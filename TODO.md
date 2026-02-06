@@ -20,7 +20,8 @@ Testes:
 Enviar prompt simples e receber resposta streaming.
 </details>
 
-## Fase 1: Core Agent Loop + Tool Calling (3-5 dias)
+<details>
+<summary>Fase 1: Core Agent Loop + Tool Calling (3-5 dias) (COMPLETO)</summary>
 
 Criar agente base com Rig
 Implementar ReAct / Plan-and-Execute loop
@@ -30,6 +31,7 @@ Testes:
 
 Agente responde perguntas gerais
 Agente reconhece e chama ferramentas (ex: calculadora)
+</details>
 
 ## Fase 2: Ferramentas Essenciais (Execução Real) (5-7 dias)
 
@@ -45,6 +47,8 @@ Testes:
 "Liste os arquivos da pasta atual"
 "Crie um arquivo teste.txt com o texto 'hello'"
 "Execute ls -la"
+
+
 
 ## Fase 3: Memória Persistente de Longo Prazo (LTM) (6-8 dias)
 
