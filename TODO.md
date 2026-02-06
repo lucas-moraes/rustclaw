@@ -33,7 +33,8 @@ Agente responde perguntas gerais
 Agente reconhece e chama ferramentas (ex: calculadora)
 </details>
 
-## Fase 2: Ferramentas Essenciais (Execução Real) (5-7 dias)
+<details>
+<summary>Fase 2: Ferramentas Essenciais (Execução Real) (5-7 dias) (COMPLETO)</summary>
 
 Ferramentas prioritárias:
 Shell execution (std::process::Command)
@@ -48,7 +49,9 @@ Testes:
 "Crie um arquivo teste.txt com o texto 'hello'"
 "Execute ls -la"
 
+</details>
 
+A partir daqui podemos seguir dois caminhos, assistente de desenvolvimento, ou assistente geral
 
 ## Fase 3: Memória Persistente de Longo Prazo (LTM) (6-8 dias)
 

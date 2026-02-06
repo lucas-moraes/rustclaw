@@ -38,11 +38,13 @@ impl Agent {
         let messages = self.build_messages(&system_prompt);
 
         // ReAct loop
+        let mut current_messages = messages;
+        
         for iteration in 0..self.config.max_iterations {
             info!("ReAct iteration {}", iteration + 1);
 
             // Call LLM
-            let response = self.call_llm(&messages).await?;
+            let response = self.call_llm(&current_messages).await?;
             debug!("LLM response:\n{}", response);
 
             // Parse response
@@ -64,21 +66,17 @@ impl Agent {
                     let observation = self.execute_tool(&action, &action_input).await?;
                     info!("Tool observation: {}", observation);
 
-                    // Add to messages for next iteration
+                    // Add tool result to messages for next iteration
                     let tool_result = format!(
                         "Thought: {}\nAction: {}\nAction Input: {}\nObservation: {}",
                         thought, action, action_input, observation
                     );
                     
-                    // Rebuild messages with the result
-                    let mut new_messages = self.build_messages(&system_prompt);
-                    new_messages.push(json!({
+                    // Add to current messages for next LLM call
+                    current_messages.push(json!({
                         "role": "assistant",
                         "content": tool_result
                     }));
-                    
-                    // Update for next iteration
-                    // We need to include this in the next API call
                 }
             }
         }

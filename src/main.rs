@@ -6,7 +6,15 @@ use agent::Agent;
 use config::Config;
 use dotenv::dotenv;
 use std::io::{self, Write};
+use tools::capabilities::CapabilitiesTool;
 use tools::echo::EchoTool;
+use tools::file_list::FileListTool;
+use tools::file_read::FileReadTool;
+use tools::file_search::FileSearchTool;
+use tools::file_write::FileWriteTool;
+use tools::http::{HttpGetTool, HttpPostTool};
+use tools::shell::ShellTool;
+use tools::system::SystemInfoTool;
 use tools::ToolRegistry;
 use tracing::{info, Level};
 
@@ -28,8 +36,17 @@ async fn main() -> anyhow::Result<()> {
 
     // Create tool registry and register tools
     let mut tools = ToolRegistry::new();
+    tools.register(Box::new(CapabilitiesTool::new()));
     tools.register(Box::new(EchoTool));
-    info!("Ferramentas registradas");
+    tools.register(Box::new(ShellTool::new()));
+    tools.register(Box::new(FileReadTool::new()));
+    tools.register(Box::new(FileWriteTool::new()));
+    tools.register(Box::new(FileListTool::new()));
+    tools.register(Box::new(FileSearchTool::new()));
+    tools.register(Box::new(HttpGetTool::new()));
+    tools.register(Box::new(HttpPostTool::new()));
+    tools.register(Box::new(SystemInfoTool::new()));
+    info!("Ferramentas registradas: {}", tools.list().lines().count());
 
     // Create agent
     let mut agent = Agent::new(config, tools);
@@ -37,10 +54,12 @@ async fn main() -> anyhow::Result<()> {
     // CLI loop
     println!("╔════════════════════════════════════╗");
     println!("║        RustClaw v0.1.0             ║");
-    println!("║   Fase 1: Core Agent + Tools       ║");
+    println!("║   Fase 2: Ferramentas Essenciais   ║");
     println!("╚════════════════════════════════════╝");
     println!();
     println!("Digite mensagens (ou 'sair' para terminar):");
+    println!();
+    println!("💡 Dica: Pergunte 'o que você pode fazer?' para ver todas as capacidades");
     println!();
 
     let stdin = io::stdin();
