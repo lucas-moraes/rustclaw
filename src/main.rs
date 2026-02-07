@@ -1,11 +1,13 @@
 mod agent;
 mod config;
+mod memory;
 mod tools;
 
 use agent::Agent;
 use config::Config;
 use dotenv::dotenv;
 use std::io::{self, Write};
+use std::path::Path;
 use tools::capabilities::CapabilitiesTool;
 use tools::echo::EchoTool;
 use tools::file_list::FileListTool;
@@ -34,6 +36,9 @@ async fn main() -> anyhow::Result<()> {
     let config = Config::from_env()?;
     info!("Configuração carregada. Modelo: {}", config.model);
 
+    // Create data directory for memory
+    let memory_path = Path::new("data/memory.db");
+
     // Create tool registry and register tools
     let mut tools = ToolRegistry::new();
     tools.register(Box::new(CapabilitiesTool::new()));
@@ -48,18 +53,24 @@ async fn main() -> anyhow::Result<()> {
     tools.register(Box::new(SystemInfoTool::new()));
     info!("Ferramentas registradas: {}", tools.list().lines().count());
 
-    // Create agent
-    let mut agent = Agent::new(config, tools);
+    // Create agent with memory
+    let mut agent = Agent::new(config, tools, memory_path)?;
+    let memory_count = agent.get_memory_count()?;
+    info!("Memórias carregadas: {}", memory_count);
 
     // CLI loop
-    println!("╔════════════════════════════════════╗");
-    println!("║        RustClaw v0.1.0             ║");
-    println!("║   Fase 2: Ferramentas Essenciais   ║");
-    println!("╚════════════════════════════════════╝");
+    println!("╔════════════════════════════════════════════════╗");
+    println!("║              RustClaw v0.1.0                   ║");
+    println!("║   Fase 3: Memória Persistente de Longo Prazo   ║");
+    println!("╚════════════════════════════════════════════════╝");
+    println!();
+    println!("🧠 Memórias salvas: {}", memory_count);
     println!();
     println!("Digite mensagens (ou 'sair' para terminar):");
     println!();
     println!("💡 Dica: Pergunte 'o que você pode fazer?' para ver todas as capacidades");
+    println!("💡 Dica: Pergunte 'Qual API eu prefiro?' após dizer 'Prefiro usar Kimi'");
+    println!("   e veja se ele lembra após reiniciar!");
     println!();
 
     let stdin = io::stdin();
@@ -74,7 +85,7 @@ async fn main() -> anyhow::Result<()> {
         let input = input.trim();
 
         if input.eq_ignore_ascii_case("sair") {
-            println!("Até logo!");
+            println!("Até logo! Suas memórias foram salvas.");
             break;
         }
 

@@ -53,7 +53,8 @@ Testes:
 
 A partir daqui podemos seguir dois caminhos, assistente de desenvolvimento, ou assistente geral
 
-## Fase 3: Memória Persistente de Longo Prazo (LTM) (6-8 dias)
+<details>
+<summary>Fase 3: Memória Persistente de Longo Prazo (LTM) (6-8 dias)</summary>
 
 Gerar embeddings com fastembed-rust
 Usar OasysDB ou LanceDB como vector store (leves e embedded)
@@ -67,6 +68,8 @@ Testes:
 
 "Lembra qual API eu prefiro usar?" (deve lembrar de conversa anterior)
 Busca semântica funciona após reiniciar o programa
+
+</details>
 
 ## Fase 4: Integração com Chat (Telegram) (4-6 dias)
 

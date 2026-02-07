@@ -1,8 +1,13 @@
 use crate::config::Config;
+use crate::memory::embeddings::EmbeddingService;
+use crate::memory::search::{format_memories_for_prompt, search_similar_memories};
+use crate::memory::store::MemoryStore;
+use crate::memory::{MemoryEntry, MemoryType};
 use crate::tools::ToolRegistry;
 use regex::Regex;
 use reqwest::Client;
 use serde_json::{json, Value};
+use std::path::Path;
 use tracing::{debug, info};
 
 pub struct Agent {
@@ -10,36 +15,47 @@ pub struct Agent {
     config: Config,
     tools: ToolRegistry,
     conversation_history: Vec<Value>,
+    memory_store: MemoryStore,
+    embedding_service: EmbeddingService,
 }
 
 impl Agent {
-    pub fn new(config: Config, tools: ToolRegistry) -> Self {
-        Self {
+    pub fn new(config: Config, tools: ToolRegistry, memory_path: &Path) -> anyhow::Result<Self> {
+        let memory_store = MemoryStore::new(memory_path)?;
+        let embedding_service = EmbeddingService::new()?;
+
+        Ok(Self {
             client: Client::new(),
             config,
             tools,
             conversation_history: Vec::new(),
-        }
+            memory_store,
+            embedding_service,
+        })
     }
 
     pub async fn prompt(&mut self, user_input: &str) -> anyhow::Result<String> {
         info!("User input: {}", user_input);
 
-        // Build system prompt with ReAct instructions
-        let system_prompt = self.build_system_prompt();
+        // 1. Search for relevant memories from long-term memory
+        let memories = self.retrieve_relevant_memories(user_input).await?;
+        let memory_context = format_memories_for_prompt(&memories);
 
-        // Add user message to history
+        // 2. Build system prompt with memories
+        let system_prompt = self.build_system_prompt(&memory_context);
+
+        // 3. Add user message to short-term history
         self.conversation_history.push(json!({
             "role": "user",
             "content": user_input
         }));
 
-        // Build messages for API call
+        // 4. Build messages for API call
         let messages = self.build_messages(&system_prompt);
 
-        // ReAct loop
+        // 5. ReAct loop
         let mut current_messages = messages;
-        
+
         for iteration in 0..self.config.max_iterations {
             info!("ReAct iteration {}", iteration + 1);
 
@@ -53,26 +69,36 @@ impl Agent {
             match parsed {
                 ParsedResponse::FinalAnswer(answer) => {
                     info!("Final answer received");
+                    
+                    // Save to conversation history
                     self.conversation_history.push(json!({
                         "role": "assistant",
                         "content": answer.clone()
                     }));
+
+                    // Save to long-term memory
+                    self.save_conversation_to_memory(user_input, &answer).await?;
+
                     return Ok(answer);
                 }
                 ParsedResponse::Action { thought, action, action_input } => {
                     info!("Action detected: {} with input: {}", action, action_input);
-                    
+
                     // Execute tool
                     let observation = self.execute_tool(&action, &action_input).await?;
                     info!("Tool observation: {}", observation);
+
+                    // Save important tool results to memory
+                    if action != "echo" {
+                        self.save_tool_result_to_memory(&action, &action_input, &observation).await?;
+                    }
 
                     // Add tool result to messages for next iteration
                     let tool_result = format!(
                         "Thought: {}\nAction: {}\nAction Input: {}\nObservation: {}",
                         thought, action, action_input, observation
                     );
-                    
-                    // Add to current messages for next LLM call
+
                     current_messages.push(json!({
                         "role": "assistant",
                         "content": tool_result
@@ -83,15 +109,12 @@ impl Agent {
 
         // If we reached max iterations, force a final answer
         info!("Max iterations reached, forcing final answer");
-        let final_prompt = format!(
-            "{}",
-            self.build_messages(&system_prompt)
-                .iter()
-                .map(|m| m["content"].as_str().unwrap_or(""))
-                .collect::<Vec<_>>()
-                .join("\n")
-        );
-        
+        let final_prompt = self.build_messages(&system_prompt)
+            .iter()
+            .map(|m| m["content"].as_str().unwrap_or(""))
+            .collect::<Vec<_>>()
+            .join("\n");
+
         let final_messages = vec![
             json!({
                 "role": "system",
@@ -103,15 +126,89 @@ impl Agent {
             })
         ];
         let final_response = self.call_llm(&final_messages).await?;
-        
+
         if let ParsedResponse::FinalAnswer(answer) = self.parse_response(&final_response)? {
+            self.save_conversation_to_memory(user_input, &answer).await?;
             return Ok(answer);
         }
-        
+
         Ok(final_response)
     }
 
-    fn build_system_prompt(&self) -> String {
+    async fn retrieve_relevant_memories(&self, query: &str) -> anyhow::Result<Vec<(MemoryEntry, f32)>> {
+        // Generate embedding for the query
+        let query_embedding = self.embedding_service.embed(query).await?;
+
+        // Get all memories from store
+        let all_memories = self.memory_store.get_all()?;
+
+        if all_memories.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // Search for similar memories
+        let results = search_similar_memories(&query_embedding, &all_memories, 5, 0.5);
+
+        // Increment search count for found memories
+        for (memory, _) in &results {
+            if let Err(e) = self.memory_store.increment_search_count(&memory.id) {
+                tracing::warn!("Failed to increment search count: {}", e);
+            }
+        }
+
+        Ok(results)
+    }
+
+    async fn save_conversation_to_memory(&self, user_input: &str, assistant_response: &str) -> anyhow::Result<()> {
+        // Only save if conversation is meaningful (longer than 10 chars)
+        if user_input.len() < 10 {
+            return Ok(());
+        }
+
+        // Create memory content
+        let content = format!("Usuário: {}\nAssistente: {}", user_input, assistant_response);
+
+        // Generate embedding
+        let embedding = self.embedding_service.embed(&content).await?;
+
+        // Create memory entry
+        let memory = MemoryEntry::new(
+            content,
+            embedding,
+            MemoryType::Episode,
+            0.6, // Base importance for conversations
+        );
+
+        // Save to store
+        self.memory_store.save(&memory)?;
+        info!("Saved conversation to long-term memory");
+
+        Ok(())
+    }
+
+    async fn save_tool_result_to_memory(&self, tool_name: &str, input: &str, output: &str) -> anyhow::Result<()> {
+        // Only save important tool results (not errors, not too long)
+        if output.starts_with("Erro:") || output.len() > 1000 {
+            return Ok(());
+        }
+
+        let content = format!("Tool: {}\nInput: {}\nOutput: {}", tool_name, input, output.chars().take(200).collect::<String>());
+
+        let embedding = self.embedding_service.embed(&content).await?;
+
+        let memory = MemoryEntry::new(
+            content,
+            embedding,
+            MemoryType::ToolResult,
+            0.5,
+        );
+
+        self.memory_store.save(&memory)?;
+
+        Ok(())
+    }
+
+    fn build_system_prompt(&self, memory_context: &str) -> String {
         let tool_list = if self.tools.is_empty() {
             "Nenhuma ferramenta disponível".to_string()
         } else {
@@ -119,7 +216,7 @@ impl Agent {
         };
 
         format!(
-            r#"Você é RustClaw, um assistente AI útil.
+            r#"Você é RustClaw, um assistente AI útil com memória de longo prazo.
 
 Você tem acesso às seguintes ferramentas:
 {}
@@ -133,8 +230,10 @@ Quando tiver a resposta final (ou não precisar de ferramentas), responda EXATAM
 Thought: [seu raciocínio]
 Final Answer: [sua resposta para o usuário]
 
-Sempre pense passo a passo."#,
-            tool_list
+Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para contextualizar sua resposta.{}
+"#,
+            tool_list,
+            memory_context
         )
     }
 
@@ -151,7 +250,7 @@ Sempre pense passo a passo."#,
 
     async fn call_llm(&self, messages: &[Value]) -> anyhow::Result<String> {
         let url = format!("{}/chat/completions", self.config.base_url);
-        
+
         let body = json!({
             "model": self.config.model,
             "messages": messages,
@@ -174,7 +273,7 @@ Sempre pense passo a passo."#,
         }
 
         let json_response: Value = response.json().await?;
-        
+
         let content = json_response["choices"][0]["message"]["content"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("Invalid response format from API"))?;
@@ -194,7 +293,8 @@ Sempre pense passo a passo."#,
         // Try to find Action
         let thought_re = Regex::new(r"(?i)Thought:\s*(.+?)(?:\n|$)").unwrap();
         let action_re = Regex::new(r"(?i)Action:\s*(.+?)(?:\n|$)").unwrap();
-        let action_input_re = Regex::new(r"(?i)Action Input:\s*(\{.+\}|.+?)(?:\n|$)").unwrap();
+        let action_input_re = Regex::new(r"(?i)Action Input:\s*(\{.+
+}|.+?)(?:\n|$)").unwrap();
 
         let thought = thought_re
             .captures(response)
@@ -238,6 +338,10 @@ Sempre pense passo a passo."#,
             Ok(result) => Ok(result),
             Err(e) => Ok(format!("Erro: {}", e)),
         }
+    }
+
+    pub fn get_memory_count(&self) -> anyhow::Result<i64> {
+        self.memory_store.count()
     }
 }
 
