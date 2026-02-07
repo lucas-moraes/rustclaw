@@ -21,3 +21,5 @@ fastembed = "4"
 rusqlite = { version = "0.32", features = ["bundled", "chrono", "uuid"] }
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
+teloxide = { version = "0.13", features = ["macros"] }
+clap = { version = "4", features = ["derive"] }

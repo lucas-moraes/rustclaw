@@ -1,106 +1,52 @@
 mod agent;
+mod cli;
 mod config;
 mod memory;
+mod telegram;
 mod tools;
 
-use agent::Agent;
-use config::Config;
+use clap::Parser;
 use dotenv::dotenv;
-use std::io::{self, Write};
-use std::path::Path;
-use tools::capabilities::CapabilitiesTool;
-use tools::echo::EchoTool;
-use tools::file_list::FileListTool;
-use tools::file_read::FileReadTool;
-use tools::file_search::FileSearchTool;
-use tools::file_write::FileWriteTool;
-use tools::http::{HttpGetTool, HttpPostTool};
-use tools::shell::ShellTool;
-use tools::system::SystemInfoTool;
-use tools::ToolRegistry;
-use tracing::{info, Level};
+use tracing::info;
+
+#[derive(Parser, Debug)]
+#[command(
+    name = "rustclaw",
+    about = "RustClaw - Agente AI com memória persistente",
+    version = "0.1.0"
+)]
+struct Args {
+    /// Modo de execução: cli ou telegram
+    #[arg(short, long, default_value = "cli")]
+    mode: String,
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Load environment variables
     dotenv().ok();
 
-    // Initialize tracing
-    tracing_subscriber::fmt()
-        .with_max_level(Level::INFO)
-        .init();
+    // Parse command line arguments
+    let args = Args::parse();
 
-    info!("Iniciando RustClaw...");
+    info!("Starting RustClaw in {} mode", args.mode);
 
-    // Load config
-    let config = Config::from_env()?;
-    info!("Configuração carregada. Modelo: {}", config.model);
+    // Load config (needed for both modes)
+    let config = config::Config::from_env()?;
 
-    // Create data directory for memory
-    let memory_path = Path::new("data/memory.db");
-
-    // Create tool registry and register tools
-    let mut tools = ToolRegistry::new();
-    tools.register(Box::new(CapabilitiesTool::new()));
-    tools.register(Box::new(EchoTool));
-    tools.register(Box::new(ShellTool::new()));
-    tools.register(Box::new(FileReadTool::new()));
-    tools.register(Box::new(FileWriteTool::new()));
-    tools.register(Box::new(FileListTool::new()));
-    tools.register(Box::new(FileSearchTool::new()));
-    tools.register(Box::new(HttpGetTool::new()));
-    tools.register(Box::new(HttpPostTool::new()));
-    tools.register(Box::new(SystemInfoTool::new()));
-    info!("Ferramentas registradas: {}", tools.list().lines().count());
-
-    // Create agent with memory
-    let mut agent = Agent::new(config, tools, memory_path)?;
-    let memory_count = agent.get_memory_count()?;
-    info!("Memórias carregadas: {}", memory_count);
-
-    // CLI loop
-    println!("╔════════════════════════════════════════════════╗");
-    println!("║              RustClaw v0.1.0                   ║");
-    println!("║   Fase 3: Memória Persistente de Longo Prazo   ║");
-    println!("╚════════════════════════════════════════════════╝");
-    println!();
-    println!("🧠 Memórias salvas: {}", memory_count);
-    println!();
-    println!("Digite mensagens (ou 'sair' para terminar):");
-    println!();
-    println!("💡 Dica: Pergunte 'o que você pode fazer?' para ver todas as capacidades");
-    println!("💡 Dica: Pergunte 'Qual API eu prefiro?' após dizer 'Prefiro usar Kimi'");
-    println!("   e veja se ele lembra após reiniciar!");
-    println!();
-
-    let stdin = io::stdin();
-    let mut stdout = io::stdout();
-
-    loop {
-        print!("> ");
-        stdout.flush()?;
-
-        let mut input = String::new();
-        stdin.read_line(&mut input)?;
-        let input = input.trim();
-
-        if input.eq_ignore_ascii_case("sair") {
-            println!("Até logo! Suas memórias foram salvas.");
-            break;
+    match args.mode.as_str() {
+        "cli" => {
+            // Run in CLI mode
+            cli::run(config).await?;
         }
-
-        if input.is_empty() {
-            continue;
+        "telegram" => {
+            // Run in Telegram bot mode
+            telegram::TelegramBot::run(config).await?;
         }
-
-        // Process with agent
-        match agent.prompt(input).await {
-            Ok(response) => {
-                println!("\n🤖 RustClaw: {}\n", response);
-            }
-            Err(e) => {
-                eprintln!("\n❌ Erro: {}\n", e);
-            }
+        _ => {
+            eprintln!("❌ Modo inválido: {}", args.mode);
+            eprintln!("Use: --mode cli ou --mode telegram");
+            std::process::exit(1);
         }
     }
 

@@ -54,7 +54,7 @@ Testes:
 A partir daqui podemos seguir dois caminhos, assistente de desenvolvimento, ou assistente geral
 
 <details>
-<summary>Fase 3: Memória Persistente de Longo Prazo (LTM) (6-8 dias)</summary>
+<summary>Fase 3: Memória Persistente de Longo Prazo (LTM) (6-8 dias) (COMPLETO)</summary>
 
 Gerar embeddings com fastembed-rust
 Usar OasysDB ou LanceDB como vector store (leves e embedded)
@@ -71,7 +71,8 @@ Busca semântica funciona após reiniciar o programa
 
 </details>
 
-## Fase 4: Integração com Chat (Telegram) (4-6 dias)
+<details>
+<summary>Fase 4: Integração com Chat (Telegram) (4-6 dias) (COMPLETO)</summary>
 
 Usar teloxide
 Suporte a comandos (/start, /status, /clear_memory)
@@ -81,6 +82,7 @@ Testes:
 
 Receber mensagem no Telegram → agente responde
 Agente mantém contexto entre várias mensagens
+</details>
 
 ## Fase 5: Proatividade e Agendamento (4-6 dias)
 
