@@ -84,7 +84,8 @@ Receber mensagem no Telegram → agente responde
 Agente mantém contexto entre várias mensagens
 </details>
 
-## Fase 5: Proatividade e Agendamento (4-6 dias)
+<details>
+<summary>Fase 5: Proatividade e Agendamento (4-6 dias) (COMPLETO)</summary>
 
 Implementar scheduler (tokio-cron-scheduler)
 Heartbeat diário (resumo do dia, tarefas pendentes)
@@ -94,6 +95,8 @@ Testes:
 
 Agente envia mensagem automática todo dia às 8h
 Heartbeat funciona após reboot
+</details>
+
 
 ## Fase 6: Browser Automation (Opcional / Avançado) (5-7 dias)
 

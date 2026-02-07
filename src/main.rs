@@ -2,6 +2,7 @@ mod agent;
 mod cli;
 mod config;
 mod memory;
+mod scheduler;
 mod telegram;
 mod tools;
 

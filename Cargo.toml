@@ -23,3 +23,5 @@ uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 teloxide = { version = "0.13", features = ["macros"] }
 clap = { version = "4", features = ["derive"] }
+tokio-cron-scheduler = "0.13"
+cron = "0.15"
