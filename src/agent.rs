@@ -10,6 +10,15 @@ use serde_json::{json, Value};
 use std::path::Path;
 use tracing::{debug, info};
 
+const USER_AGENT: &str = "RustClaw/1.0";
+
+fn create_http_client() -> reqwest::Client {
+    Client::builder()
+        .user_agent(USER_AGENT)
+        .build()
+        .expect("Failed to create HTTP client")
+}
+
 pub struct Agent {
     client: Client,
     config: Config,
@@ -25,7 +34,7 @@ impl Agent {
         let embedding_service = EmbeddingService::new()?;
 
         Ok(Self {
-            client: Client::new(),
+            client: create_http_client(),
             config,
             tools,
             conversation_history: Vec::new(),
@@ -220,6 +229,12 @@ impl Agent {
 
 Você tem acesso às seguintes ferramentas:
 {}
+
+DIRETRIZES IMPORTANTES:
+1. Para BUSCAS NA INTERNET, use SEMPRE tavily_search (busca IA sem CAPTCHA) ou web_search (busca rápida)
+2. Use browser_navigate APENAS para acessar sites específicos quando necessário
+3. Use browser_screenshot para capturar páginas
+4. Use http_get APENAS para APIs REST ou quando Tavily não for suficiente
 
 Para usar uma ferramenta, responda EXATAMENTE neste formato:
 Thought: [seu raciocínio sobre o que fazer]

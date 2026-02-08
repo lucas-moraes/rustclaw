@@ -97,16 +97,16 @@ Agente envia mensagem automática todo dia às 8h
 Heartbeat funciona após reboot
 </details>
 
+<details>
+<summary>Fase 6: Browser Automation (Opcional / Avançado) (5-7 dias) (COMPLETO)</summary>
 
-## Fase 6: Browser Automation (Opcional / Avançado) (5-7 dias)
-
-Integrar headless_chrome ou fantoccini
-Ferramentas: navegar, screenshot, extrair texto
+Integrar headless_chrome ou fantoccini Ferramentas: navegar, screenshot, extrair texto
 
 Testes:
 
-"Acesse google.com e busque por 'preço bitcoin'"
-Tirar screenshot e salvar
+"Acesse google.com e busque por 'preço bitcoin'" Tirar screenshot e salvar
+</details>
+
 
 ## Fase 7: Otimização para Raspberry Pi 3 + Segurança (5-7 dias)
 

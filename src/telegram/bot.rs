@@ -1,13 +1,19 @@
 use crate::agent::Agent;
+use crate::browser::tools::{
+    BrowserExtractTool, BrowserNavigateTool, BrowserScreenshotTool, BrowserSearchTool,
+    BrowserTestTool,
+};
 use crate::config::Config;
 use crate::scheduler::task::{ScheduledTask, TaskType};
 use crate::scheduler::SchedulerService;
+use crate::tavily::tools::{TavilyQuickSearchTool, TavilySearchTool};
 use crate::tools::{
     capabilities::CapabilitiesTool, echo::EchoTool, file_list::FileListTool,
     file_read::FileReadTool, file_search::FileSearchTool, file_write::FileWriteTool,
     http::{HttpGetTool, HttpPostTool}, shell::ShellTool, system::SystemInfoTool,
-    ToolRegistry,
+    Tool, ToolRegistry,
 };
+use teloxide::types::{BotCommand, InputFile};
 use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -32,6 +38,8 @@ pub enum Command {
     ClearMemory,
     #[command(description = "Listar tarefas agendadas")]
     Tasks,
+    #[command(description = "Pesquisar na internet", parse_with = "split")]
+    Internet(String),
     #[command(description = "Ajuda")]
     Help,
 }
@@ -54,6 +62,23 @@ impl TelegramBot {
         }
 
         let bot = Bot::new(token);
+        
+        // Registrar comandos no menu do Telegram
+        let commands = vec![
+            BotCommand::new("start", "Iniciar o bot"),
+            BotCommand::new("status", "Status do sistema"),
+            BotCommand::new("tasks", "Listar tarefas agendadas"),
+            BotCommand::new("clear_memory", "Limpar memórias"),
+            BotCommand::new("internet", "Pesquisar na internet"),
+            BotCommand::new("help", "Ajuda e comandos disponíveis"),
+        ];
+        
+        if let Err(e) = bot.set_my_commands(commands).await {
+            error!("Failed to set commands: {}", e);
+        } else {
+            info!("Commands registered successfully");
+        }
+        
         let config = Arc::new(config);
         
         // Initialize scheduler for authorized chat only
@@ -143,7 +168,7 @@ impl TelegramBot {
         bot: Bot,
         msg: Message,
         cmd: Command,
-        _config: &Config,
+        config: &Config,
         authorized_chat_id: Option<i64>,
         _state: &Arc<Mutex<BotState>>,
     ) -> ResponseResult<()> {
@@ -161,7 +186,38 @@ impl TelegramBot {
                 bot.send_message(chat_id, Self::welcome_message()).await?;
             }
             Command::Help => {
-                bot.send_message(chat_id, Command::descriptions().to_string()).await?;
+                let help_text = r#"🦀 RustClaw - Comandos Disponíveis
+
+📱 COMANDOS DO BOT:
+/start - Iniciar o bot e ver boas-vindas
+/status - Status do sistema (memória, RAM, tarefas)
+/tasks - Listar tarefas agendadas
+/clear_memory - Limpar todas as memórias
+/internet <consulta> - Pesquisar na internet
+/help - Mostrar esta mensagem
+
+⏰ AGENDAMENTO:
+/add_task <nome> <cron> <tipo> - Adicionar tarefa agendada
+   Exemplo: /add_task Backup "0 2 * * *" reminder "Fazer backup"
+/remove_task <id> - Remover tarefa pelo ID
+
+🛠️ FERRAMENTAS DISPONÍVEIS (via conversa):
+• Sistema de arquivos: ler, escrever, listar, buscar arquivos
+• Shell: executar comandos (ls, cat, etc.)
+• HTTP: fazer requisições web
+• Tavily: busca IA na internet (sem CAPTCHA)
+• Browser: navegar em sites, tirar screenshots
+• Sistema: informações de RAM, CPU, disco
+
+💡 EXEMPLOS DE USO:
+"Liste os arquivos da pasta atual"
+"Busque preço do bitcoin"
+"Acesse example.com e tire screenshot"
+"Qual o clima em São Paulo?"
+"Execute df -h para ver espaço em disco"
+
+📊 O bot também envia Heartbeat automático às 8h com status do sistema."#;
+                bot.send_message(chat_id, help_text).await?;
             }
             Command::Status => {
                 let status = Self::get_status(chat_id).await;
@@ -174,6 +230,55 @@ impl TelegramBot {
             Command::Tasks => {
                 let tasks = Self::get_tasks(chat_id).await;
                 bot.send_message(chat_id, tasks).await?;
+            }
+            Command::Internet(query) => {
+                if query.is_empty() {
+                    bot.send_message(chat_id, "❌ Use: /internet <texto da consulta>\nExemplo: /internet preço do bitcoin").await?;
+                    return Ok(());
+                }
+                
+                bot.send_chat_action(chat_id, teloxide::types::ChatAction::Typing).await?;
+                
+                // Usar Tavily para pesquisa (sem CAPTCHA, resultado mais rápido)
+                if let Some(ref tavily_key) = config.tavily_api_key {
+                    let tool = TavilyQuickSearchTool::new(tavily_key.clone());
+                    let args = serde_json::json!({ "query": query });
+                    
+                    match tool.call(args).await {
+                        Ok(result) => {
+                            bot.send_message(chat_id, format!("🔍 Resultados:\n\n{}", result)).await?;
+                        }
+                        Err(e) => {
+                            bot.send_message(chat_id, format!("❌ Erro na pesquisa: {}", e)).await?;
+                        }
+                    }
+                } else {
+                    // Fallback para browser search se Tavily não estiver configurado
+                    let tool = BrowserSearchTool::new();
+                    let args = serde_json::json!({ "query": query });
+                    
+                    match tool.call(args).await {
+                        Ok(result) => {
+                            bot.send_message(chat_id, format!("🔍 Resultados:\n\n{}", result)).await?;
+                            
+                            // Verificar se há screenshot para enviar
+                            if result.contains("data/screenshots/") {
+                                if let Some(start) = result.find("data/screenshots/") {
+                                    let path_end = result[start..].find('\n').unwrap_or(result[start..].len());
+                                    let screenshot_path = &result[start..start + path_end];
+                                    if std::path::Path::new(screenshot_path).exists() {
+                                        let photo = InputFile::file(screenshot_path);
+                                        bot.send_photo(chat_id, photo).await?;
+                                        let _ = tokio::fs::remove_file(screenshot_path).await;
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            bot.send_message(chat_id, format!("❌ Erro na pesquisa: {}", e)).await?;
+                        }
+                    }
+                }
             }
         }
 
@@ -232,7 +337,31 @@ impl TelegramBot {
 
         match response {
             Ok(Ok(text)) => {
-                bot.send_message(chat_id, format!("🤖 {}", text)).await?;
+                // Check if response contains a screenshot path
+                if text.contains("data/screenshots/") && text.contains(".png") {
+                    // Extract the screenshot path
+                    if let Some(start) = text.find("data/screenshots/") {
+                        let path_end = text[start..].find('\n').unwrap_or(text[start..].len());
+                        let screenshot_path = &text[start..start + path_end];
+                        
+                        // Send text without the path
+                        let clean_text = text.replace(screenshot_path, "[screenshot attached]");
+                        bot.send_message(chat_id, format!("🤖 {}", clean_text)).await?;
+                        
+                        // Send screenshot as photo
+                        if std::path::Path::new(screenshot_path).exists() {
+                            let photo = InputFile::file(screenshot_path);
+                            bot.send_photo(chat_id, photo).await?;
+                            
+                            // Optionally delete the file after sending
+                            let _ = tokio::fs::remove_file(screenshot_path).await;
+                        }
+                    } else {
+                        bot.send_message(chat_id, format!("🤖 {}", text)).await?;
+                    }
+                } else {
+                    bot.send_message(chat_id, format!("🤖 {}", text)).await?;
+                }
             }
             Ok(Err(e)) => {
                 error!("Agent error: {}", e);
@@ -344,6 +473,19 @@ impl TelegramBot {
         tools.register(Box::new(HttpGetTool::new()));
         tools.register(Box::new(HttpPostTool::new()));
         tools.register(Box::new(SystemInfoTool::new()));
+        
+        // Tavily search tools (IA-powered search without CAPTCHAs)
+        if let Some(ref tavily_key) = config.tavily_api_key {
+            tools.register(Box::new(TavilySearchTool::new(tavily_key.clone())));
+            tools.register(Box::new(TavilyQuickSearchTool::new(tavily_key.clone())));
+        }
+        
+        // Browser automation tools (Fase 6)
+        tools.register(Box::new(BrowserNavigateTool::new()));
+        tools.register(Box::new(BrowserSearchTool::new()));
+        tools.register(Box::new(BrowserExtractTool::new()));
+        tools.register(Box::new(BrowserScreenshotTool::new()));
+        tools.register(Box::new(BrowserTestTool::new()));
 
         let memory_path = PathBuf::from(format!("data/memories_{}.db", chat_id.0));
         Agent::new(config.clone(), tools, &memory_path).expect("Failed to create agent")
@@ -354,8 +496,10 @@ impl TelegramBot {
 
 Sou seu assistente AI proativo com:
 ✅ Memória persistente
-✅ Ferramentas de sistema
-✅ Tarefas agendadas (Heartbeat automático às 8h)
+✅ Ferramentas de sistema (shell, arquivos, HTTP)
+✅ Tarefas agendadas (Heartbeat às 8h)
+🌐 Navegação web 
+📸 Screenshots de páginas
 
 Comandos:
 /start - Esta mensagem
@@ -367,6 +511,11 @@ Comandos:
 Tarefas:
 /add_task <nome> <cron> <tipo> - Adicionar tarefa
 /remove_task <id> - Remover tarefa
+
+Exemplos de uso:
+• "Busque preço do bitcoin"
+• "Acesse example.com e tire screenshot"
+• "Liste arquivos do diretório atual"
 
 Vamos conversar!"#.to_string()
     }

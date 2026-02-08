@@ -5,6 +5,7 @@ use std::time::Duration;
 
 const MAX_RESPONSE_SIZE: usize = 100_000;
 const TIMEOUT_SECONDS: u64 = 30;
+const USER_AGENT: &str = "RustClaw/1.0";
 
 pub struct HttpGetTool;
 pub struct HttpPostTool;
@@ -40,10 +41,11 @@ impl Tool for HttpGetTool {
 
         let client = Client::builder()
             .timeout(Duration::from_secs(TIMEOUT_SECONDS))
+            .user_agent(USER_AGENT)
             .build()
             .map_err(|e| format!("Erro ao criar client HTTP: {}", e))?;
 
-        let mut request = client.get(url);
+        let mut request = client.get(url).header("User-Agent", USER_AGENT);
 
         if let Some(headers) = headers {
             for (key, value) in headers {
@@ -108,10 +110,11 @@ impl Tool for HttpPostTool {
 
         let client = Client::builder()
             .timeout(Duration::from_secs(TIMEOUT_SECONDS))
+            .user_agent(USER_AGENT)
             .build()
             .map_err(|e| format!("Erro ao criar client HTTP: {}", e))?;
 
-        let mut request = client.post(url);
+        let mut request = client.post(url).header("User-Agent", USER_AGENT);
 
         if let Some(headers) = headers {
             for (key, value) in headers {
