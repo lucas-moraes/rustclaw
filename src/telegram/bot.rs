@@ -4,13 +4,16 @@ use crate::browser::tools::{
     BrowserTestTool,
 };
 use crate::config::Config;
+use crate::reminder_executor::ReminderExecutor;
 use crate::scheduler::task::{ScheduledTask, TaskType};
 use crate::scheduler::SchedulerService;
 use crate::tavily::tools::{TavilyQuickSearchTool, TavilySearchTool};
 use crate::tools::{
-    capabilities::CapabilitiesTool, echo::EchoTool, file_list::FileListTool,
-    file_read::FileReadTool, file_search::FileSearchTool, file_write::FileWriteTool,
-    http::{HttpGetTool, HttpPostTool}, shell::ShellTool, system::SystemInfoTool,
+    capabilities::CapabilitiesTool, datetime::DateTimeTool, echo::EchoTool,
+    file_list::FileListTool, file_read::FileReadTool, file_search::FileSearchTool,
+    file_write::FileWriteTool, http::{HttpGetTool, HttpPostTool},
+    location::LocationTool, reminder::{AddReminderTool, CancelReminderTool, ListRemindersTool},
+    shell::ShellTool, system::SystemInfoTool,
     Tool, ToolRegistry,
 };
 use teloxide::types::{BotCommand, InputFile};
@@ -36,6 +39,10 @@ pub enum Command {
     Status,
     #[command(description = "Limpar memória")]
     ClearMemory,
+    #[command(description = "Listar lembretes")]
+    Reminders,
+    #[command(description = "Cancelar lembrete", parse_with = "split")]
+    CancelReminder(String),
     #[command(description = "Listar tarefas agendadas")]
     Tasks,
     #[command(description = "Pesquisar na internet", parse_with = "split")]
@@ -63,10 +70,11 @@ impl TelegramBot {
 
         let bot = Bot::new(token);
         
-        
         let commands = vec![
             BotCommand::new("start", "Iniciar o bot"),
             BotCommand::new("status", "Status do sistema"),
+            BotCommand::new("reminders", "Listar lembretes"),
+            BotCommand::new("cancel_reminder", "Cancelar lembrete"),
             BotCommand::new("tasks", "Listar tarefas agendadas"),
             BotCommand::new("clear_memory", "Limpar memórias"),
             BotCommand::new("internet", "Pesquisar na internet"),
@@ -81,6 +89,16 @@ impl TelegramBot {
         
         let config = Arc::new(config);
         
+        // Start reminder executor
+        if let Some(chat_id) = authorized_chat_id {
+            let memory_path = PathBuf::from(format!("data/memories_{}.db", chat_id));
+            let bot_clone = bot.clone();
+            tokio::spawn(async move {
+                let executor = ReminderExecutor::new(bot_clone, memory_path);
+                executor.start().await;
+            });
+            info!("Reminder executor started for chat {}", chat_id);
+        }
         
         let scheduler = if let Some(chat_id) = authorized_chat_id {
             let memory_path = PathBuf::from(format!("data/memories_{}.db", chat_id));
@@ -88,9 +106,7 @@ impl TelegramBot {
                 Ok(svc) => {
                     info!("Initializing scheduler for chat {}", chat_id);
                     
-                    
                     svc.init_default_tasks().await?;
-                    
                     
                     let bot_clone = bot.clone();
                     let callback = move |chat_id: i64, message: String| {
@@ -176,7 +192,7 @@ impl TelegramBot {
 
         if let Some(auth_id) = authorized_chat_id {
             if chat_id.0 != auth_id {
-                bot.send_message(chat_id, "⛔ Não autorizado").await?;
+                bot.send_message(chat_id, "Não autorizado").await?;
                 return Ok(());
             }
         }
@@ -186,38 +202,7 @@ impl TelegramBot {
                 bot.send_message(chat_id, Self::welcome_message()).await?;
             }
             Command::Help => {
-                let help_text = r#"🦀 RustClaw - Comandos Disponíveis
-
-📱 COMANDOS DO BOT:
-/start - Iniciar o bot e ver boas-vindas
-/status - Status do sistema (memória, RAM, tarefas)
-/tasks - Listar tarefas agendadas
-/clear_memory - Limpar todas as memórias
-/internet <consulta> - Pesquisar na internet
-/help - Mostrar esta mensagem
-
-⏰ AGENDAMENTO:
-/add_task <nome> <cron> <tipo> - Adicionar tarefa agendada
-   Exemplo: /add_task Backup "0 2 * * *" reminder "Fazer backup"
-/remove_task <id> - Remover tarefa pelo ID
-
-🛠️ FERRAMENTAS DISPONÍVEIS (via conversa):
-• Sistema de arquivos: ler, escrever, listar, buscar arquivos
-• Shell: executar comandos (ls, cat, etc.)
-• HTTP: fazer requisições web
-• Tavily: busca IA na internet (sem CAPTCHA)
-• Browser: navegar em sites, tirar screenshots
-• Sistema: informações de RAM, CPU, disco
-
-💡 EXEMPLOS DE USO:
-"Liste os arquivos da pasta atual"
-"Busque preço do bitcoin"
-"Acesse example.com e tire screenshot"
-"Qual o clima em São Paulo?"
-"Execute df -h para ver espaço em disco"
-
-📊 O bot também envia Heartbeat automático às 8h com status do sistema."#;
-                bot.send_message(chat_id, help_text).await?;
+                bot.send_message(chat_id, Self::help_message()).await?;
             }
             Command::Status => {
                 let status = Self::get_status(chat_id).await;
@@ -227,18 +212,25 @@ impl TelegramBot {
                 let result = Self::clear_memory(chat_id).await;
                 bot.send_message(chat_id, result).await?;
             }
+            Command::Reminders => {
+                let reminders = Self::get_reminders(chat_id).await;
+                bot.send_message(chat_id, reminders).await?;
+            }
+            Command::CancelReminder(id) => {
+                let result = Self::cancel_reminder(chat_id, &id).await;
+                bot.send_message(chat_id, result).await?;
+            }
             Command::Tasks => {
                 let tasks = Self::get_tasks(chat_id).await;
                 bot.send_message(chat_id, tasks).await?;
             }
             Command::Internet(query) => {
                 if query.is_empty() {
-                    bot.send_message(chat_id, "❌ Use: /internet <texto da consulta>\nExemplo: /internet preço do bitcoin").await?;
+                    bot.send_message(chat_id, "Use: /internet <consulta>").await?;
                     return Ok(());
                 }
                 
                 bot.send_chat_action(chat_id, teloxide::types::ChatAction::Typing).await?;
-                
                 
                 if let Some(ref tavily_key) = config.tavily_api_key {
                     let tool = TavilyQuickSearchTool::new(tavily_key.clone());
@@ -246,38 +238,14 @@ impl TelegramBot {
                     
                     match tool.call(args).await {
                         Ok(result) => {
-                            bot.send_message(chat_id, format!("🔍 Resultados:\n\n{}", result)).await?;
+                            bot.send_message(chat_id, format!("Resultados:\n\n{}", result)).await?;
                         }
                         Err(e) => {
-                            bot.send_message(chat_id, format!("❌ Erro na pesquisa: {}", e)).await?;
+                            bot.send_message(chat_id, format!("Erro: {}", e)).await?;
                         }
                     }
                 } else {
-                    
-                    let tool = BrowserSearchTool::new();
-                    let args = serde_json::json!({ "query": query });
-                    
-                    match tool.call(args).await {
-                        Ok(result) => {
-                            bot.send_message(chat_id, format!("🔍 Resultados:\n\n{}", result)).await?;
-                            
-                            
-                            if result.contains("data/screenshots/") {
-                                if let Some(start) = result.find("data/screenshots/") {
-                                    let path_end = result[start..].find('\n').unwrap_or(result[start..].len());
-                                    let screenshot_path = &result[start..start + path_end];
-                                    if std::path::Path::new(screenshot_path).exists() {
-                                        let photo = InputFile::file(screenshot_path);
-                                        bot.send_photo(chat_id, photo).await?;
-                                        let _ = tokio::fs::remove_file(screenshot_path).await;
-                                    }
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            bot.send_message(chat_id, format!("❌ Erro na pesquisa: {}", e)).await?;
-                        }
-                    }
+                    bot.send_message(chat_id, "TAVILY_API_KEY não configurado").await?;
                 }
             }
         }
@@ -296,7 +264,7 @@ impl TelegramBot {
 
         if let Some(auth_id) = authorized_chat_id {
             if chat_id.0 != auth_id {
-                bot.send_message(chat_id, "⛔ Não autorizado").await?;
+                bot.send_message(chat_id, "Não autorizado").await?;
                 return Ok(());
             }
         }
@@ -304,25 +272,14 @@ impl TelegramBot {
         let text = match msg.text() {
             Some(t) => t,
             None => {
-                bot.send_message(chat_id, "❌ Envie texto").await?;
+                bot.send_message(chat_id, "Envie texto").await?;
                 return Ok(());
             }
         };
 
-        
-        if text.starts_with("/add_task ") {
-            return Self::handle_add_task(bot, msg.clone(), text).await;
-        }
-
-        
-        if text.starts_with("/remove_task ") {
-            return Self::handle_remove_task(bot, msg.clone(), text).await;
-        }
-
         info!("Message from {}: {}", chat_id, text);
         bot.send_chat_action(chat_id, teloxide::types::ChatAction::Typing).await?;
 
-        
         let config = config.clone();
         let text = text.to_string();
 
@@ -337,125 +294,16 @@ impl TelegramBot {
 
         match response {
             Ok(Ok(text)) => {
-                
-                if text.contains("data/screenshots/") && text.contains(".png") {
-                    
-                    if let Some(start) = text.find("data/screenshots/") {
-                        let path_end = text[start..].find('\n').unwrap_or(text[start..].len());
-                        let screenshot_path = &text[start..start + path_end];
-                        
-                        
-                        let clean_text = text.replace(screenshot_path, "[screenshot attached]");
-                        bot.send_message(chat_id, format!("🤖 {}", clean_text)).await?;
-                        
-                        
-                        if std::path::Path::new(screenshot_path).exists() {
-                            let photo = InputFile::file(screenshot_path);
-                            bot.send_photo(chat_id, photo).await?;
-                            
-                            
-                            let _ = tokio::fs::remove_file(screenshot_path).await;
-                        }
-                    } else {
-                        bot.send_message(chat_id, format!("🤖 {}", text)).await?;
-                    }
-                } else {
-                    bot.send_message(chat_id, format!("🤖 {}", text)).await?;
-                }
+                bot.send_message(chat_id, format!("{}", text)).await?;
             }
             Ok(Err(e)) => {
                 error!("Agent error: {}", e);
-                bot.send_message(chat_id, format!("❌ Erro: {}", e)).await?;
+                bot.send_message(chat_id, format!("Erro: {}", e)).await?;
             }
             Err(e) => {
                 error!("Task error: {}", e);
-                bot.send_message(chat_id, "❌ Erro interno").await?;
+                bot.send_message(chat_id, "Erro interno").await?;
             }
-        }
-
-        Ok(())
-    }
-
-    async fn handle_add_task(
-        bot: Bot,
-        msg: Message,
-        text: &str,
-    ) -> ResponseResult<()> {
-        let chat_id = msg.chat.id;
-        
-        
-        let parts: Vec<&str> = text.split_whitespace().collect();
-        if parts.len() < 4 {
-            bot.send_message(
-                chat_id,
-                "❌ Formato: /add_task <nome> <cron> <tipo>\nEx: /add_task Teste '*/5 * * * *' reminder 'mensagem'",
-            ).await?;
-            return Ok(());
-        }
-
-        let name = parts[1];
-        let cron = parts[2].trim_matches('\'').trim_matches('"');
-        let task_type = parts[3];
-
-        let task_type = if task_type == "heartbeat" {
-            TaskType::Heartbeat
-        } else if task_type == "system_check" {
-            TaskType::SystemCheck
-        } else if task_type.starts_with("reminder:") || task_type == "reminder" {
-            let reminder_msg = if parts.len() > 4 {
-                parts[4..].join(" ")
-            } else {
-                "Lembrete!".to_string()
-            };
-            TaskType::Reminder(reminder_msg)
-        } else {
-            TaskType::Custom(task_type.to_string())
-        };
-
-        let task = ScheduledTask::new(name.to_string(), cron.to_string(), task_type);
-        
-        // Save to database
-        let memory_path = PathBuf::from(format!("data/memories_{}.db", chat_id.0));
-        if let Ok(store) = crate::memory::store::MemoryStore::new(&memory_path) {
-            if let Err(e) = store.save_task(&task) {
-                bot.send_message(chat_id, format!("❌ Erro ao salvar tarefa: {}", e)).await?;
-            } else {
-                bot.send_message(
-                    chat_id,
-                    format!("✅ Tarefa '{}' adicionada!\nCron: {}\nReinicie o bot para ativar.", name, cron),
-                ).await?;
-            }
-        } else {
-            bot.send_message(chat_id, "❌ Erro ao acessar banco de dados").await?;
-        }
-
-        Ok(())
-    }
-
-    async fn handle_remove_task(
-        bot: Bot,
-        msg: Message,
-        text: &str,
-    ) -> ResponseResult<()> {
-        let chat_id = msg.chat.id;
-        
-        let parts: Vec<&str> = text.split_whitespace().collect();
-        if parts.len() < 2 {
-            bot.send_message(chat_id, "❌ Formato: /remove_task <id>").await?;
-            return Ok(());
-        }
-
-        let task_id = parts[1];
-        
-        let memory_path = PathBuf::from(format!("data/memories_{}.db", chat_id.0));
-        if let Ok(store) = crate::memory::store::MemoryStore::new(&memory_path) {
-            if let Err(e) = store.delete_task(task_id) {
-                bot.send_message(chat_id, format!("❌ Erro ao remover: {}", e)).await?;
-            } else {
-                bot.send_message(chat_id, "✅ Tarefa removida!").await?;
-            }
-        } else {
-            bot.send_message(chat_id, "❌ Erro ao acessar banco de dados").await?;
         }
 
         Ok(())
@@ -463,84 +311,101 @@ impl TelegramBot {
 
     fn create_agent(config: &Config, chat_id: ChatId) -> Agent {
         let mut tools = ToolRegistry::new();
+        let config_arc = Arc::new(config.clone());
+        let memory_path = PathBuf::from(format!("data/memories_{}.db", chat_id.0));
+
         tools.register(Box::new(CapabilitiesTool::new()));
+        tools.register(Box::new(DateTimeTool::new()));
         tools.register(Box::new(EchoTool));
-        tools.register(Box::new(ShellTool::new()));
-        tools.register(Box::new(FileReadTool::new()));
-        tools.register(Box::new(FileWriteTool::new()));
         tools.register(Box::new(FileListTool::new()));
+        tools.register(Box::new(FileReadTool::new()));
         tools.register(Box::new(FileSearchTool::new()));
+        tools.register(Box::new(FileWriteTool::new()));
         tools.register(Box::new(HttpGetTool::new()));
         tools.register(Box::new(HttpPostTool::new()));
+        tools.register(Box::new(LocationTool::new()));
+        tools.register(Box::new(AddReminderTool::new(config_arc.clone(), &memory_path, chat_id.0)));
+        tools.register(Box::new(ListRemindersTool::new(&memory_path, chat_id.0)));
+        tools.register(Box::new(CancelReminderTool::new(&memory_path, chat_id.0)));
+        tools.register(Box::new(ShellTool::new()));
         tools.register(Box::new(SystemInfoTool::new()));
         
-        // Tavily search tools (IA-powered search without CAPTCHAs)
-        if let Some(ref tavily_key) = config.tavily_api_key {
-            tools.register(Box::new(TavilySearchTool::new(tavily_key.clone())));
-            tools.register(Box::new(TavilyQuickSearchTool::new(tavily_key.clone())));
-        }
-        
-        // Browser automation tools (Fase 6)
         tools.register(Box::new(BrowserNavigateTool::new()));
         tools.register(Box::new(BrowserSearchTool::new()));
         tools.register(Box::new(BrowserExtractTool::new()));
         tools.register(Box::new(BrowserScreenshotTool::new()));
         tools.register(Box::new(BrowserTestTool::new()));
 
-        let memory_path = PathBuf::from(format!("data/memories_{}.db", chat_id.0));
+        if let Some(ref tavily_key) = config.tavily_api_key {
+            tools.register(Box::new(TavilySearchTool::new(tavily_key.clone())));
+            tools.register(Box::new(TavilyQuickSearchTool::new(tavily_key.clone())));
+        }
+
         Agent::new(config.clone(), tools, &memory_path).expect("Failed to create agent")
     }
 
     fn welcome_message() -> String {
-        r#"🦀 Bem-vindo ao RustClaw!
+        r#"Bem-vindo ao RustClaw!
 
-Sou seu assistente AI proativo com:
-✅ Memória persistente
-✅ Ferramentas de sistema (shell, arquivos, HTTP)
-✅ Tarefas agendadas (Heartbeat às 8h)
-🌐 Navegação web 
-📸 Screenshots de páginas
+Sou seu assistente AI com:
+✓ Memória persistente
+✓ Ferramentas de sistema
+✓ Busca na internet
+✓ Lembretes automáticos
+✓ Browser automation
 
 Comandos:
 /start - Esta mensagem
-/status - Status do sistema  
+/status - Status do sistema
+/reminders - Ver lembretes
+/cancel_reminder <id> - Cancelar
+/tasks - Ver tarefas
 /clear_memory - Limpar memórias
-/tasks - Ver tarefas agendadas
+/internet <query> - Pesquisar
 /help - Ajuda
 
-Tarefas:
-/add_task <nome> <cron> <tipo> - Adicionar tarefa
-/remove_task <id> - Remover tarefa
-
-Exemplos de uso:
-• "Busque preço do bitcoin"
-• "Acesse example.com e tire screenshot"
-• "Liste arquivos do diretório atual"
+Criar lembretes:
+• "Me lembre amanhã às 10h"
+• "Todo dia às 8h tomar remédio"
 
 Vamos conversar!"#.to_string()
     }
 
+    fn help_message() -> String {
+        r#"Comandos disponíveis:
+
+/reminders - Listar lembretes
+/cancel_reminder <id> - Cancelar
+/tasks - Listar tarefas
+/status - Status do sistema
+/clear_memory - Limpar memórias
+/internet <query> - Pesquisar
+/help - Esta mensagem
+
+Exemplos de lembretes:
+• "Me lembre amanhã às 10h"
+• "Todo dia às 8h"
+• "Daqui 2 horas"
+• "Toda segunda às 9h""#.to_string()
+    }
+
     async fn get_status(chat_id: ChatId) -> String {
         let memory_path = PathBuf::from(format!("data/memories_{}.db", chat_id.0));
-        let (memory_count, task_count) = if memory_path.exists() {
+        let memory_count = if memory_path.exists() {
             match crate::memory::store::MemoryStore::new(&memory_path) {
-                Ok(store) => (
-                    store.count().unwrap_or(0),
-                    store.count_tasks().unwrap_or(0),
-                ),
-                Err(_) => (0, 0),
+                Ok(store) => store.count().unwrap_or(0),
+                Err(_) => 0,
             }
         } else {
-            (0, 0)
+            0
         };
 
         let mut sys = System::new_all();
         sys.refresh_all();
 
         format!(
-            "📊 Status\n\n📝 Memórias: {}\n⏰ Tarefas: {}\n🧠 RAM: {} MB / {} MB",
+            "Status\n\nMemórias: {}\nRAM: {} MB / {} MB",
             memory_count,
-            task_count,
             sys.used_memory() / 1024,
             sys.total_memory() / 1024
         )
@@ -554,35 +419,95 @@ Vamos conversar!"#.to_string()
                 match store.get_all_tasks() {
                     Ok(tasks) => {
                         if tasks.is_empty() {
-                            "📋 Nenhuma tarefa agendada.\n\nUse /add_task para criar uma.".to_string()
+                            "Nenhuma tarefa agendada.".to_string()
                         } else {
-                            let mut output = String::from("📋 Tarefas Agendadas:\n\n");
+                            let mut output = String::from("Tarefas:\n\n");
                             for task in tasks {
-                                let status = if task.is_active { "✅" } else { "❌" };
                                 output.push_str(&format!(
-                                    "{} {}\n   ID: {}\n   Cron: {}\n   Tipo: {}\n\n",
-                                    status,
+                                    "{}\n   ID: {}\n\n",
                                     task.name,
-                                    task.id,
-                                    task.cron_expression,
-                                    task.get_type_string()
+                                    task.id
                                 ));
                             }
-                            output.push_str("Use /remove_task <id> para remover");
+                            output
+                        }
+                    }
+                    Err(e) => format!("Erro: {}", e),
+                }
+            }
+            Err(e) => format!("Erro: {}", e),
+        }
+    }
+
+    async fn get_reminders(chat_id: ChatId) -> String {
+        let memory_path = PathBuf::from(format!("data/memories_{}.db", chat_id.0));
+        
+        match crate::memory::store::MemoryStore::new(&memory_path) {
+            Ok(store) => {
+                match store.get_pending_reminders(chat_id.0) {
+                    Ok(reminders) => {
+                        if reminders.is_empty() {
+                            "📋 Nenhum lembrete.\n\nCrie um:\n• 'Me lembre amanhã às 10h'".to_string()
+                        } else {
+                            let mut output = String::from("📋 Lembretes:\n\n");
+                            for (i, reminder) in reminders.iter().enumerate() {
+                                let local_time = reminder.remind_at.with_timezone(&chrono::Local);
+                                let icon = if reminder.is_recurring { "🔄" } else { "⏰" };
+                                output.push_str(&format!(
+                                    "{}. {} {}\n   📅 {}\n   🆔 {}\n\n",
+                                    i + 1,
+                                    icon,
+                                    reminder.message,
+                                    local_time.format("%d/%m %H:%M"),
+                                    &reminder.id[..8]
+                                ));
+                            }
                             output
                         }
                     }
                     Err(e) => format!("❌ Erro: {}", e),
                 }
             }
-            Err(e) => format!("❌ Erro ao acessar banco: {}", e),
+            Err(e) => format!("❌ Erro: {}", e),
+        }
+    }
+
+    async fn cancel_reminder(chat_id: ChatId, id: &str) -> String {
+        if id.is_empty() {
+            return "Use: /cancel_reminder <id>".to_string();
+        }
+        
+        let memory_path = PathBuf::from(format!("data/memories_{}.db", chat_id.0));
+        
+        match crate::memory::store::MemoryStore::new(&memory_path) {
+            Ok(store) => {
+                match store.get_pending_reminders(chat_id.0) {
+                    Ok(reminders) => {
+                        let reminder_to_cancel = reminders.iter()
+                            .find(|r| r.id.starts_with(id));
+                        
+                        match reminder_to_cancel {
+                            Some(reminder) => {
+                                if let Err(e) = store.delete_reminder(&reminder.id) {
+                                    format!("❌ Erro: {}", e)
+                                } else {
+                                    format!("✅ Cancelado: {}", reminder.message)
+                                }
+                            }
+                            None => format!("❌ ID '{}' não encontrado", id)
+                        }
+                    }
+                    Err(e) => format!("❌ Erro: {}", e),
+                }
+            }
+            Err(e) => format!("❌ Erro: {}", e),
         }
     }
 
     async fn clear_memory(chat_id: ChatId) -> String {
         let path = PathBuf::from(format!("data/memories_{}.db", chat_id.0));
         match tokio::fs::remove_file(&path).await {
-            Ok(_) => "🧹 Memória limpa! Reinicie o bot para recriar as tarefas padrão.".to_string(),
+            Ok(_) => "🧹 Memória limpa!".to_string(),
             Err(_) => "🧹 Memória já estava limpa".to_string(),
         }
     }

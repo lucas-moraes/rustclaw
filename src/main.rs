@@ -3,6 +3,7 @@ mod browser;
 mod cli;
 mod config;
 mod memory;
+mod reminder_executor;
 mod scheduler;
 mod tavily;
 mod telegram;

@@ -48,11 +48,16 @@ impl Default for ToolRegistry {
 }
 
 pub mod capabilities;
+pub mod clear_memory;
+pub mod datetime;
 pub mod echo;
-pub mod shell;
-pub mod file_read;
-pub mod file_write;
 pub mod file_list;
+pub mod file_read;
 pub mod file_search;
+pub mod file_write;
 pub mod http;
+pub mod location;
+pub mod reminder;
+pub mod reminder_parser;
+pub mod shell;
 pub mod system;

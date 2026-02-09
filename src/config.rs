@@ -7,6 +7,7 @@ pub struct Config {
     pub model: String,
     pub max_iterations: usize,
     pub tavily_api_key: Option<String>,
+    pub timezone: String,
 }
 
 impl Config {
@@ -15,6 +16,7 @@ impl Config {
             .map_err(|_| anyhow::anyhow!("HF_TOKEN environment variable not set"))?;
 
         let tavily_api_key = std::env::var("TAVILY_API_KEY").ok();
+        let timezone = std::env::var("TZ").unwrap_or_else(|_| "America/Sao_Paulo".to_string());
 
         Ok(Self {
             api_key,
@@ -22,6 +24,7 @@ impl Config {
             model: "Qwen/Qwen2.5-72B-Instruct".to_string(),
             max_iterations: 5,
             tavily_api_key,
+            timezone,
         })
     }
 }
