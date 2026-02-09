@@ -63,7 +63,7 @@ impl TelegramBot {
 
         let bot = Bot::new(token);
         
-        // Registrar comandos no menu do Telegram
+        
         let commands = vec![
             BotCommand::new("start", "Iniciar o bot"),
             BotCommand::new("status", "Status do sistema"),
@@ -81,17 +81,17 @@ impl TelegramBot {
         
         let config = Arc::new(config);
         
-        // Initialize scheduler for authorized chat only
+        
         let scheduler = if let Some(chat_id) = authorized_chat_id {
             let memory_path = PathBuf::from(format!("data/memories_{}.db", chat_id));
             match SchedulerService::new(&memory_path, chat_id).await {
                 Ok(svc) => {
                     info!("Initializing scheduler for chat {}", chat_id);
                     
-                    // Initialize default tasks
+                    
                     svc.init_default_tasks().await?;
                     
-                    // Setup callback for scheduled messages
+                    
                     let bot_clone = bot.clone();
                     let callback = move |chat_id: i64, message: String| {
                         let bot = bot_clone.clone();
@@ -239,7 +239,7 @@ impl TelegramBot {
                 
                 bot.send_chat_action(chat_id, teloxide::types::ChatAction::Typing).await?;
                 
-                // Usar Tavily para pesquisa (sem CAPTCHA, resultado mais rápido)
+                
                 if let Some(ref tavily_key) = config.tavily_api_key {
                     let tool = TavilyQuickSearchTool::new(tavily_key.clone());
                     let args = serde_json::json!({ "query": query });
@@ -253,7 +253,7 @@ impl TelegramBot {
                         }
                     }
                 } else {
-                    // Fallback para browser search se Tavily não estiver configurado
+                    
                     let tool = BrowserSearchTool::new();
                     let args = serde_json::json!({ "query": query });
                     
@@ -261,7 +261,7 @@ impl TelegramBot {
                         Ok(result) => {
                             bot.send_message(chat_id, format!("🔍 Resultados:\n\n{}", result)).await?;
                             
-                            // Verificar se há screenshot para enviar
+                            
                             if result.contains("data/screenshots/") {
                                 if let Some(start) = result.find("data/screenshots/") {
                                     let path_end = result[start..].find('\n').unwrap_or(result[start..].len());
@@ -309,12 +309,12 @@ impl TelegramBot {
             }
         };
 
-        // Check for add_task command
+        
         if text.starts_with("/add_task ") {
             return Self::handle_add_task(bot, msg.clone(), text).await;
         }
 
-        // Check for remove_task command
+        
         if text.starts_with("/remove_task ") {
             return Self::handle_remove_task(bot, msg.clone(), text).await;
         }
@@ -322,7 +322,7 @@ impl TelegramBot {
         info!("Message from {}: {}", chat_id, text);
         bot.send_chat_action(chat_id, teloxide::types::ChatAction::Typing).await?;
 
-        // Process in blocking task
+        
         let config = config.clone();
         let text = text.to_string();
 
@@ -337,23 +337,23 @@ impl TelegramBot {
 
         match response {
             Ok(Ok(text)) => {
-                // Check if response contains a screenshot path
+                
                 if text.contains("data/screenshots/") && text.contains(".png") {
-                    // Extract the screenshot path
+                    
                     if let Some(start) = text.find("data/screenshots/") {
                         let path_end = text[start..].find('\n').unwrap_or(text[start..].len());
                         let screenshot_path = &text[start..start + path_end];
                         
-                        // Send text without the path
+                        
                         let clean_text = text.replace(screenshot_path, "[screenshot attached]");
                         bot.send_message(chat_id, format!("🤖 {}", clean_text)).await?;
                         
-                        // Send screenshot as photo
+                        
                         if std::path::Path::new(screenshot_path).exists() {
                             let photo = InputFile::file(screenshot_path);
                             bot.send_photo(chat_id, photo).await?;
                             
-                            // Optionally delete the file after sending
+                            
                             let _ = tokio::fs::remove_file(screenshot_path).await;
                         }
                     } else {
@@ -383,7 +383,7 @@ impl TelegramBot {
     ) -> ResponseResult<()> {
         let chat_id = msg.chat.id;
         
-        // Parse: /add_task <name> <cron> <type>
+        
         let parts: Vec<&str> = text.split_whitespace().collect();
         if parts.len() < 4 {
             bot.send_message(

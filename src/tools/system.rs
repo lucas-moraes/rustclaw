@@ -53,7 +53,7 @@ impl Tool for SystemInfoTool {
         let mut s = System::new_all();
         s.refresh_all();
 
-        // RAM
+        
         let total_memory = s.total_memory();
         let used_memory = s.used_memory();
         let free_memory = total_memory - used_memory;
@@ -63,20 +63,20 @@ impl Tool for SystemInfoTool {
             0.0
         };
 
-        // CPU
+        
         let cpu_count = s.cpus().len();
         let cpu_usage: f32 = s.cpus().iter().map(|cpu| cpu.cpu_usage()).sum::<f32>() / cpu_count as f32;
 
-        // Hostname e OS
+        
         let hostname = System::host_name().unwrap_or_else(|| "Desconhecido".to_string());
         let os_name = System::name().unwrap_or_else(|| "Desconhecido".to_string());
         let os_version = System::os_version().unwrap_or_else(|| "Desconhecido".to_string());
         let kernel_version = System::kernel_version().unwrap_or_else(|| "Desconhecido".to_string());
 
-        // Uptime
+        
         let uptime = System::uptime();
 
-        // Discos
+        
         let disks = Disks::new_with_refreshed_list();
 
         match detail {
@@ -127,7 +127,7 @@ impl Tool for SystemInfoTool {
                 Ok(output.trim().to_string())
             }
             _ => {
-                // Informação completa
+                
                 let mut output = format!(
                     "🖥️  Informações do Sistema\n\n"
                 );
@@ -141,7 +141,7 @@ impl Tool for SystemInfoTool {
                     Self::format_duration(uptime)
                 ));
 
-                // Memória
+                
                 output.push_str(&format!(
                     "🧠 Memória:\n  Total: {}\n  Usada: {} ({:.1}%)\n  Livre: {}\n\n",
                     Self::format_bytes(total_memory),
@@ -150,14 +150,14 @@ impl Tool for SystemInfoTool {
                     Self::format_bytes(free_memory)
                 ));
 
-                // CPU
+                
                 output.push_str(&format!(
                     "💻 CPU:\n  Cores: {}\n  Uso médio: {:.1}%\n\n",
                     cpu_count,
                     cpu_usage
                 ));
 
-                // Discos
+                
                 output.push_str("💾 Discos:\n");
                 for disk in &disks {
                     let total = disk.total_space();

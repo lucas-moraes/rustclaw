@@ -27,14 +27,14 @@ impl EmbeddingService {
         let model = self.model.clone();
         let text = text.to_string();
         
-        // Run embedding in a blocking task since fastembed can be CPU intensive
+        
         let embeddings = tokio::task::spawn_blocking(move || {
             let model = model.blocking_lock();
             model.embed(vec![text], None)
         })
         .await??;
 
-        // Return first (and only) embedding
+        
         embeddings
             .into_iter()
             .next()
@@ -53,7 +53,7 @@ impl EmbeddingService {
         Ok(embeddings)
     }
 
-    /// Normalize embedding to unit vector for cosine similarity
+    
     pub fn normalize(embedding: &mut [f32]) {
         let magnitude: f32 = embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
         if magnitude > 0.0 {
@@ -63,7 +63,7 @@ impl EmbeddingService {
         }
     }
 
-    /// Get the dimension size for this model (384 for BGE-Small)
+    
     pub fn dimensions(&self) -> usize {
         384
     }

@@ -14,13 +14,13 @@ impl BrowserSession {
     pub async fn new() -> anyhow::Result<Self> {
         info!("Starting browser session with Playwright...");
         
-        // Launch Playwright
+        
         let playwright = Playwright::launch().await
             .map_err(|e| anyhow::anyhow!("Failed to launch Playwright: {}", e))?;
         
         info!("Playwright launched successfully");
         
-        // Launch browser (Chromium)
+        
         let browser = playwright.chromium()
             .launch()
             .await
@@ -28,7 +28,7 @@ impl BrowserSession {
         
         info!("Browser launched successfully");
         
-        // Create new page directly
+        
         let page = browser.new_page().await
             .map_err(|e| anyhow::anyhow!("Failed to create page: {}", e))?;
         
@@ -43,7 +43,7 @@ impl BrowserSession {
             .await
             .map_err(|e| anyhow::anyhow!("Failed to navigate: {}", e))?;
         
-        // Wait for page to load
+        
         tokio::time::sleep(Duration::from_secs(2)).await;
         
         Ok(())
@@ -55,17 +55,17 @@ impl BrowserSession {
         
         self.navigate(&url).await?;
         
-        // Wait for results to load
+        
         tokio::time::sleep(Duration::from_secs(3)).await;
         
-        // Extract search results
+        
         let results = self.extract_search_results().await?;
         
         Ok(results)
     }
 
     async fn extract_search_results(&self) -> anyhow::Result<String> {
-        // Try different selectors for Brave search results
+        
         let selectors = [
             ".snippet",
             ".result",
@@ -92,8 +92,8 @@ impl BrowserSession {
                 selector
             );
             
-            // evaluate<T, U> where T is input args type, U is return type
-            // Pass None for args since our JS function takes no arguments
+            
+            
             match self.page.evaluate::<String, String>(&js_code, None).await {
                 Ok(text) => {
                     if !text.is_empty() {
@@ -107,7 +107,7 @@ impl BrowserSession {
             }
         }
         
-        // Fallback: get page title and basic content
+        
         info!("No search results found, using fallback");
         let title = self.page.title().await
             .unwrap_or_else(|_| "Sem título".to_string());
@@ -121,18 +121,18 @@ impl BrowserSession {
     }
 
     pub async fn take_screenshot(&self, filename: &str) -> anyhow::Result<String> {
-        // Ensure screenshots directory exists
+        
         let screenshots_dir = Path::new("data/screenshots");
         std::fs::create_dir_all(screenshots_dir)?;
         
         let filepath = screenshots_dir.join(filename);
 
-        // Take screenshot - playwright-rs returns bytes, we save to file
+        
         let screenshot_bytes = self.page.screenshot(None)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to take screenshot: {}", e))?;
         
-        // Save bytes to file
+        
         std::fs::write(&filepath, screenshot_bytes)
             .map_err(|e| anyhow::anyhow!("Failed to save screenshot: {}", e))?;
         
@@ -154,7 +154,7 @@ impl BrowserSession {
             self.page.evaluate::<String, String>(&js_code, None).await
                 .map_err(|e| anyhow::anyhow!("Failed to extract text: {}", e))?
         } else {
-            // Get full page text
+            
             let js_code = r#"
                 () => {
                     // Remove script and style elements
@@ -173,20 +173,20 @@ impl BrowserSession {
 
     pub async fn close(self) {
         info!("Closing browser session");
-        // Playwright will automatically cleanup when dropped
+        
     }
 }
 
-/// Test Playwright installation
+
 pub async fn test_browser() -> anyhow::Result<String> {
     info!("Testing browser installation...");
     
     let session = BrowserSession::new().await?;
     
-    // Navigate to a test page
+    
     session.navigate("https://www.google.com").await?;
     
-    // Get page title
+    
     let title = session.page.title().await
         .unwrap_or_else(|_| "Unknown".to_string());
     

@@ -57,8 +57,8 @@ impl Tool for TavilySearchTool {
 
 impl Default for TavilySearchTool {
     fn default() -> Self {
-        // This will fail at runtime if TAVILY_API_KEY is not set
-        // In practice, you should always use new() with a proper key
+        
+        
         let api_key = std::env::var("TAVILY_API_KEY").unwrap_or_default();
         Self::new(api_key)
     }

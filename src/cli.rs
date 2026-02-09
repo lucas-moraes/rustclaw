@@ -16,17 +16,17 @@ use std::path::Path;
 use tracing::{info, Level};
 
 pub async fn run(config: Config) -> anyhow::Result<()> {
-    // Initialize tracing
+    
     tracing_subscriber::fmt()
         .with_max_level(Level::INFO)
         .init();
 
     info!("Iniciando RustClaw em modo CLI...");
 
-    // Create data directory for memory
+    
     let memory_path = Path::new("data/memory_cli.db");
 
-    // Create tool registry and register tools
+    
     let mut tools = ToolRegistry::new();
     tools.register(Box::new(CapabilitiesTool::new()));
     tools.register(Box::new(EchoTool));
@@ -39,7 +39,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     tools.register(Box::new(HttpPostTool::new()));
     tools.register(Box::new(SystemInfoTool::new()));
     
-    // Tavily search tools (IA-powered search without CAPTCHAs)
+    
     if let Some(ref tavily_key) = config.tavily_api_key {
         tools.register(Box::new(TavilySearchTool::new(tavily_key.clone())));
         tools.register(Box::new(TavilyQuickSearchTool::new(tavily_key.clone())));
@@ -48,7 +48,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
         info!("⚠️  TAVILY_API_KEY not set, Tavily search tools disabled");
     }
     
-    // Browser automation tools (Fase 6)
+    
     tools.register(Box::new(BrowserNavigateTool::new()));
     tools.register(Box::new(BrowserSearchTool::new()));
     tools.register(Box::new(BrowserExtractTool::new()));
@@ -57,12 +57,12 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     
     info!("Ferramentas registradas: {}", tools.list().lines().count());
 
-    // Create agent with memory
+    
     let mut agent = Agent::new(config, tools, memory_path)?;
     let memory_count = agent.get_memory_count()?;
     info!("Memórias carregadas: {}", memory_count);
 
-    // CLI loop
+    
     println!("╔════════════════════════════════════════════════╗");
     println!("║              RustClaw v0.1.0                   ║");
     println!("║   Fase 4: Telegram + CLI + Memória LTM         ║");
@@ -97,7 +97,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
             continue;
         }
 
-        // Process with agent
+        
         match agent.prompt(input).await {
             Ok(response) => {
                 println!("\n🤖 RustClaw: {}\n", response);

@@ -3100,6 +3100,7 @@ dependencies = [
  "sysinfo",
  "tavily",
  "teloxide",
+ "tempfile",
  "tokio",
  "tokio-cron-scheduler",
  "tracing",

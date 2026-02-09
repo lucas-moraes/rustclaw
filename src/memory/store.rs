@@ -9,7 +9,7 @@ pub struct MemoryStore {
 
 impl MemoryStore {
     pub fn new(db_path: &Path) -> Result<Self> {
-        // Create data directory if it doesn't exist
+        
         if let Some(parent) = db_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -227,7 +227,7 @@ impl MemoryStore {
         Ok(count)
     }
 
-    // Helper functions for serialization
+    
     fn vec_f32_to_bytes(vec: &[f32]) -> Vec<u8> {
         vec.iter().flat_map(|&f| f.to_le_bytes()).collect()
     }
@@ -243,7 +243,7 @@ impl MemoryStore {
             .collect()
     }
 
-    // Scheduled Tasks methods
+    
     pub fn save_task(&self, task: &crate::scheduler::task::ScheduledTask) -> Result<()> {
         let created_at = task.created_at.to_rfc3339();
         let last_run = task.last_run.map(|t| t.to_rfc3339());

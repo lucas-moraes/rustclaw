@@ -87,7 +87,7 @@ impl SearchResponse {
     pub fn format_results(&self, max_chars: usize) -> String {
         let mut output = format!("🔍 Resultados da busca: '{}'\n\n", self.query);
 
-        // Include AI-generated answer if available
+        
         if let Some(answer) = &self.answer {
             output.push_str(&format!("🤖 Resumo IA:\n{}\n\n", answer));
         }

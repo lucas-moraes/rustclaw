@@ -37,7 +37,7 @@ impl Tool for BrowserNavigateTool {
             session.navigate(url).await
                 .map_err(|e| format!("Erro ao navegar: {}", e))?;
             
-            // Get page title
+            
             let title = session.page.title().await
                 .unwrap_or_else(|_| "Sem título".to_string());
 
@@ -77,7 +77,7 @@ impl Tool for BrowserSearchTool {
             let results = session.search_brave(query).await
                 .map_err(|e| format!("Erro na busca: {}", e))?;
             
-            // Tirar screenshot da página de resultados
+            
             let screenshot_filename = format!("search_{}.png", 
                 query.replace(" ", "_").replace(|c: char| !c.is_ascii_alphanumeric(), "_"));
             let screenshot_path = session.take_screenshot(&screenshot_filename).await
@@ -122,7 +122,7 @@ impl Tool for BrowserExtractTool {
             .map_err(|e| format!("Erro ao iniciar browser: {}", e))?;
 
         let result = async {
-            // Navigate to about:blank first to have a page
+            
             session.navigate("about:blank").await
                 .map_err(|e| format!("Erro: {}", e))?;
             
@@ -176,12 +176,12 @@ impl Tool for BrowserScreenshotTool {
                 session.navigate(u).await
                     .map_err(|e| format!("Erro ao navegar: {}", e))?;
             } else {
-                // Use blank page
+                
                 session.navigate("about:blank").await
                     .map_err(|e| format!("Erro: {}", e))?;
             };
 
-            // Wait a bit for page to fully render
+            
             tokio::time::sleep(Duration::from_secs(1)).await;
 
             let filepath = session.take_screenshot(filename).await

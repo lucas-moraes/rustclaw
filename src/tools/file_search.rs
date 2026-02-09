@@ -46,20 +46,20 @@ impl Tool for FileSearchTool {
 
         let mut results = Vec::new();
 
-        // Busca por nome usando glob
+        
         if let Some(pattern) = pattern {
             let glob_pattern = format!("{}/{}", path_str, pattern);
 
             for entry in glob(&glob_pattern).map_err(|e| format!("Pattern inválido: {}", e))? {
                 if let Ok(path) = entry {
-                    // Verificar profundidade
+                    
                     let depth = path
                         .components()
                         .count()
                         .saturating_sub(path.components().count().min(3));
 
                     if depth <= max_depth {
-                        // Se tem busca por conteúdo
+                        
                         if let Some(search_content) = content {
                             if let Ok(file_content) = fs::read_to_string(&path) {
                                 if file_content.contains(search_content) {
@@ -77,7 +77,7 @@ impl Tool for FileSearchTool {
                 }
             }
         }
-        // Busca apenas por conteúdo (recursiva)
+        
         else if let Some(search_content) = content {
             for entry in walkdir::WalkDir::new(path)
                 .max_depth(max_depth)

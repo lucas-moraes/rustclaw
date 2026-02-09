@@ -35,7 +35,7 @@ impl Tool for FileWriteTool {
 
         let path = Path::new(path_str);
 
-        // Criar diretórios pai se necessário
+        
         if let Some(parent) = path.parent() {
             if !parent.exists() {
                 fs::create_dir_all(parent)

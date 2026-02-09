@@ -28,7 +28,7 @@ impl SchedulerService {
     }
 
     pub async fn init_default_tasks(&self) -> anyhow::Result<()> {
-        // Check if heartbeat task already exists
+        
         let store = self.store.lock().await;
         let tasks = store.get_all_tasks()?;
         
@@ -40,7 +40,7 @@ impl SchedulerService {
             info!("Creating default Heartbeat task");
             let heartbeat = ScheduledTask::new(
                 "Heartbeat Diário".to_string(),
-                "0 8 * * *".to_string(), // 8:00 AM every day
+                "0 8 * * *".to_string(), 
                 crate::scheduler::task::TaskType::Heartbeat,
             );
             store.save_task(&heartbeat)?;
@@ -55,7 +55,7 @@ impl SchedulerService {
     {
         let store = self.store.lock().await;
         let tasks = store.get_all_tasks()?;
-        drop(store); // Release lock
+        drop(store); 
 
         for task in tasks {
             if !task.is_active {
