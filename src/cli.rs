@@ -1,8 +1,4 @@
 use crate::agent::Agent;
-use crate::browser::tools::{
-    BrowserExtractTool, BrowserNavigateTool, BrowserScreenshotTool, BrowserSearchTool,
-    BrowserTestTool,
-};
 use crate::config::Config;
 use crate::tavily::tools::{TavilyQuickSearchTool, TavilySearchTool};
 use crate::tools::{
@@ -16,17 +12,14 @@ use std::path::Path;
 use tracing::{info, Level};
 
 pub async fn run(config: Config) -> anyhow::Result<()> {
-    
     tracing_subscriber::fmt()
         .with_max_level(Level::INFO)
         .init();
 
     info!("Iniciando RustClaw em modo CLI...");
 
-    
     let memory_path = Path::new("data/memory_cli.db");
 
-    
     let mut tools = ToolRegistry::new();
     tools.register(Box::new(CapabilitiesTool::new()));
     tools.register(Box::new(EchoTool));
@@ -39,42 +32,25 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     tools.register(Box::new(HttpPostTool::new()));
     tools.register(Box::new(SystemInfoTool::new()));
     
-    
     if let Some(ref tavily_key) = config.tavily_api_key {
         tools.register(Box::new(TavilySearchTool::new(tavily_key.clone())));
         tools.register(Box::new(TavilyQuickSearchTool::new(tavily_key.clone())));
-        info!("✅ Tavily search tools registered");
+        info!("Tavily search tools registered");
     } else {
-        info!("⚠️  TAVILY_API_KEY not set, Tavily search tools disabled");
+        info!("TAVILY_API_KEY not set, Tavily search tools disabled");
     }
-    
-    
-    tools.register(Box::new(BrowserNavigateTool::new()));
-    tools.register(Box::new(BrowserSearchTool::new()));
-    tools.register(Box::new(BrowserExtractTool::new()));
-    tools.register(Box::new(BrowserScreenshotTool::new()));
-    tools.register(Box::new(BrowserTestTool::new()));
     
     info!("Ferramentas registradas: {}", tools.list().lines().count());
 
-    
     let mut agent = Agent::new(config, tools, memory_path)?;
     let memory_count = agent.get_memory_count()?;
     info!("Memórias carregadas: {}", memory_count);
 
-    
-    println!("╔════════════════════════════════════════════════╗");
-    println!("║              RustClaw v0.1.0                   ║");
-    println!("║   Fase 4: Telegram + CLI + Memória LTM         ║");
-    println!("╚════════════════════════════════════════════════╝");
-    println!();
-    println!("🖥️  Modo: Terminal (CLI)");
-    println!("🧠 Memórias salvas: {}", memory_count);
+    println!("RustClaw v0.1.0 - Raspberry Pi Edition");
+    println!("Modo: Terminal (CLI)");
+    println!("Memórias salvas: {}", memory_count);
     println!();
     println!("Digite mensagens (ou 'sair' para terminar):");
-    println!();
-    println!("💡 Dica: Pergunte 'o que você pode fazer?' para ver todas as capacidades");
-    println!("💡 Dica: Execute com --mode telegram para modo bot");
     println!();
 
     let stdin = io::stdin();
@@ -97,13 +73,12 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
             continue;
         }
 
-        
         match agent.prompt(input).await {
             Ok(response) => {
-                println!("\n🤖 RustClaw: {}\n", response);
+                println!("\nRustClaw: {}\n", response);
             }
             Err(e) => {
-                eprintln!("\n❌ Erro: {}\n", e);
+                eprintln!("\nErro: {}\n", e);
             }
         }
     }

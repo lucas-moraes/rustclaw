@@ -4,30 +4,36 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.12", features = ["json"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1.0", features = ["derive"] }
 dotenv = "0.15"
 serde_json = "1.0"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = "0.3"
 anyhow = "1.0"
 regex = "1"
 async-trait = "0.1"
 sysinfo = "0.32"
 walkdir = "2"
 glob = "0.3"
-fastembed = "4"
-rusqlite = { version = "0.32", features = ["bundled", "chrono", "uuid"] }
+rusqlite = { version = "0.32", features = ["chrono"] }
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 teloxide = { version = "0.13", features = ["macros"] }
 clap = { version = "4", features = ["derive"] }
-tokio-cron-scheduler = "0.13"
-cron = "0.15"
-playwright-rs = "0.8"
 urlencoding = "2"
 tavily = "2"
 
 [dev-dependencies]
 tempfile = "3"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.release.package."*"]
+opt-level = "z"

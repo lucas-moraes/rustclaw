@@ -1,7 +1,38 @@
 use super::{MemoryEntry, MemoryType};
 use anyhow::Result;
+use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
 use std::path::Path;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SimpleTask {
+    pub id: String,
+    pub name: String,
+    pub cron_expression: String,
+    pub task_type: String,
+    pub is_active: bool,
+    pub created_at: DateTime<Utc>,
+    pub last_run: Option<DateTime<Utc>>,
+    pub next_run: Option<DateTime<Utc>>,
+    pub metadata: serde_json::Value,
+}
+
+impl SimpleTask {
+    pub fn new(name: String, cron_expression: String, task_type: String) -> Self {
+        Self {
+            id: uuid::Uuid::new_v4().to_string(),
+            name,
+            cron_expression,
+            task_type,
+            is_active: true,
+            created_at: Utc::now(),
+            last_run: None,
+            next_run: None,
+            metadata: serde_json::Value::Object(serde_json::Map::new()),
+        }
+    }
+}
 
 pub struct MemoryStore {
     conn: Connection,
@@ -9,7 +40,6 @@ pub struct MemoryStore {
 
 impl MemoryStore {
     pub fn new(db_path: &Path) -> Result<Self> {
-        
         if let Some(parent) = db_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -227,7 +257,6 @@ impl MemoryStore {
         Ok(count)
     }
 
-    
     fn vec_f32_to_bytes(vec: &[f32]) -> Vec<u8> {
         vec.iter().flat_map(|&f| f.to_le_bytes()).collect()
     }
@@ -243,8 +272,7 @@ impl MemoryStore {
             .collect()
     }
 
-    
-    pub fn save_task(&self, task: &crate::scheduler::task::ScheduledTask) -> Result<()> {
+    pub fn save_task(&self, task: &SimpleTask) -> Result<()> {
         let created_at = task.created_at.to_rfc3339();
         let last_run = task.last_run.map(|t| t.to_rfc3339());
         let next_run = task.next_run.map(|t| t.to_rfc3339());
@@ -260,7 +288,7 @@ impl MemoryStore {
                 task.id,
                 task.name,
                 task.cron_expression,
-                task.get_type_string(),
+                task.task_type,
                 task.is_active,
                 created_at,
                 last_run,
@@ -272,7 +300,7 @@ impl MemoryStore {
         Ok(())
     }
 
-    pub fn get_all_tasks(&self) -> Result<Vec<crate::scheduler::task::ScheduledTask>> {
+    pub fn get_all_tasks(&self) -> Result<Vec<SimpleTask>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, name, cron_expression, task_type, is_active, created_at, last_run, next_run, metadata 
              FROM scheduled_tasks ORDER BY created_at DESC"
@@ -282,7 +310,7 @@ impl MemoryStore {
             let id: String = row.get(0)?;
             let name: String = row.get(1)?;
             let cron_expression: String = row.get(2)?;
-            let task_type_str: String = row.get(3)?;
+            let task_type: String = row.get(3)?;
             let is_active: bool = row.get(4)?;
             let created_at_str: String = row.get(5)?;
             let last_run_str: Option<String> = row.get(6)?;
@@ -308,16 +336,7 @@ impl MemoryStore {
                 )
             })?;
 
-            let task_type =
-                crate::scheduler::task::TaskType::from_string(&task_type_str).map_err(|e| {
-                    rusqlite::Error::FromSqlConversionFailure(
-                        3,
-                        rusqlite::types::Type::Text,
-                        Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
-                    )
-                })?;
-
-            Ok(crate::scheduler::task::ScheduledTask {
+            Ok(SimpleTask {
                 id,
                 name,
                 cron_expression,

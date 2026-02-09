@@ -107,8 +107,8 @@ Testes:
 "Acesse google.com e busque por 'preço bitcoin'" Tirar screenshot e salvar
 </details>
 
-
-## Fase 7: Otimização para Raspberry Pi 3 + Segurança (5-7 dias)
+<details>
+<summary>Fase 7: Otimização para Raspberry Pi 3 + Segurança (5-7 dias) (COMPLETO)</summary>
 
 Compilação cruzada para armv7-unknown-linux-gnueabihf
 Reduzir uso de RAM (limites de buffer, embeddings em batch)
@@ -119,6 +119,7 @@ Testes:
 
 Uso de memória < 300-400 MB em idle
 Estabilidade rodando 24h+ no Pi 3
+</details>
 
 ## Fase 8: Testes Finais, CLI e Documentação (3-5 dias)
 

@@ -1,9 +1,7 @@
 mod agent;
-mod browser;
 mod cli;
 mod config;
 mod memory;
-mod scheduler;
 mod tavily;
 mod telegram;
 mod tools;

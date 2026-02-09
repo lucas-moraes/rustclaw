@@ -48,6 +48,7 @@ impl Default for ToolRegistry {
 }
 
 pub mod capabilities;
+pub mod clear_memory;
 pub mod echo;
 pub mod shell;
 pub mod file_read;

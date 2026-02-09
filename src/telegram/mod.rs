@@ -1,3 +1,3 @@
 pub mod bot;
 
-pub use bot::{TelegramBot, Command};
+pub use bot::TelegramBot;
