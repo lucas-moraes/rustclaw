@@ -224,17 +224,25 @@ impl Agent {
             self.tools.list()
         };
 
-        format!(
+        let context_info = format!(
             r#"Você é RustClaw, um assistente AI útil com memória de longo prazo.
 
 Você tem acesso às seguintes ferramentas:
 {}
 
+CONTEXTO DO DISPOSITIVO:
+- Para saber data e hora atual do sistema, use a ferramenta 'datetime'
+- Para saber a localização geográfica do dispositivo, use a ferramenta 'location'
+- Use essas informações quando o usuário perguntar sobre hora, data, clima local, ou serviços baseados em localização
+
 DIRETRIZES IMPORTANTES:
 1. Para BUSCAS NA INTERNET, use SEMPRE tavily_search (busca IA sem CAPTCHA) ou web_search (busca rápida)
-2. Use browser_navigate APENAS para acessar sites específicos quando necessário
-3. Use browser_screenshot para capturar páginas
-4. Use http_get APENAS para APIs REST ou quando Tavily não for suficiente
+2. Para saber DATA/HORA ATUAL, use 'datetime' - não presuma a hora
+3. Para saber LOCALIZAÇÃO do dispositivo, use 'location' - útil para clima local, fuso horário, etc
+4. Para CRIAR LEMBRETES, use 'add_reminder' quando o usuário pedir para ser lembrado de algo
+   - Formatos aceitos: "amanhã às 10h", "daqui 2 horas", "todo dia às 8h", "toda segunda às 9h"
+   - O sistema enviará mensagem automaticamente no horário marcado
+5. Use http_get APENAS para APIs REST ou quando Tavily não for suficiente
 
 Para usar uma ferramenta, responda EXATAMENTE neste formato:
 Thought: [seu raciocínio sobre o que fazer]
@@ -249,7 +257,8 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
 "#,
             tool_list,
             memory_context
-        )
+        );
+        context_info
     }
 
     fn build_messages(&self, system_prompt: &str) -> Vec<Value> {

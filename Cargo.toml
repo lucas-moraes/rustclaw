@@ -24,6 +24,7 @@ teloxide = { version = "0.13", features = ["macros"] }
 clap = { version = "4", features = ["derive"] }
 urlencoding = "2"
 tavily = "2"
+cron = "0.15"
 
 [dev-dependencies]
 tempfile = "3"

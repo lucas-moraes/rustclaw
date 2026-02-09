@@ -2,9 +2,10 @@ use crate::agent::Agent;
 use crate::config::Config;
 use crate::tavily::tools::{TavilyQuickSearchTool, TavilySearchTool};
 use crate::tools::{
-    capabilities::CapabilitiesTool, echo::EchoTool, file_list::FileListTool,
-    file_read::FileReadTool, file_search::FileSearchTool, file_write::FileWriteTool,
-    http::{HttpGetTool, HttpPostTool}, shell::ShellTool, system::SystemInfoTool,
+    capabilities::CapabilitiesTool, datetime::DateTimeTool, echo::EchoTool,
+    file_list::FileListTool, file_read::FileReadTool, file_search::FileSearchTool,
+    file_write::FileWriteTool, http::{HttpGetTool, HttpPostTool},
+    location::LocationTool, shell::ShellTool, system::SystemInfoTool,
     ToolRegistry,
 };
 use std::io::{self, Write};
@@ -22,14 +23,16 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
 
     let mut tools = ToolRegistry::new();
     tools.register(Box::new(CapabilitiesTool::new()));
+    tools.register(Box::new(DateTimeTool::new()));
     tools.register(Box::new(EchoTool));
-    tools.register(Box::new(ShellTool::new()));
-    tools.register(Box::new(FileReadTool::new()));
-    tools.register(Box::new(FileWriteTool::new()));
     tools.register(Box::new(FileListTool::new()));
+    tools.register(Box::new(FileReadTool::new()));
     tools.register(Box::new(FileSearchTool::new()));
+    tools.register(Box::new(FileWriteTool::new()));
     tools.register(Box::new(HttpGetTool::new()));
     tools.register(Box::new(HttpPostTool::new()));
+    tools.register(Box::new(LocationTool::new()));
+    tools.register(Box::new(ShellTool::new()));
     tools.register(Box::new(SystemInfoTool::new()));
     
     if let Some(ref tavily_key) = config.tavily_api_key {

@@ -9,6 +9,7 @@ pub struct Config {
     pub tavily_api_key: Option<String>,
     pub openai_api_key: Option<String>,
     pub conversation_history_limit: usize,
+    pub timezone: String,
 }
 
 impl Config {
@@ -18,6 +19,8 @@ impl Config {
 
         let tavily_api_key = std::env::var("TAVILY_API_KEY").ok();
         let openai_api_key = std::env::var("OPENAI_API_KEY").ok();
+        let timezone =
+            std::env::var("TIMEZONE").unwrap_or_else(|_| "America/Sao_Paulo".to_string());
 
         Ok(Self {
             api_key,
@@ -27,6 +30,7 @@ impl Config {
             tavily_api_key,
             openai_api_key,
             conversation_history_limit: 10,
+            timezone,
         })
     }
 }

@@ -83,6 +83,21 @@ impl MemoryStore {
             );
 
             CREATE INDEX IF NOT EXISTS idx_task_active ON scheduled_tasks(is_active);
+
+            CREATE TABLE IF NOT EXISTS reminders (
+                id TEXT PRIMARY KEY,
+                message TEXT NOT NULL,
+                remind_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                is_recurring INTEGER NOT NULL DEFAULT 0,
+                cron_expression TEXT,
+                chat_id INTEGER NOT NULL,
+                is_sent INTEGER NOT NULL DEFAULT 0
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_reminder_time ON reminders(remind_at);
+            CREATE INDEX IF NOT EXISTS idx_reminder_chat ON reminders(chat_id);
+            CREATE INDEX IF NOT EXISTS idx_reminder_sent ON reminders(is_sent);
             "#,
         )?;
 
@@ -371,6 +386,196 @@ impl MemoryStore {
         let count: i64 =
             self.conn
                 .query_row("SELECT COUNT(*) FROM scheduled_tasks", [], |row| row.get(0))?;
+        Ok(count)
+    }
+
+    // Reminder methods
+    pub fn get_next_reminder_id(&self) -> Result<i64> {
+        let max_id: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT MAX(CAST(id AS INTEGER)) FROM reminders WHERE id GLOB '[0-9]*'",
+                [],
+                |row| row.get(0),
+            )
+            .ok()
+            .flatten();
+        Ok(max_id.unwrap_or(0) + 1)
+    }
+
+    pub fn save_reminder(&self, reminder: &crate::memory::reminder::Reminder) -> Result<()> {
+        let remind_at = reminder.remind_at.to_rfc3339();
+        let created_at = reminder.created_at.to_rfc3339();
+        let is_recurring: i32 = if reminder.is_recurring { 1 } else { 0 };
+        let is_sent: i32 = if reminder.is_sent { 1 } else { 0 };
+
+        // Se o ID ainda for vazio (novo reminder), gerar um numérico
+        let id = if reminder.id.is_empty() {
+            self.get_next_reminder_id()?.to_string()
+        } else {
+            reminder.id.clone()
+        };
+
+        self.conn.execute(
+            r#"
+            INSERT OR REPLACE INTO reminders 
+            (id, message, remind_at, created_at, is_recurring, cron_expression, chat_id, is_sent)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "#,
+            params![
+                id,
+                reminder.message,
+                remind_at,
+                created_at,
+                is_recurring,
+                reminder.cron_expression,
+                reminder.chat_id,
+                is_sent
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    pub fn get_pending_reminders(
+        &self,
+        chat_id: i64,
+    ) -> Result<Vec<crate::memory::reminder::Reminder>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, message, remind_at, created_at, is_recurring, cron_expression, chat_id, is_sent 
+             FROM reminders 
+             WHERE chat_id = ?1 AND is_sent = 0
+             ORDER BY remind_at ASC"
+        )?;
+
+        let reminders = stmt.query_map([chat_id], |row| {
+            let id: String = row.get(0)?;
+            let message: String = row.get(1)?;
+            let remind_at_str: String = row.get(2)?;
+            let created_at_str: String = row.get(3)?;
+            let is_recurring: i32 = row.get(4)?;
+            let cron_expression: Option<String> = row.get(5)?;
+            let chat_id: i64 = row.get(6)?;
+            let is_sent: i32 = row.get(7)?;
+
+            let remind_at = remind_at_str.parse().map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    2,
+                    rusqlite::types::Type::Text,
+                    Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
+                )
+            })?;
+
+            let created_at = created_at_str.parse().map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    3,
+                    rusqlite::types::Type::Text,
+                    Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
+                )
+            })?;
+
+            Ok(crate::memory::reminder::Reminder {
+                id,
+                message,
+                remind_at,
+                created_at,
+                is_recurring: is_recurring != 0,
+                cron_expression,
+                chat_id,
+                is_sent: is_sent != 0,
+            })
+        })?;
+
+        reminders
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.into())
+    }
+
+    pub fn get_due_reminders(
+        &self,
+        before: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<crate::memory::reminder::Reminder>> {
+        let before_str = before.to_rfc3339();
+
+        let mut stmt = self.conn.prepare(
+            "SELECT id, message, remind_at, created_at, is_recurring, cron_expression, chat_id, is_sent 
+             FROM reminders 
+             WHERE remind_at <= ?1 AND is_sent = 0
+             ORDER BY remind_at ASC"
+        )?;
+
+        let reminders = stmt.query_map([&before_str], |row| {
+            let id: String = row.get(0)?;
+            let message: String = row.get(1)?;
+            let remind_at_str: String = row.get(2)?;
+            let created_at_str: String = row.get(3)?;
+            let is_recurring: i32 = row.get(4)?;
+            let cron_expression: Option<String> = row.get(5)?;
+            let chat_id: i64 = row.get(6)?;
+            let is_sent: i32 = row.get(7)?;
+
+            let remind_at = remind_at_str.parse().map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    2,
+                    rusqlite::types::Type::Text,
+                    Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
+                )
+            })?;
+
+            let created_at = created_at_str.parse().map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    3,
+                    rusqlite::types::Type::Text,
+                    Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
+                )
+            })?;
+
+            Ok(crate::memory::reminder::Reminder {
+                id,
+                message,
+                remind_at,
+                created_at,
+                is_recurring: is_recurring != 0,
+                cron_expression,
+                chat_id,
+                is_sent: is_sent != 0,
+            })
+        })?;
+
+        reminders
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.into())
+    }
+
+    pub fn mark_reminder_sent(&self, id: &str) -> Result<()> {
+        self.conn
+            .execute("UPDATE reminders SET is_sent = 1 WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    pub fn delete_reminder(&self, id: &str) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM reminders WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    pub fn update_reminder_time(
+        &self,
+        id: &str,
+        new_time: chrono::DateTime<chrono::Utc>,
+    ) -> Result<()> {
+        let time_str = new_time.to_rfc3339();
+        self.conn.execute(
+            "UPDATE reminders SET remind_at = ?1, is_sent = 0 WHERE id = ?2",
+            [&time_str, id],
+        )?;
+        Ok(())
+    }
+
+    pub fn cleanup_sent_reminders(&self) -> Result<usize> {
+        let count = self
+            .conn
+            .execute("DELETE FROM reminders WHERE is_sent = 1", [])?;
         Ok(count)
     }
 }

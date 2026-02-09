@@ -2,6 +2,7 @@ mod agent;
 mod cli;
 mod config;
 mod memory;
+mod reminder_executor;
 mod tavily;
 mod telegram;
 mod tools;

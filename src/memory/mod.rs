@@ -1,4 +1,5 @@
 pub mod embeddings;
+pub mod reminder;
 pub mod search;
 pub mod store;
 
