@@ -1,8 +1,4 @@
 use crate::agent::Agent;
-use crate::browser::tools::{
-    BrowserExtractTool, BrowserNavigateTool, BrowserScreenshotTool, BrowserSearchTool,
-    BrowserTestTool,
-};
 use crate::config::Config;
 use crate::tavily::tools::{TavilyQuickSearchTool, TavilySearchTool};
 use crate::tools::{
@@ -53,13 +49,6 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     } else {
         info!("⚠️  TAVILY_API_KEY not set, Tavily search tools disabled");
     }
-    
-    
-    tools.register(Box::new(BrowserNavigateTool::new()));
-    tools.register(Box::new(BrowserSearchTool::new()));
-    tools.register(Box::new(BrowserExtractTool::new()));
-    tools.register(Box::new(BrowserScreenshotTool::new()));
-    tools.register(Box::new(BrowserTestTool::new()));
     
     // Skill management tools
     tools.register(Box::new(SkillListTool::new()));

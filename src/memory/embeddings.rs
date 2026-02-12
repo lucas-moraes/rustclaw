@@ -1,59 +1,103 @@
 use anyhow::Result;
-use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
-use std::sync::Arc;
-use tokio::sync::Mutex;
+use serde_json::json;
 
 pub struct EmbeddingService {
-    model: Arc<Mutex<TextEmbedding>>,
+    api_key: String,
+    base_url: String,
+    model: String,
+    client: reqwest::Client,
 }
 
 impl EmbeddingService {
     pub fn new() -> Result<Self> {
-        tracing::info!("Initializing embedding model (BAAI/bge-small-en-v1.5)...");
+        let api_key = std::env::var("OPENAI_API_KEY")
+            .or_else(|_| std::env::var("COHERE_API_KEY"))
+            .unwrap_or_default();
         
-        let model = TextEmbedding::try_new(
-            InitOptions::new(EmbeddingModel::BGESmallENV15)
-                .with_show_download_progress(true),
-        )?;
-
-        tracing::info!("Embedding model loaded successfully");
+        if api_key.is_empty() {
+            tracing::warn!("No embedding API key found. Set OPENAI_API_KEY or COHERE_API_KEY");
+        }
+        
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()?;
         
         Ok(Self {
-            model: Arc::new(Mutex::new(model)),
+            api_key,
+            base_url: "https://api.openai.com/v1".to_string(),
+            model: "text-embedding-3-small".to_string(),
+            client,
         })
     }
 
     pub async fn embed(&self, text: &str) -> Result<Vec<f32>> {
-        let model = self.model.clone();
-        let text = text.to_string();
+        if self.api_key.is_empty() {
+            return Ok(self.fallback_embedding(text));
+        }
         
+        let url = format!("{}/embeddings", self.base_url);
         
-        let embeddings = tokio::task::spawn_blocking(move || {
-            let model = model.blocking_lock();
-            model.embed(vec![text], None)
-        })
-        .await??;
-
+        let body = json!({
+            "model": self.model,
+            "input": text,
+            "encoding_format": "float"
+        });
         
-        embeddings
-            .into_iter()
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("No embedding generated"))
+        let response = self.client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await?;
+        
+        if !response.status().is_success() {
+            let error_text = response.text().await?;
+            tracing::warn!("Embedding API error: {}. Using fallback.", error_text);
+            return Ok(self.fallback_embedding(text));
+        }
+        
+        let json_response: serde_json::Value = response.json().await?;
+        let embedding = json_response["data"][0]["embedding"]
+            .as_array()
+            .ok_or_else(|| anyhow::anyhow!("Invalid embedding response"))?
+            .iter()
+            .filter_map(|v| v.as_f64().map(|f| f as f32))
+            .collect();
+        
+        Ok(embedding)
     }
 
     pub async fn embed_batch(&self, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
-        let model = self.model.clone();
-        
-        let embeddings = tokio::task::spawn_blocking(move || {
-            let model = model.blocking_lock();
-            model.embed(texts, None)
-        })
-        .await??;
-
+        let mut embeddings = Vec::new();
+        for text in texts {
+            embeddings.push(self.embed(&text).await?);
+        }
         Ok(embeddings)
     }
 
-    
+    fn fallback_embedding(&self, text: &str) -> Vec<f32> {
+        let mut embedding = vec![0.0f32; 384];
+        let words: Vec<&str> = text.split_whitespace().collect();
+        
+        for (i, word) in words.iter().enumerate() {
+            let hash = Self::simple_hash(word);
+            let idx = (hash % 384) as usize;
+            embedding[idx] += 1.0;
+        }
+        
+        Self::normalize(&mut embedding);
+        embedding
+    }
+
+    fn simple_hash(s: &str) -> u64 {
+        let mut hash: u64 = 5381;
+        for c in s.chars() {
+            hash = ((hash << 5).wrapping_add(hash)).wrapping_add(c as u64);
+        }
+        hash
+    }
+
     pub fn normalize(embedding: &mut [f32]) {
         let magnitude: f32 = embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
         if magnitude > 0.0 {
@@ -63,7 +107,6 @@ impl EmbeddingService {
         }
     }
 
-    
     pub fn dimensions(&self) -> usize {
         384
     }

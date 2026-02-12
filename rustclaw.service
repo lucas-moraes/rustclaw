@@ -1,0 +1,19 @@
+[Unit]
+Description=RustClaw AI Agent
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/home/pi
+EnvironmentFile=/etc/rustclaw/.env
+ExecStart=/home/pi/rustclaw --mode telegram
+Restart=always
+RestartSec=10
+StandardOutput=append:/var/log/rustclaw/rustclaw.log
+StandardError=append:/var/log/rustclaw/rustclaw-error.log
+
+[Install]
+WantedBy=multi-user.target

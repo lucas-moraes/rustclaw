@@ -256,93 +256,11 @@ impl MemoryStore {
             .collect()
     }
 
-    pub fn save_task(&self, task: &crate::scheduler::task::ScheduledTask) -> Result<()> {
-        let created_at = task.created_at.to_rfc3339();
-        let last_run = task.last_run.map(|t| t.to_rfc3339());
-        let next_run = task.next_run.map(|t| t.to_rfc3339());
-        let metadata = serde_json::to_string(&task.metadata)?;
-
-        self.conn.execute(
-            r#"
-            INSERT OR REPLACE INTO scheduled_tasks 
-            (id, name, cron_expression, task_type, is_active, created_at, last_run, next_run, metadata)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-            "#,
-            params![
-                task.id,
-                task.name,
-                task.cron_expression,
-                task.get_type_string(),
-                task.is_active,
-                created_at,
-                last_run,
-                next_run,
-                metadata
-            ],
-        )?;
-
-        Ok(())
-    }
-
-    pub fn get_all_tasks(&self) -> Result<Vec<crate::scheduler::task::ScheduledTask>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, name, cron_expression, task_type, is_active, created_at, last_run, next_run, metadata 
-             FROM scheduled_tasks ORDER BY created_at DESC"
-        )?;
-
-        let tasks = stmt.query_map([], |row| {
-            let id: String = row.get(0)?;
-            let name: String = row.get(1)?;
-            let cron_expression: String = row.get(2)?;
-            let task_type_str: String = row.get(3)?;
-            let is_active: bool = row.get(4)?;
-            let created_at_str: String = row.get(5)?;
-            let last_run_str: Option<String> = row.get(6)?;
-            let next_run_str: Option<String> = row.get(7)?;
-            let metadata_str: String = row.get(8)?;
-
-            let created_at = created_at_str.parse().map_err(|e| {
-                rusqlite::Error::FromSqlConversionFailure(
-                    5,
-                    rusqlite::types::Type::Text,
-                    Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
-                )
-            })?;
-
-            let last_run = last_run_str.and_then(|s| s.parse().ok());
-            let next_run = next_run_str.and_then(|s| s.parse().ok());
-
-            let metadata: serde_json::Value = serde_json::from_str(&metadata_str).map_err(|e| {
-                rusqlite::Error::FromSqlConversionFailure(
-                    8,
-                    rusqlite::types::Type::Text,
-                    Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
-                )
-            })?;
-
-            let task_type =
-                crate::scheduler::task::TaskType::from_string(&task_type_str).map_err(|e| {
-                    rusqlite::Error::FromSqlConversionFailure(
-                        3,
-                        rusqlite::types::Type::Text,
-                        Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
-                    )
-                })?;
-
-            Ok(crate::scheduler::task::ScheduledTask {
-                id,
-                name,
-                cron_expression,
-                task_type,
-                is_active,
-                created_at,
-                last_run,
-                next_run,
-                metadata,
-            })
-        })?;
-
-        tasks.collect::<Result<Vec<_>, _>>().map_err(|e| e.into())
+    // Scheduler module deleted - these functions are disabled
+    #[allow(dead_code)]
+    pub fn get_all_tasks(&self) -> Result<Vec<()>> {
+        // Returns empty vec since scheduler module was deleted
+        Ok(vec![])
     }
 
     pub fn delete_task(&self, id: &str) -> Result<()> {

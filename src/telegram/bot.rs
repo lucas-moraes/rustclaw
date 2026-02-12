@@ -1,12 +1,6 @@
 use crate::agent::Agent;
-use crate::browser::tools::{
-    BrowserExtractTool, BrowserNavigateTool, BrowserScreenshotTool, BrowserSearchTool,
-    BrowserTestTool,
-};
 use crate::config::Config;
 use crate::reminder_executor::ReminderExecutor;
-use crate::scheduler::task::{ScheduledTask, TaskType};
-use crate::scheduler::SchedulerService;
 use crate::tavily::tools::{TavilyQuickSearchTool, TavilySearchTool};
 use crate::tools::{
     capabilities::CapabilitiesTool, datetime::DateTimeTool, echo::EchoTool,
@@ -54,7 +48,7 @@ pub enum Command {
 }
 
 pub struct BotState {
-    scheduler: Arc<Mutex<Option<SchedulerService>>>,
+    // scheduler removed - module deleted
 }
 
 impl TelegramBot {
@@ -102,42 +96,8 @@ impl TelegramBot {
             info!("Reminder executor started for chat {}", chat_id);
         }
         
-        let scheduler = if let Some(chat_id) = authorized_chat_id {
-            let memory_path = PathBuf::from(format!("data/memories_{}.db", chat_id));
-            match SchedulerService::new(&memory_path, chat_id).await {
-                Ok(svc) => {
-                    info!("Initializing scheduler for chat {}", chat_id);
-                    
-                    svc.init_default_tasks().await?;
-                    
-                    let bot_clone = bot.clone();
-                    let callback = move |chat_id: i64, message: String| {
-                        let bot = bot_clone.clone();
-                        tokio::spawn(async move {
-                            if let Err(e) = bot.send_message(ChatId(chat_id), message).await {
-                                error!("Failed to send scheduled message: {}", e);
-                            }
-                        });
-                    };
-                    
-                    svc.load_and_schedule_tasks(callback).await?;
-                    svc.start().await?;
-                    
-                    Some(svc)
-                }
-                Err(e) => {
-                    error!("Failed to create scheduler: {}", e);
-                    None
-                }
-            }
-        } else {
-            info!("No authorized chat ID, scheduler disabled");
-            None
-        };
-
-        let state = Arc::new(Mutex::new(BotState {
-            scheduler: Arc::new(Mutex::new(scheduler)),
-        }));
+        // Scheduler removed - module deleted
+        let state = Arc::new(Mutex::new(BotState {}));
 
         info!("Starting Telegram bot...");
 
@@ -331,12 +291,6 @@ impl TelegramBot {
         tools.register(Box::new(CancelReminderTool::new(&memory_path, chat_id.0)));
         tools.register(Box::new(ShellTool::new()));
         tools.register(Box::new(SystemInfoTool::new()));
-        
-        tools.register(Box::new(BrowserNavigateTool::new()));
-        tools.register(Box::new(BrowserSearchTool::new()));
-        tools.register(Box::new(BrowserExtractTool::new()));
-        tools.register(Box::new(BrowserScreenshotTool::new()));
-        tools.register(Box::new(BrowserTestTool::new()));
 
         // Skill management tools
         tools.register(Box::new(SkillListTool::new()));
@@ -425,29 +379,8 @@ Exemplos de lembretes:
     async fn get_tasks(chat_id: ChatId) -> String {
         let memory_path = PathBuf::from(format!("data/memories_{}.db", chat_id.0));
         
-        match crate::memory::store::MemoryStore::new(&memory_path) {
-            Ok(store) => {
-                match store.get_all_tasks() {
-                    Ok(tasks) => {
-                        if tasks.is_empty() {
-                            "Nenhuma tarefa agendada.".to_string()
-                        } else {
-                            let mut output = String::from("Tarefas:\n\n");
-                            for task in tasks {
-                                output.push_str(&format!(
-                                    "{}\n   ID: {}\n\n",
-                                    task.name,
-                                    task.id
-                                ));
-                            }
-                            output
-                        }
-                    }
-                    Err(e) => format!("Erro: {}", e),
-                }
-            }
-            Err(e) => format!("Erro: {}", e),
-        }
+        // Scheduler module deleted - task listing disabled
+        "📋 O agendador de tarefas foi removido.\n\nUse o sistema de lembretes com:\n• /reminders - Listar lembretes\n• /cancel_reminder - Cancelar lembrete".to_string()
     }
 
     async fn get_reminders(chat_id: ChatId) -> String {
