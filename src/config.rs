@@ -19,8 +19,9 @@ impl Config {
 
         let tavily_api_key = std::env::var("TAVILY_API_KEY").ok();
         let openai_api_key = std::env::var("OPENAI_API_KEY").ok();
-        let timezone =
-            std::env::var("TIMEZONE").unwrap_or_else(|_| "America/Sao_Paulo".to_string());
+        let timezone = std::env::var("TZ")
+            .or_else(|_| std::env::var("TIMEZONE"))
+            .unwrap_or_else(|_| "America/Sao_Paulo".to_string());
 
         Ok(Self {
             api_key,

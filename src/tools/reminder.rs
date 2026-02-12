@@ -35,7 +35,7 @@ impl Tool for AddReminderTool {
 
     async fn call(&self, args: Value) -> Result<String, String> {
         // Parse input - can be either full text or structured
-        let (message, when) = if let Some(text) = args["text"].as_str() {
+        let (message, _when) = if let Some(text) = args["text"].as_str() {
             // Parse from full text like "Me lembre de tomar remédio amanhã às 8h"
             (text.to_string(), None)
         } else if let (Some(msg), Some(when_str)) = (args["message"].as_str(), args["when"].as_str()) {
@@ -54,14 +54,12 @@ impl Tool for AddReminderTool {
                     - 'amanhã às 10h'\n\
                     - 'daqui 2 horas'\n\
                     - 'todo dia às 8h'\n\
-                    - '10/02/2025 às 14:30'\n\
                     Timezone atual: {}",
                     self.config.timezone
                 ));
             }
         };
 
-        // Create reminder
         let reminder = match parsed.reminder_type {
             ReminderType::Single => {
                 let datetime = parsed.datetime.ok_or("Data não parseada")?;
@@ -73,7 +71,6 @@ impl Tool for AddReminderTool {
             }
         };
 
-        // Save to database
         let path = std::path::Path::new(&self.memory_path);
         let store = MemoryStore::new(path).map_err(|e| format!("Erro ao acessar banco: {}", e))?;
         
@@ -92,7 +89,6 @@ impl Tool for AddReminderTool {
             reminder.remind_at
         );
 
-        // Format response
         let local_time = reminder.remind_at.with_timezone(&chrono::Local);
         let formatted_time = local_time.format("%d/%m/%Y às %H:%M").to_string();
         
@@ -200,7 +196,7 @@ impl Tool for ListRemindersTool {
             .map_err(|e| format!("Erro ao buscar lembretes: {}", e))?;
 
         if reminders.is_empty() {
-            return Ok("📋 Nenhum lembrete pendente.\n\nPara criar um, digite algo como:\n• 'Me lembre amanhã às 10h'\n• 'Todo dia às 8h tomar remédio'".to_string());
+            return Ok("📋 Nenhum lembrete pendente.\n\nPara criar um, diga algo como:\n• 'Me lembre amanhã às 10h'\n• 'Todo dia às 8h tomar remédio'".to_string());
         }
 
         let mut output = String::from("📋 Seus Lembretes:\n\n");
@@ -213,11 +209,10 @@ impl Tool for ListRemindersTool {
             let rec_text = if reminder.is_recurring { " (recorrente)" } else { "" };
             
             output.push_str(&format!(
-                "🆔 ID: {} {}\n   📝 {}{}\n   📅 {}\n\n",
-                reminder.id,
+                "🆔 ID: {} {}\n   📝 {}\n   📅 {}\n\n",
+                reminder.id.split('-').next().unwrap_or(&reminder.id),
                 icon,
                 reminder.message,
-                rec_text,
                 formatted_time
             ));
         }

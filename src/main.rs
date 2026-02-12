@@ -3,6 +3,7 @@ mod cli;
 mod config;
 mod memory;
 mod reminder_executor;
+mod skills;
 mod tavily;
 mod telegram;
 mod tools;
