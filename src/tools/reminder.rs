@@ -30,7 +30,7 @@ impl Tool for AddReminderTool {
     }
 
     fn description(&self) -> &str {
-        "Cria um lembrete com data/hora. Input: {\"text\": \"mensagem com data\"} ou {\"message\": \"texto\", \"when\": \"amanhã às 10h\"}"
+        "Cria um lembrete agendado. Input: {\"text\": \"mensagem com data\", \"message\": \"texto\", \"when\": \"amanhã às 10h\"} - Exemplos: 'Me lembre amanhã às 10h', 'Todo dia às 8h', 'Daqui 30 minutos'"
     }
 
     async fn call(&self, args: Value) -> Result<String, String> {
@@ -50,11 +50,13 @@ impl Tool for AddReminderTool {
             Some(p) => p,
             None => {
                 return Err(format!(
-                    "Não consegui entender a data/hora. Tente formatos como:\n\
-                    - 'amanhã às 10h'\n\
-                    - 'daqui 2 horas'\n\
-                    - 'todo dia às 8h'\n\
-                    Timezone atual: {}",
+                    "❓ *Não consegui entender a data/hora*\n\n\
+                    Tente usar formatos mais claros:\n\
+                    • \"amanhã às 10h\"\n\
+                    • \"daqui 2 horas\"\n\
+                    • \"todo dia às 8h\"\n\
+                    • \"próxima segunda às 14:30\"\n\n\
+                    🌍 Timezone atual: {}",
                     self.config.timezone
                 ));
             }
@@ -95,12 +97,13 @@ impl Tool for AddReminderTool {
         let response = if reminder.is_recurring {
             let cron_desc = Self::cron_to_description(&reminder.cron_expression);
             format!(
-                "✅ Lembrete recorrente criado!\n\
-                🆔 ID: {}\n\
-                📝 Mensagem: {}\n\
-                🔄 Frequência: {}\n\
-                📅 Próximo: {} ({})\n\n\
-                Para cancelar: /cancel_reminder {}",
+                "✅ *Lembrete recorrente criado com sucesso!*\n\n\
+                🆔 *ID:* `{}`\n\
+                📝 *Mensagem:* {}\n\
+                🔄 *Frequência:* {}\n\
+                📅 *Próximo disparo:* {}\n\
+                🌍 *Timezone:* {}\n\n\
+                💡 Para cancelar este lembrete, use: `cancel_reminder` com `{{\"id\": \"{}\"}}`",
                 reminder_id,
                 reminder.message,
                 cron_desc,
@@ -110,11 +113,12 @@ impl Tool for AddReminderTool {
             )
         } else {
             format!(
-                "✅ Lembrete criado!\n\
-                🆔 ID: {}\n\
-                📝 Mensagem: {}\n\
-                📅 Quando: {} ({})\n\n\
-                Para cancelar: /cancel_reminder {}",
+                "✅ *Lembrete criado com sucesso!*\n\n\
+                🆔 *ID:* `{}`\n\
+                📝 *Mensagem:* {}\n\
+                📅 *Data/hora:* {}\n\
+                🌍 *Timezone:* {}\n\n\
+                💡 Para cancelar este lembrete, use: `cancel_reminder` com `{{\"id\": \"{}\"}}`",
                 reminder_id,
                 reminder.message,
                 formatted_time,
@@ -185,7 +189,7 @@ impl Tool for ListRemindersTool {
     }
 
     fn description(&self) -> &str {
-        "Lista todos os lembretes pendentes. Input: {}"
+        "Lista todos os seus lembretes agendados e pendentes. Input: {} (vazio)"
     }
 
     async fn call(&self, _args: Value) -> Result<String, String> {
@@ -196,10 +200,16 @@ impl Tool for ListRemindersTool {
             .map_err(|e| format!("Erro ao buscar lembretes: {}", e))?;
 
         if reminders.is_empty() {
-            return Ok("📋 Nenhum lembrete pendente.\n\nPara criar um, diga algo como:\n• 'Me lembre amanhã às 10h'\n• 'Todo dia às 8h tomar remédio'".to_string());
+            return Ok("📋 *Nenhum lembrete pendente*\n\n\
+                💡 *Como criar um lembrete:*\n\
+                • Diga: \"Me lembre de [tarefa] [quando]\"\n\
+                • Exemplos:\n\
+                  - \"Me lembre amanhã às 10h de ligar para o médico\"\n\
+                  - \"Todo dia às 8h tomar remédio\"\n\
+                  - \"Daqui a 30 minutos sair para reunião\"".to_string());
         }
 
-        let mut output = String::from("📋 Seus Lembretes:\n\n");
+        let mut output = String::from("📋 *Seus Lembretes*\n\n");
         
         for reminder in reminders.iter() {
             let local_time = reminder.remind_at.with_timezone(&chrono::Local);
@@ -209,15 +219,23 @@ impl Tool for ListRemindersTool {
             let rec_text = if reminder.is_recurring { " (recorrente)" } else { "" };
             
             output.push_str(&format!(
-                "🆔 ID: {} {}\n   📝 {}\n   📅 {}\n\n",
+                "{} *ID:* `{}`\n\
+                {} *Tarefa:* {}\n\
+                📅 *Quando:* {}{}\n\n",
+                icon,
                 reminder.id.split('-').next().unwrap_or(&reminder.id),
                 icon,
                 reminder.message,
-                formatted_time
+                formatted_time,
+                rec_text
             ));
         }
 
-        output.push_str(&format!("Total: {} lembrete(s)\n\nPara cancelar: /cancel_reminder <ID>", reminders.len()));
+        output.push_str(&format!(
+            "📊 *Total:* {} lembrete(s)\n\n\
+            💡 Para cancelar, use: `cancel_reminder` com `{{\"id\": \"<ID>\"}}`", 
+            reminders.len()
+        ));
         
         Ok(output)
     }
@@ -244,7 +262,7 @@ impl Tool for CancelReminderTool {
     }
 
     fn description(&self) -> &str {
-        "Cancela um lembrete pelo ID. Input: {\"id\": \"abc-123\"}"
+        "Cancela um lembrete existente pelo seu ID. Input: {\"id\": \"abc-123\"} - Use list_reminders para ver os IDs disponíveis"
     }
 
     async fn call(&self, args: Value) -> Result<String, String> {
@@ -267,17 +285,19 @@ impl Tool for CancelReminderTool {
                     .map_err(|e| format!("Erro ao cancelar lembrete: {}", e))?;
                 
                 Ok(format!(
-                    "✅ Lembrete cancelado!\n\
-                    📝 {}\n\
-                    🆔 {}",
+                    "✅ *Lembrete cancelado com sucesso!*\n\n\
+                    📝 *Tarefa:* {}\n\
+                    🆔 *ID:* `{}`\n\n\
+                    📋 Use `list_reminders` para ver seus lembretes restantes.",
                     reminder.message,
                     reminder.id.split('-').next().unwrap_or(&reminder.id)
                 ))
             }
             None => {
                 Err(format!(
-                    "❌ Lembrete não encontrado com ID '{}'.\n\
-                    Use 'list_reminders' para ver os IDs disponíveis.",
+                    "❌ *Lembrete não encontrado*\n\n\
+                    O ID `{}` não corresponde a nenhum lembrete ativo.\n\n\
+                    💡 Use `list_reminders` para ver todos os seus lembretes e seus IDs.",
                     id
                 ))
             }
