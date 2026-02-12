@@ -4,18 +4,11 @@ use std::process::Command;
 use std::time::Duration;
 
 const BLOCKED_COMMANDS: &[&str] = &[
-    "rm",
-    "del",
-    "rd",
-    "shutdown",
-    "reboot",
-    "halt",
-    "poweroff",
-    "mkfs",
-    "dd",
-    "fdisk",
-    "format",
+    "rm", "del", "rd", "shutdown", "reboot", "halt", "poweroff",
+    "mkfs", "dd", "fdisk", "format", ">", ">>", "|", ";", "&&", "||",
 ];
+
+const MAX_OUTPUT_SIZE: usize = 10000; // 10KB max
 
 pub struct ShellTool;
 
@@ -28,6 +21,24 @@ impl ShellTool {
         let cmd_lower = command.to_lowercase();
         BLOCKED_COMMANDS.iter().any(|&blocked| cmd_lower.contains(blocked))
     }
+
+    fn sanitize_output(output: &[u8]) -> String {
+        // Converte bytes para string, substituindo caracteres inválidos
+        let text = String::from_utf8_lossy(output);
+        
+        // Remove caracteres de controle exceto newline e tab
+        let sanitized: String = text
+            .chars()
+            .filter(|&c| c == '\n' || c == '\t' || c == '\r' || !c.is_control())
+            .collect();
+        
+        // Limita tamanho
+        if sanitized.len() > MAX_OUTPUT_SIZE {
+            format!("{}\n... (output truncado)", &sanitized[..MAX_OUTPUT_SIZE])
+        } else {
+            sanitized
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -37,7 +48,7 @@ impl Tool for ShellTool {
     }
 
     fn description(&self) -> &str {
-        "Executa comandos shell. Input: { \"command\": \"ls -la\", \"working_dir\": \"/tmp\" } (working_dir opcional)"
+        "Executa comandos shell. Input: { \"command\": \"ls -la\" }"
     }
 
     async fn call(&self, args: Value) -> Result<String, String> {
@@ -45,15 +56,20 @@ impl Tool for ShellTool {
             .as_str()
             .ok_or_else(|| "Parâmetro 'command' é obrigatório".to_string())?;
 
+        if command.is_empty() {
+            return Err("Comando vazio".to_string());
+        }
+
         if Self::is_blocked(command) {
             return Err(format!(
-                "Comando bloqueado por segurança. Comandos proibidos: {:?}",
+                "Comando bloqueado por segurança: {:?}",
                 BLOCKED_COMMANDS
             ));
         }
 
         let working_dir = args["working_dir"].as_str();
 
+        // Parse command more carefully
         let parts: Vec<&str> = command.split_whitespace().collect();
         if parts.is_empty() {
             return Err("Comando vazio".to_string());
@@ -68,31 +84,34 @@ impl Tool for ShellTool {
             cmd.current_dir(dir);
         }
 
-        let output = tokio::time::timeout(Duration::from_secs(30), async {
-            cmd.output()
-        })
-        .await
-        .map_err(|_| "Timeout: comando excedeu 30 segundos".to_string())?
-        .map_err(|e| format!("Erro ao executar comando: {}", e))?;
+        // Execute with timeout
+        let result = tokio::time::timeout(
+            Duration::from_secs(30),
+            tokio::task::spawn_blocking(move || cmd.output())
+        )
+        .await;
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let output = match result {
+            Ok(Ok(Ok(output))) => output,
+            Ok(Ok(Err(e))) => return Err(format!("Erro ao executar: {}", e)),
+            Ok(Err(_)) => return Err("Erro interno na execução".to_string()),
+            Err(_) => return Err("Timeout: comando excedeu 30 segundos".to_string()),
+        };
+
+        let stdout = Self::sanitize_output(&output.stdout);
+        let stderr = Self::sanitize_output(&output.stderr);
 
         if output.status.success() {
             if stdout.is_empty() && !stderr.is_empty() {
-                Ok(format!("Aviso: {}", stderr.trim()))
+                Ok(format!("⚠️  {}", stderr.trim()))
             } else {
                 Ok(stdout.trim().to_string())
             }
         } else {
             Err(format!(
-                "Comando falhou (código {}): {}",
+                "❌ Erro (código {}): {}",
                 output.status.code().unwrap_or(-1),
-                if stderr.is_empty() {
-                    stdout.trim()
-                } else {
-                    stderr.trim()
-                }
+                if stderr.is_empty() { stdout.trim() } else { stderr.trim() }
             ))
         }
     }

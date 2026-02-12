@@ -60,4 +60,6 @@ pub mod location;
 pub mod reminder;
 pub mod reminder_parser;
 pub mod shell;
+pub mod skill_import;
+pub mod skill_manager;
 pub mod system;

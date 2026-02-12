@@ -5,6 +5,7 @@ mod config;
 mod memory;
 mod reminder_executor;
 mod scheduler;
+mod skills;
 mod tavily;
 mod telegram;
 mod tools;

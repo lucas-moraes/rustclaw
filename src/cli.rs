@@ -6,9 +6,12 @@ use crate::browser::tools::{
 use crate::config::Config;
 use crate::tavily::tools::{TavilyQuickSearchTool, TavilySearchTool};
 use crate::tools::{
-    capabilities::CapabilitiesTool, echo::EchoTool, file_list::FileListTool,
-    file_read::FileReadTool, file_search::FileSearchTool, file_write::FileWriteTool,
-    http::{HttpGetTool, HttpPostTool}, shell::ShellTool, system::SystemInfoTool,
+    capabilities::CapabilitiesTool, clear_memory::ClearMemoryTool, datetime::DateTimeTool,
+    echo::EchoTool, file_list::FileListTool, file_read::FileReadTool,
+    file_search::FileSearchTool, file_write::FileWriteTool, http::{HttpGetTool, HttpPostTool},
+    location::LocationTool, shell::ShellTool, system::SystemInfoTool,
+    skill_manager::{SkillCreateTool, SkillDeleteTool, SkillEditTool, SkillListTool, SkillRenameTool, SkillValidateTool},
+    skill_import::SkillImportFromUrlTool,
     ToolRegistry,
 };
 use std::io::{self, Write};
@@ -38,6 +41,9 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     tools.register(Box::new(HttpGetTool::new()));
     tools.register(Box::new(HttpPostTool::new()));
     tools.register(Box::new(SystemInfoTool::new()));
+    tools.register(Box::new(DateTimeTool::new()));
+    tools.register(Box::new(LocationTool::new()));
+    tools.register(Box::new(ClearMemoryTool::new(memory_path)));
     
     
     if let Some(ref tavily_key) = config.tavily_api_key {
@@ -54,6 +60,15 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     tools.register(Box::new(BrowserExtractTool::new()));
     tools.register(Box::new(BrowserScreenshotTool::new()));
     tools.register(Box::new(BrowserTestTool::new()));
+    
+    // Skill management tools
+    tools.register(Box::new(SkillListTool::new()));
+    tools.register(Box::new(SkillCreateTool::new()));
+    tools.register(Box::new(SkillDeleteTool::new()));
+    tools.register(Box::new(SkillEditTool::new("skills")));
+    tools.register(Box::new(SkillRenameTool::new()));
+    tools.register(Box::new(SkillValidateTool::new()));
+    tools.register(Box::new(SkillImportFromUrlTool::new()));
     
     info!("Ferramentas registradas: {}", tools.list().lines().count());
 

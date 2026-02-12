@@ -1,6 +1,7 @@
 pub mod embeddings;
 pub mod reminder;
 pub mod search;
+pub mod skill_context;
 pub mod store;
 
 use chrono::{DateTime, Utc};
