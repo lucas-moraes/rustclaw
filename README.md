@@ -1,431 +1,431 @@
 # RustClaw - Raspberry Pi Edition
 
-Agente AI em Rust otimizado para Raspberry Pi 3 Model B com 1GB RAM. Interface via Telegram ou CLI, com memória persistente em SQLite.
+AI Agent in Rust optimized for Raspberry Pi 3 Model B with 1GB RAM. Interface via Telegram or CLI, with persistent memory in SQLite.
 
-## ✨ Características
+## ✨ Features
 
-- 🤖 **Agente AI** com arquitetura ReAct
-- 💾 **Memória persistente** via SQLite
-- 🔍 **Busca na internet** via Tavily API
-- 💬 **Interface** via Telegram Bot ou CLI
-- 🧠 **Embeddings** via OpenAI API (com fallback offline)
-- ⚡ **Otimizado** para baixo consumo de RAM (~150-250MB)
+- 🤖 **AI Agent** with ReAct architecture
+- 💾 **Persistent memory** via SQLite
+- 🔍 **Web search** via Tavily API
+- 💬 **Interface** via Telegram Bot or CLI
+- 🧠 **Embeddings** via OpenAI API (with offline fallback)
+- ⚡ **Optimized** for low RAM consumption (~150-250MB)
 
-## 📋 Requisitos
+## 📋 Requirements
 
 ### Hardware
-- Raspberry Pi 3 Model B (ou superior)
-- 1GB RAM (compartilhada com GPU)
-- 20GB+ armazenamento (SD Card)
-- Conexão internet
+- Raspberry Pi 3 Model B (or better)
+- 1GB RAM (shared with GPU)
+- 20GB+ storage (SD Card)
+- Internet connection
 
-### Sistema
-- Raspberry Pi OS Lite (64-bit recomendado)
-- Swap de 1GB configurado
-- Acesso SSH (para setup remoto)
+### System
+- Raspberry Pi OS Lite (64-bit recommended)
+- 1GB swap configured
+- SSH access (for remote setup)
 
-### API Keys Necessárias
-- [Hugging Face](https://huggingface.co/settings/tokens) - Para LLM
-- [Tavily](https://app.tavily.com) - Para busca na web
-- [OpenAI](https://platform.openai.com/api-keys) - Para embeddings (opcional, tem fallback)
-- [Telegram Bot](https://t.me/botfather) - Para bot do Telegram
+### Required API Keys
+- [Hugging Face](https://huggingface.co/settings/tokens) - For LLM
+- [Tavily](https://app.tavily.com) - For web search
+- [OpenAI](https://platform.openai.com/api-keys) - For embeddings (optional, has fallback)
+- [Telegram Bot](https://t.me/botfather) - For Telegram bot
 
 ---
 
-## 🚀 Instalação
+## 🚀 Installation
 
-### Opção 1: Cross-Compile no PC (Recomendado - 5 minutos)
+### Option 1: Cross-Compile on PC (Recommended - 5 minutes)
 
-Mais rápido! Compile no seu computador e transfira para o Raspberry Pi.
+Faster! Compile on your computer and transfer to the Raspberry Pi.
 
-#### No PC (macOS/Linux):
+#### On PC (macOS/Linux):
 
 ```bash
-# 1. Entrar no diretório do projeto
+# 1. Enter the project directory
 cd rustclaw
 
-# 2. Instalar cross (se não tiver)
+# 2. Install cross (if you don't have it)
 cargo install cross --git https://github.com/cross-rs/cross
 
-# 3. Build para ARM64
+# 3. Build for ARM64
 cross build --target aarch64-unknown-linux-gnu --release
 
-# 4. Verificar binário foi criado
+# 4. Verify binary was created
 ls -lh target/aarch64-unknown-linux-gnu/release/rustclaw
 ```
 
-#### Transferir para Raspberry Pi:
+#### Transfer to Raspberry Pi:
 
 ```bash
-# Copiar binário para o Raspberry Pi
+# Copy binary to Raspberry Pi
 scp target/aarch64-unknown-linux-gnu/release/rustclaw pi@raspberrypi.local:~/
 
-# Ou copiar para o SD card diretamente
+# Or copy to SD card directly
 ```
 
-#### No Raspberry Pi:
+#### On Raspberry Pi:
 
 ```bash
-# Tornar executável
+# Make executable
 chmod +x ~/rustclaw
 
-# Testar
+# Test
 ./rustclaw --help
 ```
 
 ---
 
-### Opção 2: Build Nativo no Raspberry Pi (2-3 horas)
+### Option 2: Native Build on Raspberry Pi (2-3 hours)
 
-Compile diretamente no Raspberry Pi (mais lento, mas não precisa de PC).
+Compile directly on Raspberry Pi (slower, but doesn't need a PC).
 
-#### 1. Preparar o Sistema
+#### 1. Prepare the System
 
 ```bash
-# Atualizar sistema
+# Update system
 sudo apt update && sudo apt upgrade -y
 
-# Instalar dependências
+# Install dependencies
 sudo apt install -y sqlite3 libsqlite3-dev pkg-config libssl-dev
 
-# Configurar swap de 1GB (ESSENCIAL!)
+# Configure 1GB swap (ESSENTIAL!)
 sudo dphys-swapfile swapoff
 sudo nano /etc/dphys-swapfile
-# Alterar: CONF_SWAPSIZE=1024
+# Change: CONF_SWAPSIZE=1024
 sudo dphys-swapfile setup
 sudo dphys-swapfile swapon
 ```
 
-#### 2. Instalar Rust
+#### 2. Install Rust
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source $HOME/.cargo/env
 ```
 
-#### 3. Clonar e Compilar
+#### 3. Clone and Compile
 
 ```bash
-# Copiar o projeto para o Raspberry Pi
-# (via git clone, scp, ou pendrive)
+# Copy the project to the Raspberry Pi
+# (via git clone, scp, or USB drive)
 
-# Entrar no diretório
+# Enter the directory
 cd rustclaw
 
-# Compilar (use --jobs 1 para economizar RAM)
+# Compile (use --jobs 1 to save RAM)
 cargo build --release --jobs 1
 
-# O binário estará em:
+# The binary will be at:
 # target/release/rustclaw
 ```
 
 ---
 
-## ⚙️ Configuração
+## ⚙️ Configuration
 
-### 1. Criar Arquivo de Variáveis
+### 1. Create Environment Variables File
 
 ```bash
-# Criar diretório de dados
+# Create data directory
 mkdir -p ~/data
 
-# Criar arquivo .env
+# Create .env file
 nano ~/.env
 ```
 
-Adicione suas API keys:
+Add your API keys:
 
 ```bash
-# Hugging Face API Token (obrigatório)
-HF_TOKEN=seu_token_hf_aqui
+# Hugging Face API Token (required)
+HF_TOKEN=your_hf_token_here
 
-# Tavily API Key (obrigatório para busca)
-TAVILY_API_KEY=sua_chave_tavily_aqui
+# Tavily API Key (required for search)
+TAVILY_API_KEY=your_tavily_key_here
 
-# OpenAI API Key (opcional, para embeddings)
-# Se não fornecido, usa fallback offline
-OPENAI_API_KEY=sua_chave_openai_aqui
+# OpenAI API Key (optional, for embeddings)
+# If not provided, uses offline fallback
+OPENAI_API_KEY=your_openai_key_here
 
-# Telegram Bot Token (obrigatório para modo telegram)
-TELEGRAM_TOKEN=seu_token_bot_aqui
+# Telegram Bot Token (required for telegram mode)
+TELEGRAM_TOKEN=your_bot_token_here
 
-# Telegram Chat ID (opcional, restringe acesso)
-# Deixe em branco para permitir qualquer chat
-TELEGRAM_CHAT_ID=seu_chat_id_aqui
+# Telegram Chat ID (optional, restricts access)
+# Leave empty to allow any chat
+TELEGRAM_CHAT_ID=your_chat_id_here
 ```
 
-### 2. Carregar Variáveis
+### 2. Load Variables
 
 ```bash
-# Carregar variáveis
+# Load variables
 source ~/.env
 
-# Ou adicionar ao .bashrc para carregar automaticamente
+# Or add to .bashrc to load automatically
 echo 'source ~/.env' >> ~/.bashrc
 ```
 
 ---
 
-## 🤖 Executar
+## 🤖 Running
 
-### Modo CLI (Terminal)
+### CLI Mode (Terminal)
 
 ```bash
 ./rustclaw --mode cli
 
-# Você verá:
+# You will see:
 # > 
-# Digite mensagens ou comandos:
-# - sair: Encerrar
-# - clear-memory: Limpar memórias
-# - clear-all: Limpar memórias e tarefas
-# - status: Ver status
+# Type messages or commands:
+# - exit: Quit
+# - clear-memory: Clear memories
+# - clear-all: Clear memories and tasks
+# - status: Check status
 ```
 
-### Modo Telegram
+### Telegram Mode
 
 ```bash
 ./rustclaw --mode telegram
 
-# O bot ficará rodando e responderá mensagens no Telegram
+# The bot will run and respond to messages on Telegram
 ```
 
-**Comandos disponíveis no Telegram:**
-- `/start` - Iniciar o bot
-- `/status` - Status do sistema
-- `/tasks` - Listar tarefas
-- `/clear_memory` - Limpar memórias
-- `/internet <consulta>` - Buscar na web
-- `/help` - Ajuda
+**Available commands on Telegram:**
+- `/start` - Start the bot
+- `/status` - System status
+- `/tasks` - List scheduled tasks
+- `/clear_memory` - Clear memories
+- `/internet <query>` - Search the web
+- `/help` - Help
 
 ---
 
-## ⚡ Configurar Systemd (Iniciar Automaticamente)
+## ⚡ Configure Systemd (Start Automatically)
 
-Para o RustClaw iniciar automaticamente no boot:
+For RustClaw to start automatically on boot:
 
-### 1. Copiar Arquivos de Configuração
+### 1. Copy Configuration Files
 
 ```bash
-# Copiar service file
+# Copy service file
 sudo cp rustclaw.service /etc/systemd/system/
 
-# Criar diretórios
+# Create directories
 sudo mkdir -p /etc/rustclaw /var/lib/rustclaw /var/log/rustclaw
 sudo chown -R pi:pi /var/lib/rustclaw /var/log/rustclaw
 ```
 
-### 2. Configurar Variáveis
+### 2. Configure Variables
 
 ```bash
 sudo nano /etc/rustclaw/.env
-# (adicione as mesmas variáveis do ~/.env)
+# (add the same variables as in ~/.env)
 ```
 
-### 3. Ativar Serviço
+### 3. Enable Service
 
 ```bash
-# Recarregar systemd
+# Reload systemd
 sudo systemctl daemon-reload
 
-# Habilitar início automático
+# Enable auto-start
 sudo systemctl enable rustclaw
 
-# Iniciar serviço
+# Start service
 sudo systemctl start rustclaw
 
-# Verificar status
+# Check status
 sudo systemctl status rustclaw
 ```
 
-### Comandos Úteis
+### Useful Commands
 
 ```bash
-# Iniciar/Parar/Reiniciar
+# Start/Stop/Restart
 sudo systemctl start rustclaw
 sudo systemctl stop rustclaw
 sudo systemctl restart rustclaw
 
-# Ver logs
+# View logs
 sudo tail -f /var/log/rustclaw/rustclaw.log
 sudo tail -f /var/log/rustclaw/rustclaw-error.log
 
-# Ver status completo
+# View full status
 sudo systemctl status rustclaw
 ```
 
 ---
 
-## 🛠️ Solução de Problemas
+## 🛠️ Troubleshooting
 
-### Erro: "cannot find -lsqlite3"
+### Error: "cannot find -lsqlite3"
 
 ```bash
 sudo apt install libsqlite3-dev
 ```
 
-### Erro: "cannot find -lssl"
+### Error: "cannot find -lssl"
 
 ```bash
 sudo apt install libssl-dev
 ```
 
-### Erro: "Out of memory" durante compilação
+### Error: "Out of memory" during compilation
 
 ```bash
-# Aumentar swap para 2GB temporariamente
+# Increase swap to 2GB temporarily
 sudo dphys-swapfile swapoff
 sudo nano /etc/dphys-swapfile  # CONF_SWAPSIZE=2048
 sudo dphys-swapfile setup
 sudo dphys-swapfile swapon
 
-# Compilar com thread única
+# Compile with single thread
 cargo build --release --jobs 1
 ```
 
-### Serviço não inicia
+### Service doesn't start
 
 ```bash
-# Verificar erro
+# Check error
 sudo systemctl status rustclaw
 
-# Ver logs
+# View logs
 sudo journalctl -u rustclaw --no-pager | tail -50
 
-# Verificar permissões
+# Check permissions
 ls -la /home/pi/rustclaw
 ls -la /etc/rustclaw/.env
 ```
 
-### Bot não responde no Telegram
+### Bot doesn't respond on Telegram
 
-1. Verifique se `TELEGRAM_TOKEN` está correto
-2. Verifique se iniciou o bot com `/start`
-3. Verifique logs: `sudo tail -f /var/log/rustclaw/rustclaw.log`
+1. Check if `TELEGRAM_TOKEN` is correct
+2. Check if you started the bot with `/start`
+3. Check logs: `sudo tail -f /var/log/rustclaw/rustclaw.log`
 
 ---
 
-## 📊 Uso de Recursos
+## 📊 Resource Usage
 
-| Recurso | Consumo |
+| Resource | Consumption |
 |---------|---------|
 | **RAM** | 150-250MB |
-| **CPU** | 5-15% (idle), 50-80% (processando) |
-| **Disco** | ~20MB (binário) + dados SQLite |
-| **Swap** | 100-500MB (depende da carga) |
+| **CPU** | 5-15% (idle), 50-80% (processing) |
+| **Disk** | ~20MB (binary) + SQLite data |
+| **Swap** | 100-500MB (depends on load) |
 
 ---
 
-## 🔧 Funcionalidades Disponíveis
+## 🔧 Available Features
 
-### Ferramentas (10 total)
+### Tools (10 total)
 
-1. **file_list** - Listar diretórios
-2. **file_read** - Ler arquivos
-3. **file_write** - Escrever arquivos
-4. **file_search** - Buscar arquivos
-5. **shell** - Executar comandos shell (seguro)
-6. **http_get** - Requisições HTTP GET
-7. **http_post** - Requisições HTTP POST
-8. **system_info** - Informações do sistema
-9. **echo** - Teste
-10. **capabilities** - Listar capacidades
+1. **file_list** - List directories
+2. **file_read** - Read files
+3. **file_write** - Write files
+4. **file_search** - Search files
+5. **shell** - Execute shell commands (safe)
+6. **http_get** - HTTP GET requests
+7. **http_post** - HTTP POST requests
+8. **system_info** - System information
+9. **echo** - Test
+10. **capabilities** - List capabilities
 
-### Memória
-- Persistente em SQLite
-- Busca semântica com embeddings
-- Histórico de 10 mensagens
-- Tipos: Fact, Episode, ToolResult
+### Memory
+- Persistent in SQLite
+- Semantic search with embeddings
+- History of 10 messages
+- Types: Fact, Episode, ToolResult
 
-### Integrações
+### Integrations
 - ✅ Hugging Face (LLM)
-- ✅ Tavily (busca web)
-- ✅ OpenAI (embeddings, opcional)
+- ✅ Tavily (web search)
+- ✅ OpenAI (embeddings, optional)
 - ✅ Telegram Bot
 
 ---
 
-## 🔄 Atualizando
+## 🔄 Updating
 
-### Atualizar Binário
+### Update Binary
 
 ```bash
-# 1. Parar serviço
+# 1. Stop service
 sudo systemctl stop rustclaw
 
-# 2. Copiar novo binário (do PC)
+# 2. Copy new binary (from PC)
 scp target/aarch64-unknown-linux-gnu/release/rustclaw pi@raspberrypi.local:~/rustclaw
 
-# 3. No Raspberry Pi, dar permissão
+# 3. On Raspberry Pi, set permission
 chmod +x ~/rustclaw
 
-# 4. Iniciar serviço
+# 4. Start service
 sudo systemctl start rustclaw
 ```
 
-### Backup das Memórias
+### Backup Memories
 
 ```bash
 # Backup
 sudo tar -czf backup-$(date +%Y%m%d).tar.gz ~/data/
 
-# Ou copiar para PC
+# Or copy to PC
 scp pi@raspberrypi.local:~/data/memory_cli.db ./backup/
 ```
 
 ---
 
-## 📝 Configuração de Agendamento (Cron)
+## 📝 Scheduling Configuration (Cron)
 
-Como o scheduler integrado foi removido, use o cron do Linux:
+Since the integrated scheduler was removed, use Linux cron:
 
 ```bash
-# Editar crontab
+# Edit crontab
 sudo crontab -e
 
-# Exemplo: Heartbeat diário às 8h
+# Example: Daily heartbeat at 8am
 0 8 * * * /usr/bin/curl -X POST http://localhost:8080/heartbeat
 
-# Ou script personalizado
+# Or custom script
 0 */6 * * * /home/pi/scripts/check-system.sh
 ```
 
 ---
 
-## 🆚 Diferenças da Versão Desktop
+## 🆚 Differences from Desktop Version
 
 | Feature | Desktop | Raspberry Pi |
 |---------|---------|--------------|
 | **Embeddings** | fastembed local | OpenAI API |
-| **Browser** | Playwright | Removido |
-| **Agendamento** | Integrado | Cron Linux |
+| **Browser** | Playwright | Removed |
+| **Scheduling** | Integrated | Linux Cron |
 | **RAM** | ~500-800MB | ~150-250MB |
-| **Tamanho** | ~50-100MB | ~15-25MB |
+| **Size** | ~50-100MB | ~15-25MB |
 
 ---
 
-## 📄 Licença
+## 📄 License
 
 MIT License
 
 ---
 
-## 🤝 Contribuindo
+## 🤝 Contributing
 
-Este é um projeto otimizado específico para Raspberry Pi. Para a versão completa desktop, consulte a branch `main`.
-
----
-
-## 💡 Dicas
-
-1. **Use swap de 1GB** - Essencial para evitar "Out of memory"
-2. **Prefira cross-compile** - Muito mais rápido que build nativo
-3. **Monitore logs** - `sudo tail -f /var/log/rustclaw/rustclaw.log`
-4. **Backup regular** - Faça backup do diretório `data/`
-5. **Atualize o sistema** - `sudo apt update && sudo apt upgrade`
+This is a project specifically optimized for Raspberry Pi. For the full desktop version, see the `main` branch.
 
 ---
 
-**Pronto!** Agora você tem o RustClaw rodando no Raspberry Pi 3! 🎉
+## 💡 Tips
 
-Para dúvidas ou problemas, consulte o arquivo `SYSTEMD-GUIDE.md` ou verifique os logs do sistema.
+1. **Use 1GB swap** - Essential to avoid "Out of memory"
+2. **Prefer cross-compile** - Much faster than native build
+3. **Monitor logs** - `sudo tail -f /var/log/rustclaw/rustclaw.log`
+4. **Regular backups** - Backup the `data/` directory
+5. **Update the system** - `sudo apt update && sudo apt upgrade`
+
+---
+
+**Ready!** You now have RustClaw running on Raspberry Pi 3! 🎉
+
+For questions or issues, check the `SYSTEMD-GUIDE.md` file or view the system logs.
