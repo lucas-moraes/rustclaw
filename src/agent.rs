@@ -383,6 +383,7 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
         self.memory_store.count()
     }
     
+    #[allow(dead_code)]
     pub fn get_active_skill_name(&self) -> Option<String> {
         self.skill_manager.get_active_skill_name()
     }

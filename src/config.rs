@@ -21,7 +21,7 @@ impl Config {
         Ok(Self {
             api_key,
             base_url: "https://router.huggingface.co/v1".to_string(),
-            model: "Qwen/Qwen2.5-72B-Instruct".to_string(),
+            model: "zai-org/GLM-5".to_string(),
             max_iterations: 5,
             tavily_api_key,
             timezone,

@@ -154,6 +154,7 @@ impl MemoryStore {
         entries.collect::<Result<Vec<_>, _>>().map_err(|e| e.into())
     }
 
+    #[allow(dead_code)]
     pub fn get_by_id(&self, id: &str) -> Result<Option<MemoryEntry>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, content, embedding, timestamp, importance, memory_type, metadata, search_count 
@@ -212,6 +213,7 @@ impl MemoryStore {
         Ok(entry)
     }
 
+    #[allow(dead_code)]
     pub fn delete(&self, id: &str) -> Result<()> {
         self.conn
             .execute("DELETE FROM memories WHERE id = ?1", [id])?;
@@ -226,6 +228,7 @@ impl MemoryStore {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn cleanup_old_memories(&self, days: i64) -> Result<usize> {
         let deleted = self.conn.execute(
             "DELETE FROM memories WHERE timestamp < datetime('now', ?1)",
@@ -263,21 +266,24 @@ impl MemoryStore {
         Ok(vec![])
     }
 
+    #[allow(dead_code)]
     pub fn delete_task(&self, id: &str) -> Result<()> {
         self.conn
             .execute("DELETE FROM scheduled_tasks WHERE id = ?1", [id])?;
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn toggle_task(&self, id: &str, is_active: bool) -> Result<()> {
         let active_int: i32 = if is_active { 1 } else { 0 };
         self.conn.execute(
             "UPDATE scheduled_tasks SET is_active = ?1 WHERE id = ?2",
-            rusqlite::params![active_int, id],
+            params![active_int, id],
         )?;
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn count_tasks(&self) -> Result<i64> {
         let count: i64 =
             self.conn

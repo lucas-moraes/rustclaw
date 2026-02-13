@@ -8,6 +8,7 @@ pub struct Skill {
     pub context: String,
     pub keywords: Vec<String>,
     pub behaviors: SkillBehaviors,
+    #[allow(dead_code)]
     pub preferred_tools: Vec<String>,
     pub examples: Vec<SkillExample>,
     pub file_path: PathBuf,

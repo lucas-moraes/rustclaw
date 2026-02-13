@@ -10,14 +10,25 @@ use crate::tools::{
     skill_import::SkillImportFromUrlTool,
     ToolRegistry,
 };
+use crate::utils::spinner::Spinner;
 use std::io::{self, Write};
 use std::path::Path;
-use tracing::{info, Level};
+use tracing::info;
+use tracing_subscriber::EnvFilter;
 
 pub async fn run(config: Config) -> anyhow::Result<()> {
-    
+    // Configure logging with EnvFilter - defaults to WARN level
+    // Users can override with RUST_LOG environment variable
+    // Examples:
+    //   RUST_LOG=info    - Show info, warn, error logs
+    //   RUST_LOG=warn    - Show warn, error logs (default)
+    //   RUST_LOG=error   - Show only error logs
+    //   RUST_LOG=off     - Disable all logs
     tracing_subscriber::fmt()
-        .with_max_level(Level::INFO)
+        .with_env_filter(
+            EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| EnvFilter::new("warn"))
+        )
         .init();
 
     info!("Iniciando RustClaw em modo CLI...");
@@ -102,7 +113,8 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
         }
 
         
-        match agent.prompt(input).await {
+        let spinner = Spinner::new();
+        match spinner.run(agent.prompt(input)).await {
             Ok(response) => {
                 println!("\n🤖 RustClaw: {}\n", response);
             }

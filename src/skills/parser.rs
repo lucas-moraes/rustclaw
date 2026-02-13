@@ -10,6 +10,7 @@ pub struct SkillParser;
 pub enum ParseError {
     Io(std::io::Error),
     MissingField(String),
+    #[allow(dead_code)]
     InvalidFormat(String),
 }
 

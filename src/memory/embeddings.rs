@@ -68,6 +68,7 @@ impl EmbeddingService {
         Ok(embedding)
     }
 
+    #[allow(dead_code)]
     pub async fn embed_batch(&self, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
         let mut embeddings = Vec::new();
         for text in texts {
@@ -80,7 +81,7 @@ impl EmbeddingService {
         let mut embedding = vec![0.0f32; 384];
         let words: Vec<&str> = text.split_whitespace().collect();
         
-        for (i, word) in words.iter().enumerate() {
+        for (_i, word) in words.iter().enumerate() {
             let hash = Self::simple_hash(word);
             let idx = (hash % 384) as usize;
             embedding[idx] += 1.0;
@@ -98,6 +99,7 @@ impl EmbeddingService {
         hash
     }
 
+    #[allow(dead_code)]
     pub fn normalize(embedding: &mut [f32]) {
         let magnitude: f32 = embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
         if magnitude > 0.0 {
@@ -107,6 +109,7 @@ impl EmbeddingService {
         }
     }
 
+    #[allow(dead_code)]
     pub fn dimensions(&self) -> usize {
         384
     }

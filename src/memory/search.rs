@@ -1,7 +1,5 @@
 use super::MemoryEntry;
 
-
-
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() {
         return 0.0;
@@ -18,7 +16,6 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     dot_product / (magnitude_a * magnitude_b)
 }
 
-
 pub fn search_similar_memories(
     query_embedding: &[f32],
     memories: &[MemoryEntry],
@@ -34,33 +31,24 @@ pub fn search_similar_memories(
         .filter(|(_, similarity)| *similarity >= min_similarity)
         .collect();
 
-    
     results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
-    
     results.truncate(top_k);
 
     results
 }
 
-
-
-
-
+#[allow(dead_code)]
 pub fn calculate_relevance_score(memory: &MemoryEntry, now: chrono::DateTime<chrono::Utc>) -> f32 {
     let base_importance = memory.importance;
 
-    
     let age_days = (now - memory.timestamp).num_days() as f32;
     let recency_factor = (-age_days / 30.0).exp();
 
-    
     let search_factor = (memory.search_count as f32 / 10.0).min(1.0);
 
-    
     base_importance * 0.5 + recency_factor * 0.3 + search_factor * 0.2
 }
-
 
 pub fn format_memories_for_prompt(memories: &[(MemoryEntry, f32)]) -> String {
     if memories.is_empty() {

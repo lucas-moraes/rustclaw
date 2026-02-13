@@ -2,7 +2,7 @@ pub mod tools;
 
 use std::time::Duration;
 use tavily::{Tavily, SearchRequest};
-use tracing::{info, warn};
+use tracing::info;
 
 pub struct TavilyClient {
     client: Tavily,
@@ -63,6 +63,7 @@ impl TavilyClient {
         self.search(query, 5, "basic", true).await
     }
 
+    #[allow(dead_code)]
     pub async fn search_advanced(&self, query: &str) -> anyhow::Result<SearchResponse> {
         self.search(query, 10, "advanced", true).await
     }
@@ -80,6 +81,7 @@ pub struct SearchResultItem {
     pub title: String,
     pub url: String,
     pub content: String,
+    #[allow(dead_code)]
     pub score: f64,
 }
 

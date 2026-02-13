@@ -75,10 +75,12 @@ impl SkillManager {
             .or_else(|| self.loader.get_skill("general"))
     }
 
+    #[allow(dead_code)]
     pub fn get_active_skill_name(&self) -> Option<String> {
         self.active_skill.clone()
     }
 
+    #[allow(dead_code)]
     pub fn list_available_skills(&self) -> Vec<String> {
         self.loader
             .list_skills()

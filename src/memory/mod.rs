@@ -56,6 +56,7 @@ impl MemoryEntry {
         }
     }
 
+    #[allow(dead_code)]
     pub fn with_metadata(mut self, metadata: serde_json::Value) -> Self {
         self.metadata = metadata;
         self

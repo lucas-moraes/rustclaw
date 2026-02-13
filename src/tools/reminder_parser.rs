@@ -1,5 +1,5 @@
 use crate::memory::reminder::{ParsedReminder, ReminderType};
-use chrono::{DateTime, Datelike, Duration, TimeZone, Timelike, Utc};
+use chrono::{DateTime, Datelike, Duration, Timelike, Utc};
 use regex::Regex;
 
 pub struct ReminderParser;

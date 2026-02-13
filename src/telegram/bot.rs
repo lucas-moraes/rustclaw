@@ -12,7 +12,7 @@ use crate::tools::{
     skill_import::SkillImportFromUrlTool,
     Tool, ToolRegistry,
 };
-use teloxide::types::{BotCommand, InputFile};
+use teloxide::types::BotCommand;
 use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -376,9 +376,7 @@ Exemplos de lembretes:
         )
     }
 
-    async fn get_tasks(chat_id: ChatId) -> String {
-        let memory_path = PathBuf::from(format!("data/memories_{}.db", chat_id.0));
-        
+    async fn get_tasks(_chat_id: ChatId) -> String {
         // Scheduler module deleted - task listing disabled
         "📋 O agendador de tarefas foi removido.\n\nUse o sistema de lembretes com:\n• /reminders - Listar lembretes\n• /cancel_reminder - Cancelar lembrete".to_string()
     }

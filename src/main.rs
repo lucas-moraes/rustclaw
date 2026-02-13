@@ -7,6 +7,7 @@ mod skills;
 mod tavily;
 mod telegram;
 mod tools;
+mod utils;
 
 use clap::Parser;
 use dotenv::dotenv;
