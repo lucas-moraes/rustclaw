@@ -1,3 +1,4 @@
+use crate::security::SecurityManager;
 use crate::skills::{Skill, SkillBehaviors, SkillExample};
 use regex::Regex;
 use std::fs;
@@ -85,7 +86,9 @@ impl SkillParser {
             let content = section_content.trim_start_matches('\n').trim();
 
             if !content.is_empty() {
-                return Ok(content.to_string());
+                // SECURITY: Sanitize skill context
+                let sanitized = SecurityManager::sanitize_skill_context(content);
+                return Ok(sanitized);
             }
         }
 
