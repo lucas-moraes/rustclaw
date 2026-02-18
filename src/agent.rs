@@ -4,6 +4,7 @@ use crate::memory::search::{format_memories_for_prompt, search_similar_memories}
 use crate::memory::skill_context::SkillContextStore;
 use crate::memory::store::MemoryStore;
 use crate::memory::{MemoryEntry, MemoryType};
+use crate::security::SecurityManager;
 use crate::skills::manager::SkillManager;
 use crate::skills::prompt_builder::SkillPromptBuilder;
 use crate::tools::ToolRegistry;
@@ -75,6 +76,23 @@ impl Agent {
     }
 
     pub async fn prompt(&mut self, user_input: &str) -> anyhow::Result<String> {
+        // SECURITY: Validate user input
+        let validation = SecurityManager::validate_user_input(user_input);
+        if !validation.valid {
+            let error_msg = format!("Invalid input: {}", validation.errors.join(", "));
+            tracing::warn!("Security validation failed: {}", error_msg);
+            return Ok(error_msg);
+        }
+
+        // SECURITY: Sanitize user input
+        let sanitized_input = SecurityManager::sanitize_user_input(user_input);
+        if sanitized_input.was_modified {
+            tracing::debug!("Input was sanitized: {} -> {}", 
+                sanitized_input.original_length, 
+                sanitized_input.sanitized_length);
+        }
+        
+        let user_input = &sanitized_input.text;
         info!("User input: {}", user_input);
 
         // 1. Detecta skill (com hot reload automático)
@@ -86,8 +104,11 @@ impl Agent {
         let memories = self.retrieve_relevant_memories(user_input).await?;
         let memory_context = format_memories_for_prompt(&memories);
 
-        // 3. Constrói system prompt com skill
-        let system_prompt = self.build_system_prompt(&memory_context, skill_opt.as_ref());
+        // 3. Constrói system prompt com skill e defense instructions
+        let mut system_prompt = self.build_system_prompt(&memory_context, skill_opt.as_ref());
+        
+        // SECURITY: Append defense prompt
+        system_prompt.push_str(&SecurityManager::get_defense_prompt());
         
         // 4. Se skill mudou, salva no banco (after skill_manager borrow is done)
         if let Some(cid) = self.chat_id {
@@ -132,8 +153,11 @@ impl Agent {
                 ParsedResponse::Action { thought, action, action_input } => {
                     info!("Action detected: {} with input: {}", action, action_input);
 
-                    let observation = self.execute_tool(&action, &action_input).await?;
-                    info!("Tool observation: {}", observation);
+                    let raw_observation = self.execute_tool(&action, &action_input).await?;
+                    
+                    // SECURITY: Sanitize tool output
+                    let observation = SecurityManager::clean_tool_output(&raw_observation, &action);
+                    info!("Tool observation (sanitized): {}", observation);
 
                     if action != "echo" {
                         self.save_tool_result_to_memory(&action, &action_input, &observation).await?;
