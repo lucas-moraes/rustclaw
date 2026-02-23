@@ -41,6 +41,10 @@ impl SkillLoader {
         }
     }
 
+    fn normalize_key(name: &str) -> String {
+        name.trim().to_lowercase()
+    }
+
     pub fn load_all(&mut self) -> Result<Vec<Skill>, LoadError> {
         self.loaded_skills.clear();
 
@@ -62,9 +66,9 @@ impl SkillLoader {
                     match self.load_skill_file(&skill_file) {
                         Ok(skill) => {
                             let skill_name = skill.name.clone();
+                            let key = Self::normalize_key(&skill_name);
                             let modified = skill.last_modified;
-                            self.loaded_skills
-                                .insert(skill_name.clone(), (skill.clone(), modified));
+                            self.loaded_skills.insert(key, (skill.clone(), modified));
                             info!("Loaded skill: {}", skill_name);
                             skills.push(skill);
                         }
@@ -77,13 +81,15 @@ impl SkillLoader {
         }
 
         // Verifica se tem skill general, se não cria uma padrão
-        if !self.loaded_skills.contains_key("general") {
+        if !self
+            .loaded_skills
+            .contains_key(&Self::normalize_key("general"))
+        {
             warn!("No 'general' skill found. Creating default.");
             if let Ok(default_skill) = self.create_default_general_skill() {
-                self.loaded_skills.insert(
-                    "general".to_string(),
-                    (default_skill.clone(), SystemTime::now()),
-                );
+                let key = Self::normalize_key(&default_skill.name);
+                self.loaded_skills
+                    .insert(key, (default_skill.clone(), SystemTime::now()));
                 skills.push(default_skill);
             }
         }
@@ -103,7 +109,16 @@ impl SkillLoader {
             if let Ok(metadata) = fs::metadata(&skill.file_path) {
                 if let Ok(modified_time) = metadata.modified() {
                     if modified_time > *last_loaded {
-                        modified.push(name.clone());
+                        if let Some(dir_name) = skill
+                            .file_path
+                            .parent()
+                            .and_then(|p| p.file_name())
+                            .and_then(|n| n.to_str())
+                        {
+                            modified.push(dir_name.to_string());
+                        } else {
+                            modified.push(name.clone());
+                        }
                     }
                 }
             }
@@ -118,7 +133,10 @@ impl SkillLoader {
                     if skill_file.exists() {
                         // Extrai nome do diretório como nome provisório
                         if let Some(dir_name) = path.file_name().and_then(|n| n.to_str()) {
-                            if !self.loaded_skills.contains_key(dir_name) {
+                            if !self
+                                .loaded_skills
+                                .contains_key(&Self::normalize_key(dir_name))
+                            {
                                 modified.push(dir_name.to_string());
                             }
                         }
@@ -138,8 +156,11 @@ impl SkillLoader {
             if skill_file.exists() {
                 match self.load_skill_file(&skill_file) {
                     Ok(skill) => {
+                        let dir_key = Self::normalize_key(name);
+                        self.loaded_skills.remove(&dir_key);
+                        let key = Self::normalize_key(&skill.name);
                         let modified = skill.last_modified;
-                        self.loaded_skills.insert(name.clone(), (skill, modified));
+                        self.loaded_skills.insert(key, (skill, modified));
                         info!("Reloaded skill: {}", name);
                     }
                     Err(e) => {
@@ -148,7 +169,8 @@ impl SkillLoader {
                 }
             } else {
                 // Skill foi deletada
-                self.loaded_skills.remove(name);
+                let key = Self::normalize_key(name);
+                self.loaded_skills.remove(&key);
                 info!("Removed skill: {}", name);
             }
         }
@@ -157,7 +179,8 @@ impl SkillLoader {
     }
 
     pub fn get_skill(&self, name: &str) -> Option<&Skill> {
-        self.loaded_skills.get(name).map(|(skill, _)| skill)
+        let key = Self::normalize_key(name);
+        self.loaded_skills.get(&key).map(|(skill, _)| skill)
     }
 
     pub fn list_skills(&self) -> Vec<&Skill> {
