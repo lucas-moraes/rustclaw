@@ -321,7 +321,7 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
         let body = json!({
             "model": self.config.model,
             "messages": messages,
-            "max_tokens": 500,
+            "max_tokens": self.config.max_tokens,
             "temperature": 0.7
         });
 

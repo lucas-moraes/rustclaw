@@ -5,6 +5,7 @@ pub struct Config {
     pub api_key: String,
     pub base_url: String,
     pub model: String,
+    pub max_tokens: usize,
     pub max_iterations: usize,
     pub tavily_api_key: Option<String>,
     pub timezone: String,
@@ -17,11 +18,16 @@ impl Config {
 
         let tavily_api_key = std::env::var("TAVILY_API_KEY").ok();
         let timezone = std::env::var("TZ").unwrap_or_else(|_| "America/Sao_Paulo".to_string());
+        let max_tokens = std::env::var("MAX_TOKENS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(1200);
 
         Ok(Self {
             api_key,
             base_url: "https://router.huggingface.co/v1".to_string(),
             model: "zai-org/GLM-5".to_string(),
+            max_tokens,
             max_iterations: 5,
             tavily_api_key,
             timezone,

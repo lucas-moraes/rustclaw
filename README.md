@@ -152,6 +152,10 @@ TELEGRAM_TOKEN=your_bot_token_here
 # Telegram Chat ID (optional, restricts access)
 # Leave empty to allow any chat
 TELEGRAM_CHAT_ID=your_chat_id_here
+
+# Max tokens for model responses (optional)
+# Default: 1200
+MAX_TOKENS=1200
 ```
 
 ### 2. Load Variables
