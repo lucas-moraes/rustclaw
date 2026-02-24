@@ -2,12 +2,23 @@ use crate::agent::Agent;
 use crate::config::Config;
 use crate::tavily::tools::{TavilyQuickSearchTool, TavilySearchTool};
 use crate::tools::{
-    capabilities::CapabilitiesTool, clear_memory::ClearMemoryTool, datetime::DateTimeTool,
-    echo::EchoTool, file_list::FileListTool, file_read::FileReadTool,
-    file_search::FileSearchTool, file_write::FileWriteTool, http::{HttpGetTool, HttpPostTool},
-    location::LocationTool, shell::ShellTool, system::SystemInfoTool,
-    skill_manager::{SkillCreateTool, SkillDeleteTool, SkillEditTool, SkillListTool, SkillRenameTool, SkillValidateTool},
+    capabilities::CapabilitiesTool,
+    clear_memory::ClearMemoryTool,
+    datetime::DateTimeTool,
+    echo::EchoTool,
+    file_list::FileListTool,
+    file_read::FileReadTool,
+    file_search::FileSearchTool,
+    file_write::FileWriteTool,
+    http::{HttpGetTool, HttpPostTool},
+    location::LocationTool,
+    shell::ShellTool,
     skill_import::SkillImportFromUrlTool,
+    skill_manager::{
+        SkillCreateTool, SkillDeleteTool, SkillEditTool, SkillListTool, SkillRenameTool,
+        SkillValidateTool,
+    },
+    system::SystemInfoTool,
     ToolRegistry,
 };
 use crate::utils::spinner::Spinner;
@@ -26,17 +37,14 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     //   RUST_LOG=off     - Disable all logs
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("warn"))
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn")),
         )
         .init();
 
     info!("Iniciando RustClaw em modo CLI...");
 
-    
     let memory_path = Path::new("data/memory_cli.db");
 
-    
     let mut tools = ToolRegistry::new();
     tools.register(Box::new(CapabilitiesTool::new()));
     tools.register(Box::new(EchoTool));
@@ -51,8 +59,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     tools.register(Box::new(DateTimeTool::new()));
     tools.register(Box::new(LocationTool::new()));
     tools.register(Box::new(ClearMemoryTool::new(memory_path)));
-    
-    
+
     if let Some(ref tavily_key) = config.tavily_api_key {
         tools.register(Box::new(TavilySearchTool::new(tavily_key.clone())));
         tools.register(Box::new(TavilyQuickSearchTool::new(tavily_key.clone())));
@@ -60,7 +67,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     } else {
         info!("⚠️  TAVILY_API_KEY not set, Tavily search tools disabled");
     }
-    
+
     // Skill management tools
     tools.register(Box::new(SkillListTool::new()));
     tools.register(Box::new(SkillCreateTool::new()));
@@ -69,19 +76,18 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     tools.register(Box::new(SkillRenameTool::new()));
     tools.register(Box::new(SkillValidateTool::new()));
     tools.register(Box::new(SkillImportFromUrlTool::new()));
-    
+
     info!("Ferramentas registradas: {}", tools.list().lines().count());
 
-    
     let mut agent = Agent::new(config, tools, memory_path)?;
     let memory_count = agent.get_memory_count()?;
     info!("Memórias carregadas: {}", memory_count);
 
-    
     println!("╔════════════════════════════════════════════════╗");
-    println!("║              RustClaw v0.1.0                   ║");
-    println!("║   Fase 4: Telegram + CLI + Memória LTM         ║");
+    println!("║                RustClaw v1.0.0                 ║");
     println!("╚════════════════════════════════════════════════╝");
+    println!();
+    println!("Modelo: {}", agent.model_name());
     println!();
     println!("🖥️  Modo: Terminal (CLI)");
     println!("🧠 Memórias salvas: {}", memory_count);
@@ -112,7 +118,6 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
             continue;
         }
 
-        
         let spinner = Spinner::new();
         match spinner.run(agent.prompt(input)).await {
             Ok(response) => {

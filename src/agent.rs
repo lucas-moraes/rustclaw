@@ -41,21 +41,21 @@ impl Agent {
         let memory_store = MemoryStore::new(memory_path)?;
         let embedding_service = EmbeddingService::new()?;
         let skill_context_store = SkillContextStore::new(memory_path)?;
-        
+
         // Extrai chat_id do nome do arquivo (memories_<chat_id>.db)
         let chat_id = memory_path
             .file_stem()
             .and_then(|s| s.to_str())
             .and_then(|s| s.strip_prefix("memories_"))
             .and_then(|s| s.parse::<i64>().ok());
-        
+
         // Carrega skill ativa do banco
         let active_skill = if let Some(cid) = chat_id {
             skill_context_store.get_active_skill(cid).unwrap_or(None)
         } else {
             None
         };
-        
+
         // Inicializa skill manager
         let mut skill_manager = SkillManager::new(PathBuf::from(SKILLS_DIR))?;
         if let Some(skill) = active_skill {
@@ -87,29 +87,34 @@ impl Agent {
         // SECURITY: Sanitize user input
         let sanitized_input = SecurityManager::sanitize_user_input(user_input);
         if sanitized_input.was_modified {
-            tracing::debug!("Input was sanitized: {} -> {}", 
-                sanitized_input.original_length, 
-                sanitized_input.sanitized_length);
+            tracing::debug!(
+                "Input was sanitized: {} -> {}",
+                sanitized_input.original_length,
+                sanitized_input.sanitized_length
+            );
         }
-        
+
         let user_input = &sanitized_input.text;
         info!("User input: {}", user_input);
 
         // 1. Detecta skill (com hot reload automático)
         // Clone skill data immediately to avoid borrow issues
-        let skill_opt = self.skill_manager.process_message(user_input).map(|s| s.clone());
+        let skill_opt = self
+            .skill_manager
+            .process_message(user_input)
+            .map(|s| s.clone());
         let skill_name = skill_opt.as_ref().map(|s| s.name.clone());
-        
+
         // 2. Recupera memórias
         let memories = self.retrieve_relevant_memories(user_input).await?;
         let memory_context = format_memories_for_prompt(&memories);
 
         // 3. Constrói system prompt com skill e defense instructions
         let mut system_prompt = self.build_system_prompt(&memory_context, skill_opt.as_ref());
-        
+
         // SECURITY: Append defense prompt
         system_prompt.push_str(&SecurityManager::get_defense_prompt());
-        
+
         // 4. Se skill mudou, salva no banco (after skill_manager borrow is done)
         if let Some(cid) = self.chat_id {
             if let Some(ref name) = skill_name {
@@ -146,21 +151,27 @@ impl Agent {
                         "content": answer.clone()
                     }));
 
-                    self.save_conversation_to_memory(user_input, &answer).await?;
+                    self.save_conversation_to_memory(user_input, &answer)
+                        .await?;
 
                     return Ok(answer);
                 }
-                ParsedResponse::Action { thought, action, action_input } => {
+                ParsedResponse::Action {
+                    thought,
+                    action,
+                    action_input,
+                } => {
                     info!("Action detected: {} with input: {}", action, action_input);
 
                     let raw_observation = self.execute_tool(&action, &action_input).await?;
-                    
+
                     // SECURITY: Sanitize tool output
                     let observation = SecurityManager::clean_tool_output(&raw_observation, &action);
                     info!("Tool observation (sanitized): {}", observation);
 
                     if action != "echo" {
-                        self.save_tool_result_to_memory(&action, &action_input, &observation).await?;
+                        self.save_tool_result_to_memory(&action, &action_input, &observation)
+                            .await?;
                     }
 
                     let tool_result = format!(
@@ -177,7 +188,8 @@ impl Agent {
         }
 
         info!("Max iterations reached, forcing final answer");
-        let final_prompt = self.build_messages(&system_prompt)
+        let final_prompt = self
+            .build_messages(&system_prompt)
             .iter()
             .map(|m| m["content"].as_str().unwrap_or(""))
             .collect::<Vec<_>>()
@@ -191,19 +203,23 @@ impl Agent {
             json!({
                 "role": "user",
                 "content": format!("{}\n\nCom base nas observações anteriores, forneça sua resposta final usando o formato:\nFinal Answer: [sua resposta]", final_prompt)
-            })
+            }),
         ];
         let final_response = self.call_llm(&final_messages).await?;
 
         if let ParsedResponse::FinalAnswer(answer) = self.parse_response(&final_response)? {
-            self.save_conversation_to_memory(user_input, &answer).await?;
+            self.save_conversation_to_memory(user_input, &answer)
+                .await?;
             return Ok(answer);
         }
 
         Ok(final_response)
     }
 
-    async fn retrieve_relevant_memories(&self, query: &str) -> anyhow::Result<Vec<(MemoryEntry, f32)>> {
+    async fn retrieve_relevant_memories(
+        &self,
+        query: &str,
+    ) -> anyhow::Result<Vec<(MemoryEntry, f32)>> {
         let query_embedding = self.embedding_service.embed(query).await?;
 
         let all_memories = self.memory_store.get_all()?;
@@ -223,21 +239,23 @@ impl Agent {
         Ok(results)
     }
 
-    async fn save_conversation_to_memory(&self, user_input: &str, assistant_response: &str) -> anyhow::Result<()> {
+    async fn save_conversation_to_memory(
+        &self,
+        user_input: &str,
+        assistant_response: &str,
+    ) -> anyhow::Result<()> {
         if user_input.len() < 10 {
             return Ok(());
         }
 
-        let content = format!("Usuário: {}\nAssistente: {}", user_input, assistant_response);
+        let content = format!(
+            "Usuário: {}\nAssistente: {}",
+            user_input, assistant_response
+        );
 
         let embedding = self.embedding_service.embed(&content).await?;
 
-        let memory = MemoryEntry::new(
-            content,
-            embedding,
-            MemoryType::Episode,
-            0.6,
-        );
+        let memory = MemoryEntry::new(content, embedding, MemoryType::Episode, 0.6);
 
         self.memory_store.save(&memory)?;
         info!("Saved conversation to long-term memory");
@@ -245,28 +263,37 @@ impl Agent {
         Ok(())
     }
 
-    async fn save_tool_result_to_memory(&self, tool_name: &str, input: &str, output: &str) -> anyhow::Result<()> {
+    async fn save_tool_result_to_memory(
+        &self,
+        tool_name: &str,
+        input: &str,
+        output: &str,
+    ) -> anyhow::Result<()> {
         if output.starts_with("Erro:") || output.len() > 1000 {
             return Ok(());
         }
 
-        let content = format!("Tool: {}\nInput: {}\nOutput: {}", tool_name, input, output.chars().take(200).collect::<String>());
+        let content = format!(
+            "Tool: {}\nInput: {}\nOutput: {}",
+            tool_name,
+            input,
+            output.chars().take(200).collect::<String>()
+        );
 
         let embedding = self.embedding_service.embed(&content).await?;
 
-        let memory = MemoryEntry::new(
-            content,
-            embedding,
-            MemoryType::ToolResult,
-            0.5,
-        );
+        let memory = MemoryEntry::new(content, embedding, MemoryType::ToolResult, 0.5);
 
         self.memory_store.save(&memory)?;
 
         Ok(())
     }
 
-    fn build_system_prompt(&self, memory_context: &str, skill: Option<&crate::skills::Skill>) -> String {
+    fn build_system_prompt(
+        &self,
+        memory_context: &str,
+        skill: Option<&crate::skills::Skill>,
+    ) -> String {
         let tool_list = if self.tools.is_empty() {
             "Nenhuma ferramenta disponível".to_string()
         } else {
@@ -351,7 +378,9 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
     fn parse_response(&self, response: &str) -> anyhow::Result<ParsedResponse> {
         let final_answer_re = Regex::new(r"(?i)Final Answer:\s*(.+)$").unwrap();
         if let Some(caps) = final_answer_re.captures(response) {
-            let answer = caps.get(1).map(|m| m.as_str().trim().to_string())
+            let answer = caps
+                .get(1)
+                .map(|m| m.as_str().trim().to_string())
                 .unwrap_or_else(|| response.to_string());
             return Ok(ParsedResponse::FinalAnswer(answer));
         }
@@ -406,7 +435,11 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
     pub fn get_memory_count(&self) -> anyhow::Result<i64> {
         self.memory_store.count()
     }
-    
+
+    pub fn model_name(&self) -> String {
+        self.config.model.clone()
+    }
+
     #[allow(dead_code)]
     pub fn get_active_skill_name(&self) -> Option<String> {
         self.skill_manager.get_active_skill_name()
