@@ -125,7 +125,7 @@ impl Tool for SkillCreateTool {
     }
 
     fn description(&self) -> &str {
-        "Cria uma nova skill a partir de template. Input: { \"name\": \"minha-skill\", \"custom_content\": \"opcional\" }"
+        "Cria uma nova skill. Input: { \"name\": \"minha-skill\", \"content\": \"# Skill: ...\" }. Por padrão não valida o formato - use validate:true para validar."
     }
 
     async fn call(&self, args: Value) -> Result<String, String> {
@@ -150,24 +150,31 @@ impl Tool for SkillCreateTool {
             .map_err(|e| format!("Erro ao criar diretório: {}", e))?;
 
         // Get content - either custom or template
-        let content = if let Some(custom) = args["custom_content"].as_str() {
-            custom.to_string()
-        } else {
-            Self::get_skill_template(name)
-        };
+        let content = args["content"]
+            .as_str()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| Self::get_skill_template(name));
 
         let skill_file = skill_dir.join("skill.md");
-        fs::write(&skill_file, content)
+        fs::write(&skill_file, &content)
             .map_err(|e| format!("Erro ao escrever arquivo: {}", e))?;
 
-        // Validate the created skill
-        match SkillParser::parse(&skill_file) {
-            Ok(_) => Ok(format!("✅ Skill '{}' criada com sucesso em {:?}", name, skill_file)),
-            Err(e) => {
-                // Clean up on validation error
-                let _ = fs::remove_dir_all(&skill_dir);
-                Err(format!("Skill criada mas com erro de validação: {}. Diretório removido.", e))
+        // Check if validation is requested
+        let validate = args["validate"]
+            .as_bool()
+            .unwrap_or(false);
+
+        if validate {
+            // Validate the created skill
+            match SkillParser::parse(&skill_file) {
+                Ok(_) => Ok(format!("✅ Skill '{}' criada e validada com sucesso em {:?}", name, skill_file)),
+                Err(e) => {
+                    let _ = fs::remove_dir_all(&skill_dir);
+                    Err(format!("Erro de validação: {}. Diretório removido.", e))
+                }
             }
+        } else {
+            Ok(format!("✅ Skill '{}' criada com sucesso em {:?}\n💡 Use validate:true para validar o formato.", name, skill_file))
         }
     }
 }

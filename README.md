@@ -10,6 +10,9 @@ AI Agent in Rust optimized for Raspberry Pi 3 Model B with 1GB RAM. Interface vi
 - 💬 **Interface** via Telegram Bot or CLI
 - 🧠 **Embeddings** via OpenAI API (with offline fallback)
 - ⚡ **Optimized** for low RAM consumption (~150-250MB)
+- 🌐 **Browser automation** via Chromiumoxide (Chrome DevTools Protocol)
+- 🛡️ **Stealth mode** via Chaser-oxide (anti-detection)
+- 📺 **TMUX visualization** - Real-time session monitoring
 
 ## 📋 Requirements
 
@@ -29,6 +32,20 @@ AI Agent in Rust optimized for Raspberry Pi 3 Model B with 1GB RAM. Interface vi
 - [Tavily](https://app.tavily.com) - For web search
 - [OpenAI](https://platform.openai.com/api-keys) - For embeddings (optional, has fallback)
 - [Telegram Bot](https://t.me/botfather) - For Telegram bot
+
+### Required Software (for Browser Automation)
+- [Chrome/Chromium](https://www.google.com/chrome/) - Required for Chromiumoxide/Chaser-oxide
+- Or use the built-in browser fetcher
+
+### Browser Automation Features
+
+- **Chromiumoxide** - Chrome DevTools Protocol integration
+- **Chaser-oxide** - Stealth mode with anti-detection:
+  - Protocol-level stealth
+  - Fingerprint spoofing
+  - Random delays between actions
+  - Human-like typing simulation
+- **Screenshot capture** - Automatic saving to /tmp/
 
 ---
 
@@ -119,6 +136,16 @@ cargo build --release --jobs 1
 # target/release/rustclaw
 ```
 
+#### 4. Install Chromium Browser (Optional - for browser automation)
+
+```bash
+# Install Chromium if not present
+# On Debian/Ubuntu:
+sudo apt install chromium chromium-driver
+
+# Or the library will download Chrome automatically on first run
+```
+
 ---
 
 ## ⚙️ Configuration
@@ -156,6 +183,13 @@ TELEGRAM_CHAT_ID=your_chat_id_here
 # Max tokens for model responses (optional)
 # Default: 1200
 MAX_TOKENS=1200
+
+# TMUX Configuration (for real-time visualization)
+# Enable TMUX sessions for monitoring agent activity
+TMUX_ENABLED=false
+
+# Log level: debug, info, warn, error
+LOG_LEVEL=info
 ```
 
 ### 2. Load Variables
@@ -194,13 +228,67 @@ echo 'source ~/.env' >> ~/.bashrc
 # The bot will run and respond to messages on Telegram
 ```
 
-**Available commands on Telegram:**
+### Available commands on Telegram:
 - `/start` - Start the bot
 - `/status` - System status
 - `/tasks` - List scheduled tasks
 - `/clear_memory` - Clear memories
 - `/internet <query>` - Search the web
 - `/help` - Help
+
+---
+
+## 📺 TMUX Real-Time Visualization
+
+Monitor agent activity in real-time with multiple TMUX sessions!
+
+### Enable TMUX
+
+```bash
+# In .env file
+TMUX_ENABLED=true
+LOG_LEVEL=debug
+```
+
+### Sessions Created
+
+When enabled, 4 sessions are created:
+
+| Session | Name | Content |
+|--------|------|---------|
+| Agent | `rustclaw-{skill}-agent` | Thoughts, actions, final answers |
+| Tools | `rustclaw-{skill}-tools` | Tool execution details |
+| Debug | `rustclaw-{skill}-debug` | Logs, timestamps, errors |
+| Browser | `rustclaw-{skill}-browser` | Screenshots in real-time |
+
+### Connect to Sessions
+
+```bash
+# List all sessions
+tmux ls
+
+# Connect to agent session
+tmux attach -t rustclaw-cli-agent
+
+# Connect to tools session
+tmux attach -t rustclaw-cli-tools
+
+# Connect to debug session
+tmux attach -t rustclaw-cli-debug
+
+# Connect to browser screenshots
+tmux attach -t rustclaw-cli-browser
+
+# View screenshots
+ls /tmp/rustclaw-cli/browser/
+```
+
+### Screenshot Auto-Save
+
+When browser tool takes screenshots with TMUX enabled:
+- Saves to `/tmp/rustclaw-{skill}/browser/`
+- Automatically numbered
+- Notified in TMUX session
 
 ---
 
@@ -307,6 +395,19 @@ ls -la /etc/rustclaw/.env
 2. Check if you started the bot with `/start`
 3. Check logs: `sudo tail -f /var/log/rustclaw/rustclaw.log`
 
+### TMUX sessions not created
+
+1. Check if TMUX is installed: `which tmux`
+2. Install if needed: `apt install tmux`
+3. Check `TMUX_ENABLED=true` in .env
+4. Check logs for errors
+
+### Browser blocked by websites
+
+- Enable stealth mode with Chaser-oxide (enabled by default)
+- Uses random delays and human-like behavior
+- For extreme cases, use headless=false (not implemented yet)
+
 ---
 
 ## 📊 Resource Usage
@@ -322,7 +423,7 @@ ls -la /etc/rustclaw/.env
 
 ## 🔧 Available Features
 
-### Tools (10 total)
+### Tools (18 total)
 
 1. **file_list** - List directories
 2. **file_read** - Read files
@@ -334,6 +435,14 @@ ls -la /etc/rustclaw/.env
 8. **system_info** - System information
 9. **echo** - Test
 10. **capabilities** - List capabilities
+11. **browser** - Browser automation (Chromiumoxide + Chaser-oxide stealth)
+12. **skill_list** - List available skills
+13. **skill_create** - Create new skill
+14. **skill_delete** - Delete skill
+15. **skill_edit** - Edit skill
+16. **skill_validate** - Validate skill format
+17. **skill_import** - Import skill from URL
+18. **location** - Get location from IP
 
 ### Memory
 - Persistent in SQLite
@@ -401,7 +510,8 @@ sudo crontab -e
 | Feature | Desktop | Raspberry Pi |
 |---------|---------|--------------|
 | **Embeddings** | fastembed local | OpenAI API |
-| **Browser** | Playwright | Removed |
+| **Browser** | Chromiumoxide + Chaser-oxide | Chromiumoxide + Chaser-oxide |
+| **TMUX** | Optional | Optional |
 | **Scheduling** | Integrated | Linux Cron |
 | **RAM** | ~500-800MB | ~150-250MB |
 | **Size** | ~50-100MB | ~15-25MB |

@@ -8,11 +8,18 @@ use crate::security::SecurityManager;
 use crate::skills::manager::SkillManager;
 use crate::skills::prompt_builder::SkillPromptBuilder;
 use crate::tools::ToolRegistry;
+use crate::utils::output::{OutputManager, OutputSink};
+use crate::utils::tmux::TmuxManager;
 use regex::Regex;
 use reqwest::Client;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tracing::{debug, info};
+use std::sync::OnceLock;
+
+static OUTPUT_MANAGER: OnceLock<OutputManager> = OnceLock::new();
+static TMUX_MANAGER: OnceLock<TmuxManager> = OnceLock::new();
 
 const USER_AGENT: &str = "RustClaw/1.0";
 const SKILLS_DIR: &str = "skills";
@@ -426,9 +433,23 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
         let args: Value = serde_json::from_str(action_input)
             .map_err(|_| anyhow::anyhow!("Action Input inválido: {}", action_input))?;
 
+        output_write_tool(action, action_input, "...");
+        
         match tool.call(args).await {
-            Ok(result) => Ok(result),
-            Err(e) => Ok(format!("Erro: {}", e)),
+            Ok(result) => {
+                let preview = if result.len() > 200 {
+                    format!("{}...", &result[..200])
+                } else {
+                    result.clone()
+                };
+                output_write_tool(action, action_input, &preview);
+                Ok(result)
+            }
+            Err(e) => {
+                let err_msg = format!("Erro: {}", e);
+                output_write_error(&err_msg);
+                Ok(err_msg)
+            }
         }
     }
 
@@ -453,4 +474,75 @@ enum ParsedResponse {
         action: String,
         action_input: String,
     },
+}
+
+pub fn init_tmux(skill_name: &str) {
+    if TmuxManager::is_enabled() {
+        let mut manager = TmuxManager::new(skill_name);
+        if let Err(e) = manager.create_sessions() {
+            eprintln!("⚠️  Erro ao criar sessões TMUX: {}", e);
+        }
+        
+        let mut output = OutputManager::new();
+        output.add_sink(Arc::new(crate::utils::output::ConsoleSink::new()));
+        
+        let _ = TMUX_MANAGER.set(manager);
+        let _ = OUTPUT_MANAGER.set(output);
+    }
+}
+
+pub fn get_tmux_manager() -> Option<&'static TmuxManager> {
+    TMUX_MANAGER.get()
+}
+
+pub fn get_output_manager() -> Option<&'static OutputManager> {
+    OUTPUT_MANAGER.get()
+}
+
+pub fn output_write(msg: &str) {
+    if let Some(output) = OUTPUT_MANAGER.get() {
+        output.write(msg);
+    }
+    print!("{}", msg);
+}
+
+pub fn output_write_line(msg: &str) {
+    if let Some(output) = OUTPUT_MANAGER.get() {
+        output.write_line(msg);
+    }
+    println!("{}", msg);
+}
+
+pub fn output_write_tool(tool: &str, input: &str, output: &str) {
+    if let Some(out) = OUTPUT_MANAGER.get() {
+        out.write_tool(tool, input, output);
+    }
+    println!("🛠️  TOOL: {}", tool);
+    println!("📦 Args: {}", input);
+}
+
+pub fn output_write_thought(thought: &str) {
+    if let Some(output) = OUTPUT_MANAGER.get() {
+        output.write_thought(thought);
+    }
+}
+
+pub fn output_write_error(error: &str) {
+    if let Some(output) = OUTPUT_MANAGER.get() {
+        output.write_error(error);
+    }
+    eprintln!("❌ {}", error);
+}
+
+pub fn output_write_debug(msg: &str) {
+    if let Some(output) = OUTPUT_MANAGER.get() {
+        output.write_debug(msg);
+    }
+}
+
+pub fn output_write_browser(path: &str, description: &str) {
+    if let Some(output) = OUTPUT_MANAGER.get() {
+        output.write_browser(path, description);
+    }
+    println!("📸 {} - {}", description, path);
 }

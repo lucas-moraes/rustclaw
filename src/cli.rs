@@ -1,4 +1,6 @@
 use crate::agent::Agent;
+use crate::agent::init_tmux;
+use crate::tools::browser::BrowserTool;
 use crate::config::Config;
 use crate::tavily::tools::{TavilyQuickSearchTool, TavilySearchTool};
 use crate::tools::{
@@ -60,6 +62,9 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     tools.register(Box::new(LocationTool::new()));
     tools.register(Box::new(ClearMemoryTool::new(memory_path)));
 
+    let data_dir = Path::new("data");
+    tools.register(Box::new(BrowserTool::new(data_dir.to_path_buf())));
+
     if let Some(ref tavily_key) = config.tavily_api_key {
         tools.register(Box::new(TavilySearchTool::new(tavily_key.clone())));
         tools.register(Box::new(TavilyQuickSearchTool::new(tavily_key.clone())));
@@ -79,6 +84,9 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
 
     info!("Ferramentas registradas: {}", tools.list().lines().count());
 
+    // Initialize TMUX if enabled
+    init_tmux("cli");
+
     let mut agent = Agent::new(config, tools, memory_path)?;
     let memory_count = agent.get_memory_count()?;
     info!("Memórias carregadas: {}", memory_count);
@@ -91,6 +99,9 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     println!();
     println!("🖥️  Modo: Terminal (CLI)");
     println!("🧠 Memórias salvas: {}", memory_count);
+    if crate::agent::get_tmux_manager().is_some() {
+        println!("📺 TMUX: Ativo");
+    }
     println!();
     println!("Digite mensagens (ou 'sair' para terminar):");
     println!();

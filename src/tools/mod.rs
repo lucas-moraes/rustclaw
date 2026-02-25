@@ -63,3 +63,4 @@ pub mod shell;
 pub mod skill_import;
 pub mod skill_manager;
 pub mod system;
+pub mod browser;
