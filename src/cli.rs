@@ -45,7 +45,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
 
     info!("Iniciando RustClaw em modo CLI...");
 
-    let memory_path = Path::new("data/memory_cli.db");
+    let memory_path = Path::new("config/memory_cli.db");
 
     let mut tools = ToolRegistry::new();
     tools.register(Box::new(CapabilitiesTool::new()));
@@ -62,8 +62,8 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     tools.register(Box::new(LocationTool::new()));
     tools.register(Box::new(ClearMemoryTool::new(memory_path)));
 
-    let data_dir = Path::new("data");
-    tools.register(Box::new(BrowserTool::new(data_dir.to_path_buf())));
+    let config_dir = Path::new("config");
+    tools.register(Box::new(BrowserTool::new(config_dir.to_path_buf())));
 
     if let Some(ref tavily_key) = config.tavily_api_key {
         tools.register(Box::new(TavilySearchTool::new(tavily_key.clone())));

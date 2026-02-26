@@ -150,17 +150,27 @@ sudo apt install chromium chromium-driver
 
 ## ⚙️ Configuration
 
-### 1. Create Environment Variables File
+### 1. Folder Structure
+
+All configuration files are in the `config/` directory:
 
 ```bash
-# Create data directory
-mkdir -p ~/data
+# Create config directory structure
+mkdir -p config/github/keys
 
-# Create .env file
-nano ~/.env
+# Your config will look like:
+config/
+├── .env                  # Environment variables
+├── github/
+│   └── keys/
+│       └── github_key   # SSH private key for GitHub
+├── memory_cli.db         # SQLite database (created automatically)
+└── memory_telegram.db   # Telegram memories (created automatically)
 ```
 
-Add your API keys:
+### 2. Environment Variables
+
+Create `config/.env`:
 
 ```bash
 # Hugging Face API Token (required)
@@ -192,14 +202,19 @@ TMUX_ENABLED=false
 LOG_LEVEL=info
 ```
 
-### 2. Load Variables
+### 3. GitHub SSH Setup (Optional)
+
+If you want GitHub integration via SSH:
 
 ```bash
-# Load variables
-source ~/.env
+# Place your private SSH key
+cp ~/.ssh/id_rsa config/github/keys/github_key
 
-# Or add to .bashrc to load automatically
-echo 'source ~/.env' >> ~/.bashrc
+# Set permissions (IMPORTANT!)
+chmod 600 config/github/keys/github_key
+
+# Test connection
+ssh -i config/github/keys/github_key -T git@github.com
 ```
 
 ---
@@ -480,10 +495,10 @@ sudo systemctl start rustclaw
 
 ```bash
 # Backup
-sudo tar -czf backup-$(date +%Y%m%d).tar.gz ~/data/
+sudo tar -czf backup-$(date +%Y%m%d).tar.gz ~/config/
 
 # Or copy to PC
-scp pi@raspberrypi.local:~/data/memory_cli.db ./backup/
+scp pi@raspberrypi.local:~/config/memory_cli.db ./backup/
 ```
 
 ---
@@ -535,7 +550,7 @@ This is a project specifically optimized for Raspberry Pi. For the full desktop 
 1. **Use 1GB swap** - Essential to avoid "Out of memory"
 2. **Prefer cross-compile** - Much faster than native build
 3. **Monitor logs** - `sudo tail -f /var/log/rustclaw/rustclaw.log`
-4. **Regular backups** - Backup the `data/` directory
+4. **Regular backups** - Backup the `config/` directory
 5. **Update the system** - `sudo apt update && sudo apt upgrade`
 
 ---

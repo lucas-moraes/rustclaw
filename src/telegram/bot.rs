@@ -87,7 +87,7 @@ impl TelegramBot {
         
         // Start reminder executor
         if let Some(chat_id) = authorized_chat_id {
-            let memory_path = PathBuf::from(format!("data/memories_{}.db", chat_id));
+            let memory_path = PathBuf::from(format!("config/memories_{}.db", chat_id));
             let bot_clone = bot.clone();
             tokio::spawn(async move {
                 let executor = ReminderExecutor::new(bot_clone, memory_path);
@@ -274,7 +274,7 @@ impl TelegramBot {
     fn create_agent(config: &Config, chat_id: ChatId) -> Agent {
         let mut tools = ToolRegistry::new();
         let config_arc = Arc::new(config.clone());
-        let memory_path = PathBuf::from(format!("data/memories_{}.db", chat_id.0));
+        let memory_path = PathBuf::from(format!("config/memories_{}.db", chat_id.0));
 
         tools.register(Box::new(CapabilitiesTool::new()));
         tools.register(Box::new(DateTimeTool::new()));
@@ -355,7 +355,7 @@ Exemplos de lembretes:
     }
 
     async fn get_status(chat_id: ChatId) -> String {
-        let memory_path = PathBuf::from(format!("data/memories_{}.db", chat_id.0));
+        let memory_path = PathBuf::from(format!("config/memories_{}.db", chat_id.0));
         let memory_count = if memory_path.exists() {
             match crate::memory::store::MemoryStore::new(&memory_path) {
                 Ok(store) => store.count().unwrap_or(0),
@@ -382,7 +382,7 @@ Exemplos de lembretes:
     }
 
     async fn get_reminders(chat_id: ChatId) -> String {
-        let memory_path = PathBuf::from(format!("data/memories_{}.db", chat_id.0));
+        let memory_path = PathBuf::from(format!("config/memories_{}.db", chat_id.0));
         
         match crate::memory::store::MemoryStore::new(&memory_path) {
             Ok(store) => {
@@ -419,7 +419,7 @@ Exemplos de lembretes:
             return "Use: /cancel_reminder <id>".to_string();
         }
         
-        let memory_path = PathBuf::from(format!("data/memories_{}.db", chat_id.0));
+        let memory_path = PathBuf::from(format!("config/memories_{}.db", chat_id.0));
         
         match crate::memory::store::MemoryStore::new(&memory_path) {
             Ok(store) => {
@@ -447,7 +447,7 @@ Exemplos de lembretes:
     }
 
     async fn clear_memory(chat_id: ChatId) -> String {
-        let path = PathBuf::from(format!("data/memories_{}.db", chat_id.0));
+        let path = PathBuf::from(format!("config/memories_{}.db", chat_id.0));
         match tokio::fs::remove_file(&path).await {
             Ok(_) => "🧹 Memória limpa!".to_string(),
             Err(_) => "🧹 Memória já estava limpa".to_string(),
