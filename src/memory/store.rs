@@ -13,7 +13,16 @@ impl MemoryStore {
             std::fs::create_dir_all(parent)?;
         }
 
+        // Ensure file exists with correct permissions
+        if !db_path.exists() {
+            std::fs::File::create(db_path)?;
+        }
+
         let conn = Connection::open(db_path)?;
+
+        // Enable WAL mode for better concurrency
+        conn.execute_batch("PRAGMA journal_mode=WAL;")?;
+
         let store = Self { conn };
         store.init_schema()?;
 
