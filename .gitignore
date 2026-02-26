@@ -1,11 +1,25 @@
+# Build artifacts
 /target
-.env
+
+# Environment variables (sensitive!)
+config/.env
+config/.env.local
+
+# SSH Keys (highly sensitive!)
+config/github/keys/
+*.pem
+*.key
+id_rsa*
+id_ed25519*
 
 # SQLite database with memories
-data/
+config/
 *.db
 *.db-journal
 *.db-wal
+
+# Keep example files
+!config/.env.example
 
 # Cargo.lock for libraries (keep for binaries)
 # Uncomment if this is a library:
