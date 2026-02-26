@@ -13,6 +13,7 @@ mod utils;
 
 use clap::Parser;
 use dotenv::dotenv;
+use std::path::Path;
 use tracing::info;
 
 #[derive(Parser, Debug)]
@@ -30,7 +31,13 @@ struct Args {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     
-    dotenv().ok();
+    // Load environment variables from config/.env
+    let config_env = Path::new("config/.env");
+    if config_env.exists() {
+        dotenv::from_path(config_env).ok();
+    } else {
+        dotenv().ok();
+    }
 
     
     let args = Args::parse();
