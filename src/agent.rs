@@ -235,7 +235,7 @@ impl Agent {
             return Ok(vec![]);
         }
 
-        let results = search_similar_memories(&query_embedding, &all_memories, 5, 0.5);
+        let results = search_similar_memories(&query_embedding, &all_memories, 5, 0.3);
 
         for (memory, _) in &results {
             if let Err(e) = self.memory_store.increment_search_count(&memory.id) {

@@ -25,11 +25,14 @@ use crate::tools::{
 };
 use crate::utils::spinner::Spinner;
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::PathBuf;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 pub async fn run(config: Config) -> anyhow::Result<()> {
+    let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let config_dir = current_dir.join("config");
+    let memory_path = config_dir.join("memory_cli.db");
     // Configure logging with EnvFilter - defaults to WARN level
     // Users can override with RUST_LOG environment variable
     // Examples:
@@ -45,8 +48,6 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
 
     info!("Iniciando RustClaw em modo CLI...");
 
-    let memory_path = Path::new("config/memory_cli.db");
-
     let mut tools = ToolRegistry::new();
     tools.register(Box::new(CapabilitiesTool::new()));
     tools.register(Box::new(EchoTool));
@@ -60,9 +61,8 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     tools.register(Box::new(SystemInfoTool::new()));
     tools.register(Box::new(DateTimeTool::new()));
     tools.register(Box::new(LocationTool::new()));
-    tools.register(Box::new(ClearMemoryTool::new(memory_path)));
+    tools.register(Box::new(ClearMemoryTool::new(&memory_path)));
 
-    let config_dir = Path::new("config");
     tools.register(Box::new(BrowserTool::new(config_dir.to_path_buf())));
 
     if let Some(ref tavily_key) = config.tavily_api_key {
@@ -87,7 +87,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     // Initialize TMUX if enabled
     init_tmux("cli");
 
-    let mut agent = Agent::new(config, tools, memory_path)?;
+    let mut agent = Agent::new(config, tools, &memory_path)?;
     let memory_count = agent.get_memory_count()?;
     info!("Memórias carregadas: {}", memory_count);
 

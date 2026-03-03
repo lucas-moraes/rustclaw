@@ -22,13 +22,21 @@ pub fn search_similar_memories(
     top_k: usize,
     min_similarity: f32,
 ) -> Vec<(MemoryEntry, f32)> {
+    let now = chrono::Utc::now();
+
     let mut results: Vec<(MemoryEntry, f32)> = memories
         .iter()
         .map(|memory| {
             let similarity = cosine_similarity(query_embedding, &memory.embedding);
-            (memory.clone(), similarity)
+
+            let age_days = (now - memory.timestamp).num_days().max(1) as f32;
+            let recency_factor = 1.0 / age_days.sqrt();
+
+            let final_score = similarity * 0.7 + recency_factor.min(0.5) * 0.3;
+
+            (memory.clone(), final_score)
         })
-        .filter(|(_, similarity)| *similarity >= min_similarity)
+        .filter(|(_, score)| *score >= min_similarity)
         .collect();
 
     results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
