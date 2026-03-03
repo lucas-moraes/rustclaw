@@ -21,14 +21,19 @@ impl Config {
         let max_tokens = std::env::var("MAX_TOKENS")
             .ok()
             .and_then(|value| value.parse::<usize>().ok())
-            .unwrap_or(1200);
+            .unwrap_or(4000);
+
+        let max_iterations = std::env::var("MAX_ITERATIONS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(20);
 
         Ok(Self {
             api_key,
             base_url: "https://router.huggingface.co/v1".to_string(),
             model: "zai-org/GLM-5".to_string(),
             max_tokens,
-            max_iterations: 5,
+            max_iterations,
             tavily_api_key,
             timezone,
         })
