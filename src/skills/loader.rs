@@ -60,7 +60,12 @@ impl SkillLoader {
             let path = entry.path();
 
             if path.is_dir() {
-                let skill_file = path.join("skill.md");
+                // Support both skill.md (RustClaw) and SKILL.md (skills.sh)
+                let skill_file = if path.join("SKILL.md").exists() {
+                    path.join("SKILL.md")
+                } else {
+                    path.join("skill.md")
+                };
 
                 if skill_file.exists() {
                     match self.load_skill_file(&skill_file) {

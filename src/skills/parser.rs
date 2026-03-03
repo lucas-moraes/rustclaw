@@ -1,11 +1,28 @@
 use crate::security::SecurityManager;
 use crate::skills::{Skill, SkillBehaviors, SkillExample};
 use regex::Regex;
+use serde::Deserialize;
 use std::fs;
 use std::path::Path;
 use std::time::SystemTime;
 
 pub struct SkillParser;
+
+#[derive(Debug, Deserialize)]
+struct YamlFrontmatter {
+    name: Option<String>,
+    description: Option<String>,
+    #[serde(default)]
+    allowed_tools: Vec<String>,
+    #[serde(default)]
+    metadata: YamlMetadata,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct YamlMetadata {
+    #[serde(default)]
+    internal: bool,
+}
 
 #[derive(Debug)]
 pub enum ParseError {
@@ -38,16 +55,92 @@ impl SkillParser {
         let content = fs::read_to_string(path)?;
         let metadata = fs::metadata(path)?;
 
-        let name = Self::extract_name(&content)?;
-        let description = Self::extract_section(&content, "Descrição")?;
-        let context = Self::extract_section(&content, "Contexto")?;
-        let keywords = Self::extract_keywords(&content);
-        let behaviors = SkillBehaviors {
-            always: Self::extract_behaviors(&content, "SEMPRE"),
-            never: Self::extract_behaviors(&content, "NUNCA"),
+        // Detect format: YAML frontmatter (skills.sh) or Markdown (RustClaw)
+        if Self::has_yaml_frontmatter(&content) {
+            Self::parse_yaml_format(&content, path, &metadata)
+        } else {
+            Self::parse_markdown_format(&content, path, &metadata)
+        }
+    }
+
+    fn has_yaml_frontmatter(content: &str) -> bool {
+        content.trim().starts_with("---")
+    }
+
+    fn parse_yaml_format(
+        content: &str,
+        path: &Path,
+        file_meta: &std::fs::Metadata,
+    ) -> Result<Skill, ParseError> {
+        // Extract YAML frontmatter between --- markers
+        let trimmed = content.trim();
+        if !trimmed.starts_with("---") {
+            return Err(ParseError::InvalidFormat(
+                "Expected YAML frontmatter".to_string(),
+            ));
+        }
+
+        let start = trimmed[3..]
+            .find("---")
+            .ok_or_else(|| ParseError::InvalidFormat("Missing closing ---".to_string()))?;
+        let yaml_content = &trimmed[3..start + 3];
+        let markdown_content = &trimmed[start + 6..];
+
+        // Parse YAML
+        let frontmatter: YamlFrontmatter = serde_yaml::from_str(yaml_content)
+            .map_err(|e| ParseError::InvalidFormat(format!("Invalid YAML: {}", e)))?;
+
+        let name = frontmatter
+            .name
+            .ok_or_else(|| ParseError::MissingField("name".to_string()))?;
+        let description = frontmatter.description.unwrap_or_default();
+
+        // Use markdown content as context, or build from description if empty
+        let context = if markdown_content.trim().is_empty() {
+            description.clone()
+        } else {
+            Self::extract_context_from_markdown(markdown_content)
         };
-        let preferred_tools = Self::extract_tools(&content);
-        let examples = Self::extract_examples(&content);
+
+        // Extract keywords from markdown content
+        let keywords = Self::extract_keywords_from_markdown(markdown_content);
+
+        // Convert allowed-tools to preferred_tools
+        let preferred_tools = frontmatter.allowed_tools;
+
+        let behaviors = SkillBehaviors {
+            always: vec!["Follow the guidelines in the skill context".to_string()],
+            never: vec!["Ignore the skill context".to_string()],
+        };
+
+        Ok(Skill {
+            name,
+            description,
+            context,
+            keywords,
+            behaviors,
+            preferred_tools,
+            examples: vec![],
+            file_path: path.to_path_buf(),
+            last_modified: file_meta.modified().unwrap_or(SystemTime::now()),
+        })
+    }
+
+    fn parse_markdown_format(
+        content: &str,
+        path: &Path,
+        file_meta: &std::fs::Metadata,
+    ) -> Result<Skill, ParseError> {
+        let name = Self::extract_name(content)?;
+        let description = Self::extract_section(content, "Descrição")?;
+        let context = Self::extract_section(content, "Contexto")?;
+        let keywords = Self::extract_keywords(content);
+        let behaviors = SkillBehaviors {
+            always: Self::extract_behaviors(content, "SEMPRE"),
+            never: Self::extract_behaviors(content, "NUNCA"),
+        };
+        let preferred_tools = Self::extract_tools(content);
+        let examples = Self::extract_examples(content);
 
         Ok(Skill {
             name,
@@ -58,8 +151,69 @@ impl SkillParser {
             preferred_tools,
             examples,
             file_path: path.to_path_buf(),
-            last_modified: metadata.modified().unwrap_or(SystemTime::now()),
+            last_modified: file_meta.modified().unwrap_or(SystemTime::now()),
         })
+    }
+
+    fn extract_context_from_markdown(markdown: &str) -> String {
+        // Remove title (#) and section headers to get context
+        let mut context = markdown.to_string();
+
+        // Remove title
+        if let Some(pos) = context.find("\n#") {
+            context = context[pos + 1..].to_string();
+        }
+
+        // Remove all ## sections for cleaner context
+        while let Some(pos) = context.find("\n##") {
+            if let Some(end) = context[pos + 3..].find("\n##") {
+                context = context[..pos].to_string() + &context[pos + 3 + end..];
+            } else {
+                break;
+            }
+        }
+
+        let sanitized = SecurityManager::sanitize_skill_context(context.trim());
+        sanitized
+    }
+
+    fn extract_keywords_from_markdown(markdown: &str) -> Vec<String> {
+        // Look for ## Keywords or similar patterns
+        let patterns = [
+            "## Keywords",
+            "## Keywords\n",
+            "## when to use",
+            "## When to Use",
+        ];
+
+        for pattern in patterns {
+            if let Some(pos) = markdown.to_lowercase().find(&pattern.to_lowercase()) {
+                let start = pos + pattern.len();
+                let remaining = &markdown[start..];
+                let end = remaining.find("\n## ").unwrap_or(remaining.len());
+                let keywords_content = &remaining[..end];
+
+                return keywords_content
+                    .lines()
+                    .filter_map(|line| {
+                        let trimmed = line.trim();
+                        if trimmed.starts_with('-') || trimmed.starts_with('*') {
+                            trimmed
+                                .strip_prefix('-')
+                                .or_else(|| trimmed.strip_prefix('*'))
+                                .map(|s| s.trim().to_lowercase())
+                        } else if !trimmed.is_empty() && !trimmed.starts_with('#') {
+                            Some(trimmed.to_lowercase())
+                        } else {
+                            None
+                        }
+                    })
+                    .filter(|s| !s.is_empty())
+                    .collect();
+            }
+        }
+
+        vec![]
     }
 
     fn extract_name(content: &str) -> Result<String, ParseError> {
