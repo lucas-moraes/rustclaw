@@ -22,14 +22,56 @@ impl BrowserManager {
         }
     }
 
+    fn check_chromium_installed() -> Result<(), String> {
+        let output = std::process::Command::new("which")
+            .arg("chromium")
+            .output();
+
+        match output {
+            Ok(o) if o.status.success() => Ok(()),
+            _ => {
+                let output2 = std::process::Command::new("which")
+                    .arg("chromium-browser")
+                    .output();
+                
+                match output2 {
+                    Ok(o) if o.status.success() => Ok(()),
+                    _ => {
+                        let output3 = std::process::Command::new("which")
+                            .arg("google-chrome")
+                            .output();
+                        
+                        match output3 {
+                            Ok(o) if o.status.success() => Ok(()),
+                            _ => Err("Chromium not found. Please install:\n\
+                                - macOS: brew install chromium\n\
+                                - Linux: sudo apt install chromium chromium-driver\n\
+                                - Or set CHROMIUM_PATH environment variable".to_string()),
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     pub async fn initialize(&mut self) -> Result<(), String> {
+        Self::check_chromium_installed()?;
+
         let config = BrowserConfig::builder()
             .build()
             .map_err(|e| format!("Failed to create browser config: {}", e))?;
 
         let (browser, _handler) = Browser::launch(config)
             .await
-            .map_err(|e| format!("Failed to launch browser: {}", e))?;
+            .map_err(|e| {
+                if e.to_string().contains("Executable doesn't exist") {
+                    format!("Chromium not found. Install with: brew install chromium\nError: {}", e)
+                } else if e.to_string().contains("connection refused") {
+                    format!("Browser connection failed. Check if Chromium is installed.\nError: {}", e)
+                } else {
+                    format!("Failed to launch browser: {}", e)
+                }
+            })?;
 
         self.browser = Some(browser);
         Ok(())
