@@ -162,8 +162,7 @@ impl Agent {
                     self.save_conversation_to_memory(user_input, &answer)
                         .await?;
 
-                    let final_answer = self.refine_answer(user_input, &answer).await?;
-                    return Ok(final_answer);
+                    return Ok(answer);
                 }
                 ParsedResponse::Action {
                     thought,
@@ -219,42 +218,10 @@ impl Agent {
         if let ParsedResponse::FinalAnswer(answer) = self.parse_response(&final_response)? {
             self.save_conversation_to_memory(user_input, &answer)
                 .await?;
-            let final_answer = self.refine_answer(user_input, &answer).await?;
-            return Ok(final_answer);
+            return Ok(answer);
         }
 
         Ok(final_response)
-    }
-
-    async fn refine_answer(&self, user_input: &str, initial_answer: &str) -> anyhow::Result<String> {
-        info!("Starting answer refinement stage");
-
-        let refine_prompt = format!(
-            "Você já respondeu à pergunta do usuário. Agora revise e melhore sua resposta.\n\n\
-            Pergunta original: {}\n\n\
-            Sua resposta inicial: {}\n\n\
-            Instruções de revisão:\n\
-            - Verifique se a resposta está correta e completa\n\
-            - Corrija quaisquer erros ou imprecisões\n\
-            - Melhore a clareza e organização se necessário\n\
-            - Adicione informações relevantes que podem estar faltando\n\
-            - Retorne a versão revisada ou a mesma resposta se já estiver perfeita\n\
-            - Responda APENAS com a resposta final revisada, sem comentários sobre o processo de revisão",
-            user_input, initial_answer
-        );
-
-        let messages = vec![
-            json!({
-                "role": "user",
-                "content": refine_prompt
-            })
-        ];
-
-        let refined = self.call_llm(&messages).await?;
-        let refined_answer = refined.trim().to_string();
-
-        info!("Answer refined successfully");
-        Ok(refined_answer)
     }
 
     async fn retrieve_relevant_memories(
