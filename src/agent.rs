@@ -1,4 +1,5 @@
 use crate::config::Config;
+use crate::memory::checkpoint::{CheckpointStore, DevelopmentCheckpoint, DevelopmentState, ToolExecution};
 use crate::memory::embeddings::EmbeddingService;
 use crate::memory::search::{format_memories_for_prompt, search_similar_memories};
 use crate::memory::skill_context::SkillContextStore;
@@ -37,6 +38,7 @@ pub struct Agent {
     tools: ToolRegistry,
     conversation_history: Vec<Value>,
     memory_store: MemoryStore,
+    checkpoint_store: CheckpointStore,
     embedding_service: EmbeddingService,
     skill_manager: SkillManager,
     skill_context_store: SkillContextStore,
@@ -46,6 +48,7 @@ pub struct Agent {
 impl Agent {
     pub fn new(config: Config, tools: ToolRegistry, memory_path: &Path) -> anyhow::Result<Self> {
         let memory_store = MemoryStore::new(memory_path)?;
+        let checkpoint_store = CheckpointStore::new(memory_path)?;
         let embedding_service = EmbeddingService::new()?;
         let skill_context_store = SkillContextStore::new(memory_path)?;
 
@@ -76,6 +79,7 @@ impl Agent {
             tools,
             conversation_history: Vec::new(),
             memory_store,
+            checkpoint_store,
             embedding_service,
             skill_manager,
             skill_context_store,
@@ -84,6 +88,8 @@ impl Agent {
     }
 
     pub async fn prompt(&mut self, user_input: &str) -> anyhow::Result<String> {
+        let mut checkpoint = self.load_or_create_checkpoint(user_input).await?;
+
         // SECURITY: Validate user input
         let validation = SecurityManager::validate_user_input(user_input);
         if !validation.valid {
@@ -139,11 +145,15 @@ impl Agent {
         }));
 
         // 6. Build messages
-        let mut current_messages = self.build_messages(&system_prompt);
+        let mut current_messages = self.load_checkpoint_messages(&checkpoint)
+            .unwrap_or_else(|| self.build_messages(&system_prompt));
 
         // 7. ReAct loop
-        for iteration in 0..self.config.max_iterations {
+        let start_iteration = checkpoint.current_iteration;
+        for iteration in start_iteration..self.config.max_iterations {
             info!("ReAct iteration {}", iteration + 1);
+            checkpoint.current_iteration = iteration;
+            self.save_checkpoint(&mut checkpoint, &current_messages, &[])?;
 
             let response = self.call_llm(&current_messages).await?;
             debug!("LLM response:\n{}", response);
@@ -161,6 +171,8 @@ impl Agent {
 
                     self.save_conversation_to_memory(user_input, &answer)
                         .await?;
+
+                    self.finalize_checkpoint(&mut checkpoint, DevelopmentState::Completed, &current_messages, &[])?;
 
                     return Ok(answer);
                 }
@@ -182,6 +194,14 @@ impl Agent {
                             .await?;
                     }
 
+                    let tool_execution = ToolExecution {
+                        tool_name: action.clone(),
+                        input: action_input.clone(),
+                        output: observation.clone(),
+                        iteration: iteration + 1,
+                        timestamp: chrono::Utc::now(),
+                    };
+
                     let tool_result = format!(
                         "Thought: {}\nAction: {}\nAction Input: {}\nObservation: {}",
                         thought, action, action_input, observation
@@ -191,11 +211,14 @@ impl Agent {
                         "role": "assistant",
                         "content": tool_result
                     }));
+
+                    self.save_checkpoint(&mut checkpoint, &current_messages, &[tool_execution])?;
                 }
             }
         }
 
         info!("Max iterations reached, forcing final answer");
+        self.finalize_checkpoint(&mut checkpoint, DevelopmentState::Interrupted, &current_messages, &[])?;
         let final_prompt = self
             .build_messages(&system_prompt)
             .iter()
@@ -245,6 +268,64 @@ impl Agent {
         }
 
         Ok(results)
+    }
+
+    async fn load_or_create_checkpoint(&self, user_input: &str) -> anyhow::Result<DevelopmentCheckpoint> {
+        if DevelopmentCheckpoint::is_development_task(user_input) {
+            if let Ok(Some(existing)) = self.checkpoint_store.find_by_input(user_input) {
+                info!("Resuming development checkpoint: {}", existing.id);
+                return Ok(existing);
+            }
+        }
+
+        Ok(DevelopmentCheckpoint::new(user_input.to_string()))
+    }
+
+    fn load_checkpoint_messages(&self, checkpoint: &DevelopmentCheckpoint) -> Option<Vec<Value>> {
+        if checkpoint.messages_json == "[]" {
+            return None;
+        }
+
+        serde_json::from_str(&checkpoint.messages_json).ok()
+    }
+
+    fn save_checkpoint(
+        &self,
+        checkpoint: &mut DevelopmentCheckpoint,
+        messages: &[Value],
+        tool_execs: &[ToolExecution],
+    ) -> anyhow::Result<()> {
+        if !DevelopmentCheckpoint::is_development_task(&checkpoint.user_input) {
+            return Ok(());
+        }
+
+        let mut all_tools: Vec<ToolExecution> = serde_json::from_str(&checkpoint.completed_tools_json)
+            .unwrap_or_default();
+        all_tools.extend_from_slice(tool_execs);
+
+        checkpoint.messages_json = serde_json::to_string(messages)?;
+        checkpoint.completed_tools_json = serde_json::to_string(&all_tools)?;
+        checkpoint.updated_at = chrono::Utc::now();
+
+        self.checkpoint_store.save(checkpoint)?;
+        Ok(())
+    }
+
+    fn finalize_checkpoint(
+        &self,
+        checkpoint: &mut DevelopmentCheckpoint,
+        state: DevelopmentState,
+        messages: &[Value],
+        tool_execs: &[ToolExecution],
+    ) -> anyhow::Result<()> {
+        if !DevelopmentCheckpoint::is_development_task(&checkpoint.user_input) {
+            return Ok(());
+        }
+
+        self.save_checkpoint(checkpoint, messages, tool_execs)?;
+        checkpoint.set_state(state);
+        self.checkpoint_store.save(checkpoint)?;
+        Ok(())
     }
 
     async fn save_conversation_to_memory(

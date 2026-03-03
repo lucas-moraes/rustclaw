@@ -1,3 +1,4 @@
+pub mod checkpoint;
 pub mod embeddings;
 pub mod reminder;
 pub mod search;
