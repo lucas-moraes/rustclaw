@@ -25,7 +25,8 @@ impl Tool for SkillListTool {
     }
 
     async fn call(&self, _args: Value) -> Result<String, String> {
-        let skills_path = Path::new(SKILLS_DIR);
+        let current_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let skills_path = current_dir.join(SKILLS_DIR);
         
         if !skills_path.exists() {
             return Ok("Diretório de skills não encontrado.".to_string());

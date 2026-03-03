@@ -63,8 +63,9 @@ impl Agent {
             None
         };
 
-        // Inicializa skill manager
-        let mut skill_manager = SkillManager::new(PathBuf::from(SKILLS_DIR))?;
+        let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let skills_dir = current_dir.join(SKILLS_DIR);
+        let mut skill_manager = SkillManager::new(skills_dir)?;
         if let Some(skill) = active_skill {
             let _ = skill_manager.force_skill(&skill);
         }
