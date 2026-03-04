@@ -626,7 +626,67 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
             }
         }
 
+        if let Some(value) = self.recover_action_input(&stripped) {
+            return Ok(value);
+        }
+
         Err(anyhow::anyhow!("Action Input inválido: {}", action_input))
+    }
+
+    fn recover_action_input(&self, input: &str) -> Option<Value> {
+        let path_re = Regex::new(r#"(?s)"path"\s*:\s*"([^"]*)""#).unwrap();
+        let command_re = Regex::new(r#"(?s)"command"\s*:\s*"([^"]*)""#).unwrap();
+
+        if let Some(caps) = path_re.captures(input) {
+            let path = caps.get(1).map(|m| m.as_str().to_string()).unwrap_or_default();
+            if let Some(content) = Self::extract_json_string_field(input, "content") {
+                return Some(json!({
+                    "path": path,
+                    "content": content,
+                }));
+            }
+        }
+
+        if let Some(caps) = command_re.captures(input) {
+            let command = caps.get(1).map(|m| m.as_str().to_string()).unwrap_or_default();
+            if !command.is_empty() {
+                return Some(json!({
+                    "command": command,
+                }));
+            }
+        }
+
+        None
+    }
+
+    fn extract_json_string_field(input: &str, field: &str) -> Option<String> {
+        let key = format!("\"{}\"", field);
+        let idx = input.find(&key)?;
+        let after_key = &input[idx + key.len()..];
+        let colon_idx = after_key.find(':')?;
+        let mut rest = after_key[colon_idx + 1..].trim_start();
+
+        if !rest.starts_with('"') {
+            return None;
+        }
+
+        rest = &rest[1..];
+        let mut end = rest.len();
+        if let Some(pos) = rest.rfind("\"}") {
+            end = pos;
+        } else if let Some(pos) = rest.rfind("\"") {
+            end = pos;
+        }
+
+        let raw = rest[..end].to_string();
+        let unescaped = raw
+            .replace("\\n", "\n")
+            .replace("\\t", "\t")
+            .replace("\\r", "\r")
+            .replace("\\\"", "\"")
+            .replace("\\\\", "\\");
+
+        Some(unescaped)
     }
 
     fn extract_json_block(input: &str) -> Option<String> {
