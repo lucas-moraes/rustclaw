@@ -150,6 +150,7 @@ impl Agent {
 
         // 7. ReAct loop
         let start_iteration = checkpoint.current_iteration;
+        let mut forced_tool_use = false;
         for iteration in start_iteration..self.config.max_iterations {
             info!("ReAct iteration {}", iteration + 1);
             checkpoint.current_iteration = iteration;
@@ -163,6 +164,18 @@ impl Agent {
             match parsed {
                 ParsedResponse::FinalAnswer(answer) => {
                     info!("Final answer received");
+
+                    if DevelopmentCheckpoint::is_development_task(user_input)
+                        && !self.checkpoint_has_tools(&checkpoint)
+                        && !forced_tool_use
+                    {
+                        forced_tool_use = true;
+                        current_messages.push(json!({
+                            "role": "user",
+                            "content": "Você ainda não executou nenhuma ferramenta. Para tarefas de desenvolvimento, use ferramentas (file_write, shell, file_read, etc.) antes de responder com a solução final. Prossiga com a primeira ação agora."
+                        }));
+                        continue;
+                    }
 
                     self.conversation_history.push(json!({
                         "role": "assistant",
@@ -326,6 +339,16 @@ impl Agent {
         checkpoint.set_state(state);
         self.checkpoint_store.save(checkpoint)?;
         Ok(())
+    }
+
+    fn checkpoint_has_tools(&self, checkpoint: &DevelopmentCheckpoint) -> bool {
+        if checkpoint.completed_tools_json == "[]" {
+            return false;
+        }
+
+        serde_json::from_str::<Vec<ToolExecution>>(&checkpoint.completed_tools_json)
+            .map(|tools| !tools.is_empty())
+            .unwrap_or(false)
     }
 
     async fn save_conversation_to_memory(
