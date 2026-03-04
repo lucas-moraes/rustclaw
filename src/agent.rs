@@ -500,7 +500,7 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
         let thought_re = Regex::new(r"(?i)Thought:\s*(.+?)(?:\n|$)").unwrap();
         let action_re = Regex::new(r"(?i)Action:\s*(.+?)(?:\n|$)").unwrap();
         let action_input_re = Regex::new(
-            r"(?is)Action Input:\s*(.+?)(?:\n(?:Observation|Thought|Action|Final Answer):|$)",
+            r"(?is)Action Input:\s*(.+?)(?:\n(?:Observation|Thought|Action|Final Answer):|<system-reminder>|$)",
         )
         .unwrap();
 
@@ -571,8 +571,14 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
             return Ok(value);
         }
 
-        let stripped = if trimmed.starts_with("```") {
-            let mut lines: Vec<&str> = trimmed.lines().collect();
+        let cleaned = if let Some(reminder_idx) = trimmed.find("<system-reminder>") {
+            trimmed[..reminder_idx].to_string()
+        } else {
+            trimmed.to_string()
+        };
+
+        let stripped = if cleaned.starts_with("```") {
+            let mut lines: Vec<&str> = cleaned.lines().collect();
             if !lines.is_empty() {
                 lines.remove(0);
             }
