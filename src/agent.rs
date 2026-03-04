@@ -156,6 +156,13 @@ impl Agent {
             checkpoint.current_iteration = iteration;
             self.save_checkpoint(&mut checkpoint, &current_messages, &[])?;
 
+            if DevelopmentCheckpoint::is_development_task(user_input) {
+                current_messages.push(json!({
+                    "role": "system",
+                    "content": "IMPORTANTE: para tarefas de desenvolvimento, sempre execute pelo menos uma ferramenta por etapa. Responda APENAS nos formatos especificados. Nunca inclua <system-reminder> na resposta."
+                }));
+            }
+
             let response = self.call_llm(&current_messages).await?;
             debug!("LLM response:\n{}", response);
 
@@ -488,12 +495,13 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
     }
 
     fn parse_response(&self, response: &str) -> anyhow::Result<ParsedResponse> {
+        let sanitized = self.sanitize_model_response(response);
         let final_answer_re = Regex::new(r"(?i)Final Answer:\s*(.+)$").unwrap();
-        if let Some(caps) = final_answer_re.captures(response) {
+        if let Some(caps) = final_answer_re.captures(&sanitized) {
             let answer = caps
                 .get(1)
                 .map(|m| m.as_str().trim().to_string())
-                .unwrap_or_else(|| response.to_string());
+                .unwrap_or_else(|| sanitized.to_string());
             return Ok(ParsedResponse::FinalAnswer(answer));
         }
 
@@ -505,18 +513,18 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
         .unwrap();
 
         let thought = thought_re
-            .captures(response)
+            .captures(&sanitized)
             .and_then(|c| c.get(1))
             .map(|m| m.as_str().trim().to_string())
             .unwrap_or_default();
 
         let action = action_re
-            .captures(response)
+            .captures(&sanitized)
             .and_then(|c| c.get(1))
             .map(|m| m.as_str().trim().to_string());
 
         let action_input = action_input_re
-            .captures(response)
+            .captures(&sanitized)
             .and_then(|c| c.get(1))
             .map(|m| m.as_str().trim().to_string())
             .unwrap_or_else(|| "{}".to_string());
@@ -529,7 +537,7 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
             });
         }
 
-        Ok(ParsedResponse::FinalAnswer(response.trim().to_string()))
+        Ok(ParsedResponse::FinalAnswer(sanitized.trim().to_string()))
     }
 
     async fn execute_tool(&self, action: &str, action_input: &str) -> anyhow::Result<String> {
@@ -538,7 +546,14 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
             .get(action)
             .ok_or_else(|| anyhow::anyhow!("Ferramenta '{}' não encontrada", action))?;
 
-        let args = self.parse_action_input_json(action_input)?;
+        let args = match self.parse_action_input_json(action_input) {
+            Ok(value) => value,
+            Err(e) => {
+                let err_msg = format!("Erro: {}", e);
+                output_write_error(&err_msg);
+                return Ok("Erro: Action Input inválido. Reenvie apenas o JSON válido para a ferramenta.".to_string());
+            }
+        };
 
         output_write_tool(action, action_input, "...");
         
@@ -562,6 +577,11 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
 
     pub fn get_memory_count(&self) -> anyhow::Result<i64> {
         self.memory_store.count()
+    }
+
+    fn sanitize_model_response(&self, response: &str) -> String {
+        let reminder_re = Regex::new(r"(?is)<system-reminder>.*?</system-reminder>").unwrap();
+        reminder_re.replace_all(response, "").to_string()
     }
 
     fn parse_action_input_json(&self, action_input: &str) -> anyhow::Result<Value> {
