@@ -499,7 +499,10 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
 
         let thought_re = Regex::new(r"(?i)Thought:\s*(.+?)(?:\n|$)").unwrap();
         let action_re = Regex::new(r"(?i)Action:\s*(.+?)(?:\n|$)").unwrap();
-        let action_input_re = Regex::new(r"(?is)Action Input:\s*(\{.*\}|\[.*\]|.+)$").unwrap();
+        let action_input_re = Regex::new(
+            r"(?is)Action Input:\s*(.+?)(?:\n(?:Observation|Thought|Action|Final Answer):|$)",
+        )
+        .unwrap();
 
         let thought = thought_re
             .captures(response)
@@ -587,21 +590,73 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
             return Ok(value);
         }
 
-        let obj_re = Regex::new(r"(?s)\{.*\}").unwrap();
-        if let Some(m) = obj_re.find(&stripped) {
-            if let Ok(value) = serde_json::from_str::<Value>(m.as_str()) {
-                return Ok(value);
-            }
-        }
-
-        let arr_re = Regex::new(r"(?s)\[.*\]").unwrap();
-        if let Some(m) = arr_re.find(&stripped) {
-            if let Ok(value) = serde_json::from_str::<Value>(m.as_str()) {
+        if let Some(json_block) = Self::extract_json_block(&stripped) {
+            if let Ok(value) = serde_json::from_str::<Value>(&json_block) {
                 return Ok(value);
             }
         }
 
         Err(anyhow::anyhow!("Action Input inválido: {}", action_input))
+    }
+
+    fn extract_json_block(input: &str) -> Option<String> {
+        let mut start_idx = None;
+        let mut stack: Vec<char> = Vec::new();
+        let mut in_string = false;
+        let mut escape = false;
+
+        for (i, c) in input.char_indices() {
+            if start_idx.is_none() {
+                if c == '{' || c == '[' {
+                    start_idx = Some(i);
+                    stack.push(c);
+                }
+                continue;
+            }
+
+            if in_string {
+                if escape {
+                    escape = false;
+                    continue;
+                }
+                if c == '\\' {
+                    escape = true;
+                    continue;
+                }
+                if c == '"' {
+                    in_string = false;
+                }
+                continue;
+            }
+
+            match c {
+                '"' => in_string = true,
+                '{' | '[' => stack.push(c),
+                '}' => {
+                    if let Some(last) = stack.pop() {
+                        if last != '{' {
+                            return None;
+                        }
+                    }
+                }
+                ']' => {
+                    if let Some(last) = stack.pop() {
+                        if last != '[' {
+                            return None;
+                        }
+                    }
+                }
+                _ => {}
+            }
+
+            if stack.is_empty() {
+                if let Some(start) = start_idx {
+                    return Some(input[start..=i].to_string());
+                }
+            }
+        }
+
+        None
     }
 
     pub fn model_name(&self) -> String {
