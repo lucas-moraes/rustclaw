@@ -507,10 +507,6 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
 
         let thought_re = Regex::new(r"(?i)Thought:\s*(.+?)(?:\n|$)").unwrap();
         let action_re = Regex::new(r"(?i)Action:\s*(.+?)(?:\n|$)").unwrap();
-        let action_input_re = Regex::new(
-            r"(?is)Action Input:\s*(.+?)(?:\n(?:Observation|Thought|Action|Final Answer):|$)",
-        )
-        .unwrap();
 
         let thought = thought_re
             .captures(&sanitized)
@@ -523,11 +519,16 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
             .and_then(|c| c.get(1))
             .map(|m| m.as_str().trim().to_string());
 
-        let action_input = action_input_re
-            .captures(&sanitized)
-            .and_then(|c| c.get(1))
-            .map(|m| m.as_str().trim().to_string())
-            .unwrap_or_else(|| "{}".to_string());
+        let action_input = if let Some(pos) = sanitized.to_lowercase().find("action input:") {
+            let after = &sanitized[pos + "action input:".len()..];
+            if let Some(json_block) = Self::extract_json_block(after) {
+                json_block
+            } else {
+                after.trim().to_string()
+            }
+        } else {
+            "{}".to_string()
+        };
 
         if let Some(action) = action {
             return Ok(ParsedResponse::Action {
