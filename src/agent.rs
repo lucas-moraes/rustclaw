@@ -476,7 +476,7 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
 
         let thought_re = Regex::new(r"(?i)Thought:\s*(.+?)(?:\n|$)").unwrap();
         let action_re = Regex::new(r"(?i)Action:\s*(.+?)(?:\n|$)").unwrap();
-        let action_input_re = Regex::new(r"(?i)Action Input:\s*(\{.+\}|.+?)(?:\n|$)").unwrap();
+        let action_input_re = Regex::new(r"(?is)Action Input:\s*(\{.*\}|\[.*\]|.+)$").unwrap();
 
         let thought = thought_re
             .captures(response)
@@ -512,8 +512,7 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
             .get(action)
             .ok_or_else(|| anyhow::anyhow!("Ferramenta '{}' não encontrada", action))?;
 
-        let args: Value = serde_json::from_str(action_input)
-            .map_err(|_| anyhow::anyhow!("Action Input inválido: {}", action_input))?;
+        let args = self.parse_action_input_json(action_input)?;
 
         output_write_tool(action, action_input, "...");
         
@@ -537,6 +536,49 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
 
     pub fn get_memory_count(&self) -> anyhow::Result<i64> {
         self.memory_store.count()
+    }
+
+    fn parse_action_input_json(&self, action_input: &str) -> anyhow::Result<Value> {
+        let trimmed = action_input.trim();
+
+        if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
+            return Ok(value);
+        }
+
+        let stripped = if trimmed.starts_with("```") {
+            let mut lines: Vec<&str> = trimmed.lines().collect();
+            if !lines.is_empty() {
+                lines.remove(0);
+            }
+            if let Some(last) = lines.last() {
+                if last.trim().starts_with("```") {
+                    lines.pop();
+                }
+            }
+            lines.join("\n")
+        } else {
+            trimmed.to_string()
+        };
+
+        if let Ok(value) = serde_json::from_str::<Value>(stripped.trim()) {
+            return Ok(value);
+        }
+
+        let obj_re = Regex::new(r"(?s)\{.*\}").unwrap();
+        if let Some(m) = obj_re.find(&stripped) {
+            if let Ok(value) = serde_json::from_str::<Value>(m.as_str()) {
+                return Ok(value);
+            }
+        }
+
+        let arr_re = Regex::new(r"(?s)\[.*\]").unwrap();
+        if let Some(m) = arr_re.find(&stripped) {
+            if let Ok(value) = serde_json::from_str::<Value>(m.as_str()) {
+                return Ok(value);
+            }
+        }
+
+        Err(anyhow::anyhow!("Action Input inválido: {}", action_input))
     }
 
     pub fn model_name(&self) -> String {
