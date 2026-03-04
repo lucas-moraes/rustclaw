@@ -571,11 +571,8 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
             return Ok(value);
         }
 
-        let cleaned = if let Some(reminder_idx) = trimmed.find("<system-reminder>") {
-            trimmed[..reminder_idx].to_string()
-        } else {
-            trimmed.to_string()
-        };
+        let reminder_re = Regex::new(r"(?is)<system-reminder>.*?</system-reminder>").unwrap();
+        let cleaned = reminder_re.replace_all(trimmed, "").to_string();
 
         let stripped = if cleaned.starts_with("```") {
             let mut lines: Vec<&str> = cleaned.lines().collect();
