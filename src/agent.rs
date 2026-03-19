@@ -108,6 +108,23 @@ impl Agent {
 
         let mut checkpoint = self.load_or_create_checkpoint(user_input).await?;
         let mut task_input = user_input.to_string();
+        let lower_input = user_input.to_lowercase();
+        let wants_new_project = lower_input.starts_with("novo projeto")
+            || lower_input.starts_with("iniciar novo projeto")
+            || lower_input.starts_with("novo trabalho");
+
+        if !wants_new_project && DevelopmentCheckpoint::is_development_task(user_input) {
+            if let Some(active) = self.get_last_active_checkpoint() {
+                if active.id != checkpoint.id
+                    && !user_input.eq_ignore_ascii_case("aprovar plano")
+                    && !user_input.eq_ignore_ascii_case("cancelar plano")
+                    && !user_input.to_lowercase().starts_with("editar plano:")
+                {
+                    checkpoint = active;
+                    task_input = checkpoint.user_input.clone();
+                }
+            }
+        }
 
         if user_input.eq_ignore_ascii_case("continuar projeto") {
             if let Some(active) = self.get_last_active_checkpoint() {
