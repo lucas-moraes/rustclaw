@@ -88,9 +88,37 @@ impl Agent {
     }
 
     pub async fn prompt(&mut self, user_input: &str) -> anyhow::Result<String> {
-        let mut checkpoint = self.load_or_create_checkpoint(user_input).await?;
+        if user_input.eq_ignore_ascii_case("status projeto") {
+            if let Some(checkpoint) = self.get_last_active_checkpoint() {
+                let step_count = self.count_plan_steps(&checkpoint.plan_text);
+                let tool_count = self.count_tool_execs(&checkpoint);
+                return Ok(format!(
+                    "Projeto ativo:\n- tarefa: {}\n- fase: {}\n- iteracao: {}\n- passos no plano: {}\n- ferramentas usadas: {}\n\nPlano:\n{}",
+                    checkpoint.user_input,
+                    checkpoint.phase,
+                    checkpoint.current_iteration + 1,
+                    step_count,
+                    tool_count,
+                    if checkpoint.plan_text.is_empty() { "(sem plano)" } else { checkpoint.plan_text.as_str() }
+                ));
+            }
 
-        if DevelopmentCheckpoint::is_development_task(user_input) {
+            return Ok("Nenhum projeto ativo encontrado.".to_string());
+        }
+
+        let mut checkpoint = self.load_or_create_checkpoint(user_input).await?;
+        let mut task_input = user_input.to_string();
+
+        if user_input.eq_ignore_ascii_case("continuar projeto") {
+            if let Some(active) = self.get_last_active_checkpoint() {
+                checkpoint = active;
+                task_input = checkpoint.user_input.clone();
+            } else {
+                return Ok("Nenhum projeto ativo para continuar.".to_string());
+            }
+        }
+
+        if DevelopmentCheckpoint::is_development_task(&task_input) {
             if user_input.eq_ignore_ascii_case("cancelar plano") {
                 checkpoint.set_plan_text(String::new());
                 checkpoint.set_phase(PlanPhase::Planning);
@@ -99,7 +127,7 @@ impl Agent {
             }
 
             if checkpoint.plan_text.is_empty() {
-                let plan = self.generate_plan(user_input).await?;
+                let plan = self.generate_plan(&task_input).await?;
                 checkpoint.set_plan_text(plan.clone());
                 let step_count = self.count_plan_steps(&plan);
 
@@ -148,7 +176,7 @@ impl Agent {
         }
 
         // SECURITY: Validate user input
-        let validation = SecurityManager::validate_user_input(user_input);
+        let validation = SecurityManager::validate_user_input(&task_input);
         if !validation.valid {
             let error_msg = format!("Invalid input: {}", validation.errors.join(", "));
             tracing::warn!("Security validation failed: {}", error_msg);
@@ -156,7 +184,7 @@ impl Agent {
         }
 
         // SECURITY: Sanitize user input
-        let sanitized_input = SecurityManager::sanitize_user_input(user_input);
+        let sanitized_input = SecurityManager::sanitize_user_input(&task_input);
         if sanitized_input.was_modified {
             tracing::debug!(
                 "Input was sanitized: {} -> {}",
@@ -382,6 +410,20 @@ impl Agent {
                 trimmed.starts_with(|c: char| c.is_ascii_digit()) && trimmed.contains(')')
             })
             .count()
+    }
+
+    fn get_last_active_checkpoint(&self) -> Option<DevelopmentCheckpoint> {
+        if let Ok(checkpoints) = self.checkpoint_store.get_active() {
+            return checkpoints.into_iter().next();
+        }
+
+        None
+    }
+
+    fn count_tool_execs(&self, checkpoint: &DevelopmentCheckpoint) -> usize {
+        serde_json::from_str::<Vec<ToolExecution>>(&checkpoint.completed_tools_json)
+            .map(|tools| tools.len())
+            .unwrap_or(0)
     }
 
     fn load_checkpoint_messages(&self, checkpoint: &DevelopmentCheckpoint) -> Option<Vec<Value>> {
