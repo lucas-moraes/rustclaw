@@ -38,18 +38,23 @@ impl Tool for SkillListTool {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.is_dir() {
-                    let skill_file = path.join("skill.md");
+                    let skill_file = if path.join("SKILL.md").exists() {
+                        path.join("SKILL.md")
+                    } else {
+                        path.join("skill.md")
+                    };
+
                     if skill_file.exists() {
-                        let skill_name = path.file_name()
+                        let skill_name = path
+                            .file_name()
                             .and_then(|n| n.to_str())
                             .unwrap_or("unknown");
-                        
-                        // Try to parse and get description
+
                         let description = match SkillParser::parse(&skill_file) {
                             Ok(skill) => skill.description,
                             Err(_) => "(erro ao carregar)".to_string(),
                         };
-                        
+
                         skills.push(format!("- **{}**: {}", skill_name, description));
                     }
                 }
