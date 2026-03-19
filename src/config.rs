@@ -7,6 +7,7 @@ pub struct Config {
     pub model: String,
     pub max_tokens: usize,
     pub max_iterations: usize,
+    pub plan_auto_threshold: usize,
     pub tavily_api_key: Option<String>,
     pub timezone: String,
 }
@@ -28,12 +29,18 @@ impl Config {
             .and_then(|value| value.parse::<usize>().ok())
             .unwrap_or(20);
 
+        let plan_auto_threshold = std::env::var("PLAN_AUTO_THRESHOLD")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(4);
+
         Ok(Self {
             api_key,
             base_url: "https://router.huggingface.co/v1".to_string(),
             model: "MiniMaxAI/MiniMax-M2.5:novita".to_string(),
             max_tokens,
             max_iterations,
+            plan_auto_threshold,
             tavily_api_key,
             timezone,
         })

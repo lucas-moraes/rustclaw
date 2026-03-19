@@ -91,24 +91,56 @@ impl Agent {
         let mut checkpoint = self.load_or_create_checkpoint(user_input).await?;
 
         if DevelopmentCheckpoint::is_development_task(user_input) {
+            if user_input.eq_ignore_ascii_case("cancelar plano") {
+                checkpoint.set_plan_text(String::new());
+                checkpoint.set_phase(PlanPhase::Planning);
+                self.checkpoint_store.save(&checkpoint)?;
+                return Ok("Plano cancelado. Descreva a nova tarefa para gerar outro plano.".to_string());
+            }
+
             if checkpoint.plan_text.is_empty() {
                 let plan = self.generate_plan(user_input).await?;
                 checkpoint.set_plan_text(plan.clone());
-                checkpoint.set_phase(PlanPhase::AwaitingApproval);
-                self.checkpoint_store.save(&checkpoint)?;
-                return Ok(format!(
-                    "Plano proposto:\n{}\n\nConfirme para executar (responda: aprovar plano)",
-                    plan
-                ));
+                let step_count = self.count_plan_steps(&plan);
+
+                if step_count <= self.config.plan_auto_threshold {
+                    checkpoint.set_phase(PlanPhase::Executing);
+                    self.checkpoint_store.save(&checkpoint)?;
+                } else {
+                    checkpoint.set_phase(PlanPhase::AwaitingApproval);
+                    self.checkpoint_store.save(&checkpoint)?;
+                    return Ok(format!(
+                        "Plano proposto:\n{}\n\nConfirme para executar (responda: aprovar plano)\nOu edite: editar plano: <sua versao>",
+                        plan
+                    ));
+                }
             }
 
             if checkpoint.phase == PlanPhase::AwaitingApproval {
+                if let Some(edited) = user_input.strip_prefix("editar plano:") {
+                    let new_plan = edited.trim().to_string();
+                    if !new_plan.is_empty() {
+                        checkpoint.set_plan_text(new_plan.clone());
+                        let step_count = self.count_plan_steps(&new_plan);
+                        if step_count <= self.config.plan_auto_threshold {
+                            checkpoint.set_phase(PlanPhase::Executing);
+                            self.checkpoint_store.save(&checkpoint)?;
+                        } else {
+                            self.checkpoint_store.save(&checkpoint)?;
+                            return Ok(format!(
+                                "Plano atualizado:\n{}\n\nConfirme para executar (responda: aprovar plano)",
+                                new_plan
+                            ));
+                        }
+                    }
+                }
+
                 if user_input.eq_ignore_ascii_case("aprovar plano") {
                     checkpoint.set_phase(PlanPhase::Executing);
                     self.checkpoint_store.save(&checkpoint)?;
                 } else {
                     return Ok(format!(
-                        "Plano pendente de aprovacao. Responda: aprovar plano\n\n{}",
+                        "Plano pendente de aprovacao. Responda: aprovar plano ou editar plano: <sua versao>\n\n{}",
                         checkpoint.plan_text
                     ));
                 }
@@ -341,6 +373,15 @@ impl Agent {
 
         let response = self.call_llm(&messages).await?;
         Ok(response.trim().to_string())
+    }
+
+    fn count_plan_steps(&self, plan: &str) -> usize {
+        plan.lines()
+            .filter(|line| {
+                let trimmed = line.trim_start();
+                trimmed.starts_with(|c: char| c.is_ascii_digit()) && trimmed.contains(')')
+            })
+            .count()
     }
 
     fn load_checkpoint_messages(&self, checkpoint: &DevelopmentCheckpoint) -> Option<Vec<Value>> {
