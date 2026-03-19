@@ -94,9 +94,21 @@ impl Agent {
                 return Ok("Diretório inválido. Ex: diretorio: /caminho/do/projeto".to_string());
             }
 
+            let path = std::path::Path::new(dir);
+            if !path.exists() {
+                match std::fs::create_dir_all(path) {
+                    Ok(_) => {
+                        info!("Diretório criado: {}", dir);
+                    }
+                    Err(e) => {
+                        return Ok(format!("Erro ao criar diretório {}: {}", dir, e));
+                    }
+                }
+            }
+
             if let Some(mut checkpoint) = self.get_last_active_checkpoint() {
                 checkpoint.set_project_dir(dir.to_string());
-                let plan_path = std::path::Path::new(dir).join("plain.md");
+                let plan_path = path.join("plain.md");
                 checkpoint.set_plan_file(plan_path.to_string_lossy().to_string());
                 self.checkpoint_store.save(&checkpoint)?;
                 return Ok(format!(
@@ -241,6 +253,17 @@ impl Agent {
 
                 if step_count <= self.config.plan_auto_threshold {
                     checkpoint.set_phase(PlanPhase::Executing);
+
+                    if !checkpoint.plan_file.is_empty() {
+                        let plan_path = std::path::Path::new(&checkpoint.plan_file);
+                        let sync_content = format!(
+                            "# Plano de Desenvolvimento\n\n**Tarefa:** {}\n**Status:** Aprovado (auto)\n\n## Passos\n\n{}\n",
+                            checkpoint.user_input,
+                            checkpoint.plan_text
+                        );
+                        let _ = std::fs::write(plan_path, &sync_content);
+                    }
+
                     self.checkpoint_store.save(&checkpoint)?;
                 } else {
                     checkpoint.set_phase(PlanPhase::AwaitingApproval);
@@ -263,6 +286,17 @@ impl Agent {
                         let step_count = self.count_plan_steps(&new_plan);
                         if step_count <= self.config.plan_auto_threshold {
                             checkpoint.set_phase(PlanPhase::Executing);
+
+                            if !checkpoint.plan_file.is_empty() {
+                                let plan_path = std::path::Path::new(&checkpoint.plan_file);
+                                let sync_content = format!(
+                                    "# Plano de Desenvolvimento\n\n**Tarefa:** {}\n**Status:** Aprovado\n\n## Passos\n\n{}\n",
+                                    checkpoint.user_input,
+                                    checkpoint.plan_text
+                                );
+                                let _ = std::fs::write(plan_path, &sync_content);
+                            }
+
                             self.checkpoint_store.save(&checkpoint)?;
                         } else {
                             self.checkpoint_store.save(&checkpoint)?;
@@ -276,6 +310,21 @@ impl Agent {
 
                 if user_input.eq_ignore_ascii_case("aprovar plano") {
                     checkpoint.set_phase(PlanPhase::Executing);
+
+                    if !checkpoint.plan_file.is_empty() && !checkpoint.plan_text.is_empty() {
+                        let plan_path = std::path::Path::new(&checkpoint.plan_file);
+                        let _ = std::fs::create_dir_all(
+                            plan_path.parent().unwrap_or_else(|| std::path::Path::new("."))
+                        );
+                        let sync_content = format!(
+                            "# Plano de Desenvolvimento\n\n**Tarefa:** {}\n**Status:** Aprovado\n\n## Passos\n\n{}\n",
+                            checkpoint.user_input,
+                            checkpoint.plan_text
+                        );
+                        let _ = std::fs::write(plan_path, &sync_content);
+                        info!("Plan synced to: {}", checkpoint.plan_file);
+                    }
+
                     self.checkpoint_store.save(&checkpoint)?;
                 } else {
                     return Ok(format!(
