@@ -31,7 +31,7 @@ impl Config {
         Ok(Self {
             api_key,
             base_url: "https://router.huggingface.co/v1".to_string(),
-            model: "zai-org/GLM-5".to_string(),
+            model: "MiniMaxAI/MiniMax-M2.5:novita".to_string(),
             max_tokens,
             max_iterations,
             tavily_api_key,
