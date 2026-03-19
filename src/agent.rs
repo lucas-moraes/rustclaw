@@ -1,5 +1,5 @@
 use crate::config::Config;
-use crate::memory::checkpoint::{CheckpointStore, DevelopmentCheckpoint, DevelopmentState, ToolExecution};
+use crate::memory::checkpoint::{CheckpointStore, DevelopmentCheckpoint, DevelopmentState, PlanPhase, ToolExecution};
 use crate::memory::embeddings::EmbeddingService;
 use crate::memory::search::{format_memories_for_prompt, search_similar_memories};
 use crate::memory::skill_context::SkillContextStore;
@@ -89,6 +89,31 @@ impl Agent {
 
     pub async fn prompt(&mut self, user_input: &str) -> anyhow::Result<String> {
         let mut checkpoint = self.load_or_create_checkpoint(user_input).await?;
+
+        if DevelopmentCheckpoint::is_development_task(user_input) {
+            if checkpoint.plan_text.is_empty() {
+                let plan = self.generate_plan(user_input).await?;
+                checkpoint.set_plan_text(plan.clone());
+                checkpoint.set_phase(PlanPhase::AwaitingApproval);
+                self.checkpoint_store.save(&checkpoint)?;
+                return Ok(format!(
+                    "Plano proposto:\n{}\n\nConfirme para executar (responda: aprovar plano)",
+                    plan
+                ));
+            }
+
+            if checkpoint.phase == PlanPhase::AwaitingApproval {
+                if user_input.eq_ignore_ascii_case("aprovar plano") {
+                    checkpoint.set_phase(PlanPhase::Executing);
+                    self.checkpoint_store.save(&checkpoint)?;
+                } else {
+                    return Ok(format!(
+                        "Plano pendente de aprovacao. Responda: aprovar plano\n\n{}",
+                        checkpoint.plan_text
+                    ));
+                }
+            }
+        }
 
         // SECURITY: Validate user input
         let validation = SecurityManager::validate_user_input(user_input);
@@ -299,6 +324,23 @@ impl Agent {
         }
 
         Ok(DevelopmentCheckpoint::new(user_input.to_string()))
+    }
+
+    async fn generate_plan(&self, user_input: &str) -> anyhow::Result<String> {
+        let plan_prompt = format!(
+            "Voce e um planejador. Crie um plano em passos numerados, conciso e executavel, para a tarefa abaixo.\n\nTarefa: {}\n\nRegras:\n- Use 5-10 passos\n- Cada passo deve ser uma acao concreta\n- Nao execute nada, apenas planeje\n\nFormato:\n1) ...\n2) ...\n3) ...",
+            user_input
+        );
+
+        let messages = vec![
+            json!({
+                "role": "user",
+                "content": plan_prompt
+            })
+        ];
+
+        let response = self.call_llm(&messages).await?;
+        Ok(response.trim().to_string())
     }
 
     fn load_checkpoint_messages(&self, checkpoint: &DevelopmentCheckpoint) -> Option<Vec<Value>> {

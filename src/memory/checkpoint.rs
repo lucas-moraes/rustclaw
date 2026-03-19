@@ -20,9 +20,42 @@ pub struct DevelopmentCheckpoint {
     pub current_iteration: usize,
     pub messages_json: String,
     pub completed_tools_json: String,
+    pub plan_text: String,
+    pub phase: PlanPhase,
     pub state: DevelopmentState,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum PlanPhase {
+    Planning,
+    AwaitingApproval,
+    Executing,
+    Completed,
+}
+
+impl std::fmt::Display for PlanPhase {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PlanPhase::Planning => write!(f, "planning"),
+            PlanPhase::AwaitingApproval => write!(f, "awaiting_approval"),
+            PlanPhase::Executing => write!(f, "executing"),
+            PlanPhase::Completed => write!(f, "completed"),
+        }
+    }
+}
+
+impl From<&str> for PlanPhase {
+    fn from(s: &str) -> Self {
+        match s {
+            "planning" => PlanPhase::Planning,
+            "awaiting_approval" => PlanPhase::AwaitingApproval,
+            "completed" => PlanPhase::Completed,
+            _ => PlanPhase::Executing,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -77,12 +110,23 @@ impl CheckpointStore {
                 current_iteration INTEGER DEFAULT 0,
                 messages_json TEXT NOT NULL,
                 completed_tools_json TEXT NOT NULL,
+                plan_text TEXT NOT NULL DEFAULT '',
+                phase TEXT NOT NULL DEFAULT 'executing',
                 state TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )",
             [],
         )?;
+
+        let _ = self.conn.execute(
+            "ALTER TABLE checkpoints ADD COLUMN plan_text TEXT NOT NULL DEFAULT ''",
+            [],
+        );
+        let _ = self.conn.execute(
+            "ALTER TABLE checkpoints ADD COLUMN phase TEXT NOT NULL DEFAULT 'executing'",
+            [],
+        );
 
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_checkpoints_state ON checkpoints(state)",
@@ -100,14 +144,16 @@ impl CheckpointStore {
     pub fn save(&self, checkpoint: &DevelopmentCheckpoint) -> SqliteResult<()> {
         self.conn.execute(
             "INSERT OR REPLACE INTO checkpoints 
-             (id, user_input, current_iteration, messages_json, completed_tools_json, state, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+             (id, user_input, current_iteration, messages_json, completed_tools_json, plan_text, phase, state, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 checkpoint.id,
                 checkpoint.user_input,
                 checkpoint.current_iteration,
                 checkpoint.messages_json,
                 checkpoint.completed_tools_json,
+                checkpoint.plan_text,
+                checkpoint.phase.to_string(),
                 checkpoint.state.to_string(),
                 checkpoint.created_at.to_rfc3339(),
                 checkpoint.updated_at.to_rfc3339(),
@@ -118,7 +164,7 @@ impl CheckpointStore {
 
     pub fn get(&self, id: &str) -> SqliteResult<Option<DevelopmentCheckpoint>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, user_input, current_iteration, messages_json, completed_tools_json, state, created_at, updated_at
+            "SELECT id, user_input, current_iteration, messages_json, completed_tools_json, plan_text, phase, state, created_at, updated_at
              FROM checkpoints WHERE id = ?1"
         )?;
 
@@ -133,7 +179,7 @@ impl CheckpointStore {
 
     pub fn get_active(&self) -> SqliteResult<Vec<DevelopmentCheckpoint>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, user_input, current_iteration, messages_json, completed_tools_json, state, created_at, updated_at
+            "SELECT id, user_input, current_iteration, messages_json, completed_tools_json, plan_text, phase, state, created_at, updated_at
              FROM checkpoints WHERE state IN ('in_progress', 'interrupted')
              ORDER BY updated_at DESC"
         )?;
@@ -152,7 +198,7 @@ impl CheckpointStore {
         let search_pattern = format!("%{}%", user_input);
 
         let mut stmt = self.conn.prepare(
-            "SELECT id, user_input, current_iteration, messages_json, completed_tools_json, state, created_at, updated_at
+            "SELECT id, user_input, current_iteration, messages_json, completed_tools_json, plan_text, phase, state, created_at, updated_at
              FROM checkpoints WHERE user_input LIKE ?1 AND state IN ('in_progress', 'interrupted')
              ORDER BY updated_at DESC LIMIT 1"
         )?;
@@ -206,7 +252,8 @@ impl CheckpointStore {
     }
 
     fn row_to_checkpoint(&self, row: &rusqlite::Row) -> SqliteResult<DevelopmentCheckpoint> {
-        let state_str: String = row.get(5)?;
+        let state_str: String = row.get(7)?;
+        let phase_str: String = row.get(6)?;
 
         Ok(DevelopmentCheckpoint {
             id: row.get(0)?,
@@ -214,11 +261,13 @@ impl CheckpointStore {
             current_iteration: row.get(2)?,
             messages_json: row.get(3)?,
             completed_tools_json: row.get(4)?,
+            plan_text: row.get(5)?,
+            phase: PlanPhase::from(phase_str.as_str()),
             state: DevelopmentState::from(state_str.as_str()),
-            created_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(6)?)
+            created_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(8)?)
                 .map(|dt| dt.with_timezone(&Utc))
                 .unwrap_or_else(|_| Utc::now()),
-            updated_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(7)?)
+            updated_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(9)?)
                 .map(|dt| dt.with_timezone(&Utc))
                 .unwrap_or_else(|_| Utc::now()),
         })
@@ -234,6 +283,8 @@ impl DevelopmentCheckpoint {
             current_iteration: 0,
             messages_json: "[]".to_string(),
             completed_tools_json: "[]".to_string(),
+            plan_text: String::new(),
+            phase: PlanPhase::Executing,
             state: DevelopmentState::InProgress,
             created_at: now,
             updated_at: now,
@@ -257,6 +308,16 @@ impl DevelopmentCheckpoint {
 
     pub fn set_state(&mut self, state: DevelopmentState) {
         self.state = state;
+        self.updated_at = Utc::now();
+    }
+
+    pub fn set_phase(&mut self, phase: PlanPhase) {
+        self.phase = phase;
+        self.updated_at = Utc::now();
+    }
+
+    pub fn set_plan_text(&mut self, plan_text: String) {
+        self.plan_text = plan_text;
         self.updated_at = Utc::now();
     }
 
