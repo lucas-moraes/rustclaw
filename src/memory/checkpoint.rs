@@ -21,6 +21,8 @@ pub struct DevelopmentCheckpoint {
     pub messages_json: String,
     pub completed_tools_json: String,
     pub plan_text: String,
+    pub project_dir: String,
+    pub plan_file: String,
     pub phase: PlanPhase,
     pub state: DevelopmentState,
     pub created_at: DateTime<Utc>,
@@ -111,6 +113,8 @@ impl CheckpointStore {
                 messages_json TEXT NOT NULL,
                 completed_tools_json TEXT NOT NULL,
                 plan_text TEXT NOT NULL DEFAULT '',
+                project_dir TEXT NOT NULL DEFAULT '',
+                plan_file TEXT NOT NULL DEFAULT '',
                 phase TEXT NOT NULL DEFAULT 'executing',
                 state TEXT NOT NULL,
                 created_at TEXT NOT NULL,
@@ -121,6 +125,14 @@ impl CheckpointStore {
 
         let _ = self.conn.execute(
             "ALTER TABLE checkpoints ADD COLUMN plan_text TEXT NOT NULL DEFAULT ''",
+            [],
+        );
+        let _ = self.conn.execute(
+            "ALTER TABLE checkpoints ADD COLUMN project_dir TEXT NOT NULL DEFAULT ''",
+            [],
+        );
+        let _ = self.conn.execute(
+            "ALTER TABLE checkpoints ADD COLUMN plan_file TEXT NOT NULL DEFAULT ''",
             [],
         );
         let _ = self.conn.execute(
@@ -144,8 +156,8 @@ impl CheckpointStore {
     pub fn save(&self, checkpoint: &DevelopmentCheckpoint) -> SqliteResult<()> {
         self.conn.execute(
             "INSERT OR REPLACE INTO checkpoints 
-             (id, user_input, current_iteration, messages_json, completed_tools_json, plan_text, phase, state, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+             (id, user_input, current_iteration, messages_json, completed_tools_json, plan_text, project_dir, plan_file, phase, state, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 checkpoint.id,
                 checkpoint.user_input,
@@ -153,6 +165,8 @@ impl CheckpointStore {
                 checkpoint.messages_json,
                 checkpoint.completed_tools_json,
                 checkpoint.plan_text,
+                checkpoint.project_dir,
+                checkpoint.plan_file,
                 checkpoint.phase.to_string(),
                 checkpoint.state.to_string(),
                 checkpoint.created_at.to_rfc3339(),
@@ -164,7 +178,7 @@ impl CheckpointStore {
 
     pub fn get(&self, id: &str) -> SqliteResult<Option<DevelopmentCheckpoint>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, user_input, current_iteration, messages_json, completed_tools_json, plan_text, phase, state, created_at, updated_at
+            "SELECT id, user_input, current_iteration, messages_json, completed_tools_json, plan_text, project_dir, plan_file, phase, state, created_at, updated_at
              FROM checkpoints WHERE id = ?1"
         )?;
 
@@ -179,7 +193,7 @@ impl CheckpointStore {
 
     pub fn get_active(&self) -> SqliteResult<Vec<DevelopmentCheckpoint>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, user_input, current_iteration, messages_json, completed_tools_json, plan_text, phase, state, created_at, updated_at
+            "SELECT id, user_input, current_iteration, messages_json, completed_tools_json, plan_text, project_dir, plan_file, phase, state, created_at, updated_at
              FROM checkpoints WHERE state IN ('in_progress', 'interrupted')
              ORDER BY updated_at DESC"
         )?;
@@ -196,7 +210,7 @@ impl CheckpointStore {
 
     pub fn get_recent_with_plans(&self, limit: usize) -> SqliteResult<Vec<DevelopmentCheckpoint>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, user_input, current_iteration, messages_json, completed_tools_json, plan_text, phase, state, created_at, updated_at
+            "SELECT id, user_input, current_iteration, messages_json, completed_tools_json, plan_text, project_dir, plan_file, phase, state, created_at, updated_at
              FROM checkpoints WHERE plan_text != ''
              ORDER BY updated_at DESC LIMIT ?1"
         )?;
@@ -212,7 +226,7 @@ impl CheckpointStore {
     pub fn find_by_id_prefix(&self, prefix: &str) -> SqliteResult<Option<DevelopmentCheckpoint>> {
         let search_pattern = format!("{}%", prefix);
         let mut stmt = self.conn.prepare(
-            "SELECT id, user_input, current_iteration, messages_json, completed_tools_json, plan_text, phase, state, created_at, updated_at
+            "SELECT id, user_input, current_iteration, messages_json, completed_tools_json, plan_text, project_dir, plan_file, phase, state, created_at, updated_at
              FROM checkpoints WHERE id LIKE ?1
              ORDER BY updated_at DESC LIMIT 1"
         )?;
@@ -229,7 +243,7 @@ impl CheckpointStore {
         let search_pattern = format!("%{}%", user_input);
 
         let mut stmt = self.conn.prepare(
-            "SELECT id, user_input, current_iteration, messages_json, completed_tools_json, plan_text, phase, state, created_at, updated_at
+            "SELECT id, user_input, current_iteration, messages_json, completed_tools_json, plan_text, project_dir, plan_file, phase, state, created_at, updated_at
              FROM checkpoints WHERE user_input LIKE ?1 AND state IN ('in_progress', 'interrupted')
              ORDER BY updated_at DESC LIMIT 1"
         )?;
@@ -283,8 +297,8 @@ impl CheckpointStore {
     }
 
     fn row_to_checkpoint(&self, row: &rusqlite::Row) -> SqliteResult<DevelopmentCheckpoint> {
-        let state_str: String = row.get(7)?;
-        let phase_str: String = row.get(6)?;
+        let state_str: String = row.get(9)?;
+        let phase_str: String = row.get(8)?;
 
         Ok(DevelopmentCheckpoint {
             id: row.get(0)?,
@@ -293,12 +307,14 @@ impl CheckpointStore {
             messages_json: row.get(3)?,
             completed_tools_json: row.get(4)?,
             plan_text: row.get(5)?,
+            project_dir: row.get(6)?,
+            plan_file: row.get(7)?,
             phase: PlanPhase::from(phase_str.as_str()),
             state: DevelopmentState::from(state_str.as_str()),
-            created_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(8)?)
+            created_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(10)?)
                 .map(|dt| dt.with_timezone(&Utc))
                 .unwrap_or_else(|_| Utc::now()),
-            updated_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(9)?)
+            updated_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(11)?)
                 .map(|dt| dt.with_timezone(&Utc))
                 .unwrap_or_else(|_| Utc::now()),
         })
@@ -315,6 +331,8 @@ impl DevelopmentCheckpoint {
             messages_json: "[]".to_string(),
             completed_tools_json: "[]".to_string(),
             plan_text: String::new(),
+            project_dir: String::new(),
+            plan_file: String::new(),
             phase: PlanPhase::Executing,
             state: DevelopmentState::InProgress,
             created_at: now,
@@ -349,6 +367,16 @@ impl DevelopmentCheckpoint {
 
     pub fn set_plan_text(&mut self, plan_text: String) {
         self.plan_text = plan_text;
+        self.updated_at = Utc::now();
+    }
+
+    pub fn set_project_dir(&mut self, project_dir: String) {
+        self.project_dir = project_dir;
+        self.updated_at = Utc::now();
+    }
+
+    pub fn set_plan_file(&mut self, plan_file: String) {
+        self.plan_file = plan_file;
         self.updated_at = Utc::now();
     }
 

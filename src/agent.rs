@@ -88,6 +88,25 @@ impl Agent {
     }
 
     pub async fn prompt(&mut self, user_input: &str) -> anyhow::Result<String> {
+        if let Some(dir) = user_input.strip_prefix("diretorio:") {
+            let dir = dir.trim();
+            if dir.is_empty() {
+                return Ok("Diretório inválido. Ex: diretorio: /caminho/do/projeto".to_string());
+            }
+
+            if let Some(mut checkpoint) = self.get_last_active_checkpoint() {
+                checkpoint.set_project_dir(dir.to_string());
+                let plan_path = std::path::Path::new(dir).join("plain.md");
+                checkpoint.set_plan_file(plan_path.to_string_lossy().to_string());
+                self.checkpoint_store.save(&checkpoint)?;
+                return Ok(format!(
+                    "Diretório salvo: {}\nArquivo de plano: {}",
+                    checkpoint.project_dir, checkpoint.plan_file
+                ));
+            }
+
+            return Ok("Nenhum projeto ativo para associar o diretório.".to_string());
+        }
         if let Some(list_args) = user_input.strip_prefix("listar planos") {
             let limit = list_args
                 .trim()
@@ -109,8 +128,13 @@ impl Agent {
                 let id_short = plan.id.chars().take(8).collect::<String>();
                 let step_count = self.count_plan_steps(&plan.plan_text);
                 output.push_str(&format!(
-                    "- {} | fase: {} | passos: {}\n  tarefa: {}\n",
-                    id_short, plan.phase, step_count, plan.user_input
+                    "- {} | fase: {} | passos: {}\n  tarefa: {}\n  dir: {}\n  plano: {}\n",
+                    id_short,
+                    plan.phase,
+                    step_count,
+                    plan.user_input,
+                    if plan.project_dir.is_empty() { "(nao definido)" } else { plan.project_dir.as_str() },
+                    if plan.plan_file.is_empty() { "(nao definido)" } else { plan.plan_file.as_str() }
                 ));
             }
 
@@ -125,10 +149,12 @@ impl Agent {
 
             if let Ok(Some(plan)) = self.checkpoint_store.find_by_id_prefix(id) {
                 return Ok(format!(
-                    "Plano {}:\nTarefa: {}\nFase: {}\n\n{}",
+                    "Plano {}:\nTarefa: {}\nFase: {}\nDiretorio: {}\nArquivo: {}\n\n{}",
                     plan.id,
                     plan.user_input,
                     plan.phase,
+                    if plan.project_dir.is_empty() { "(nao definido)" } else { plan.project_dir.as_str() },
+                    if plan.plan_file.is_empty() { "(nao definido)" } else { plan.plan_file.as_str() },
                     if plan.plan_text.is_empty() { "(sem plano)" } else { plan.plan_text.as_str() }
                 ));
             }
@@ -186,13 +212,31 @@ impl Agent {
             if user_input.eq_ignore_ascii_case("cancelar plano") {
                 checkpoint.set_plan_text(String::new());
                 checkpoint.set_phase(PlanPhase::Planning);
+                checkpoint.set_project_dir(String::new());
+                checkpoint.set_plan_file(String::new());
                 self.checkpoint_store.save(&checkpoint)?;
                 return Ok("Plano cancelado. Descreva a nova tarefa para gerar outro plano.".to_string());
+            }
+
+            if checkpoint.project_dir.is_empty() {
+                return Ok("Informe o diretório do projeto. Ex: diretorio: /caminho/do/projeto".to_string());
+            }
+
+            if checkpoint.plan_file.is_empty() {
+                let plan_path = std::path::Path::new(&checkpoint.project_dir).join("plain.md");
+                checkpoint.set_plan_file(plan_path.to_string_lossy().to_string());
             }
 
             if checkpoint.plan_text.is_empty() {
                 let plan = self.generate_plan(&task_input).await?;
                 checkpoint.set_plan_text(plan.clone());
+
+                let plan_path = std::path::Path::new(&checkpoint.plan_file);
+                let _ = std::fs::create_dir_all(
+                    plan_path.parent().unwrap_or_else(|| std::path::Path::new("."))
+                );
+                std::fs::write(plan_path, &plan).ok();
+
                 let step_count = self.count_plan_steps(&plan);
 
                 if step_count <= self.config.plan_auto_threshold {
@@ -213,6 +257,9 @@ impl Agent {
                     let new_plan = edited.trim().to_string();
                     if !new_plan.is_empty() {
                         checkpoint.set_plan_text(new_plan.clone());
+                        if !checkpoint.plan_file.is_empty() {
+                            let _ = std::fs::write(&checkpoint.plan_file, &new_plan);
+                        }
                         let step_count = self.count_plan_steps(&new_plan);
                         if step_count <= self.config.plan_auto_threshold {
                             checkpoint.set_phase(PlanPhase::Executing);
