@@ -194,6 +194,37 @@ impl CheckpointStore {
         Ok(checkpoints)
     }
 
+    pub fn get_recent_with_plans(&self, limit: usize) -> SqliteResult<Vec<DevelopmentCheckpoint>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, user_input, current_iteration, messages_json, completed_tools_json, plan_text, phase, state, created_at, updated_at
+             FROM checkpoints WHERE plan_text != ''
+             ORDER BY updated_at DESC LIMIT ?1"
+        )?;
+
+        let rows = stmt.query_map(params![limit as i64], |row| self.row_to_checkpoint(row))?;
+        let mut checkpoints = Vec::new();
+        for checkpoint in rows {
+            checkpoints.push(checkpoint?);
+        }
+        Ok(checkpoints)
+    }
+
+    pub fn find_by_id_prefix(&self, prefix: &str) -> SqliteResult<Option<DevelopmentCheckpoint>> {
+        let search_pattern = format!("{}%", prefix);
+        let mut stmt = self.conn.prepare(
+            "SELECT id, user_input, current_iteration, messages_json, completed_tools_json, plan_text, phase, state, created_at, updated_at
+             FROM checkpoints WHERE id LIKE ?1
+             ORDER BY updated_at DESC LIMIT 1"
+        )?;
+
+        let mut rows = stmt.query(params![search_pattern])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(self.row_to_checkpoint(row)?))
+        } else {
+            Ok(None)
+        }
+    }
+
     pub fn find_by_input(&self, user_input: &str) -> SqliteResult<Option<DevelopmentCheckpoint>> {
         let search_pattern = format!("%{}%", user_input);
 

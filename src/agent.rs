@@ -88,6 +88,53 @@ impl Agent {
     }
 
     pub async fn prompt(&mut self, user_input: &str) -> anyhow::Result<String> {
+        if let Some(list_args) = user_input.strip_prefix("listar planos") {
+            let limit = list_args
+                .trim()
+                .strip_prefix(':')
+                .and_then(|v| v.trim().parse::<usize>().ok())
+                .unwrap_or(5);
+
+            let plans = self
+                .checkpoint_store
+                .get_recent_with_plans(limit)
+                .unwrap_or_default();
+
+            if plans.is_empty() {
+                return Ok("Nenhum plano encontrado.".to_string());
+            }
+
+            let mut output = String::from("Planos salvos:\n\n");
+            for plan in plans {
+                let id_short = plan.id.chars().take(8).collect::<String>();
+                let step_count = self.count_plan_steps(&plan.plan_text);
+                output.push_str(&format!(
+                    "- {} | fase: {} | passos: {}\n  tarefa: {}\n",
+                    id_short, plan.phase, step_count, plan.user_input
+                ));
+            }
+
+            return Ok(output.trim().to_string());
+        }
+
+        if let Some(show_args) = user_input.strip_prefix("mostrar plano") {
+            let id = show_args.trim().trim_start_matches(':').trim();
+            if id.is_empty() {
+                return Ok("Informe o id do plano. Ex: mostrar plano: abc123".to_string());
+            }
+
+            if let Ok(Some(plan)) = self.checkpoint_store.find_by_id_prefix(id) {
+                return Ok(format!(
+                    "Plano {}:\nTarefa: {}\nFase: {}\n\n{}",
+                    plan.id,
+                    plan.user_input,
+                    plan.phase,
+                    if plan.plan_text.is_empty() { "(sem plano)" } else { plan.plan_text.as_str() }
+                ));
+            }
+
+            return Ok("Plano não encontrado.".to_string());
+        }
         if user_input.eq_ignore_ascii_case("status projeto") {
             if let Some(checkpoint) = self.get_last_active_checkpoint() {
                 let step_count = self.count_plan_steps(&checkpoint.plan_text);

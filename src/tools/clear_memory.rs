@@ -1,4 +1,5 @@
 use crate::tools::Tool;
+use crate::memory::store::MemoryStore;
 use serde_json::Value;
 use std::path::Path;
 
@@ -37,13 +38,12 @@ impl Tool for ClearMemoryTool {
             return Ok("Não há memória para limpar".to_string());
         }
 
-        match tokio::fs::remove_file(&self.memory_path).await {
-            Ok(_) => {
-                Ok("Memória limpa com sucesso".to_string())
+        match MemoryStore::new(path) {
+            Ok(store) => {
+                store.clear_all().map_err(|e| format!("Erro ao limpar memória: {}", e))?;
+                Ok("Memória limpa com sucesso (incluindo planos)".to_string())
             }
-            Err(e) => {
-                Err(format!("Erro ao limpar memória: {}", e))
-            }
+            Err(e) => Err(format!("Erro ao acessar banco: {}", e)),
         }
     }
 }

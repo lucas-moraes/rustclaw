@@ -30,6 +30,19 @@ impl MemoryStore {
         Ok(store)
     }
 
+    pub fn clear_all(&self) -> Result<()> {
+        self.conn.execute_batch(
+            r#"
+            DELETE FROM memories;
+            DELETE FROM scheduled_tasks;
+            DELETE FROM reminders;
+            DELETE FROM checkpoints;
+            "#,
+        )?;
+
+        Ok(())
+    }
+
     fn init_schema(&self) -> Result<()> {
         self.conn.execute_batch(
             r#"
