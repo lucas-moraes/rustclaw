@@ -88,21 +88,138 @@ impl Agent {
     }
 
     pub async fn prompt(&mut self, user_input: &str) -> anyhow::Result<String> {
+        // ====== NEW PLAN FLOW ======
+        if user_input.eq_ignore_ascii_case("criar plano") {
+            if let Some(checkpoint) = self.get_last_active_checkpoint() {
+                if checkpoint.phase == PlanPhase::AwaitingIdea
+                    || checkpoint.phase == PlanPhase::AwaitingPlanEdit
+                    || checkpoint.phase == PlanPhase::AwaitingApproval
+                {
+                    return Ok("Já existe um plano em criação. Continue de onde parou.".to_string());
+                }
+            }
+
+            let mut checkpoint = DevelopmentCheckpoint::new("criar plano".to_string());
+            checkpoint.set_phase(PlanPhase::AwaitingDir);
+            checkpoint.set_project_dir(String::new());
+            checkpoint.set_plan_file(String::new());
+            self.checkpoint_store.save(&checkpoint)?;
+            return Ok("📁 Informe o diretório do projeto:\nEx: /Users/macbook/projects/meu-projeto".to_string());
+        }
+
+        // Handle plan flow based on current phase
+        if let Some(mut checkpoint) = self.get_last_active_checkpoint() {
+            match checkpoint.phase {
+                PlanPhase::AwaitingDir => {
+                    let dir = user_input.trim();
+                    if dir.is_empty() {
+                        return Ok("Diretório inválido. Informe o caminho do diretório.".to_string());
+                    }
+
+                    let path = std::path::Path::new(dir);
+                    if !path.exists() {
+                        if let Err(e) = std::fs::create_dir_all(path) {
+                            return Ok(format!("Erro ao criar diretório: {}", e));
+                        }
+                    }
+
+                    checkpoint.set_project_dir(dir.to_string());
+                    let plan_path = path.join("plain.md");
+                    checkpoint.set_plan_file(plan_path.to_string_lossy().to_string());
+                    checkpoint.set_phase(PlanPhase::AwaitingIdea);
+                    self.checkpoint_store.save(&checkpoint)?;
+
+                    return Ok(format!(
+                        "✅ Diretório salvo: {}\n\n💡 Agora descreva a ideia do projeto:\nEx: Um site de tarefas com Rust e React",
+                        dir
+                    ));
+                }
+
+                PlanPhase::AwaitingIdea => {
+                    let idea = user_input.trim();
+                    if idea.is_empty() {
+                        return Ok("Idea inválida. Descreva o que deseja desenvolver.".to_string());
+                    }
+
+                    checkpoint.set_plan_text(idea.to_string());
+                    checkpoint.set_phase(PlanPhase::AwaitingPlanEdit);
+                    self.checkpoint_store.save(&checkpoint)?;
+
+                    let plan = self.generate_plan(idea).await?;
+                    checkpoint.set_plan_text(plan.clone());
+                    checkpoint.set_phase(PlanPhase::AwaitingApproval);
+                    checkpoint.set_plan_text(plan.clone());
+
+                    let plan_path = std::path::Path::new(&checkpoint.plan_file);
+                    let _ = std::fs::create_dir_all(plan_path.parent().unwrap_or(std::path::Path::new(".")));
+                    let plan_content = format!(
+                        "# Plano de Desenvolvimento\n\n**Ideia:** {}\n**Status:** Pendente de aprovação\n\n## Passos\n\n{}\n\n---\n*Edite o plano acima como desejar, depois digite: sincronizar plano",
+                        idea, plan
+                    );
+                    let _ = std::fs::write(&checkpoint.plan_file, &plan_content);
+
+                    self.checkpoint_store.save(&checkpoint)?;
+
+                    return Ok(format!(
+                        "✅ Plano criado em: {}\n\n{}\n\n📝 Edite o arquivo acima como desejar.\nQuando pronto, digite: sincronizar plano",
+                        checkpoint.plan_file,
+                        plan
+                    ));
+                }
+
+                PlanPhase::AwaitingApproval | PlanPhase::AwaitingPlanEdit => {
+                    if user_input.eq_ignore_ascii_case("sincronizar plano")
+                        || user_input.eq_ignore_ascii_case("aprovar plano")
+                    {
+                        if !checkpoint.plan_file.is_empty() && std::path::Path::new(&checkpoint.plan_file).exists() {
+                            if let Ok(content) = std::fs::read_to_string(&checkpoint.plan_file) {
+                                if let Some(steps_start) = content.find("## Passos\n\n") {
+                                    if let Some(steps_end) = content[steps_start..].find("\n\n---") {
+                                        let steps = &content[steps_start + 10..steps_start + steps_end];
+                                        checkpoint.set_plan_text(steps.to_string());
+                                    }
+                                }
+                            }
+                        }
+
+                        checkpoint.set_phase(PlanPhase::Executing);
+
+                        if !checkpoint.plan_file.is_empty() {
+                            let idea = checkpoint.plan_text.lines()
+                                .find(|l| l.starts_with("**Ideia:**"))
+                                .map(|l| l.replace("**Ideia:**", "").trim().to_string())
+                                .unwrap_or_default();
+                            let plan_content = format!(
+                                "# Plano de Desenvolvimento\n\n**Ideia:** {}\n**Status:** ✅ Aprovado\n\n## Passos\n\n{}\n\n---\n*Plano aprovado e em execução*",
+                                idea, checkpoint.plan_text
+                            );
+                            let _ = std::fs::write(&checkpoint.plan_file, &plan_content);
+                        }
+
+                        self.checkpoint_store.save(&checkpoint)?;
+                        let step_count = self.count_plan_steps(&checkpoint.plan_text);
+                        return Ok(format!(
+                            "✅ Plano aprovado!\n\nPlano: {}\n\nIniciando desenvolvimento...",
+                            checkpoint.plan_text
+                        ));
+                    }
+                }
+
+                _ => {}
+            }
+        }
+
+        // ====== LEGACY COMMANDS ======
         if let Some(dir) = user_input.strip_prefix("diretorio:") {
             let dir = dir.trim();
             if dir.is_empty() {
-                return Ok("Diretório inválido. Ex: diretorio: /caminho/do/projeto".to_string());
+                return Ok("Diretório inválido.".to_string());
             }
 
             let path = std::path::Path::new(dir);
             if !path.exists() {
-                match std::fs::create_dir_all(path) {
-                    Ok(_) => {
-                        info!("Diretório criado: {}", dir);
-                    }
-                    Err(e) => {
-                        return Ok(format!("Erro ao criar diretório {}: {}", dir, e));
-                    }
+                if let Err(e) = std::fs::create_dir_all(path) {
+                    return Ok(format!("Erro ao criar diretório: {}", e));
                 }
             }
 
@@ -111,13 +228,10 @@ impl Agent {
                 let plan_path = path.join("plain.md");
                 checkpoint.set_plan_file(plan_path.to_string_lossy().to_string());
                 self.checkpoint_store.save(&checkpoint)?;
-                return Ok(format!(
-                    "Diretório salvo: {}\nArquivo de plano: {}",
-                    checkpoint.project_dir, checkpoint.plan_file
-                ));
+                return Ok(format!("Diretório salvo: {}", checkpoint.project_dir));
             }
 
-            return Ok("Nenhum projeto ativo para associar o diretório.".to_string());
+            return Ok("Nenhum projeto ativo.".to_string());
         }
         if let Some(list_args) = user_input.strip_prefix("listar planos") {
             let limit = list_args
@@ -223,115 +337,24 @@ impl Agent {
         if DevelopmentCheckpoint::is_development_task(&task_input) {
             if user_input.eq_ignore_ascii_case("cancelar plano") {
                 checkpoint.set_plan_text(String::new());
-                checkpoint.set_phase(PlanPhase::Planning);
+                checkpoint.set_phase(PlanPhase::AwaitingDir);
                 checkpoint.set_project_dir(String::new());
                 checkpoint.set_plan_file(String::new());
                 self.checkpoint_store.save(&checkpoint)?;
-                return Ok("Plano cancelado. Descreva a nova tarefa para gerar outro plano.".to_string());
+                return Ok("Plano cancelado. Digite 'criar plano' para iniciar um novo.".to_string());
             }
 
-            if checkpoint.project_dir.is_empty() {
-                return Ok("Informe o diretório do projeto. Ex: diretorio: /caminho/do/projeto".to_string());
-            }
-
-            if checkpoint.plan_file.is_empty() {
-                let plan_path = std::path::Path::new(&checkpoint.project_dir).join("plain.md");
-                checkpoint.set_plan_file(plan_path.to_string_lossy().to_string());
-            }
-
-            if checkpoint.plan_text.is_empty() {
-                let plan = self.generate_plan(&task_input).await?;
-                checkpoint.set_plan_text(plan.clone());
-
-                let plan_path = std::path::Path::new(&checkpoint.plan_file);
-                let _ = std::fs::create_dir_all(
-                    plan_path.parent().unwrap_or_else(|| std::path::Path::new("."))
-                );
-                std::fs::write(plan_path, &plan).ok();
-
-                let step_count = self.count_plan_steps(&plan);
-
-                if step_count <= self.config.plan_auto_threshold {
-                    checkpoint.set_phase(PlanPhase::Executing);
-
-                    if !checkpoint.plan_file.is_empty() {
-                        let plan_path = std::path::Path::new(&checkpoint.plan_file);
-                        let sync_content = format!(
-                            "# Plano de Desenvolvimento\n\n**Tarefa:** {}\n**Status:** Aprovado (auto)\n\n## Passos\n\n{}\n",
-                            checkpoint.user_input,
-                            checkpoint.plan_text
-                        );
-                        let _ = std::fs::write(plan_path, &sync_content);
-                    }
-
-                    self.checkpoint_store.save(&checkpoint)?;
-                } else {
-                    checkpoint.set_phase(PlanPhase::AwaitingApproval);
-                    self.checkpoint_store.save(&checkpoint)?;
-                    return Ok(format!(
-                        "Plano proposto:\n{}\n\nConfirme para executar (responda: aprovar plano)\nOu edite: editar plano: <sua versao>",
-                        plan
-                    ));
+            if checkpoint.phase != PlanPhase::Executing {
+                if checkpoint.phase == PlanPhase::AwaitingDir {
+                    return Ok("Inicie um novo plano com: criar plano".to_string());
                 }
-            }
-
-            if checkpoint.phase == PlanPhase::AwaitingApproval {
-                if let Some(edited) = user_input.strip_prefix("editar plano:") {
-                    let new_plan = edited.trim().to_string();
-                    if !new_plan.is_empty() {
-                        checkpoint.set_plan_text(new_plan.clone());
-                        if !checkpoint.plan_file.is_empty() {
-                            let _ = std::fs::write(&checkpoint.plan_file, &new_plan);
-                        }
-                        let step_count = self.count_plan_steps(&new_plan);
-                        if step_count <= self.config.plan_auto_threshold {
-                            checkpoint.set_phase(PlanPhase::Executing);
-
-                            if !checkpoint.plan_file.is_empty() {
-                                let plan_path = std::path::Path::new(&checkpoint.plan_file);
-                                let sync_content = format!(
-                                    "# Plano de Desenvolvimento\n\n**Tarefa:** {}\n**Status:** Aprovado\n\n## Passos\n\n{}\n",
-                                    checkpoint.user_input,
-                                    checkpoint.plan_text
-                                );
-                                let _ = std::fs::write(plan_path, &sync_content);
-                            }
-
-                            self.checkpoint_store.save(&checkpoint)?;
-                        } else {
-                            self.checkpoint_store.save(&checkpoint)?;
-                            return Ok(format!(
-                                "Plano atualizado:\n{}\n\nConfirme para executar (responda: aprovar plano)",
-                                new_plan
-                            ));
-                        }
-                    }
+                if checkpoint.phase == PlanPhase::AwaitingIdea {
+                    return Ok("Aguarde... descrevendo a ideia do projeto.".to_string());
                 }
-
-                if user_input.eq_ignore_ascii_case("aprovar plano") {
-                    checkpoint.set_phase(PlanPhase::Executing);
-
-                    if !checkpoint.plan_file.is_empty() && !checkpoint.plan_text.is_empty() {
-                        let plan_path = std::path::Path::new(&checkpoint.plan_file);
-                        let _ = std::fs::create_dir_all(
-                            plan_path.parent().unwrap_or_else(|| std::path::Path::new("."))
-                        );
-                        let sync_content = format!(
-                            "# Plano de Desenvolvimento\n\n**Tarefa:** {}\n**Status:** Aprovado\n\n## Passos\n\n{}\n",
-                            checkpoint.user_input,
-                            checkpoint.plan_text
-                        );
-                        let _ = std::fs::write(plan_path, &sync_content);
-                        info!("Plan synced to: {}", checkpoint.plan_file);
-                    }
-
-                    self.checkpoint_store.save(&checkpoint)?;
-                } else {
-                    return Ok(format!(
-                        "Plano pendente de aprovacao. Responda: aprovar plano ou editar plano: <sua versao>\n\n{}",
-                        checkpoint.plan_text
-                    ));
-                }
+                return Ok(format!(
+                    "Plano em '{}'. Digite 'sincronizar plano' quando terminar de editar.",
+                    checkpoint.phase
+                ));
             }
         }
 

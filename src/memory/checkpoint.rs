@@ -32,7 +32,9 @@ pub struct DevelopmentCheckpoint {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum PlanPhase {
-    Planning,
+    AwaitingDir,
+    AwaitingIdea,
+    AwaitingPlanEdit,
     AwaitingApproval,
     Executing,
     Completed,
@@ -41,7 +43,9 @@ pub enum PlanPhase {
 impl std::fmt::Display for PlanPhase {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            PlanPhase::Planning => write!(f, "planning"),
+            PlanPhase::AwaitingDir => write!(f, "awaiting_dir"),
+            PlanPhase::AwaitingIdea => write!(f, "awaiting_idea"),
+            PlanPhase::AwaitingPlanEdit => write!(f, "awaiting_plan_edit"),
             PlanPhase::AwaitingApproval => write!(f, "awaiting_approval"),
             PlanPhase::Executing => write!(f, "executing"),
             PlanPhase::Completed => write!(f, "completed"),
@@ -52,10 +56,12 @@ impl std::fmt::Display for PlanPhase {
 impl From<&str> for PlanPhase {
     fn from(s: &str) -> Self {
         match s {
-            "planning" => PlanPhase::Planning,
+            "awaiting_dir" => PlanPhase::AwaitingDir,
+            "awaiting_idea" => PlanPhase::AwaitingIdea,
+            "awaiting_plan_edit" => PlanPhase::AwaitingPlanEdit,
             "awaiting_approval" => PlanPhase::AwaitingApproval,
             "completed" => PlanPhase::Completed,
-            _ => PlanPhase::Executing,
+            _ => PlanPhase::AwaitingDir,
         }
     }
 }
