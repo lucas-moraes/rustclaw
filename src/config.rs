@@ -42,7 +42,7 @@ impl Config {
 
         Ok(Self {
             api_key,
-            base_url: "https://api.moonshot.cn/v1".to_string(),
+            base_url: "https://api.moonshot.ai/v1".to_string(),
             model: "kimi-k2-thinking".to_string(),
             max_tokens,
             max_iterations,
