@@ -1240,9 +1240,26 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
     async fn call_llm(&self, messages: &[Value]) -> anyhow::Result<String> {
         let url = format!("{}/chat/completions", self.config.base_url);
 
+        // Filter out messages with empty content to avoid API errors
+        let filtered_messages: Vec<Value> = messages
+            .iter()
+            .filter(|m| {
+                if let Some(content) = m["content"].as_str() {
+                    !content.trim().is_empty()
+                } else {
+                    false
+                }
+            })
+            .cloned()
+            .collect();
+
+        if filtered_messages.is_empty() {
+            return Err(anyhow::anyhow!("No valid messages to send to API"));
+        }
+
         let body = json!({
             "model": self.config.model,
-            "messages": messages,
+            "messages": filtered_messages,
             "max_tokens": self.config.max_tokens,
             "temperature": 0.7
         });
@@ -1263,9 +1280,22 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
 
         let json_response: Value = response.json().await?;
 
-        let content = json_response["choices"][0]["message"]["content"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("Invalid response format from API"))?;
+        let message = &json_response["choices"][0]["message"];
+        
+        // Try to get content, fallback to reasoning_content for thinking models
+        let content = if let Some(c) = message["content"].as_str() {
+            if !c.is_empty() {
+                c
+            } else if let Some(r) = message["reasoning_content"].as_str() {
+                r
+            } else {
+                return Err(anyhow::anyhow!("Empty response from API"));
+            }
+        } else if let Some(r) = message["reasoning_content"].as_str() {
+            r
+        } else {
+            return Err(anyhow::anyhow!("Invalid response format from API"));
+        };
 
         // Strip system-reminder blocks from LLM output
         let reminder_re = Regex::new(r"(?is)<system-reminder>.*?</system-reminder>").unwrap();
