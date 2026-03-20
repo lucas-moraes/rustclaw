@@ -11,6 +11,8 @@ use crate::skills::prompt_builder::SkillPromptBuilder;
 use crate::tools::ToolRegistry;
 use crate::utils::output::{OutputManager, OutputSink};
 use crate::utils::tmux::TmuxManager;
+use crate::utils::build_detector::BuildDetector;
+use crate::utils::error_parser::{ErrorParser, BuildValidation};
 use regex::Regex;
 use reqwest::Client;
 use serde_json::{json, Value};
@@ -88,6 +90,78 @@ impl Agent {
     }
 
     pub async fn prompt(&mut self, user_input: &str) -> anyhow::Result<String> {
+        // ====== AUTO LOOP COMMAND ======
+        if user_input.to_lowercase().starts_with("auto loop:") 
+            || user_input.to_lowercase().starts_with("iniciar loop:") 
+            || user_input.to_lowercase().starts_with("dev loop:") {
+            
+            // Extrai a tarefa após o comando
+            let task = if let Some(idx) = user_input.find(':') {
+                user_input[idx + 1..].trim()
+            } else {
+                return Ok("Formato: auto loop: <tarefa>".to_string());
+            };
+            
+            if task.is_empty() {
+                return Ok("Informe a tarefa. Ex: auto loop: implementar autenticação JWT".to_string());
+            }
+            
+            // Verifica se tem um checkpoint ativo com project_dir
+            let checkpoint = if let Some(mut cp) = self.get_last_active_checkpoint() {
+                if cp.project_dir.is_empty() {
+                    return Ok("⚠️  Nenhum diretório de projeto configurado. Use 'criar plano' primeiro ou defina o diretório.".to_string());
+                }
+                cp.set_auto_loop(true);
+                cp.reset_retry();
+                cp
+            } else {
+                return Ok("⚠️  Nenhum projeto ativo. Use 'criar plano' primeiro para definir o diretório.".to_string());
+            };
+            
+            info!("🔄 Auto loop iniciado: {}", task);
+            return self.run_development(task.to_string(), checkpoint).await;
+        }
+        
+        // Comandos para ativar/desativar loop em checkpoint existente
+        if user_input.eq_ignore_ascii_case("ativar loop") || user_input.eq_ignore_ascii_case("enable loop") {
+            if let Some(mut checkpoint) = self.get_last_active_checkpoint() {
+                checkpoint.set_auto_loop(true);
+                self.checkpoint_store.save(&checkpoint)?;
+                return Ok("🔄 Auto loop ativado! O sistema validará o build após cada ação.".to_string());
+            }
+            return Ok("Nenhum projeto ativo.".to_string());
+        }
+        
+        if user_input.eq_ignore_ascii_case("desativar loop") || user_input.eq_ignore_ascii_case("disable loop") {
+            if let Some(mut checkpoint) = self.get_last_active_checkpoint() {
+                checkpoint.set_auto_loop(false);
+                self.checkpoint_store.save(&checkpoint)?;
+                return Ok("⏸️  Auto loop desativado.".to_string());
+            }
+            return Ok("Nenhum projeto ativo.".to_string());
+        }
+        
+        if user_input.eq_ignore_ascii_case("status loop") {
+            if let Some(checkpoint) = self.get_last_active_checkpoint() {
+                let status = if checkpoint.auto_loop_enabled {
+                    format!("🔄 Auto loop: ATIVADO\n📂 Diretório: {}\n🔢 Tentativas: {}/{}\n{}",
+                        checkpoint.project_dir,
+                        checkpoint.retry_count,
+                        self.config.max_retries,
+                        if let Some(err) = &checkpoint.last_error {
+                            format!("⚠️  Último erro:\n{}", err)
+                        } else {
+                            "✅ Nenhum erro recente".to_string()
+                        }
+                    )
+                } else {
+                    "⏸️  Auto loop: DESATIVADO".to_string()
+                };
+                return Ok(status);
+            }
+            return Ok("Nenhum projeto ativo.".to_string());
+        }
+        
         // ====== NEW PLAN FLOW ======
         if user_input.eq_ignore_ascii_case("criar plano") {
             if let Some(checkpoint) = self.get_last_active_checkpoint() {
@@ -679,6 +753,66 @@ impl Agent {
                     }));
 
                     self.save_checkpoint(&mut checkpoint, &current_messages, &[tool_execution])?;
+
+                    // AUTO LOOP: Valida build se habilitado
+                    if checkpoint.auto_loop_enabled && !checkpoint.project_dir.is_empty() {
+                        info!("Auto loop enabled, validating build...");
+                        
+                        match self.validate_build(&checkpoint.project_dir).await? {
+                            BuildValidation::Success => {
+                                info!("✅ Build passed!");
+                                checkpoint.reset_retry();
+                                
+                                // Adiciona feedback positivo ao LLM
+                                current_messages.push(json!({
+                                    "role": "system",
+                                    "content": "✅ Build passou com sucesso! Continue com a próxima ação ou finalize se tudo estiver pronto."
+                                }));
+                            }
+                            BuildValidation::Failed { errors } => {
+                                checkpoint.increment_retry();
+                                let error_msg = format!(
+                                    "❌ Build falhou com {} erro(s):\n\n{}",
+                                    errors.len(),
+                                    errors.iter()
+                                        .enumerate()
+                                        .map(|(i, e)| format!("{}. {}", i + 1, e))
+                                        .collect::<Vec<_>>()
+                                        .join("\n")
+                                );
+                                
+                                checkpoint.set_last_error(error_msg.clone());
+                                info!("❌ Build failed with {} errors (retry {}/{})", 
+                                      errors.len(), checkpoint.retry_count, self.config.max_retries);
+                                
+                                if checkpoint.should_retry(self.config.max_retries) {
+                                    // Adiciona feedback de erro ao LLM para corrigir
+                                    current_messages.push(json!({
+                                        "role": "system",
+                                        "content": format!(
+                                            "{}\n\n🔧 Por favor, corrija estes erros e execute as ações necessárias. Tentativa {}/{}", 
+                                            error_msg, checkpoint.retry_count, self.config.max_retries
+                                        )
+                                    }));
+                                } else {
+                                    // Máximo de retries atingido
+                                    let failure_msg = format!(
+                                        "❌ Máximo de {} tentativas atingido. Último erro:\n\n{}",
+                                        self.config.max_retries, error_msg
+                                    );
+                                    
+                                    self.finalize_checkpoint(
+                                        &mut checkpoint, 
+                                        DevelopmentState::Failed, 
+                                        &current_messages, 
+                                        &[]
+                                    )?;
+                                    
+                                    return Ok(failure_msg);
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -887,6 +1021,37 @@ impl Agent {
 
         let response = self.call_llm(&messages).await?;
         Ok(response.trim().to_string())
+    }
+
+    /// Valida o build do projeto no diretório especificado
+    async fn validate_build(&mut self, project_dir: &str) -> anyhow::Result<BuildValidation> {
+        // Detecta tipo de projeto e comando de build
+        let build_info = BuildDetector::detect(project_dir);
+        
+        if build_info.build_command.is_empty() {
+            info!("No build command detected for {}, skipping validation", project_dir);
+            return Ok(BuildValidation::Success);
+        }
+        
+        info!("Running build command: {} in {}", build_info.build_command, project_dir);
+        
+        // Executa o comando de build via shell tool
+        let build_result = self.execute_tool("shell", &build_info.build_command).await?;
+        
+        // Verifica se o build foi bem-sucedido através do status code
+        let success = !build_result.contains("❌ Erro");
+        
+        if success {
+            info!("Build successful for {}", project_dir);
+            return Ok(BuildValidation::Success);
+        }
+        
+        // Se falhou, parseia os erros
+        info!("Build failed, parsing errors...");
+        let project_type = format!("{:?}", build_info.project_type);
+        let validation = ErrorParser::parse(&build_result, &project_type);
+        
+        Ok(validation)
     }
 
     fn count_plan_steps(&self, plan: &str) -> usize {

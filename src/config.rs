@@ -8,6 +8,7 @@ pub struct Config {
     pub max_tokens: usize,
     pub max_iterations: usize,
     pub plan_auto_threshold: usize,
+    pub max_retries: usize,
     pub tavily_api_key: Option<String>,
     pub timezone: String,
 }
@@ -34,6 +35,11 @@ impl Config {
             .and_then(|value| value.parse::<usize>().ok())
             .unwrap_or(4);
 
+        let max_retries = std::env::var("MAX_RETRIES")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(5);
+
         Ok(Self {
             api_key,
             base_url: "https://router.huggingface.co/v1".to_string(),
@@ -41,6 +47,7 @@ impl Config {
             max_tokens,
             max_iterations,
             plan_auto_threshold,
+            max_retries,
             tavily_api_key,
             timezone,
         })

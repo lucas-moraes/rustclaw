@@ -27,6 +27,9 @@ pub struct DevelopmentCheckpoint {
     pub state: DevelopmentState,
     pub current_step: usize,
     pub completed_steps: Vec<usize>,
+    pub retry_count: usize,         // NEW: número de tentativas no step atual
+    pub last_error: Option<String>, // NEW: último erro encontrado
+    pub auto_loop_enabled: bool,    // NEW: se está em modo auto loop
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -321,6 +324,9 @@ impl CheckpointStore {
             state: DevelopmentState::from(state_str.as_str()),
             current_step: 0,
             completed_steps: vec![],
+            retry_count: 0,
+            last_error: None,
+            auto_loop_enabled: false,
             created_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(10)?)
                 .map(|dt| dt.with_timezone(&Utc))
                 .unwrap_or_else(|_| Utc::now()),
@@ -347,6 +353,9 @@ impl DevelopmentCheckpoint {
             state: DevelopmentState::InProgress,
             current_step: 0,
             completed_steps: vec![],
+            retry_count: 0,
+            last_error: None,
+            auto_loop_enabled: false,
             created_at: now,
             updated_at: now,
         }
@@ -493,6 +502,28 @@ impl DevelopmentCheckpoint {
 
     pub fn is_plan_mode(&self) -> bool {
         self.phase == PlanPhase::Executing && !self.plan_text.is_empty()
+    }
+
+    // Auto loop methods
+    pub fn set_auto_loop(&mut self, enabled: bool) {
+        self.auto_loop_enabled = enabled;
+    }
+
+    pub fn increment_retry(&mut self) {
+        self.retry_count += 1;
+    }
+
+    pub fn reset_retry(&mut self) {
+        self.retry_count = 0;
+        self.last_error = None;
+    }
+
+    pub fn set_last_error(&mut self, error: String) {
+        self.last_error = Some(error);
+    }
+
+    pub fn should_retry(&self, max_retries: usize) -> bool {
+        self.retry_count < max_retries
     }
 }
 

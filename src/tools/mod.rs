@@ -99,6 +99,7 @@ mod tests {
             max_tokens: 100,
             max_iterations: 2,
             plan_auto_threshold: 4,
+            max_retries: 5,
             tavily_api_key: None,
             timezone: "America/Sao_Paulo".to_string(),
         }
