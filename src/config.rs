@@ -15,8 +15,8 @@ pub struct Config {
 
 impl Config {
     pub fn from_env() -> anyhow::Result<Self> {
-        let api_key = std::env::var("HF_TOKEN")
-            .map_err(|_| anyhow::anyhow!("HF_TOKEN environment variable not set"))?;
+        let api_key = std::env::var("MOONSHOT_API_KEY")
+            .map_err(|_| anyhow::anyhow!("MOONSHOT_API_KEY environment variable not set"))?;
 
         let tavily_api_key = std::env::var("TAVILY_API_KEY").ok();
         let timezone = std::env::var("TZ").unwrap_or_else(|_| "America/Sao_Paulo".to_string());
@@ -42,8 +42,8 @@ impl Config {
 
         Ok(Self {
             api_key,
-            base_url: "https://router.huggingface.co/v1".to_string(),
-            model: "moonshotai/Kimi-K2-Thinking".to_string(),
+            base_url: "https://api.moonshot.cn/v1".to_string(),
+            model: "kimi-k2-thinking".to_string(),
             max_tokens,
             max_iterations,
             plan_auto_threshold,
