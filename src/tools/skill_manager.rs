@@ -362,7 +362,7 @@ impl Tool for SkillEditTool {
     }
 
     fn description(&self) -> &str {
-        "Lê conteúdo de uma skill para edição. Input: { \"name\": \"minha-skill\" }"
+        "Edita o conteúdo de uma skill. Input: { \"name\": \"minha-skill\", \"content\": \"...\" }"
     }
 
     async fn call(&self, args: Value) -> Result<String, String> {
@@ -376,14 +376,19 @@ impl Tool for SkillEditTool {
             return Err(format!("Skill '{}' não encontrada", name));
         }
 
+        if let Some(content) = args["content"].as_str() {
+            fs::write(&skill_file, content)
+                .map_err(|e| format!("Erro ao salvar skill: {}", e))?;
+            return Ok(format!("Skill '{}' atualizada com sucesso", name));
+        }
+
         let content = fs::read_to_string(&skill_file)
             .map_err(|e| format!("Erro ao ler arquivo: {}", e))?;
 
         Ok(format!(
-            "Conteúdo atual da skill '{}':\n\n```markdown\n{}\n```\n\nPara editar, use file_write com o caminho: {}",
+            "Conteúdo atual da skill '{}':\n\n```markdown\n{}\n```\n\nPara editar, use skill_edit com o parâmetro 'content'.",
             name,
-            content,
-            skill_file.display()
+            content
         ))
     }
 }

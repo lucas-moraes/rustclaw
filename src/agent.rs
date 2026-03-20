@@ -116,23 +116,37 @@ impl Agent {
                         return Ok("Diretório inválido. Informe o caminho do diretório.".to_string());
                     }
 
-                    let path = std::path::Path::new(dir);
-                    if !path.exists() {
-                        if let Err(e) = std::fs::create_dir_all(path) {
-                            return Ok(format!("Erro ao criar diretório: {}", e));
+                    // If it looks like a path (starts with / or contains common path chars), treat as directory
+                    let looks_like_path = dir.starts_with('/') 
+                        || dir.starts_with('.') 
+                        || dir.contains("Users") 
+                        || dir.contains("home")
+                        || dir.contains("project")
+                        || dir.contains("src")
+                        || dir.contains("C:\\")
+                        || dir.contains("D:\\");
+
+                    if looks_like_path {
+                        let path = std::path::Path::new(dir);
+                        if !path.exists() {
+                            if let Err(e) = std::fs::create_dir_all(path) {
+                                return Ok(format!("Erro ao criar diretório: {}", e));
+                            }
                         }
+
+                        checkpoint.set_project_dir(dir.to_string());
+                        let plan_path = path.join("plain.md");
+                        checkpoint.set_plan_file(plan_path.to_string_lossy().to_string());
+                        checkpoint.set_phase(PlanPhase::AwaitingIdea);
+                        self.checkpoint_store.save(&checkpoint)?;
+
+                        return Ok(format!(
+                            "✅ Diretório salvo: {}\n\n💡 Agora descreva a ideia do projeto:\nEx: Um site de tarefas com Rust e React",
+                            dir
+                        ));
                     }
 
-                    checkpoint.set_project_dir(dir.to_string());
-                    let plan_path = path.join("plain.md");
-                    checkpoint.set_plan_file(plan_path.to_string_lossy().to_string());
-                    checkpoint.set_phase(PlanPhase::AwaitingIdea);
-                    self.checkpoint_store.save(&checkpoint)?;
-
-                    return Ok(format!(
-                        "✅ Diretório salvo: {}\n\n💡 Agora descreva a ideia do projeto:\nEx: Um site de tarefas com Rust e React",
-                        dir
-                    ));
+                    // Not a path — fall through to normal chat
                 }
 
                 PlanPhase::AwaitingIdea => {
@@ -141,68 +155,114 @@ impl Agent {
                         return Ok("Idea inválida. Descreva o que deseja desenvolver.".to_string());
                     }
 
-                    checkpoint.set_plan_text(idea.to_string());
-                    checkpoint.set_phase(PlanPhase::AwaitingPlanEdit);
-                    self.checkpoint_store.save(&checkpoint)?;
+                    // Only accept as idea if it looks like a project description
+                    // (at least 5 words, or contains keywords like criar, site, app, etc.)
+                    let word_count = idea.split_whitespace().count();
+                    let dev_keywords = ["criar", "site", "app", "aplicativo", "projeto", "sistema", "api", "build", "make", "desenvolver", "implementar", "construir", "funcionalidade", "feature"];
+                    let looks_like_idea = word_count >= 5 || dev_keywords.iter().any(|kw| idea.to_lowercase().contains(kw));
 
-                    let plan = self.generate_plan(idea).await?;
-                    checkpoint.set_plan_text(plan.clone());
-                    checkpoint.set_phase(PlanPhase::AwaitingApproval);
-                    checkpoint.set_plan_text(plan.clone());
+                    if looks_like_idea {
+                        checkpoint.set_plan_text(idea.to_string());
+                        checkpoint.set_phase(PlanPhase::AwaitingPlanEdit);
+                        self.checkpoint_store.save(&checkpoint)?;
 
-                    let plan_path = std::path::Path::new(&checkpoint.plan_file);
-                    let _ = std::fs::create_dir_all(plan_path.parent().unwrap_or(std::path::Path::new(".")));
-                    let plan_content = format!(
-                        "# Plano de Desenvolvimento\n\n**Ideia:** {}\n**Status:** Pendente de aprovação\n\n## Passos\n\n{}\n\n---\n*Edite o plano acima como desejar, depois digite: sincronizar plano",
-                        idea, plan
-                    );
-                    let _ = std::fs::write(&checkpoint.plan_file, &plan_content);
+                        let plan = self.generate_plan(idea).await?;
+                        checkpoint.set_plan_text(plan.clone());
+                        checkpoint.set_phase(PlanPhase::AwaitingApproval);
+                        checkpoint.set_plan_text(plan.clone());
 
-                    self.checkpoint_store.save(&checkpoint)?;
+                        let plan_path = std::path::Path::new(&checkpoint.plan_file);
+                        let _ = std::fs::create_dir_all(plan_path.parent().unwrap_or(std::path::Path::new(".")));
+                        let plan_content = format!(
+                            "# Plano de Desenvolvimento\n\n**Ideia:** {}\n**Status:** Pendente de aprovação\n\n## Passos\n\n{}\n\n---\n*Edite o plano acima como desejar, depois digite: sincronizar plano",
+                            idea, plan
+                        );
+                        let _ = std::fs::write(&checkpoint.plan_file, &plan_content);
 
-                    return Ok(format!(
-                        "✅ Plano criado em: {}\n\n{}\n\n📝 Edite o arquivo acima como desejar.\nQuando pronto, digite: sincronizar plano",
-                        checkpoint.plan_file,
-                        plan
-                    ));
+                        self.checkpoint_store.save(&checkpoint)?;
+
+                        return Ok(format!(
+                            "✅ Plano criado em: {}\n\n{}\n\n📝 Edite o arquivo acima como desejar.\nQuando pronto, digite: sincronizar plano",
+                            checkpoint.plan_file,
+                            plan
+                        ));
+                    }
+
+                    // Doesn't look like an idea — let it pass through to normal chat
                 }
 
                 PlanPhase::AwaitingApproval | PlanPhase::AwaitingPlanEdit => {
-                    if user_input.eq_ignore_ascii_case("sincronizar plano")
-                        || user_input.eq_ignore_ascii_case("aprovar plano")
-                    {
-                        if !checkpoint.plan_file.is_empty() && std::path::Path::new(&checkpoint.plan_file).exists() {
-                            if let Ok(content) = std::fs::read_to_string(&checkpoint.plan_file) {
-                                if let Some(steps_start) = content.find("## Passos\n\n") {
-                                    if let Some(steps_end) = content[steps_start..].find("\n\n---") {
-                                        let steps = &content[steps_start + 10..steps_start + steps_end];
-                                        checkpoint.set_plan_text(steps.to_string());
+                    let lower = user_input.to_lowercase();
+                    let is_plan_command = lower.contains("sincronizar")
+                        || lower.contains("aprovar plano")
+                        || lower.contains("cancelar plano")
+                        || lower.contains("editar plano")
+                        || lower.contains("mostrar plano")
+                        || lower.contains("continuar");
+
+                    if is_plan_command {
+                        if lower.contains("cancelar") {
+                            let id = checkpoint.id.clone();
+                            self.checkpoint_store.delete(&id)?;
+                            return Ok("Plano cancelado. Retornando ao modo normal.".to_string());
+                        }
+
+                        if lower.contains("sincronizar") || lower.contains("aprovar") {
+                            if !checkpoint.plan_file.is_empty() && std::path::Path::new(&checkpoint.plan_file).exists() {
+                                if let Ok(content) = std::fs::read_to_string(&checkpoint.plan_file) {
+                                    if let Some(steps_start) = content.find("## Passos\n\n") {
+                                        if let Some(steps_end) = content[steps_start..].find("\n\n---") {
+                                            let steps = &content[steps_start + 10..steps_start + steps_end];
+                                            checkpoint.set_plan_text(steps.to_string());
+                                        }
                                     }
+                                }
+                            }
+
+                            checkpoint.set_phase(PlanPhase::Executing);
+
+                            if !checkpoint.plan_file.is_empty() {
+                                let idea = checkpoint.plan_text.lines()
+                                    .find(|l| l.starts_with("**Ideia:**"))
+                                    .map(|l| l.replace("**Ideia:**", "").trim().to_string())
+                                    .unwrap_or_default();
+                                let plan_content = format!(
+                                    "# Plano de Desenvolvimento\n\n**Ideia:** {}\n**Status:** ✅ Aprovado\n\n## Passos\n\n{}\n\n---\n*Plano aprovado e em execução*",
+                                    idea, checkpoint.plan_text
+                                );
+                                let _ = std::fs::write(&checkpoint.plan_file, &plan_content);
+                            }
+
+                            self.checkpoint_store.save(&checkpoint)?;
+
+                            return Ok(format!(
+                                "✅ Plano aprovado e em execução!\n\n📁 Diretório: {}\n📋 Plano: {}\n\nDigite 'continuar' para iniciar o desenvolvimento.",
+                                checkpoint.project_dir,
+                                checkpoint.plan_file
+                            ));
+                        }
+
+                        if lower.contains("mostrar") {
+                            let plan_file = &checkpoint.plan_file;
+                            if !plan_file.is_empty() && std::path::Path::new(plan_file).exists() {
+                                if let Ok(content) = std::fs::read_to_string(plan_file) {
+                                    return Ok(format!("📋 Plano em {}:\n\n{}", plan_file, content));
                                 }
                             }
                         }
 
-                        checkpoint.set_phase(PlanPhase::Executing);
-
-                        if !checkpoint.plan_file.is_empty() {
-                            let idea = checkpoint.plan_text.lines()
-                                .find(|l| l.starts_with("**Ideia:**"))
-                                .map(|l| l.replace("**Ideia:**", "").trim().to_string())
-                                .unwrap_or_default();
-                            let plan_content = format!(
-                                "# Plano de Desenvolvimento\n\n**Ideia:** {}\n**Status:** ✅ Aprovado\n\n## Passos\n\n{}\n\n---\n*Plano aprovado e em execução*",
-                                idea, checkpoint.plan_text
-                            );
-                            let _ = std::fs::write(&checkpoint.plan_file, &plan_content);
-                        }
-
-                        self.checkpoint_store.save(&checkpoint)?;
-                        let step_count = self.count_plan_steps(&checkpoint.plan_text);
                         return Ok(format!(
-                            "✅ Plano aprovado!\n\nPlano: {}\n\nIniciando desenvolvimento...",
-                            checkpoint.plan_text
+                            "Plano em '{}'. Digite 'sincronizar plano' quando terminar de editar, ou 'cancelar plano' para abortar.",
+                            checkpoint.phase
                         ));
                     }
+
+                    // Not a plan command — let it pass through to normal chat
+                }
+
+                PlanPhase::Completed => {
+                    // Clean up old completed checkpoint
+                    self.checkpoint_store.delete(&checkpoint.id)?;
                 }
 
                 _ => {}
@@ -305,57 +365,33 @@ impl Agent {
             return Ok("Nenhum projeto ativo encontrado.".to_string());
         }
 
+        // Handle "continuar projeto" — resumes an Executing checkpoint
+        if user_input.eq_ignore_ascii_case("continuar projeto")
+            || user_input.eq_ignore_ascii_case("continuar")
+        {
+            if let Some(active) = self.get_last_active_checkpoint() {
+                if active.phase == PlanPhase::Executing && !active.plan_text.is_empty() {
+                    let task_input = format!(
+                        "Execute o plano de desenvolvimento no diretorio {}:\n\n{}",
+                        active.project_dir,
+                        active.plan_text
+                    );
+                    return self.run_development(task_input, active).await;
+                }
+            }
+            return Ok("Nenhum plano em execução. Use 'criar plano' para iniciar.".to_string());
+        }
+
         let mut checkpoint = self.load_or_create_checkpoint(user_input).await?;
         let mut task_input = user_input.to_string();
-        let lower_input = user_input.to_lowercase();
-        let wants_new_project = lower_input.starts_with("novo projeto")
-            || lower_input.starts_with("iniciar novo projeto")
-            || lower_input.starts_with("novo trabalho");
 
-        if !wants_new_project && DevelopmentCheckpoint::is_development_task(user_input) {
-            if let Some(active) = self.get_last_active_checkpoint() {
-                if active.id != checkpoint.id
-                    && !user_input.eq_ignore_ascii_case("aprovar plano")
-                    && !user_input.eq_ignore_ascii_case("cancelar plano")
-                    && !user_input.to_lowercase().starts_with("editar plano:")
-                {
-                    checkpoint = active;
-                    task_input = checkpoint.user_input.clone();
-                }
-            }
-        }
-
-        if user_input.eq_ignore_ascii_case("continuar projeto") {
-            if let Some(active) = self.get_last_active_checkpoint() {
-                checkpoint = active;
-                task_input = checkpoint.user_input.clone();
-            } else {
-                return Ok("Nenhum projeto ativo para continuar.".to_string());
-            }
-        }
-
-        if DevelopmentCheckpoint::is_development_task(&task_input) {
-            if user_input.eq_ignore_ascii_case("cancelar plano") {
-                checkpoint.set_plan_text(String::new());
-                checkpoint.set_phase(PlanPhase::AwaitingDir);
-                checkpoint.set_project_dir(String::new());
-                checkpoint.set_plan_file(String::new());
-                self.checkpoint_store.save(&checkpoint)?;
-                return Ok("Plano cancelado. Digite 'criar plano' para iniciar um novo.".to_string());
-            }
-
-            if checkpoint.phase != PlanPhase::Executing {
-                if checkpoint.phase == PlanPhase::AwaitingDir {
-                    return Ok("Inicie um novo plano com: criar plano".to_string());
-                }
-                if checkpoint.phase == PlanPhase::AwaitingIdea {
-                    return Ok("Aguarde... descrevendo a ideia do projeto.".to_string());
-                }
-                return Ok(format!(
-                    "Plano em '{}'. Digite 'sincronizar plano' quando terminar de editar.",
-                    checkpoint.phase
-                ));
-            }
+        // If checkpoint is Executing, use plan_text as the development task
+        if checkpoint.phase == PlanPhase::Executing && !checkpoint.plan_text.is_empty() {
+            task_input = format!(
+                "Execute o plano de desenvolvimento no diretorio {}:\n\n{}",
+                checkpoint.project_dir,
+                checkpoint.plan_text
+            );
         }
 
         // SECURITY: Validate user input
@@ -412,11 +448,19 @@ impl Agent {
             "content": user_input
         }));
 
-        // 6. Build messages
+        // 6. Check if in plan mode with steps to execute
+        if checkpoint.is_plan_mode() {
+            let steps = checkpoint.parse_plan_steps();
+            if !steps.is_empty() {
+                return self.execute_plan_steps(&mut checkpoint, &system_prompt, &steps).await;
+            }
+        }
+
+        // 7. Build messages
         let mut current_messages = self.load_checkpoint_messages(&checkpoint)
             .unwrap_or_else(|| self.build_messages(&system_prompt));
 
-        // 7. ReAct loop
+        // 8. ReAct loop
         let start_iteration = checkpoint.current_iteration;
         let mut forced_tool_use = false;
         for iteration in start_iteration..self.config.max_iterations {
@@ -533,6 +577,265 @@ impl Agent {
         }
 
         Ok(final_response)
+    }
+
+    async fn run_development(
+        &mut self,
+        task_input: String,
+        mut checkpoint: DevelopmentCheckpoint,
+    ) -> anyhow::Result<String> {
+        // Retrieve memories
+        let memories = self.retrieve_relevant_memories(&task_input).await?;
+        let memory_context = format_memories_for_prompt(&memories);
+
+        // Build system prompt
+        let mut system_prompt = self.build_system_prompt(&memory_context, None);
+        system_prompt.push_str(&SecurityManager::get_defense_prompt());
+
+        // Add user message
+        self.conversation_history.push(json!({
+            "role": "user",
+            "content": &task_input
+        }));
+
+        // Check plan mode
+        if checkpoint.is_plan_mode() {
+            let steps = checkpoint.parse_plan_steps();
+            if !steps.is_empty() {
+                return self.execute_plan_steps(&mut checkpoint, &system_prompt, &steps).await;
+            }
+        }
+
+        // Build messages
+        let mut current_messages = self.load_checkpoint_messages(&checkpoint)
+            .unwrap_or_else(|| self.build_messages(&system_prompt));
+
+        // ReAct loop
+        let start_iteration = checkpoint.current_iteration;
+        let mut forced_tool_use = false;
+        for iteration in start_iteration..self.config.max_iterations {
+            info!("ReAct iteration {}", iteration + 1);
+            checkpoint.current_iteration = iteration;
+            self.save_checkpoint(&mut checkpoint, &current_messages, &[])?;
+
+            current_messages.push(json!({
+                "role": "system",
+                "content": "IMPORTANTE: para tarefas de desenvolvimento, sempre execute pelo menos uma ferramenta por etapa. Responda APENAS nos formatos especificados. Nunca inclua <system-reminder> na resposta."
+            }));
+
+            let response = self.call_llm(&current_messages).await?;
+            let parsed = self.parse_response(&response)?;
+
+            match parsed {
+                ParsedResponse::FinalAnswer(answer) => {
+                    if DevelopmentCheckpoint::is_development_task(&task_input)
+                        && !self.checkpoint_has_tools(&checkpoint)
+                        && !forced_tool_use
+                    {
+                        forced_tool_use = true;
+                        current_messages.push(json!({
+                            "role": "user",
+                            "content": "Você ainda não executou nenhuma ferramenta. Para tarefas de desenvolvimento, use ferramentas (file_write, shell, file_read, etc.) antes de responder com a solução final. Prossiga com a primeira ação agora."
+                        }));
+                        continue;
+                    }
+
+                    self.conversation_history.push(json!({
+                        "role": "assistant",
+                        "content": answer.clone()
+                    }));
+
+                    self.save_conversation_to_memory(&task_input, &answer).await?;
+                    self.finalize_checkpoint(&mut checkpoint, DevelopmentState::Completed, &current_messages, &[])?;
+
+                    return Ok(answer);
+                }
+                ParsedResponse::Action { thought, action, action_input } => {
+                    info!("Action detected: {} with input: {}", action, action_input);
+
+                    let raw_observation = self.execute_tool(&action, &action_input).await?;
+                    let observation = SecurityManager::clean_tool_output(&raw_observation, &action);
+
+                    if action != "echo" {
+                        self.save_tool_result_to_memory(&action, &action_input, &observation).await?;
+                    }
+
+                    let tool_execution = ToolExecution {
+                        tool_name: action.clone(),
+                        input: action_input.clone(),
+                        output: observation.clone(),
+                        iteration: iteration + 1,
+                        timestamp: chrono::Utc::now(),
+                    };
+
+                    let tool_result = format!(
+                        "Thought: {}\nAction: {}\nAction Input: {}\nObservation: {}",
+                        thought, action, action_input, observation
+                    );
+
+                    current_messages.push(json!({
+                        "role": "assistant",
+                        "content": tool_result
+                    }));
+
+                    self.save_checkpoint(&mut checkpoint, &current_messages, &[tool_execution])?;
+                }
+            }
+        }
+
+        info!("Max iterations reached");
+        self.finalize_checkpoint(&mut checkpoint, DevelopmentState::Interrupted, &current_messages, &[])?;
+        Ok(format!("Execução interrompida após {} iterações.", self.config.max_iterations))
+    }
+
+    async fn execute_plan_steps(
+        &mut self,
+        checkpoint: &mut DevelopmentCheckpoint,
+        system_prompt: &str,
+        steps: &[String],
+    ) -> anyhow::Result<String> {
+        let total = steps.len();
+        let project_dir = checkpoint.project_dir.clone();
+        let plan_file = checkpoint.plan_file.clone();
+
+        for (step_idx, step) in steps.iter().enumerate() {
+            let step_num = step_idx + 1;
+            checkpoint.set_current_step(step_idx);
+
+            info!("Executing plan step {}/{}: {}", step_num, total, step);
+
+            let step_prompt = format!(
+                "## PROGRESSO DO PLANO\nEtapa {}/{} de {}\n\n**ETAPA ATUAL:**\n{}\n\n**DIRETÓRIO DO PROJETO:** {}\n\n**INSTRUÇÕES:**\n- Você está executando UM passo do plano de cada vez\n- Use as ferramentas necessárias para completar ESTA etapa\n- Após completar, responda com: Step Complete: [breve resumo do que foi feito]\n- Se precisar de mais ações, continue usando ferramentas\n\n**PLANO COMPLETO (para contexto):**\n{}",
+                step_num,
+                total,
+                total,
+                step,
+                project_dir,
+                steps.join("\n")
+            );
+
+            let mut step_messages = vec![
+                json!({"role": "system", "content": system_prompt}),
+                json!({"role": "system", "content": "MODO PLANO DE DESENVOLVIMENTO:\nVocê está executando um plano de desenvolvimento estruturado. Foque APENAS na etapa atual. Use ferramentas necessárias (file_write, shell, file_read, etc.). Quando a etapa estiver completa, responda no formato:\nStep Complete: [resumo]"}),
+                json!({"role": "user", "content": step_prompt}),
+            ];
+
+            // ReAct loop for each step (max 5 iterations per step)
+            let mut step_complete = false;
+            for _iteration in 0..5 {
+                let response = self.call_llm(&step_messages).await?;
+                let parsed = self.parse_response(&response)?;
+
+                match parsed {
+                    ParsedResponse::FinalAnswer(answer) => {
+                        if answer.to_lowercase().contains("step complete:") {
+                            checkpoint.mark_step_done(step_idx);
+                            self.checkpoint_store.save(checkpoint)?;
+                            self.update_plan_progress(&plan_file, &steps, &checkpoint.completed_steps)?;
+                            info!("Step {}/{} completed: {}", step_num, total, answer);
+                            step_complete = true;
+                            break;
+                        } else {
+                            // LLM gave a final answer but didn't say "Step Complete"
+                            // Prompt it to continue with tools
+                            step_messages.push(json!({
+                                "role": "assistant",
+                                "content": answer
+                            }));
+                            step_messages.push(json!({
+                                "role": "user",
+                                "content": "Use ferramentas para executar as ações necessárias. Quando terminar, responda: Step Complete: [resumo]"
+                            }));
+                        }
+                    }
+                    ParsedResponse::Action { thought, action, action_input } => {
+                        info!("Step {}/{} executing tool: {}", step_num, total, action);
+
+                        // Execute the tool
+                        let raw_observation = self.execute_tool(&action, &action_input).await?;
+                        let observation = SecurityManager::clean_tool_output(&raw_observation, &action);
+
+                        // Save to memory
+                        if action != "echo" {
+                            self.save_tool_result_to_memory(&action, &action_input, &observation).await?;
+                        }
+
+                        // Add tool execution to checkpoint
+                        let tool_execution = ToolExecution {
+                            tool_name: action.clone(),
+                            input: action_input.clone(),
+                            output: observation.clone(),
+                            iteration: checkpoint.current_iteration + 1,
+                            timestamp: chrono::Utc::now(),
+                        };
+
+                        // Add to message history
+                        let tool_result = format!(
+                            "Thought: {}\nAction: {}\nAction Input: {}\nObservation: {}",
+                            thought, action, action_input, observation
+                        );
+
+                        step_messages.push(json!({
+                            "role": "assistant",
+                            "content": tool_result
+                        }));
+
+                        // Save checkpoint with tool execution
+                        self.save_checkpoint(checkpoint, &step_messages, &[tool_execution])?;
+                    }
+                }
+            }
+
+            if !step_complete {
+                info!("Step {}/{} max iterations reached, marking as done anyway", step_num, total);
+                checkpoint.mark_step_done(step_idx);
+                self.checkpoint_store.save(checkpoint)?;
+                self.update_plan_progress(&plan_file, &steps, &checkpoint.completed_steps)?;
+            }
+        }
+
+        checkpoint.set_phase(PlanPhase::Completed);
+        checkpoint.set_state(DevelopmentState::Completed);
+        self.checkpoint_store.save(checkpoint)?;
+
+        let summary = format!(
+            "✅ Plano de desenvolvimento concluído!\n\n{} etapas executadas no diretório: {}",
+            total,
+            project_dir
+        );
+
+        Ok(summary)
+    }
+
+    fn update_plan_progress(
+        &self,
+        plan_file: &str,
+        _steps: &[String],
+        completed: &[usize],
+    ) -> anyhow::Result<()> {
+        if plan_file.is_empty() || !std::path::Path::new(plan_file).exists() {
+            return Ok(());
+        }
+
+        let content = std::fs::read_to_string(plan_file)?;
+        let step_re = Regex::new(r"(?m)^(\s*\d+)\.\s*(\[[ xX]\])\s+(.*)$").unwrap();
+        let done_re = Regex::new(r"\[x\]|\[X\]").unwrap();
+
+        let updated = step_re.replace_all(&content, |caps: &regex::Captures| {
+            let number = &caps[1];
+            let step_text = &caps[3];
+            let step_idx: usize = number.trim().parse::<usize>().unwrap_or(1).saturating_sub(1);
+
+            if completed.contains(&step_idx) {
+                format!("{}. [x] {}", number, step_text)
+            } else {
+                format!("{}. [ ] {}", number, step_text)
+            }
+        }).to_string();
+
+        std::fs::write(plan_file, updated)?;
+
+        Ok(())
     }
 
     async fn retrieve_relevant_memories(
@@ -799,7 +1102,11 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("Invalid response format from API"))?;
 
-        Ok(content.to_string())
+        // Strip system-reminder blocks from LLM output
+        let reminder_re = Regex::new(r"(?is)<system-reminder>.*?</system-reminder>").unwrap();
+        let cleaned = reminder_re.replace_all(content, "").trim().to_string();
+
+        Ok(cleaned)
     }
 
     fn parse_response(&self, response: &str) -> anyhow::Result<ParsedResponse> {

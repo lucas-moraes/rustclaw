@@ -37,7 +37,7 @@ impl Config {
         Ok(Self {
             api_key,
             base_url: "https://router.huggingface.co/v1".to_string(),
-            model: "MiniMaxAI/MiniMax-M2.5:novita".to_string(),
+            model: "moonshotai/Kimi-K2-Thinking".to_string(),
             max_tokens,
             max_iterations,
             plan_auto_threshold,

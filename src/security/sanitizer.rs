@@ -43,19 +43,30 @@ impl Sanitizer {
             input.to_string()
         };
 
-        let was_modified = text.len() < original_length;
+        let truncated = text.len() < original_length;
 
         // 2. Remove control characters
+        let before_cc = text.len();
         text = Self::remove_control_chars(&text);
+        let cc_removed = text.len() < before_cc;
 
         // 3. Normalize unicode (prevent homoglyph attacks)
+        let before_unicode = text.len();
         text = Self::normalize_unicode(&text);
+        let unicode_modified = text.len() < before_unicode;
 
         // 4. Escape dangerous sequences
+        let before_escape = text.len();
         text = Self::escape_dangerous_sequences(&text);
+        let escape_modified = text.len() < before_escape;
 
         // 5. Clean markdown
+        let before_md = text.len();
         text = Self::sanitize_markdown(&text);
+        let md_modified = text.len() < before_md;
+
+        let was_modified =
+            truncated || cc_removed || unicode_modified || escape_modified || md_modified;
 
         SanitizedInput::new(text, was_modified, original_length)
     }
@@ -99,22 +110,22 @@ impl Sanitizer {
             output.to_string()
         };
 
-        // 2. Mask sensitive data
-        text = Self::mask_sensitive_data(&text);
+        // 2. Escape dangerous sequences BEFORE masking so [REDACTED] stays intact
+        text = Self::escape_dangerous_sequences(&text);
 
         // 3. Remove control characters
         text = Self::remove_control_chars(&text);
 
-        // 4. Sanitize based on tool type
+        // 4. Mask sensitive data (after escaping so patterns still match)
+        text = Self::mask_sensitive_data(&text);
+
+        // 5. Sanitize based on tool type
         text = match tool_name {
             "shell" | "system_info" => Self::sanitize_shell_output(&text),
             "file_read" => Self::sanitize_file_content(&text),
             "http_get" | "http_post" => Self::sanitize_http_response(&text),
             _ => text,
         };
-
-        // 5. Prevent prompt injection via tool output
-        text = Self::escape_dangerous_sequences(&text);
 
         text
     }
@@ -177,8 +188,7 @@ impl Sanitizer {
 
         for keyword in SYSTEM_KEYWORDS.iter().chain(PERSONA_KEYWORDS.iter()) {
             if lowercase.contains(&keyword.to_lowercase()) {
-                // Replace with neutral placeholder
-                result = result.replace(&keyword.to_lowercase(), "[REDACTED]");
+                result = result.replace(&keyword.to_lowercase(), "⟨REDACTED⟩");
             }
         }
 
@@ -285,7 +295,7 @@ mod tests {
         let input = "This is system: prompt and instructions";
         let result = Sanitizer::skill_context(input);
         assert!(!result.to_lowercase().contains("system:"));
-        assert!(result.contains("[REDACTED]"));
+        assert!(result.contains("⟨REDACTED⟩"));
     }
 
     #[test]

@@ -37,6 +37,7 @@ impl MemoryStore {
             DELETE FROM scheduled_tasks;
             DELETE FROM reminders;
             DELETE FROM checkpoints;
+            DELETE FROM active_skills;
             "#,
         )?;
 

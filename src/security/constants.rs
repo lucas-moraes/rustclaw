@@ -80,12 +80,12 @@ pub const JAILBREAK_PATTERNS: &[&str] = &[
 
 /// Sensitive data patterns to mask (regex)
 pub const SENSITIVE_PATTERNS: &[&str] = &[
-    "(?i)(api[_-]?key|apikey)[\"']?\\s*[:=]\\s*[\"']?([a-zA-Z0-9_\\-]{16,})[\"']?",
-    "(?i)(password|senha|pwd)[\"']?\\s*[:=]\\s*[\"']?([^\\s\"']{8,})[\"']?",
-    "(?i)(token|bearer)\\s+([a-zA-Z0-9_\\-\\.]{20,})",
-    "(?i)(secret)[\"']?\\s*[:=]\\s*[\"']?([a-zA-Z0-9_\\-]{16,})[\"']?",
-    "\\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\\b", // UUIDs
-    "\\b[0-9a-fA-F]{32,}\\b",                                                            // Hashes
+    r#"(?i)(api[_-]?key|apikey)\s*[:=]\s*["']?([a-zA-Z0-9_\-]{16,})["']?"#,
+    r#"(?i)(password|senha|pwd)\s*[:=]\s*["']?([^\s"']{8,})["']?"#,
+    r#"(?i)(token|bearer)\s+([a-zA-Z0-9_\-\.]{20,})"#,
+    r#"(?i)(secret)\s*[:=]\s*["']?([a-zA-Z0-9_\-]{16,})["']?"#,
+    r#"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"#, // UUIDs
+    r#"\b[0-9a-fA-F]{32,}\b"#,                                                            // Hashes
 ];
 
 /// Unicode homoglyphs (characters that look like ASCII but are different)

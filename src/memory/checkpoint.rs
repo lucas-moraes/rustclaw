@@ -25,6 +25,8 @@ pub struct DevelopmentCheckpoint {
     pub plan_file: String,
     pub phase: PlanPhase,
     pub state: DevelopmentState,
+    pub current_step: usize,
+    pub completed_steps: Vec<usize>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -317,6 +319,8 @@ impl CheckpointStore {
             plan_file: row.get(7)?,
             phase: PlanPhase::from(phase_str.as_str()),
             state: DevelopmentState::from(state_str.as_str()),
+            current_step: 0,
+            completed_steps: vec![],
             created_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(10)?)
                 .map(|dt| dt.with_timezone(&Utc))
                 .unwrap_or_else(|_| Utc::now()),
@@ -341,6 +345,8 @@ impl DevelopmentCheckpoint {
             plan_file: String::new(),
             phase: PlanPhase::Executing,
             state: DevelopmentState::InProgress,
+            current_step: 0,
+            completed_steps: vec![],
             created_at: now,
             updated_at: now,
         }
@@ -431,5 +437,107 @@ impl DevelopmentCheckpoint {
 
         let input_lower = input.to_lowercase();
         dev_keywords.iter().any(|kw| input_lower.contains(kw))
+    }
+
+    pub fn set_current_step(&mut self, step: usize) {
+        self.current_step = step;
+        self.updated_at = Utc::now();
+    }
+
+    pub fn mark_step_done(&mut self, step: usize) {
+        if !self.completed_steps.contains(&step) {
+            self.completed_steps.push(step);
+            self.completed_steps.sort();
+        }
+        self.updated_at = Utc::now();
+    }
+
+    pub fn is_step_done(&self, step: usize) -> bool {
+        self.completed_steps.contains(&step)
+    }
+
+    pub fn parse_plan_steps(&self) -> Vec<String> {
+        if self.plan_text.is_empty() {
+            return vec![];
+        }
+
+        let mut steps = Vec::new();
+        for line in self.plan_text.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if trimmed.starts_with(|c: char| c.is_ascii_digit()) && trimmed.contains(')') {
+                let step_text = trimmed
+                    .trim_start_matches(|c: char| c.is_ascii_digit())
+                    .trim_start_matches(')')
+                    .trim_start_matches('.')
+                    .trim();
+                if !step_text.is_empty() {
+                    steps.push(step_text.to_string());
+                }
+            } else if trimmed.starts_with('-') || trimmed.starts_with('*') {
+                let step_text = trimmed[1..].trim().to_string();
+                if !step_text.is_empty() {
+                    steps.push(step_text);
+                }
+            }
+        }
+
+        steps
+    }
+
+    pub fn total_steps(&self) -> usize {
+        self.parse_plan_steps().len()
+    }
+
+    pub fn is_plan_mode(&self) -> bool {
+        self.phase == PlanPhase::Executing && !self.plan_text.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_plan_steps_numbered() {
+        let mut cp = DevelopmentCheckpoint::new("test".to_string());
+        cp.set_plan_text("1) Criar diretório\n2) Escrever código\n3) Testar".to_string());
+        let steps = cp.parse_plan_steps();
+        assert_eq!(steps.len(), 3);
+        assert!(steps[0].contains("Criar diretório"));
+        assert!(steps[1].contains("Escrever código"));
+        assert!(steps[2].contains("Testar"));
+    }
+
+    #[test]
+    fn test_parse_plan_steps_bullet() {
+        let mut cp = DevelopmentCheckpoint::new("test".to_string());
+        cp.set_plan_text("- Criar arquivo\n- Editar conteúdo".to_string());
+        let steps = cp.parse_plan_steps();
+        assert_eq!(steps.len(), 2);
+    }
+
+    #[test]
+    fn test_mark_step_done() {
+        let mut cp = DevelopmentCheckpoint::new("test".to_string());
+        cp.mark_step_done(0);
+        cp.mark_step_done(2);
+        cp.mark_step_done(0);
+        assert!(cp.is_step_done(0));
+        assert!(!cp.is_step_done(1));
+        assert!(cp.is_step_done(2));
+        assert_eq!(cp.completed_steps, vec![0, 2]);
+    }
+
+    #[test]
+    fn test_is_plan_mode() {
+        let mut cp = DevelopmentCheckpoint::new("test".to_string());
+        assert!(!cp.is_plan_mode());
+        cp.set_phase(PlanPhase::Executing);
+        assert!(!cp.is_plan_mode());
+        cp.set_plan_text("1) Passo 1".to_string());
+        assert!(cp.is_plan_mode());
     }
 }
