@@ -1258,6 +1258,35 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
 
         if !response.status().is_success() {
             let error_text = response.text().await?;
+            
+            // Tenta extrair conteúdo útil do erro se houver
+            if error_text.contains("Missing tool calls section markers in:") {
+                if let Some(start_idx) = error_text.find("Missing tool calls section markers in:") {
+                    let after = &error_text[start_idx + "Missing tool calls section markers in:".len()..];
+                    
+                    // Extrai até o fechamento da mensagem de erro
+                    let content = if let Some(end_idx) = after.find("\"}}") {
+                        &after[..end_idx]
+                    } else if let Some(end_idx) = after.find("<system-reminder>") {
+                        &after[..end_idx]
+                    } else {
+                        after
+                    };
+                    
+                    // Remove prefixos de formato incorreto
+                    let cleaned = content
+                        .trim()
+                        .trim_start_matches("<|tool_calls_section_begin|>")
+                        .trim_start_matches("<|tool_call_begin|>")
+                        .trim();
+                    
+                    if !cleaned.is_empty() {
+                        info!("Recovered content from error message: {}", cleaned);
+                        return Ok(cleaned.to_string());
+                    }
+                }
+            }
+            
             return Err(anyhow::anyhow!("API error: {}", error_text));
         }
 
