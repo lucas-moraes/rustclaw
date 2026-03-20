@@ -1341,7 +1341,12 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
         match tool.call(args).await {
             Ok(result) => {
                 let preview = if result.len() > 200 {
-                    format!("{}...", &result[..200])
+                    // Safe UTF-8 truncation: find the last valid char boundary
+                    let mut end = 200.min(result.len());
+                    while end > 0 && !result.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    format!("{}...", &result[..end])
                 } else {
                     result.clone()
                 };
