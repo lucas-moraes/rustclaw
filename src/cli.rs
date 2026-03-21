@@ -8,6 +8,7 @@ use crate::tools::{
     clear_memory::ClearMemoryTool,
     datetime::DateTimeTool,
     echo::EchoTool,
+    file_edit::FileEditTool,
     file_list::FileListTool,
     file_read::FileReadTool,
     file_search::FileSearchTool,
@@ -54,6 +55,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     tools.register(Box::new(ShellTool::new()));
     tools.register(Box::new(FileReadTool::new()));
     tools.register(Box::new(FileWriteTool::new()));
+    tools.register(Box::new(FileEditTool::new()));
     tools.register(Box::new(FileListTool::new()));
     tools.register(Box::new(FileSearchTool::new()));
     tools.register(Box::new(HttpGetTool::new()));

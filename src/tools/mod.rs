@@ -51,6 +51,7 @@ pub mod capabilities;
 pub mod clear_memory;
 pub mod datetime;
 pub mod echo;
+pub mod file_edit;
 pub mod file_list;
 pub mod file_read;
 pub mod file_search;
@@ -74,6 +75,7 @@ mod tests {
     use crate::tools::clear_memory::ClearMemoryTool;
     use crate::tools::datetime::DateTimeTool;
     use crate::tools::echo::EchoTool;
+    use crate::tools::file_edit::FileEditTool;
     use crate::tools::file_list::FileListTool;
     use crate::tools::file_read::FileReadTool;
     use crate::tools::file_search::FileSearchTool;

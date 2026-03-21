@@ -4,7 +4,7 @@ use crate::reminder_executor::ReminderExecutor;
 use crate::tavily::tools::{TavilyQuickSearchTool, TavilySearchTool};
 use crate::tools::{
     capabilities::CapabilitiesTool, datetime::DateTimeTool, echo::EchoTool,
-    file_list::FileListTool, file_read::FileReadTool, file_search::FileSearchTool,
+    file_edit::FileEditTool, file_list::FileListTool, file_read::FileReadTool, file_search::FileSearchTool,
     file_write::FileWriteTool, http::{HttpGetTool, HttpPostTool},
     location::LocationTool, reminder::{AddReminderTool, CancelReminderTool, ListRemindersTool},
     shell::ShellTool, system::SystemInfoTool,
@@ -283,6 +283,7 @@ impl TelegramBot {
         tools.register(Box::new(FileReadTool::new()));
         tools.register(Box::new(FileSearchTool::new()));
         tools.register(Box::new(FileWriteTool::new()));
+        tools.register(Box::new(FileEditTool::new()));
         tools.register(Box::new(HttpGetTool::new()));
         tools.register(Box::new(HttpPostTool::new()));
         tools.register(Box::new(LocationTool::new()));
