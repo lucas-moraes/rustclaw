@@ -1493,7 +1493,7 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
 
     fn parse_response(&self, response: &str) -> anyhow::Result<ParsedResponse> {
         let sanitized = self.sanitize_model_response(response);
-        let final_answer_re = Regex::new(r"(?i)Final Answer:\s*(.+)$").unwrap();
+        let final_answer_re = Regex::new(r"(?si)Final Answer:\s*(.+)$").unwrap();
         if let Some(caps) = final_answer_re.captures(&sanitized) {
             let answer = caps
                 .get(1)

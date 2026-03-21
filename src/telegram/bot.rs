@@ -21,6 +21,45 @@ use teloxide::prelude::*;
 use tokio::sync::Mutex;
 use tracing::{error, info};
 
+const TELEGRAM_MAX_MESSAGE_LENGTH: usize = 4096;
+
+fn split_long_message(text: &str) -> Vec<String> {
+    if text.len() <= TELEGRAM_MAX_MESSAGE_LENGTH {
+        return vec![text.to_string()];
+    }
+
+    let mut chunks = Vec::new();
+    let mut remaining = text;
+
+    while !remaining.is_empty() {
+        if remaining.len() <= TELEGRAM_MAX_MESSAGE_LENGTH {
+            chunks.push(remaining.to_string());
+            break;
+        }
+
+        let (chunk, suffix) = remaining.split_at(TELEGRAM_MAX_MESSAGE_LENGTH);
+        let break_pos = if let Some(pos) = chunk.rfind("\n\n") {
+            pos
+        } else if let Some(pos) = chunk.rfind('\n') {
+            pos
+        } else if let Some(pos) = chunk.rfind(' ') {
+            pos
+        } else {
+            TELEGRAM_MAX_MESSAGE_LENGTH
+        };
+
+        if break_pos == 0 {
+            chunks.push(chunk.to_string());
+            remaining = &suffix[1..];
+        } else {
+            chunks.push(chunk[..break_pos].to_string());
+            remaining = &remaining[break_pos..];
+        }
+    }
+
+    chunks
+}
+
 pub struct TelegramBot;
 
 #[derive(BotCommands, Clone)]
@@ -256,7 +295,9 @@ impl TelegramBot {
 
         match response {
             Ok(Ok(text)) => {
-                bot.send_message(chat_id, format!("{}", text)).await?;
+                for chunk in split_long_message(&text) {
+                    bot.send_message(chat_id, chunk).await?;
+                }
             }
             Ok(Err(e)) => {
                 error!("Agent error: {}", e);
