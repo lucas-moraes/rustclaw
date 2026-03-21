@@ -584,6 +584,9 @@ impl Agent {
                 }
                 ParsedResponse::Action {
                     thought,
+                    retrieved_memory,
+                    revise_memory,
+                    reasoning,
                     action,
                     action_input,
                 } => {
@@ -609,8 +612,14 @@ impl Agent {
                     };
 
                     let tool_result = format!(
-                        "Thought: {}\nAction: {}\nAction Input: {}\nObservation: {}",
-                        thought, action, action_input, observation
+                        "Thought: {}\nRetrieved Memory: {}\nRevise Memory: {}\nReasoning: {}\nAction: {}\nAction Input: {}\nObservation: {}",
+                        thought,
+                        retrieved_memory.as_deref().unwrap_or("N/A"),
+                        revise_memory.as_deref().unwrap_or("N/A"),
+                        reasoning.as_deref().unwrap_or("N/A"),
+                        action,
+                        action_input,
+                        observation
                     );
 
                     current_messages.push(json!({
@@ -724,7 +733,14 @@ impl Agent {
 
                     return Ok(answer);
                 }
-                ParsedResponse::Action { thought, action, action_input } => {
+                ParsedResponse::Action {
+                    thought,
+                    retrieved_memory,
+                    revise_memory,
+                    reasoning,
+                    action,
+                    action_input,
+                } => {
                     info!("Action detected: {} with input: {}", action, action_input);
 
                     let raw_observation = self.execute_tool(&action, &action_input).await?;
@@ -743,8 +759,14 @@ impl Agent {
                     };
 
                     let tool_result = format!(
-                        "Thought: {}\nAction: {}\nAction Input: {}\nObservation: {}",
-                        thought, action, action_input, observation
+                        "Thought: {}\nRetrieved Memory: {}\nRevise Memory: {}\nReasoning: {}\nAction: {}\nAction Input: {}\nObservation: {}",
+                        thought,
+                        retrieved_memory.as_deref().unwrap_or("N/A"),
+                        revise_memory.as_deref().unwrap_or("N/A"),
+                        reasoning.as_deref().unwrap_or("N/A"),
+                        action,
+                        action_input,
+                        observation
                     );
 
                     current_messages.push(json!({
@@ -882,7 +904,14 @@ impl Agent {
                             }));
                         }
                     }
-                    ParsedResponse::Action { thought, action, action_input } => {
+                    ParsedResponse::Action {
+                        thought,
+                        retrieved_memory,
+                        revise_memory,
+                        reasoning,
+                        action,
+                        action_input,
+                    } => {
                         info!("Step {}/{} executing tool: {}", step_num, total, action);
 
                         // Execute the tool
@@ -905,8 +934,14 @@ impl Agent {
 
                         // Add to message history
                         let tool_result = format!(
-                            "Thought: {}\nAction: {}\nAction Input: {}\nObservation: {}",
-                            thought, action, action_input, observation
+                            "Thought: {}\nRetrieved Memory: {}\nRevise Memory: {}\nReasoning: {}\nAction: {}\nAction Input: {}\nObservation: {}",
+                            thought,
+                            retrieved_memory.as_deref().unwrap_or("N/A"),
+                            revise_memory.as_deref().unwrap_or("N/A"),
+                            reasoning.as_deref().unwrap_or("N/A"),
+                            action,
+                            action_input,
+                            observation
                         );
 
                         step_messages.push(json!({
@@ -1209,6 +1244,9 @@ DIRETRIZES IMPORTANTES:
 
 Para usar uma ferramenta, responda EXATAMENTE neste formato:
 Thought: [seu raciocínio sobre o que fazer]
+Retrieved Memory: [conteúdo relevante recuperado da memória, se houver]
+Revise Memory: [seu raciocínio sobre se a memória recuperada é útil ou não]
+Reasoning: [seu raciocínio passo a passo sobre qual ação tomar, baseado no input do usuário e na memória]
 Action: [nome_da_ferramenta]
 Action Input: {{"arg": "valor"}}
 
@@ -1316,6 +1354,9 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
         }
 
         let thought_re = Regex::new(r"(?i)Thought:\s*(.+?)(?:\n|$)").unwrap();
+        let retrieved_memory_re = Regex::new(r"(?i)Retrieved Memory:\s*(.+?)(?:\n(?:Revise Memory:|Reasoning:|Action:|Final Answer:)|$)").unwrap();
+        let revise_memory_re = Regex::new(r"(?i)Revise Memory:\s*(.+?)(?:\n(?:Reasoning:|Action:|Final Answer:)|$)").unwrap();
+        let reasoning_re = Regex::new(r"(?i)Reasoning:\s*(.+?)(?:\n(?:Action:|Final Answer:)|$)").unwrap();
         let action_re = Regex::new(r"(?i)Action:\s*(.+?)(?:\n|$)").unwrap();
 
         let thought = thought_re
@@ -1323,6 +1364,21 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
             .and_then(|c| c.get(1))
             .map(|m| m.as_str().trim().to_string())
             .unwrap_or_default();
+
+        let retrieved_memory = retrieved_memory_re
+            .captures(&sanitized)
+            .and_then(|c| c.get(1))
+            .map(|m| m.as_str().trim().to_string());
+
+        let revise_memory = revise_memory_re
+            .captures(&sanitized)
+            .and_then(|c| c.get(1))
+            .map(|m| m.as_str().trim().to_string());
+
+        let reasoning = reasoning_re
+            .captures(&sanitized)
+            .and_then(|c| c.get(1))
+            .map(|m| m.as_str().trim().to_string());
 
         let action = action_re
             .captures(&sanitized)
@@ -1343,6 +1399,9 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
         if let Some(action) = action {
             return Ok(ParsedResponse::Action {
                 thought,
+                retrieved_memory,
+                revise_memory,
+                reasoning,
                 action,
                 action_input,
             });
@@ -1578,6 +1637,9 @@ enum ParsedResponse {
     FinalAnswer(String),
     Action {
         thought: String,
+        retrieved_memory: Option<String>,
+        revise_memory: Option<String>,
+        reasoning: Option<String>,
         action: String,
         action_input: String,
     },
