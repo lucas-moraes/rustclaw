@@ -1,3 +1,4 @@
+use crate::utils::colors::Colors;
 use std::sync::Arc;
 use std::sync::OnceLock;
 
@@ -116,7 +117,16 @@ impl OutputManager {
             return;
         }
         for sink in &self.sinks {
-            sink.write_line(&format!("🐛 {}", msg));
+            sink.write_line(&format!(
+                "{}{}{}{} {}{}{}",
+                Colors::CLEAR_LINE,
+                Colors::DIM,
+                "~",
+                Colors::RESET,
+                msg,
+                Colors::RESET,
+                Colors::RESET
+            ));
         }
     }
 
@@ -164,21 +174,49 @@ impl OutputSink for ConsoleSink {
     }
 
     fn write_tool(&self, tool: &str, input: &str, output: &str) {
-        println!("🛠️  TOOL: {}", tool);
-        println!("📦 Args: {}", input);
-        println!("📤 Output: {}", output);
+        print!("{}{}", Colors::CLEAR_LINE, Colors::ORANGE);
+        print!("{} ", "⬡");
+        print!("{}{}", Colors::RESET, Colors::DIM);
+        println!("{}  {}{}", tool, input, Colors::RESET);
+        println!("{}{}{}", Colors::DIM, output, Colors::RESET);
     }
 
     fn write_thought(&self, thought: &str) {
-        println!("💭 {}", thought);
+        println!(
+            "{}{}{} {}{}{}",
+            Colors::CLEAR_LINE,
+            Colors::DIM,
+            "·",
+            Colors::RESET,
+            thought,
+            Colors::RESET
+        );
     }
 
     fn write_error(&self, error: &str) {
-        eprintln!("❌ {}", error);
+        eprintln!(
+            "{}{}{} {}{}{}",
+            Colors::RED,
+            "⨯",
+            Colors::RESET,
+            error,
+            Colors::RESET,
+            Colors::RESET
+        );
     }
 
     fn write_browser(&self, path: &str, description: &str) {
-        println!("📸 {} - {}", description, path);
+        println!(
+            "{}{}{} {}{} {}{}{}",
+            Colors::CLEAR_LINE,
+            Colors::ORANGE,
+            "⎙",
+            Colors::RESET,
+            Colors::DIM,
+            description,
+            Colors::RESET,
+            path
+        );
     }
 
     fn flush(&self) {

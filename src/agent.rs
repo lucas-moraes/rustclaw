@@ -13,6 +13,7 @@ use crate::utils::output::{OutputManager, OutputSink};
 use crate::utils::tmux::TmuxManager;
 use crate::utils::build_detector::BuildDetector;
 use crate::utils::error_parser::{ErrorParser, BuildValidation};
+use crate::utils::colors::Colors;
 use regex::Regex;
 use reqwest::Client;
 use serde_json::{json, Value};
@@ -1917,8 +1918,14 @@ pub fn output_write_tool(tool: &str, input: &str, output: &str) {
     if let Some(out) = OUTPUT_MANAGER.get() {
         out.write_tool(tool, input, output);
     }
-    println!("🛠️  TOOL: {}", tool);
-    println!("📦 Args: {}", input);
+    print!("{}{}", Colors::CLEAR_LINE, Colors::ORANGE);
+    print!("{} ", "⬡");
+    print!("{}{}", Colors::RESET, Colors::DIM);
+    println!("{}  {}{}", tool, input, Colors::RESET);
+    println!(
+        "{}{}{}",
+        Colors::DIM, output, Colors::RESET
+    );
 }
 
 pub fn output_write_thought(thought: &str) {
@@ -1931,7 +1938,13 @@ pub fn output_write_error(error: &str) {
     if let Some(output) = OUTPUT_MANAGER.get() {
         output.write_error(error);
     }
-    eprintln!("❌ {}", error);
+    eprintln!(
+        "{}{}{} {}{}{}",
+        Colors::RED, "⨯", Colors::RESET,
+        error,
+        Colors::RESET,
+        Colors::RESET
+    );
 }
 
 pub fn output_write_debug(msg: &str) {
