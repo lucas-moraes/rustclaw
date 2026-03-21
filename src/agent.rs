@@ -570,6 +570,34 @@ impl Agent {
                         continue;
                     }
 
+                    // BUILD VALIDATION GATE: Para dev tasks com project_dir, valida build antes de aceitar
+                    if DevelopmentCheckpoint::is_development_task(user_input)
+                        && !checkpoint.project_dir.is_empty()
+                    {
+                        match self.validate_build(&checkpoint.project_dir).await? {
+                            BuildValidation::Failed { errors } => {
+                                let error_summary = errors.iter()
+                                    .take(5) // Mostra até 5 erros
+                                    .map(|e| format!("- {} ({}:{})", e.message, e.file, e.line.unwrap_or(0)))
+                                    .collect::<Vec<_>>()
+                                    .join("\n");
+                                
+                                current_messages.push(json!({
+                                    "role": "user",
+                                    "content": format!(
+                                        "❌ Antes de finalizar, o build falhou com {} erro(s):\n\n{}\n\nPor favor, corrija os erros acima antes de dar Final Answer.",
+                                        errors.len(),
+                                        error_summary
+                                    )
+                                }));
+                                continue; // Bloqueia FinalAnswer, loop continua
+                            }
+                            BuildValidation::Success => {
+                                info!("✅ Build validation passed before final answer");
+                            }
+                        }
+                    }
+
                     self.conversation_history.push(json!({
                         "role": "assistant",
                         "content": answer.clone()
@@ -587,6 +615,7 @@ impl Agent {
                     retrieved_memory,
                     revise_memory,
                     reasoning,
+                    verification,
                     action,
                     action_input,
                 } => {
@@ -603,6 +632,9 @@ impl Agent {
                             .await?;
                     }
 
+                    // VERIFICATION: Verifica automaticamente o resultado da ação
+                    let verification_result = self.verify_action_result(&action, &action_input, &observation).await?;
+
                     let tool_execution = ToolExecution {
                         tool_name: action.clone(),
                         input: action_input.clone(),
@@ -611,21 +643,39 @@ impl Agent {
                         timestamp: chrono::Utc::now(),
                     };
 
+                    let verification_status = match &verification_result {
+                        None => "✅ Verificação passou".to_string(),
+                        Some(err) => format!("❌ Verificação falhou: {}", err),
+                    };
+
                     let tool_result = format!(
-                        "Thought: {}\nRetrieved Memory: {}\nRevise Memory: {}\nReasoning: {}\nAction: {}\nAction Input: {}\nObservation: {}",
+                        "Thought: {}\nRetrieved Memory: {}\nRevise Memory: {}\nReasoning: {}\nVerification Plan: {}\nAction: {}\nAction Input: {}\nObservation: {}\nVerification Result: {}",
                         thought,
                         retrieved_memory.as_deref().unwrap_or("N/A"),
                         revise_memory.as_deref().unwrap_or("N/A"),
                         reasoning.as_deref().unwrap_or("N/A"),
+                        verification.as_deref().unwrap_or("N/A"),
                         action,
                         action_input,
-                        observation
+                        observation,
+                        verification_status
                     );
 
                     current_messages.push(json!({
                         "role": "assistant",
                         "content": tool_result
                     }));
+
+                    // Se a verificação falhou, injeta mensagem de erro para o LLM corrigir
+                    if let Some(error) = verification_result {
+                        current_messages.push(json!({
+                            "role": "user",
+                            "content": format!(
+                                "⚠️ A ação '{}' falhou na verificação automática: {}\n\nPor favor, corrija o problema e tente novamente. Verifique se:\n- O arquivo/recurso foi criado corretamente\n- Não há erros de sintaxe ou execução\n- O comando foi executado com sucesso",
+                                action, error
+                            )
+                        }));
+                    }
 
                     self.save_checkpoint(&mut checkpoint, &current_messages, &[tool_execution])?;
                 }
@@ -723,6 +773,34 @@ impl Agent {
                         continue;
                     }
 
+                    // BUILD VALIDATION GATE: Para dev tasks com project_dir, valida build antes de aceitar
+                    if DevelopmentCheckpoint::is_development_task(&task_input)
+                        && !checkpoint.project_dir.is_empty()
+                    {
+                        match self.validate_build(&checkpoint.project_dir).await? {
+                            BuildValidation::Failed { errors } => {
+                                let error_summary = errors.iter()
+                                    .take(5)
+                                    .map(|e| format!("- {} ({}:{})", e.message, e.file, e.line.unwrap_or(0)))
+                                    .collect::<Vec<_>>()
+                                    .join("\n");
+                                
+                                current_messages.push(json!({
+                                    "role": "user",
+                                    "content": format!(
+                                        "❌ Antes de finalizar, o build falhou com {} erro(s):\n\n{}\n\nPor favor, corrija os erros antes de dar Final Answer.",
+                                        errors.len(),
+                                        error_summary
+                                    )
+                                }));
+                                continue;
+                            }
+                            BuildValidation::Success => {
+                                info!("✅ Build validation passed before final answer");
+                            }
+                        }
+                    }
+
                     self.conversation_history.push(json!({
                         "role": "assistant",
                         "content": answer.clone()
@@ -738,6 +816,7 @@ impl Agent {
                     retrieved_memory,
                     revise_memory,
                     reasoning,
+                    verification,
                     action,
                     action_input,
                 } => {
@@ -750,6 +829,9 @@ impl Agent {
                         self.save_tool_result_to_memory(&action, &action_input, &observation).await?;
                     }
 
+                    // VERIFICATION: Verifica automaticamente o resultado da ação
+                    let verification_result = self.verify_action_result(&action, &action_input, &observation).await?;
+
                     let tool_execution = ToolExecution {
                         tool_name: action.clone(),
                         input: action_input.clone(),
@@ -758,21 +840,39 @@ impl Agent {
                         timestamp: chrono::Utc::now(),
                     };
 
+                    let verification_status = match &verification_result {
+                        None => "✅ Verificação passou".to_string(),
+                        Some(err) => format!("❌ Verificação falhou: {}", err),
+                    };
+
                     let tool_result = format!(
-                        "Thought: {}\nRetrieved Memory: {}\nRevise Memory: {}\nReasoning: {}\nAction: {}\nAction Input: {}\nObservation: {}",
+                        "Thought: {}\nRetrieved Memory: {}\nRevise Memory: {}\nReasoning: {}\nVerification Plan: {}\nAction: {}\nAction Input: {}\nObservation: {}\nVerification Result: {}",
                         thought,
                         retrieved_memory.as_deref().unwrap_or("N/A"),
                         revise_memory.as_deref().unwrap_or("N/A"),
                         reasoning.as_deref().unwrap_or("N/A"),
+                        verification.as_deref().unwrap_or("N/A"),
                         action,
                         action_input,
-                        observation
+                        observation,
+                        verification_status
                     );
 
                     current_messages.push(json!({
                         "role": "assistant",
                         "content": tool_result
                     }));
+
+                    // Se a verificação falhou, injeta mensagem de erro para o LLM corrigir
+                    if let Some(error) = verification_result {
+                        current_messages.push(json!({
+                            "role": "user",
+                            "content": format!(
+                                "⚠️ A ação '{}' falhou na verificação automática: {}\n\nPor favor, corrija o problema e tente novamente.",
+                                action, error
+                            )
+                        }));
+                    }
 
                     self.save_checkpoint(&mut checkpoint, &current_messages, &[tool_execution])?;
 
@@ -885,6 +985,31 @@ impl Agent {
                 match parsed {
                     ParsedResponse::FinalAnswer(answer) => {
                         if answer.to_lowercase().contains("step complete:") {
+                            // BUILD VALIDATION: Valida build antes de marcar step como completo
+                            if !checkpoint.project_dir.is_empty() {
+                                match self.validate_build(&checkpoint.project_dir).await? {
+                                    BuildValidation::Failed { errors } => {
+                                        let error_summary = errors.iter()
+                                            .take(3)
+                                            .map(|e| format!("- {} ({}:{})", e.message, e.file, e.line.unwrap_or(0)))
+                                            .collect::<Vec<_>>()
+                                            .join("\n");
+                                        
+                                        step_messages.push(json!({
+                                            "role": "user",
+                                            "content": format!(
+                                                "❌ Step não pode ser marcado como completo. Build falhou:\n\n{}\n\nCorrija os erros e tente novamente.",
+                                                error_summary
+                                            )
+                                        }));
+                                        continue; // Não marca como completo, continua o loop
+                                    }
+                                    BuildValidation::Success => {
+                                        info!("✅ Build validation passed for step {}/{}", step_num, total);
+                                    }
+                                }
+                            }
+
                             checkpoint.mark_step_done(step_idx);
                             self.checkpoint_store.save(checkpoint)?;
                             self.update_plan_progress(&plan_file, &steps, &checkpoint.completed_steps)?;
@@ -909,6 +1034,7 @@ impl Agent {
                         retrieved_memory,
                         revise_memory,
                         reasoning,
+                        verification,
                         action,
                         action_input,
                     } => {
@@ -923,6 +1049,9 @@ impl Agent {
                             self.save_tool_result_to_memory(&action, &action_input, &observation).await?;
                         }
 
+                        // VERIFICATION: Verifica automaticamente o resultado da ação
+                        let verification_result = self.verify_action_result(&action, &action_input, &observation).await?;
+
                         // Add tool execution to checkpoint
                         let tool_execution = ToolExecution {
                             tool_name: action.clone(),
@@ -932,22 +1061,40 @@ impl Agent {
                             timestamp: chrono::Utc::now(),
                         };
 
+                        let verification_status = match &verification_result {
+                            None => "✅ Verificação passou".to_string(),
+                            Some(err) => format!("❌ Verificação falhou: {}", err),
+                        };
+
                         // Add to message history
                         let tool_result = format!(
-                            "Thought: {}\nRetrieved Memory: {}\nRevise Memory: {}\nReasoning: {}\nAction: {}\nAction Input: {}\nObservation: {}",
+                            "Thought: {}\nRetrieved Memory: {}\nRevise Memory: {}\nReasoning: {}\nVerification Plan: {}\nAction: {}\nAction Input: {}\nObservation: {}\nVerification Result: {}",
                             thought,
                             retrieved_memory.as_deref().unwrap_or("N/A"),
                             revise_memory.as_deref().unwrap_or("N/A"),
                             reasoning.as_deref().unwrap_or("N/A"),
+                            verification.as_deref().unwrap_or("N/A"),
                             action,
                             action_input,
-                            observation
+                            observation,
+                            verification_status
                         );
 
                         step_messages.push(json!({
                             "role": "assistant",
                             "content": tool_result
                         }));
+
+                        // Se a verificação falhou, injeta mensagem de erro
+                        if let Some(error) = verification_result {
+                            step_messages.push(json!({
+                                "role": "user",
+                                "content": format!(
+                                    "⚠️ A ação '{}' falhou na verificação: {}\n\nCorrija o problema antes de continuar.",
+                                    action, error
+                                )
+                            }));
+                        }
 
                         // Save checkpoint with tool execution
                         self.save_checkpoint(checkpoint, &step_messages, &[tool_execution])?;
@@ -1247,11 +1394,13 @@ Thought: [seu raciocínio sobre o que fazer]
 Retrieved Memory: [conteúdo relevante recuperado da memória, se houver]
 Revise Memory: [seu raciocínio sobre se a memória recuperada é útil ou não]
 Reasoning: [seu raciocínio passo a passo sobre qual ação tomar, baseado no input do usuário e na memória]
+Verification: [como vou verificar se esta ação teve sucesso - seja específico]
 Action: [nome_da_ferramenta]
 Action Input: {{"arg": "valor"}}
 
 Quando tiver a resposta final (ou não precisar de ferramentas), responda EXATAMENTE neste formato:
 Thought: [seu raciocínio]
+Verification: [o que foi verificado e confirmado como correto antes de finalizar]
 Final Answer: [sua resposta para o usuário]
 
 Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para contextualizar sua resposta.{memory}"#;
@@ -1354,9 +1503,10 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
         }
 
         let thought_re = Regex::new(r"(?i)Thought:\s*(.+?)(?:\n|$)").unwrap();
-        let retrieved_memory_re = Regex::new(r"(?i)Retrieved Memory:\s*(.+?)(?:\n(?:Revise Memory:|Reasoning:|Action:|Final Answer:)|$)").unwrap();
-        let revise_memory_re = Regex::new(r"(?i)Revise Memory:\s*(.+?)(?:\n(?:Reasoning:|Action:|Final Answer:)|$)").unwrap();
-        let reasoning_re = Regex::new(r"(?i)Reasoning:\s*(.+?)(?:\n(?:Action:|Final Answer:)|$)").unwrap();
+        let retrieved_memory_re = Regex::new(r"(?i)Retrieved Memory:\s*(.+?)(?:\n(?:Revise Memory:|Reasoning:|Verification:|Action:|Final Answer:)|$)").unwrap();
+        let revise_memory_re = Regex::new(r"(?i)Revise Memory:\s*(.+?)(?:\n(?:Reasoning:|Verification:|Action:|Final Answer:)|$)").unwrap();
+        let reasoning_re = Regex::new(r"(?i)Reasoning:\s*(.+?)(?:\n(?:Verification:|Action:|Final Answer:)|$)").unwrap();
+        let verification_re = Regex::new(r"(?i)Verification:\s*(.+?)(?:\n(?:Action:|Final Answer:)|$)").unwrap();
         let action_re = Regex::new(r"(?i)Action:\s*(.+?)(?:\n|$)").unwrap();
 
         let thought = thought_re
@@ -1376,6 +1526,11 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
             .map(|m| m.as_str().trim().to_string());
 
         let reasoning = reasoning_re
+            .captures(&sanitized)
+            .and_then(|c| c.get(1))
+            .map(|m| m.as_str().trim().to_string());
+
+        let verification = verification_re
             .captures(&sanitized)
             .and_then(|c| c.get(1))
             .map(|m| m.as_str().trim().to_string());
@@ -1402,6 +1557,7 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
                 retrieved_memory,
                 revise_memory,
                 reasoning,
+                verification,
                 action,
                 action_input,
             });
@@ -1446,6 +1602,80 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
                 let err_msg = format!("Erro: {}", e);
                 output_write_error(&err_msg);
                 Ok(err_msg)
+            }
+        }
+    }
+
+    /// Verifica automaticamente se uma ação executada teve sucesso
+    /// Retorna None se passou, Some(erro) se falhou
+    async fn verify_action_result(
+        &mut self,
+        action: &str,
+        action_input: &str,
+        observation: &str,
+    ) -> anyhow::Result<Option<String>> {
+        // Se observation começa com erro, falhou
+        if observation.starts_with("❌ Erro") || observation.starts_with("Erro:") {
+            return Ok(Some(format!("A ferramenta retornou erro: {}", observation)));
+        }
+
+        match action {
+            "file_write" => {
+                // Verifica se arquivo foi criado/modificado lendo-o de volta
+                if let Ok(args) = self.parse_action_input_json(action_input) {
+                    if let Some(path) = args["path"].as_str() {
+                        match self.execute_tool("file_read", &format!(r#"{{"path": "{}"}}"#, path)).await {
+                            Ok(content) if !content.starts_with("❌ Erro") && !content.is_empty() => {
+                                Ok(None) // Arquivo existe e tem conteúdo
+                            }
+                            _ => Ok(Some(format!(
+                                "Arquivo '{}' não foi criado ou está vazio após file_write",
+                                path
+                            ))),
+                        }
+                    } else {
+                        Ok(None) // Sem path para verificar
+                    }
+                } else {
+                    Ok(None)
+                }
+            }
+            "shell" => {
+                // Verifica se há indicadores de erro no output
+                let error_indicators = ["❌ Erro", "error:", "ERROR:", "FAILED", "failed", "panicked", "exception", "Exception"];
+                let has_error = error_indicators.iter().any(|ind| observation.contains(ind));
+                
+                if has_error {
+                    Ok(Some(format!("Comando shell falhou. Output contém indicadores de erro")))
+                } else {
+                    Ok(None)
+                }
+            }
+            "http_get" | "http_post" => {
+                // Verifica status code (procura por padrões tipo "status: 4xx" ou "status: 5xx")
+                if observation.contains("status: 4") || observation.contains("status: 5") {
+                    Ok(Some(format!("Requisição HTTP falhou com status code de erro")))
+                } else if observation.contains("❌ Erro") {
+                    Ok(Some(format!("Requisição HTTP retornou erro")))
+                } else {
+                    Ok(None)
+                }
+            }
+            "file_read" => {
+                // Se não retornou erro, passou
+                if observation.starts_with("❌ Erro") {
+                    Ok(Some(format!("Falha ao ler arquivo")))
+                } else {
+                    Ok(None)
+                }
+            }
+            _ => {
+                // Para outras ferramentas, apenas verifica se não tem erro explícito
+                if observation.starts_with("❌ Erro") {
+                    Ok(Some(format!("A ferramenta '{}' retornou erro", action)))
+                } else {
+                    Ok(None)
+                }
             }
         }
     }
@@ -1640,6 +1870,7 @@ enum ParsedResponse {
         retrieved_memory: Option<String>,
         revise_memory: Option<String>,
         reasoning: Option<String>,
+        verification: Option<String>,
         action: String,
         action_input: String,
     },
