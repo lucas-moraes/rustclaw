@@ -1426,6 +1426,7 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
     }
 
     async fn call_llm(&self, messages: &[Value]) -> anyhow::Result<String> {
+        // Hugging Face OpenAI-compatible API format
         let url = format!("{}/chat/completions", self.config.base_url);
 
         // Filter out messages with empty content to avoid API errors
