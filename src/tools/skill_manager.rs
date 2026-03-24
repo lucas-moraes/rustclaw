@@ -84,12 +84,15 @@ impl SkillCreateTool {
     }
 
     fn get_skill_template(name: &str) -> String {
-        format!(r#"# Skill: {}
+        format!(r#"---
+name: {}
+description: Descrição breve do que esta skill faz
+user_invocable: true
+disable_model_invocation: false
+---
 
-## Descrição
-Descrição breve do que esta skill faz
+# {}
 
-## Contexto
 Contexto detalhado sobre como o assistente deve se comportar quando esta skill está ativa.
 Explique a personalidade, tom de voz, e abordagem recomendada.
 
@@ -98,29 +101,16 @@ Explique a personalidade, tom de voz, e abordagem recomendada.
 - palavra-chave2
 - palavra-chave3
 
-## Comportamento
+## Behavior
 
-### SEMPRE
+### Always
 - Comportamento obrigatório 1
 - Comportamento obrigatório 2
 
-### NUNCA
+### Never
 - Comportamento proibido 1
 - Comportamento proibido 2
-
-## Ferramentas Prioritárias
-1. tool_name1
-2. tool_name2
-
-## Exemplos
-
-### Input: "exemplo de pergunta"
-**Bom:** resposta desejada
-**Ruim:** resposta a ser evitada
-
-### Input: "outro exemplo"
-**Bom:** outra resposta desejada
-"#, name)
+"#, name, name)
     }
 }
 
@@ -161,7 +151,7 @@ impl Tool for SkillCreateTool {
             .map(|s| s.to_string())
             .unwrap_or_else(|| Self::get_skill_template(name));
 
-        let skill_file = skill_dir.join("skill.md");
+        let skill_file = skill_dir.join("SKILL.md");
         fs::write(&skill_file, &content)
             .map_err(|e| format!("Erro ao escrever arquivo: {}", e))?;
 
@@ -277,7 +267,11 @@ impl Tool for SkillValidateTool {
 
         // Validate specific skill or all
         if let Some(name) = args["name"].as_str() {
-            let skill_file = skills_path.join(name).join("skill.md");
+            let skill_file = if skills_path.join(name).join("SKILL.md").exists() {
+                skills_path.join(name).join("SKILL.md")
+            } else {
+                skills_path.join(name).join("skill.md")
+            };
             
             if !skill_file.exists() {
                 return Err(format!("Skill '{}' não encontrada", name));
@@ -307,7 +301,11 @@ impl Tool for SkillValidateTool {
                 for entry in entries.flatten() {
                     let path = entry.path();
                     if path.is_dir() {
-                        let skill_file = path.join("skill.md");
+                        let skill_file = if path.join("SKILL.md").exists() {
+                            path.join("SKILL.md")
+                        } else {
+                            path.join("skill.md")
+                        };
                         if skill_file.exists() {
                             let name = path.file_name()
                                 .and_then(|n| n.to_str())
@@ -370,8 +368,12 @@ impl Tool for SkillEditTool {
             .as_str()
             .ok_or_else(|| "Parâmetro 'name' é obrigatório".to_string())?;
 
-        let skill_file = self.skills_dir.join(name).join("skill.md");
-        
+        let skill_file = if self.skills_dir.join(name).join("SKILL.md").exists() {
+            self.skills_dir.join(name).join("SKILL.md")
+        } else {
+            self.skills_dir.join(name).join("skill.md")
+        };
+
         if !skill_file.exists() {
             return Err(format!("Skill '{}' não encontrada", name));
         }
@@ -456,7 +458,11 @@ impl Tool for SkillRenameTool {
             .map_err(|e| format!("Erro ao renomear: {}", e))?;
 
         // Update skill name inside the file
-        let skill_file = new_dir.join("skill.md");
+        let skill_file = if new_dir.join("SKILL.md").exists() {
+            new_dir.join("SKILL.md")
+        } else {
+            new_dir.join("skill.md")
+        };
         if let Ok(content) = fs::read_to_string(&skill_file) {
             // Update the title
             let new_content = content.replacen(

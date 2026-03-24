@@ -21,6 +21,7 @@ use crate::tools::{
         SkillCreateTool, SkillDeleteTool, SkillEditTool, SkillListTool, SkillRenameTool,
         SkillValidateTool,
     },
+    skill_script::{SkillScriptTool, SkillScriptsListTool},
     system::SystemInfoTool,
     ToolRegistry,
 };
@@ -85,11 +86,31 @@ fn print_help() {
         Colors::DIM, Colors::AMBER, Colors::RESET
     );
     println!(
+        "  {}{}/skills{}      list available skills",
+        Colors::DIM, Colors::AMBER, Colors::RESET
+    );
+    println!(
         "  {}{}/clear{}       clear context and memories",
         Colors::DIM, Colors::AMBER, Colors::RESET
     );
     println!(
         "  {}{}/exit{}        exit RustClaw",
+        Colors::DIM, Colors::AMBER, Colors::RESET
+    );
+    println!();
+    println!(
+        "{}{}{}  Skills",
+        Colors::ORANGE,
+        "⬡",
+        Colors::RESET
+    );
+    println!();
+    println!(
+        "  {}{}/skill-name{}  activate a skill by name",
+        Colors::DIM, Colors::AMBER, Colors::RESET
+    );
+    println!(
+        "  {}Use {}@reference.md{} to load references",
         Colors::DIM, Colors::AMBER, Colors::RESET
     );
     println!();
@@ -159,6 +180,8 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     tools.register(Box::new(SkillRenameTool::new()));
     tools.register(Box::new(SkillValidateTool::new()));
     tools.register(Box::new(SkillImportFromUrlTool::new()));
+    tools.register(Box::new(SkillScriptTool::new(PathBuf::from("skills"))));
+    tools.register(Box::new(SkillScriptsListTool::new(PathBuf::from("skills"))));
 
     init_tmux("cli");
 
@@ -206,6 +229,31 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
         if trimmed.eq_ignore_ascii_case("/help") {
             print_help();
             continue;
+        }
+
+        if trimmed.eq_ignore_ascii_case("/skills") || trimmed.eq_ignore_ascii_case("/skill") {
+            let skills = agent.list_skills();
+            println!();
+            println!("{}{}{}  Available Skills", Colors::ORANGE, "⬡", Colors::RESET);
+            println!();
+            if skills.is_empty() {
+                println!("  {}No skills found{}", Colors::DIM, Colors::RESET);
+            } else {
+                for skill in skills {
+                    println!("  {}{}/{}  {}", Colors::DIM, Colors::AMBER, skill, Colors::RESET);
+                }
+            }
+            println!();
+            continue;
+        }
+
+        if trimmed.starts_with('/') && !trimmed.starts_with("<<<") {
+            let cmd = trimmed.trim_start_matches('/');
+            if let Some(skill_name) = cmd.split_whitespace().next() {
+                let input = format!("/{}", skill_name);
+                println!("{}Activating skill: {}{}", Colors::DIM, skill_name, Colors::RESET);
+                let _ = agent.force_skill(skill_name);
+            }
         }
 
         let input = if trimmed == "<<<" {

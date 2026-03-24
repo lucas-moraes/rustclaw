@@ -338,7 +338,7 @@ impl Tool for SkillImportFromUrlTool {
         fs::create_dir_all(&skill_dir)
             .map_err(|e| format!("Erro ao criar diretório: {}", e))?;
 
-        let skill_file = skill_dir.join("skill.md");
+        let skill_file = skill_dir.join("SKILL.md");
         fs::write(&skill_file, &skill_content)
             .map_err(|e| format!("Erro ao escrever arquivo: {}", e))?;
 

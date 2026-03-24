@@ -10,6 +10,7 @@ use crate::tools::{
     shell::ShellTool, system::SystemInfoTool,
     skill_manager::{SkillCreateTool, SkillDeleteTool, SkillEditTool, SkillListTool, SkillRenameTool, SkillValidateTool},
     skill_import::SkillImportFromUrlTool,
+    skill_script::{SkillScriptTool, SkillScriptsListTool},
     Tool, ToolRegistry,
 };
 use teloxide::types::BotCommand;
@@ -342,6 +343,8 @@ impl TelegramBot {
         tools.register(Box::new(SkillRenameTool::new()));
         tools.register(Box::new(SkillValidateTool::new()));
         tools.register(Box::new(SkillImportFromUrlTool::new()));
+        tools.register(Box::new(SkillScriptTool::new(PathBuf::from("skills"))));
+        tools.register(Box::new(SkillScriptsListTool::new(PathBuf::from("skills"))));
 
         if let Some(ref tavily_key) = config.tavily_api_key {
             tools.register(Box::new(TavilySearchTool::new(tavily_key.clone())));

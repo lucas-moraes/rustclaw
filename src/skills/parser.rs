@@ -3,7 +3,7 @@ use crate::skills::{Skill, SkillBehaviors, SkillExample};
 use regex::Regex;
 use serde::Deserialize;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 pub struct SkillParser;
@@ -15,6 +15,22 @@ struct YamlFrontmatter {
     #[serde(default)]
     allowed_tools: Vec<String>,
     #[serde(default)]
+    user_invocable: bool,
+    #[serde(default)]
+    disable_model_invocation: bool,
+    #[serde(default)]
+    internal: bool,
+    #[serde(default)]
+    license: Option<String>,
+    #[serde(default)]
+    version: Option<String>,
+    #[serde(default)]
+    compatibility: Option<String>,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    effort: Option<String>,
+    #[serde(default)]
     metadata: YamlMetadata,
 }
 
@@ -22,6 +38,10 @@ struct YamlFrontmatter {
 struct YamlMetadata {
     #[serde(default)]
     internal: bool,
+    #[serde(default)]
+    author: Option<String>,
+    #[serde(default)]
+    version: Option<String>,
 }
 
 #[derive(Debug)]
@@ -55,7 +75,7 @@ impl SkillParser {
         let content = fs::read_to_string(path)?;
         let metadata = fs::metadata(path)?;
 
-        // Detect format: YAML frontmatter (skills.sh) or Markdown (RustClaw)
+        // Detect format: YAML frontmatter (Claude Code format) or Markdown (Legacy RustClaw)
         if Self::has_yaml_frontmatter(&content) {
             Self::parse_yaml_format(&content, path, &metadata)
         } else {
@@ -63,8 +83,44 @@ impl SkillParser {
         }
     }
 
+    pub fn supports_cli_invocation(skill: &Skill) -> bool {
+        skill.user_invocable
+    }
+
+    pub fn allows_auto_invocation(skill: &Skill) -> bool {
+        !skill.disable_model_invocation
+    }
+
     fn has_yaml_frontmatter(content: &str) -> bool {
         content.trim().starts_with("---")
+    }
+
+    fn detect_resource_directories(skill_dir: &Path) -> (bool, bool, bool) {
+        let mut has_scripts = false;
+        let mut has_references = false;
+        let mut has_assets = false;
+
+        if let Ok(entries) = fs::read_dir(skill_dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name_str = name.to_string_lossy().to_lowercase();
+                match name_str.as_str() {
+                    "scripts" => has_scripts = entry.path().is_dir(),
+                    "references" => has_references = entry.path().is_dir(),
+                    "assets" => has_assets = entry.path().is_dir(),
+                    _ => {}
+                }
+            }
+        }
+
+        (has_scripts, has_references, has_assets)
+    }
+
+    fn get_skill_directory(skill_file_path: &Path) -> PathBuf {
+        skill_file_path
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_default()
     }
 
     fn parse_yaml_format(
@@ -113,6 +169,17 @@ impl SkillParser {
             never: vec!["Ignore the skill context".to_string()],
         };
 
+        // Detect resource directories
+        let skill_dir = Self::get_skill_directory(path);
+        let (has_scripts, has_references, has_assets) =
+            Self::detect_resource_directories(&skill_dir);
+
+        // Get version from frontmatter or metadata
+        let version = frontmatter
+            .version
+            .clone()
+            .or_else(|| frontmatter.metadata.version.clone());
+
         Ok(Skill {
             name,
             description,
@@ -123,6 +190,18 @@ impl SkillParser {
             examples: vec![],
             file_path: path.to_path_buf(),
             last_modified: file_meta.modified().unwrap_or(SystemTime::now()),
+            user_invocable: frontmatter.user_invocable,
+            disable_model_invocation: frontmatter.disable_model_invocation,
+            internal: frontmatter.internal,
+            has_scripts,
+            has_references,
+            has_assets,
+            license: frontmatter.license,
+            version,
+            compatibility: frontmatter.compatibility,
+            full_content_loaded: true,
+            model: frontmatter.model,
+            effort: frontmatter.effort,
         })
     }
 
@@ -142,6 +221,11 @@ impl SkillParser {
         let preferred_tools = Self::extract_tools(content);
         let examples = Self::extract_examples(content);
 
+        // Detect resource directories
+        let skill_dir = Self::get_skill_directory(path);
+        let (has_scripts, has_references, has_assets) =
+            Self::detect_resource_directories(&skill_dir);
+
         Ok(Skill {
             name,
             description,
@@ -152,6 +236,18 @@ impl SkillParser {
             examples,
             file_path: path.to_path_buf(),
             last_modified: file_meta.modified().unwrap_or(SystemTime::now()),
+            user_invocable: true, // Default for markdown format
+            disable_model_invocation: false,
+            internal: false,
+            has_scripts,
+            has_references,
+            has_assets,
+            license: None,
+            version: None,
+            compatibility: None,
+            full_content_loaded: true,
+            model: None,
+            effort: None,
         })
     }
 

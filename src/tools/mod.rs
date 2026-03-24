@@ -36,6 +36,49 @@ impl ToolRegistry {
             .join("\n")
     }
 
+    pub fn list_filtered(&self, allowed_tools: &[String]) -> String {
+        if allowed_tools.is_empty() {
+            return self.list();
+        }
+
+        let allowed: Vec<String> = allowed_tools.iter()
+            .map(|t| t.to_lowercase())
+            .collect();
+
+        self.tools
+            .values()
+            .filter(|t| {
+                let name = t.name().to_lowercase();
+                allowed.contains(&name) || allowed.iter().any(|a| name.starts_with(a))
+            })
+            .map(|t| format!("- {}: {}", t.name(), t.description()))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    pub fn names(&self) -> Vec<String> {
+        self.tools.keys().cloned().collect()
+    }
+
+    pub fn filter_tools(&self, allowed_tools: &[String]) -> Vec<String> {
+        if allowed_tools.is_empty() {
+            return self.names();
+        }
+
+        let allowed: Vec<String> = allowed_tools.iter()
+            .map(|t| t.to_lowercase())
+            .collect();
+
+        self.tools
+            .keys()
+            .filter(|name| {
+                let name_lower = name.to_lowercase();
+                allowed.contains(&name_lower) || allowed.iter().any(|a| name_lower.starts_with(a))
+            })
+            .cloned()
+            .collect()
+    }
+
     pub fn is_empty(&self) -> bool {
         self.tools.is_empty()
     }
@@ -63,6 +106,7 @@ pub mod reminder_parser;
 pub mod shell;
 pub mod skill_import;
 pub mod skill_manager;
+pub mod skill_script;
 pub mod system;
 pub mod browser;
 

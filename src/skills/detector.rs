@@ -3,13 +3,15 @@ use std::collections::HashMap;
 use tracing::debug;
 
 pub struct SkillDetector {
-    keyword_map: HashMap<String, Vec<String>>, // keyword -> [skill_names]
+    keyword_map: HashMap<String, Vec<String>>,
+    skills_by_name: HashMap<String, Skill>,
     confidence_threshold: f32,
 }
 
 impl SkillDetector {
     pub fn new(skills: &[Skill]) -> Self {
         let mut keyword_map: HashMap<String, Vec<String>> = HashMap::new();
+        let mut skills_by_name: HashMap<String, Skill> = HashMap::new();
 
         for skill in skills {
             let keywords = skill.combined_keywords();
@@ -19,17 +21,32 @@ impl SkillDetector {
                     .or_default()
                     .push(skill.name.clone());
             }
+            skills_by_name.insert(skill.name.clone(), skill.clone());
         }
 
         debug!("Built keyword map with {} keywords", keyword_map.len());
 
         Self {
             keyword_map,
-            confidence_threshold: 0.3, // Ajustável
+            skills_by_name,
+            confidence_threshold: 0.3,
         }
     }
 
     pub fn detect(&self, message: &str, active_skill: Option<&str>) -> Option<String> {
+        // Check for /skill-name invocation (CLI-style)
+        if let Some(skill_name) = Self::parse_slash_command(message) {
+            if let Some(skill) = self.skills_by_name.get(&skill_name) {
+                if skill.user_invocable {
+                    debug!("Slash command invoked skill '{}'", skill_name);
+                    return Some(skill_name);
+                } else {
+                    debug!("Skill '{}' is not user-invocable", skill_name);
+                    return None;
+                }
+            }
+        }
+
         let tokens = Self::tokenize(message);
 
         if tokens.is_empty() {
@@ -86,6 +103,23 @@ impl SkillDetector {
             .map(|s| s.to_string())
             .collect()
     }
+
+    fn parse_slash_command(message: &str) -> Option<String> {
+        let trimmed = message.trim();
+        if !trimmed.starts_with('/') {
+            return None;
+        }
+
+        // Extract skill name after /
+        let after_slash = &trimmed[1..];
+        let skill_name = after_slash.split_whitespace().next().unwrap_or(after_slash);
+
+        if skill_name.is_empty() {
+            return None;
+        }
+
+        Some(skill_name.to_lowercase())
+    }
 }
 
 #[cfg(test)]
@@ -109,6 +143,18 @@ mod tests {
             examples: vec![],
             file_path: PathBuf::new(),
             last_modified: SystemTime::now(),
+            user_invocable: true,
+            disable_model_invocation: false,
+            internal: false,
+            has_scripts: false,
+            has_references: false,
+            has_assets: false,
+            license: None,
+            version: None,
+            compatibility: None,
+            full_content_loaded: true,
+            model: None,
+            effort: None,
         }
     }
 

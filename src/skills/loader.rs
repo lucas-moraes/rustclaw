@@ -134,7 +134,11 @@ impl SkillLoader {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.is_dir() {
-                    let skill_file = path.join("skill.md");
+                    let skill_file = if path.join("SKILL.md").exists() {
+                        path.join("SKILL.md")
+                    } else {
+                        path.join("skill.md")
+                    };
                     if skill_file.exists() {
                         // Extrai nome do diretório como nome provisório
                         if let Some(dir_name) = path.file_name().and_then(|n| n.to_str()) {
@@ -156,7 +160,11 @@ impl SkillLoader {
     pub fn reload_skills(&mut self, skill_names: &[String]) -> Result<(), LoadError> {
         for name in skill_names {
             let skill_dir = self.skills_dir.join(name);
-            let skill_file = skill_dir.join("skill.md");
+            let skill_file = if skill_dir.join("SKILL.md").exists() {
+                skill_dir.join("SKILL.md")
+            } else {
+                skill_dir.join("skill.md")
+            };
 
             if skill_file.exists() {
                 match self.load_skill_file(&skill_file) {
@@ -207,8 +215,20 @@ impl SkillLoader {
             },
             preferred_tools: vec![],
             examples: vec![],
-            file_path: self.skills_dir.join("general/skill.md"),
+            file_path: self.skills_dir.join("general/SKILL.md"),
             last_modified: SystemTime::now(),
+            user_invocable: true,
+            disable_model_invocation: false,
+            internal: false,
+            has_scripts: false,
+            has_references: false,
+            has_assets: false,
+            license: None,
+            version: None,
+            compatibility: None,
+            full_content_loaded: true,
+            model: None,
+            effort: None,
         })
     }
 }

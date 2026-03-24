@@ -3,16 +3,46 @@ use std::time::SystemTime;
 
 #[derive(Debug, Clone)]
 pub struct Skill {
+    // Level 1: Always loaded at startup
     pub name: String,
     pub description: String,
+    // Level 2: Loaded when skill is activated
     pub context: String,
     pub keywords: Vec<String>,
     pub behaviors: SkillBehaviors,
     #[allow(dead_code)]
     pub preferred_tools: Vec<String>,
     pub examples: Vec<SkillExample>,
+    // Metadata
     pub file_path: PathBuf,
     pub last_modified: SystemTime,
+    // Claude Code fields
+    pub user_invocable: bool,
+    pub disable_model_invocation: bool,
+    pub internal: bool,
+    // Resource directories
+    pub has_scripts: bool,
+    pub has_references: bool,
+    pub has_assets: bool,
+    // Additional metadata
+    pub license: Option<String>,
+    pub version: Option<String>,
+    pub compatibility: Option<String>,
+    // Lazy loading
+    pub full_content_loaded: bool,
+    // Model/effort override
+    pub model: Option<String>,
+    pub effort: Option<String>,
+}
+
+impl Skill {
+    pub fn load_level_1(&self) -> String {
+        format!("Skill: {}\nDescription: {}", self.name, self.description)
+    }
+
+    pub fn load_level_2(&self) -> String {
+        self.context.clone()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -53,7 +83,13 @@ impl Skill {
 }
 
 pub mod detector;
+pub mod hook_manager;
 pub mod loader;
 pub mod manager;
+pub mod mcp_client;
+pub mod marketplace;
 pub mod parser;
+pub mod permission_manager;
 pub mod prompt_builder;
+pub mod reference_loader;
+pub mod script_executor;

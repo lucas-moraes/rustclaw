@@ -65,6 +65,9 @@ impl SkillPromptBuilder {
                 }
             }
 
+            // Resource directories info
+            Self::add_resource_info(&mut prompt, skill);
+
             prompt.push_str("═══════════════════════════════════════════════════\n\n");
         }
 
@@ -75,5 +78,28 @@ impl SkillPromptBuilder {
         prompt.push_str(memory_context);
 
         prompt
+    }
+
+    fn add_resource_info(prompt: &mut String, skill: &Skill) {
+        let mut resources = vec![];
+
+        if skill.has_scripts {
+            resources.push("scripts/ - Executáveis disponíveis");
+        }
+        if skill.has_references {
+            resources.push("references/ - Documentação de referência");
+        }
+        if skill.has_assets {
+            resources.push("assets/ - Recursos e templates");
+        }
+
+        if !resources.is_empty() {
+            prompt.push_str("### RECURSOS DISPONÍVEIS\n\n");
+            for res in resources {
+                prompt.push_str(&format!("  • {}\n", res));
+            }
+            prompt.push_str("\nUse a ferramenta skill_script para executar scripts.\n");
+            prompt.push_str("Use @nome-do-arquivo para referenciar arquivos em references/.\n\n");
+        }
     }
 }

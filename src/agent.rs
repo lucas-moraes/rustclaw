@@ -1374,6 +1374,12 @@ impl Agent {
     ) -> String {
         let tool_list = if self.tools.is_empty() {
             "Nenhuma ferramenta disponível".to_string()
+        } else if let Some(s) = skill {
+            if s.preferred_tools.is_empty() {
+                self.tools.list()
+            } else {
+                self.tools.list_filtered(&s.preferred_tools)
+            }
         } else {
             self.tools.list()
         };
@@ -1684,6 +1690,18 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
 
     pub fn get_memory_count(&self) -> anyhow::Result<i64> {
         self.memory_store.count()
+    }
+
+    pub fn get_skill_manager(&self) -> &SkillManager {
+        &self.skill_manager
+    }
+
+    pub fn list_skills(&self) -> Vec<String> {
+        self.skill_manager.list_available_skills()
+    }
+
+    pub fn force_skill(&mut self, skill_name: &str) -> Result<(), String> {
+        self.skill_manager.force_skill(skill_name)
     }
 
     fn sanitize_model_response(&self, response: &str) -> String {
