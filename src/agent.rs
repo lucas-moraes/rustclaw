@@ -1499,8 +1499,20 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
     }
 
     async fn call_llm(&self, messages: &[Value]) -> anyhow::Result<String> {
-        // Hugging Face OpenAI-compatible API format
-        let url = format!("{}/chat/completions", self.config.base_url);
+        // Determine endpoint based on provider
+        // OpenCode Go MiniMax uses /messages (Anthropic compatible)
+        // Others use /chat/completions (OpenAI compatible)
+        let endpoint = if self.config.provider == "opencode-go" || self.config.provider == "opencode" {
+            if self.config.model.contains("minimax") {
+                "/messages"
+            } else {
+                "/chat/completions"
+            }
+        } else {
+            "/chat/completions"
+        };
+
+        let url = format!("{}{}", self.config.base_url, endpoint);
 
         // Filter out messages with empty content to avoid API errors
         let filtered_messages: Vec<Value> = messages

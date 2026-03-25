@@ -148,6 +148,7 @@ mod tests {
             max_retries: 5,
             tavily_api_key: None,
             timezone: "America/Sao_Paulo".to_string(),
+            provider: "test".to_string(),
         }
     }
 
