@@ -15,8 +15,8 @@ pub struct Config {
 
 impl Config {
     pub fn from_env() -> anyhow::Result<Self> {
-        let api_key = std::env::var("HUGGINGFACE_TOKEN")
-            .map_err(|_| anyhow::anyhow!("HUGGINGFACE_TOKEN environment variable not set"))?;
+        let api_key = std::env::var("TOKEN")
+            .map_err(|_| anyhow::anyhow!("TOKEN environment variable not set"))?;
 
         let tavily_api_key = std::env::var("TAVILY_API_KEY").ok();
         let timezone = std::env::var("TZ").unwrap_or_else(|_| "America/Sao_Paulo".to_string());
