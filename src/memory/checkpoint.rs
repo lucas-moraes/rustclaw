@@ -23,6 +23,7 @@ pub struct DevelopmentCheckpoint {
     pub plan_text: String,
     pub project_dir: String,
     pub plan_file: String,
+    pub active_skill: Option<String>, // Skill ativa durante o desenvolvimento
     pub phase: PlanPhase,
     pub state: DevelopmentState,
     pub current_step: usize,
@@ -126,6 +127,7 @@ impl CheckpointStore {
                 plan_text TEXT NOT NULL DEFAULT '',
                 project_dir TEXT NOT NULL DEFAULT '',
                 plan_file TEXT NOT NULL DEFAULT '',
+                active_skill TEXT,
                 phase TEXT NOT NULL DEFAULT 'executing',
                 state TEXT NOT NULL,
                 created_at TEXT NOT NULL,
@@ -134,22 +136,15 @@ impl CheckpointStore {
             [],
         )?;
 
-        let _ = self.conn.execute(
-            "ALTER TABLE checkpoints ADD COLUMN plan_text TEXT NOT NULL DEFAULT ''",
-            [],
-        );
-        let _ = self.conn.execute(
-            "ALTER TABLE checkpoints ADD COLUMN project_dir TEXT NOT NULL DEFAULT ''",
-            [],
-        );
-        let _ = self.conn.execute(
-            "ALTER TABLE checkpoints ADD COLUMN plan_file TEXT NOT NULL DEFAULT ''",
-            [],
-        );
-        let _ = self.conn.execute(
-            "ALTER TABLE checkpoints ADD COLUMN phase TEXT NOT NULL DEFAULT 'executing'",
-            [],
-        );
+        // Migration: add active_skill column if it doesn't exist
+        let _ = self
+            .conn
+            .execute("ALTER TABLE checkpoints ADD COLUMN active_skill TEXT", []);
+
+        // Migration: add active_skill column if it doesn't exist
+        let _ = self
+            .conn
+            .execute("ALTER TABLE checkpoints ADD COLUMN active_skill TEXT", []);
 
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_checkpoints_state ON checkpoints(state)",
@@ -167,8 +162,8 @@ impl CheckpointStore {
     pub fn save(&self, checkpoint: &DevelopmentCheckpoint) -> SqliteResult<()> {
         self.conn.execute(
             "INSERT OR REPLACE INTO checkpoints 
-             (id, user_input, current_iteration, messages_json, completed_tools_json, plan_text, project_dir, plan_file, phase, state, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+             (id, user_input, current_iteration, messages_json, completed_tools_json, plan_text, project_dir, plan_file, active_skill, phase, state, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
                 checkpoint.id,
                 checkpoint.user_input,
@@ -178,6 +173,7 @@ impl CheckpointStore {
                 checkpoint.plan_text,
                 checkpoint.project_dir,
                 checkpoint.plan_file,
+                checkpoint.active_skill,
                 checkpoint.phase.to_string(),
                 checkpoint.state.to_string(),
                 checkpoint.created_at.to_rfc3339(),
@@ -189,7 +185,7 @@ impl CheckpointStore {
 
     pub fn get(&self, id: &str) -> SqliteResult<Option<DevelopmentCheckpoint>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, user_input, current_iteration, messages_json, completed_tools_json, plan_text, project_dir, plan_file, phase, state, created_at, updated_at
+            "SELECT id, user_input, current_iteration, messages_json, completed_tools_json, plan_text, project_dir, plan_file, active_skill, phase, state, created_at, updated_at
              FROM checkpoints WHERE id = ?1"
         )?;
 
@@ -204,7 +200,7 @@ impl CheckpointStore {
 
     pub fn get_active(&self) -> SqliteResult<Vec<DevelopmentCheckpoint>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, user_input, current_iteration, messages_json, completed_tools_json, plan_text, project_dir, plan_file, phase, state, created_at, updated_at
+            "SELECT id, user_input, current_iteration, messages_json, completed_tools_json, plan_text, project_dir, plan_file, active_skill, phase, state, created_at, updated_at
              FROM checkpoints WHERE state IN ('in_progress', 'interrupted')
              ORDER BY updated_at DESC"
         )?;
@@ -221,7 +217,7 @@ impl CheckpointStore {
 
     pub fn get_recent_with_plans(&self, limit: usize) -> SqliteResult<Vec<DevelopmentCheckpoint>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, user_input, current_iteration, messages_json, completed_tools_json, plan_text, project_dir, plan_file, phase, state, created_at, updated_at
+            "SELECT id, user_input, current_iteration, messages_json, completed_tools_json, plan_text, project_dir, plan_file, active_skill, phase, state, created_at, updated_at
              FROM checkpoints WHERE plan_text != ''
              ORDER BY updated_at DESC LIMIT ?1"
         )?;
@@ -237,7 +233,7 @@ impl CheckpointStore {
     pub fn find_by_id_prefix(&self, prefix: &str) -> SqliteResult<Option<DevelopmentCheckpoint>> {
         let search_pattern = format!("{}%", prefix);
         let mut stmt = self.conn.prepare(
-            "SELECT id, user_input, current_iteration, messages_json, completed_tools_json, plan_text, project_dir, plan_file, phase, state, created_at, updated_at
+            "SELECT id, user_input, current_iteration, messages_json, completed_tools_json, plan_text, project_dir, plan_file, active_skill, phase, state, created_at, updated_at
              FROM checkpoints WHERE id LIKE ?1
              ORDER BY updated_at DESC LIMIT 1"
         )?;
@@ -254,7 +250,7 @@ impl CheckpointStore {
         let search_pattern = format!("%{}%", user_input);
 
         let mut stmt = self.conn.prepare(
-            "SELECT id, user_input, current_iteration, messages_json, completed_tools_json, plan_text, project_dir, plan_file, phase, state, created_at, updated_at
+            "SELECT id, user_input, current_iteration, messages_json, completed_tools_json, plan_text, project_dir, plan_file, active_skill, phase, state, created_at, updated_at
              FROM checkpoints WHERE user_input LIKE ?1 AND state IN ('in_progress', 'interrupted')
              ORDER BY updated_at DESC LIMIT 1"
         )?;
@@ -320,6 +316,7 @@ impl CheckpointStore {
             plan_text: row.get(5)?,
             project_dir: row.get(6)?,
             plan_file: row.get(7)?,
+            active_skill: row.get(12).ok(),
             phase: PlanPhase::from(phase_str.as_str()),
             state: DevelopmentState::from(state_str.as_str()),
             current_step: 0,
@@ -349,6 +346,7 @@ impl DevelopmentCheckpoint {
             plan_text: String::new(),
             project_dir: String::new(),
             plan_file: String::new(),
+            active_skill: None,
             phase: PlanPhase::Executing,
             state: DevelopmentState::InProgress,
             current_step: 0,

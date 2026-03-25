@@ -231,6 +231,15 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
             continue;
         }
 
+        if trimmed.eq_ignore_ascii_case("/clear") || trimmed.to_lowercase().contains("limpar memória") || trimmed.to_lowercase().contains("clean memory") {
+            println!("{}🧹 Limpando todas as memórias...{}", Colors::DIM, Colors::RESET);
+            match agent.clear_all_memory().await {
+                Ok(msg) => println!("{}✓ {}{}", Colors::AMBER, msg, Colors::RESET),
+                Err(e) => println!("{}✗ Erro ao limpar: {}{}", Colors::RED, e, Colors::RESET),
+            }
+            continue;
+        }
+
         if trimmed.eq_ignore_ascii_case("/skills") || trimmed.eq_ignore_ascii_case("/skill") {
             let skills = agent.list_skills();
             println!();
@@ -247,12 +256,21 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
             continue;
         }
 
+        // Check if it's a skill command (starts with / and matches an actual skill name)
         if trimmed.starts_with('/') && !trimmed.starts_with("<<<") {
             let cmd = trimmed.trim_start_matches('/');
             if let Some(skill_name) = cmd.split_whitespace().next() {
-                let input = format!("/{}", skill_name);
-                println!("{}Activating skill: {}{}", Colors::DIM, skill_name, Colors::RESET);
-                let _ = agent.force_skill(skill_name);
+                let available_skills = agent.list_skills();
+                if available_skills.contains(&skill_name.to_string()) {
+                    println!("{}Activating skill: {}{}", Colors::DIM, skill_name, Colors::RESET);
+                    let _ = agent.force_skill(skill_name);
+                } else {
+                    // Not a valid skill, show available skills
+                    println!("{}{}: skill '{}' not found. Available skills:", Colors::AMBER, skill_name, Colors::RESET);
+                    for skill in &available_skills {
+                        println!("  {}• {}{}", Colors::DIM, skill, Colors::RESET);
+                    }
+                }
             }
         }
 

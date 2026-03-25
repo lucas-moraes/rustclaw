@@ -164,16 +164,16 @@ impl Agent {
         }
         
         // ====== NEW PLAN FLOW ======
-        if user_input.eq_ignore_ascii_case("criar plano") {
-            if let Some(checkpoint) = self.get_last_active_checkpoint() {
-                if checkpoint.phase == PlanPhase::AwaitingIdea
-                    || checkpoint.phase == PlanPhase::AwaitingPlanEdit
-                    || checkpoint.phase == PlanPhase::AwaitingApproval
-                {
-                    return Ok("Já existe um plano em criação. Continue de onde parou.".to_string());
-                }
-            }
-
+        // Check for "criar plano" or "novo plano" or "criar novo" - more flexible matching
+        let lower_input = user_input.to_lowercase();
+        if lower_input.contains("criar plano") 
+            || lower_input.contains("novo plano") 
+            || lower_input.contains("criar novo")
+            || lower_input.contains("outro plano")
+            || lower_input.trim() == "criar"
+            || lower_input.trim() == "novo"
+        {
+            // Create a fresh checkpoint, ignoring any existing one
             let mut checkpoint = DevelopmentCheckpoint::new("criar plano".to_string());
             checkpoint.set_phase(PlanPhase::AwaitingDir);
             checkpoint.set_project_dir(String::new());
@@ -210,7 +210,9 @@ impl Agent {
                         }
 
                         checkpoint.set_project_dir(dir.to_string());
-                        let plan_path = path.join("plain.md");
+                        let ai_dev_dir = path.join(".ai-dev");
+                        let _ = std::fs::create_dir_all(&ai_dev_dir);
+                        let plan_path = ai_dev_dir.join("plain.md");
                         checkpoint.set_plan_file(plan_path.to_string_lossy().to_string());
                         checkpoint.set_phase(PlanPhase::AwaitingIdea);
                         self.checkpoint_store.save(&checkpoint)?;
@@ -296,14 +298,22 @@ impl Agent {
 
                             checkpoint.set_phase(PlanPhase::Executing);
 
+                            // Save active skill
+                            if let Some(skill_name) = self.skill_manager.get_active_skill_name() {
+                                checkpoint.active_skill = Some(skill_name);
+                            }
+
                             if !checkpoint.plan_file.is_empty() {
                                 let idea = checkpoint.plan_text.lines()
                                     .find(|l| l.starts_with("**Ideia:**"))
                                     .map(|l| l.replace("**Ideia:**", "").trim().to_string())
                                     .unwrap_or_default();
+                                let skill_info = checkpoint.active_skill.as_ref()
+                                    .map(|s| format!("\n\n## Skill Ativa\n\n{}\n", s))
+                                    .unwrap_or_default();
                                 let plan_content = format!(
-                                    "# Plano de Desenvolvimento\n\n**Ideia:** {}\n**Status:** ✅ Aprovado\n\n## Passos\n\n{}\n\n---\n*Plano aprovado e em execução*",
-                                    idea, checkpoint.plan_text
+                                    "# Plano de Desenvolvimento\n\n**Ideia:** {}\n**Status:** ✅ Aprovado{}\n## Passos\n\n{}\n\n---\n*Plano aprovado e em execução*",
+                                    idea, skill_info, checkpoint.plan_text
                                 );
                                 let _ = std::fs::write(&checkpoint.plan_file, &plan_content);
                             }
@@ -360,7 +370,9 @@ impl Agent {
 
             if let Some(mut checkpoint) = self.get_last_active_checkpoint() {
                 checkpoint.set_project_dir(dir.to_string());
-                let plan_path = path.join("plain.md");
+                let ai_dev_dir = path.join(".ai-dev");
+                let _ = std::fs::create_dir_all(&ai_dev_dir);
+                let plan_path = ai_dev_dir.join("plain.md");
                 checkpoint.set_plan_file(plan_path.to_string_lossy().to_string());
                 self.checkpoint_store.save(&checkpoint)?;
                 return Ok(format!("Diretório salvo: {}", checkpoint.project_dir));
@@ -441,20 +453,75 @@ impl Agent {
         }
 
         // Handle "continuar projeto" — resumes an Executing checkpoint
-        if user_input.eq_ignore_ascii_case("continuar projeto")
-            || user_input.eq_ignore_ascii_case("continuar")
-        {
-            if let Some(active) = self.get_last_active_checkpoint() {
-                if active.phase == PlanPhase::Executing && !active.plan_text.is_empty() {
-                    let task_input = format!(
-                        "Execute o plano de desenvolvimento no diretorio {}:\n\n{}",
-                        active.project_dir,
-                        active.plan_text
-                    );
-                    return self.run_development(task_input, active).await;
+        // Also handles common typos like "cotinuar", "contiunar", etc.
+        let lower = user_input.to_lowercase();
+        if lower.starts_with("contin") || lower.starts_with("cotin") || lower.starts_with("conti") {
+            // Try to find any checkpoint to resume
+            if let Some(checkpoints) = self.checkpoint_store.get_active().ok() {
+                for mut active in checkpoints {
+                    // Can resume from any phase with a plan
+                    if !active.plan_text.is_empty() {
+                        // Ensure .ai-dev directory exists
+                        if let Some(parent) = std::path::Path::new(&active.plan_file).parent() {
+                            let _ = std::fs::create_dir_all(parent);
+                        }
+                        
+                        // Restore active skill if saved
+                        if let Some(ref skill_name) = active.active_skill {
+                            info!("Restoring skill: {}", skill_name);
+                            let _ = self.skill_manager.force_skill(skill_name);
+                        }
+                        
+                        info!("Resuming checkpoint: {} in phase {:?}", active.id, active.phase);
+                        let task_input = format!(
+                            "Execute o plano de desenvolvimento no diretorio {}:\n\n{}",
+                            active.project_dir,
+                            active.plan_text
+                        );
+                        return self.run_development(task_input, active).await;
+                    }
                 }
             }
-            return Ok("Nenhum plano em execução. Use 'criar plano' para iniciar.".to_string());
+            
+            // Check for any recent checkpoints with plans
+            if let Ok(checkpoints) = self.checkpoint_store.get_recent_with_plans(1) {
+                for mut active in checkpoints {
+                    if !active.plan_text.is_empty() {
+                        // Ensure .ai-dev directory exists
+                        if let Some(parent) = std::path::Path::new(&active.plan_file).parent() {
+                            let _ = std::fs::create_dir_all(parent);
+                        }
+                        
+                        // Restore active skill if saved
+                        if let Some(ref skill_name) = active.active_skill {
+                            info!("Restoring skill: {}", skill_name);
+                            let _ = self.skill_manager.force_skill(skill_name);
+                        }
+                        
+                        info!("Resuming from recent: {} in phase {:?}", active.id, active.phase);
+                        let task_input = format!(
+                            "Execute o plano de desenvolvimento no diretorio {}:\n\n{}",
+                            active.project_dir,
+                            active.plan_text
+                        );
+                        return self.run_development(task_input, active).await;
+                    }
+                }
+            }
+            
+            return Ok("Nenhum plano encontrado para continuar. Use 'criar plano' para iniciar um novo projeto.".to_string());
+        }
+
+        // Handle clean memory commands
+        let lower = user_input.to_lowercase();
+        if lower.contains("limpar memória") || lower.contains("clean memory") || lower.contains("limpar memoria") {
+            if lower.contains("confirm") || lower.contains("sim") || lower.contains("yes") || lower.contains("true") {
+                match self.clear_all_memory().await {
+                    Ok(msg) => return Ok("✓ ".to_string() + &msg),
+                    Err(e) => return Ok("✗ Erro ao limpar: ".to_string() + &e),
+                }
+            }
+            return Ok("⚠️ Para confirmar que deseja limpar TODAS as memórias (conversas, planos, checkpoints), digite:\n\n'clean memory confirm' ou 'limpar memória confirmar'".to_string());
         }
 
         let mut checkpoint = self.load_or_create_checkpoint(user_input).await?;
@@ -1692,6 +1759,21 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
         self.memory_store.count()
     }
 
+    pub async fn clear_all_memory(&self) -> Result<String, String> {
+        // Clear all memories
+        self.memory_store.clear_all()
+            .map_err(|e| format!("Erro ao limpar memória: {}", e))?;
+
+        // Clear checkpoints (get all recent ones)
+        if let Ok(checkpoints) = self.checkpoint_store.get_recent_with_plans(1000) {
+            for cp in checkpoints {
+                let _ = self.checkpoint_store.delete(&cp.id);
+            }
+        }
+
+        Ok("Todas as memórias foram limpas (conversas, planos, checkpoints, skills ativas)".to_string())
+    }
+
     pub fn get_skill_manager(&self) -> &SkillManager {
         &self.skill_manager
     }
@@ -1744,6 +1826,11 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
             return Ok(value);
         }
 
+        // Try to extract heredoc content for shell commands
+        if let Some(value) = Self::parse_heredoc_input(&stripped) {
+            return Ok(value);
+        }
+
         if let Some(json_block) = Self::extract_json_block(&stripped) {
             if let Ok(value) = serde_json::from_str::<Value>(&json_block) {
                 return Ok(value);
@@ -1755,6 +1842,55 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
         }
 
         Err(anyhow::anyhow!("Action Input inválido: {}", action_input))
+    }
+
+    fn parse_heredoc_input(input: &str) -> Option<Value> {
+        // Check if this is a shell command trying to create a file
+        if input.contains("cat >") || input.contains("tee >") {
+            // Try to find heredoc pattern: cat > file << EOF ... EOF
+            let heredoc_re = Regex::new(
+                r#""command"\s*:\s*"cat\s+>\s+([^"]+)\s+<<\s*'?\w+'?\s*\n(.*?)\n\w+""#
+            ).ok()?;
+            
+            if let Some(caps) = heredoc_re.captures(input) {
+                let file_path = caps.get(1)?.as_str();
+                let content = caps.get(2)?.as_str();
+                
+                // Use file_write instead of shell for creating files
+                return Some(json!({
+                    "path": file_path,
+                    "content": content
+                }));
+            }
+            
+            // Try alternative pattern without quotes around EOF
+            let alt_re = Regex::new(
+                r#""command"\s*:\s*"([^"]*cat[^"]*\bEOF\b[^"]*)""#
+            ).ok()?;
+            
+            if let Some(caps) = alt_re.captures(input) {
+                let command = caps.get(1)?.as_str();
+                
+                // Check if it's trying to write a file
+                let file_re = Regex::new(r"cat\s+>\s+(\S+)").ok()?;
+                if let Some(file_caps) = file_re.captures(command) {
+                    let file_path = file_caps.get(1)?.as_str();
+                    
+                    // Try to extract content between EOF markers
+                    let eof_re = Regex::new(r"<<\s*'?(\w+)'?\s*\n(.*?)\n\1").ok()?;
+                    if let Some(eof_caps) = eof_re.captures(input) {
+                        let content = eof_caps.get(2)?.as_str();
+                        
+                        return Some(json!({
+                            "path": file_path,
+                            "content": content
+                        }));
+                    }
+                }
+            }
+        }
+        
+        None
     }
 
     fn recover_action_input(&self, input: &str) -> Option<Value> {
