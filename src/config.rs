@@ -1,3 +1,4 @@
+use crate::auth::get_api_key;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -12,11 +13,17 @@ pub struct Config {
     pub tavily_api_key: Option<String>,
     pub timezone: String,
     pub provider: String,
+    pub fallback_models: Vec<FallbackModel>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FallbackModel {
+    pub model: String,
+    pub base_url: String,
 }
 
 impl Config {
     pub fn from_env() -> anyhow::Result<Self> {
-        // Support both TOKEN and OPENCODE_API_KEY
         let api_key = std::env::var("OPENCODE_API_KEY")
             .or_else(|_| std::env::var("TOKEN"))
             .map_err(|_| {
@@ -45,7 +52,6 @@ impl Config {
             .and_then(|value| value.parse::<usize>().ok())
             .unwrap_or(5);
 
-        // Support multiple providers
         let provider = std::env::var("PROVIDER").unwrap_or_else(|_| "opencode-go".to_string());
 
         let (base_url, model) = match provider.as_str() {
@@ -75,6 +81,8 @@ impl Config {
             ),
         };
 
+        let fallback_models = Self::load_fallback_models();
+
         Ok(Self {
             api_key,
             base_url,
@@ -86,6 +94,34 @@ impl Config {
             tavily_api_key,
             timezone,
             provider,
+            fallback_models,
         })
+    }
+
+    fn load_fallback_models() -> Vec<FallbackModel> {
+        let mut fallbacks = Vec::new();
+
+        if let Ok(fallback_config) = std::env::var("FALLBACK_MODELS") {
+            for line in fallback_config.split(',') {
+                let parts: Vec<&str> = line.trim().split('|').collect();
+                if parts.len() >= 2 {
+                    fallbacks.push(FallbackModel {
+                        model: parts[0].trim().to_string(),
+                        base_url: parts[1].trim().to_string(),
+                    });
+                }
+            }
+        } else {
+            fallbacks.push(FallbackModel {
+                model: "minimax/minimax-m2.5:free".to_string(),
+                base_url: "https://openrouter.ai/api/v1".to_string(),
+            });
+            fallbacks.push(FallbackModel {
+                model: "Qwen/Qwen3-Coder-Next".to_string(),
+                base_url: "https://router.huggingface.co/v1".to_string(),
+            });
+        }
+
+        fallbacks
     }
 }

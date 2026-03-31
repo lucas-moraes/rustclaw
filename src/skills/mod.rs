@@ -33,6 +33,8 @@ pub struct Skill {
     // Model/effort override
     pub model: Option<String>,
     pub effort: Option<String>,
+    // Skill dependencies
+    pub dependencies: Vec<String>,
 }
 
 impl Skill {

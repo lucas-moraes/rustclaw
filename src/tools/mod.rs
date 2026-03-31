@@ -82,6 +82,81 @@ impl ToolRegistry {
     pub fn is_empty(&self) -> bool {
         self.tools.is_empty()
     }
+
+    pub fn register_with_dedup(&mut self, tool: Box<dyn Tool>) -> bool {
+        let name = tool.name().to_string();
+        let name_lower = name.to_lowercase();
+        
+        for existing in self.tools.keys() {
+            if existing.to_lowercase() == name_lower {
+                return false;
+            }
+        }
+        
+        self.tools.insert(name, tool);
+        true
+    }
+
+    pub fn deduplicate(&mut self) -> usize {
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut duplicates: Vec<String> = Vec::new();
+        
+        for name in self.tools.keys() {
+            let name_lower = name.to_lowercase();
+            if seen.contains(&name_lower) {
+                duplicates.push(name.clone());
+            } else {
+                seen.insert(name_lower);
+            }
+        }
+        
+        let count = duplicates.len();
+        for name in duplicates {
+            self.tools.remove(&name);
+        }
+        
+        count
+    }
+
+    pub fn merge(&mut self, other: ToolRegistry, strategy: MergeStrategy) -> usize {
+        let mut added = 0;
+        
+        for (name, tool) in other.tools {
+            let name_lower = name.to_lowercase();
+            
+            match strategy {
+                MergeStrategy::Skip => {
+                    if !self.tools.contains_key(&name) && !self.tools.keys().any(|k| k.to_lowercase() == name_lower) {
+                        self.tools.insert(name, tool);
+                        added += 1;
+                    }
+                }
+                MergeStrategy::Overwrite => {
+                    self.tools.insert(name, tool);
+                    added += 1;
+                }
+                MergeStrategy::Rename => {
+                    let mut new_name = name.clone();
+                    let mut counter = 1;
+                    while self.tools.contains_key(&new_name) || self.tools.keys().any(|k| k.to_lowercase() == new_name.to_lowercase()) {
+                        new_name = format!("{}_{}", name, counter);
+                        counter += 1;
+                    }
+                    self.tools.insert(new_name, tool);
+                    added += 1;
+                }
+            }
+        }
+        
+        added
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum MergeStrategy {
+    Skip,
+    Overwrite,
+    Rename,
 }
 
 impl Default for ToolRegistry {
@@ -149,6 +224,7 @@ mod tests {
             tavily_api_key: None,
             timezone: "America/Sao_Paulo".to_string(),
             provider: "test".to_string(),
+            fallback_models: vec![],
         }
     }
 

@@ -31,6 +31,8 @@ struct YamlFrontmatter {
     #[serde(default)]
     effort: Option<String>,
     #[serde(default)]
+    dependencies: Vec<String>,
+    #[serde(default)]
     metadata: YamlMetadata,
 }
 
@@ -202,6 +204,7 @@ impl SkillParser {
             full_content_loaded: true,
             model: frontmatter.model,
             effort: frontmatter.effort,
+            dependencies: frontmatter.dependencies,
         })
     }
 
@@ -248,6 +251,7 @@ impl SkillParser {
             full_content_loaded: true,
             model: None,
             effort: None,
+            dependencies: vec![],
         })
     }
 

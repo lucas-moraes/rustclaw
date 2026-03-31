@@ -127,6 +127,7 @@ mod tests {
             full_content_loaded: true,
             model: None,
             effort: None,
+            dependencies: vec![],
         }
     }
 

@@ -1,3 +1,5 @@
+use crate::app_store::Store;
+use crate::app_state::AppState;
 use crate::config::Config;
 use crate::memory::checkpoint::{CheckpointStore, DevelopmentCheckpoint, DevelopmentState, PlanPhase, ToolExecution};
 use crate::memory::embeddings::EmbeddingService;
@@ -46,6 +48,8 @@ pub struct Agent {
     skill_manager: SkillManager,
     skill_context_store: SkillContextStore,
     chat_id: Option<i64>,
+    fallback_index: usize,
+    app_store: Store<AppState>,
 }
 
 impl Agent {
@@ -87,6 +91,8 @@ impl Agent {
             skill_manager,
             skill_context_store,
             chat_id,
+            fallback_index: 0,
+            app_store: Store::new(AppState::default()),
         })
     }
 
@@ -1256,7 +1262,7 @@ impl Agent {
         Ok(DevelopmentCheckpoint::new(user_input.to_string()))
     }
 
-    async fn generate_plan(&self, user_input: &str) -> anyhow::Result<String> {
+    async fn generate_plan(&mut self, user_input: &str) -> anyhow::Result<String> {
         let plan_prompt = format!(
             "Voce e um planejador. Crie um plano em passos numerados, conciso e executavel, para a tarefa abaixo.\n\nTarefa: {}\n\nRegras:\n- Use 5-10 passos\n- Cada passo deve ser uma acao concreta\n- Nao execute nada, apenas planeje\n\nFormato:\n1) ...\n2) ...\n3) ...",
             user_input
@@ -1498,12 +1504,34 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
         messages
     }
 
-    async fn call_llm(&self, messages: &[Value]) -> anyhow::Result<String> {
-        // Determine endpoint based on provider
-        // OpenCode Go MiniMax uses /messages (Anthropic compatible)
-        // Others use /chat/completions (OpenAI compatible)
-        let endpoint = if self.config.provider == "opencode-go" || self.config.provider == "opencode" {
-            if self.config.model.contains("minimax") {
+    async fn call_llm(&mut self, messages: &[Value]) -> anyhow::Result<String> {
+        // Try primary model first
+        let result = self.call_llm_with_config(messages, &self.config.model, &self.config.base_url, &self.config.provider).await;
+        
+        // If primary fails, try fallback models
+        if result.is_err() && !self.config.fallback_models.is_empty() {
+            tracing::warn!("Primary model failed, trying fallbacks...");
+            
+            for fallback in &self.config.fallback_models {
+                tracing::info!("Trying fallback model: {}", fallback.model);
+                match self.call_llm_with_config(messages, &fallback.model, &fallback.base_url, "default").await {
+                    Ok(response) => {
+                        tracing::info!("Fallback model {} succeeded", fallback.model);
+                        return Ok(response);
+                    }
+                    Err(e) => {
+                        tracing::warn!("Fallback model {} failed: {}", fallback.model, e);
+                    }
+                }
+            }
+        }
+        
+        result
+    }
+
+    async fn call_llm_with_config(&self, messages: &[Value], model: &str, base_url: &str, provider: &str) -> anyhow::Result<String> {
+        let endpoint = if provider == "opencode-go" || provider == "opencode" {
+            if model.contains("minimax") {
                 "/messages"
             } else {
                 "/chat/completions"
@@ -1512,9 +1540,8 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
             "/chat/completions"
         };
 
-        let url = format!("{}{}", self.config.base_url, endpoint);
+        let url = format!("{}{}", base_url, endpoint);
 
-        // Filter out messages with empty content to avoid API errors
         let filtered_messages: Vec<Value> = messages
             .iter()
             .filter(|m| {
@@ -1532,7 +1559,7 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
         }
 
         let body = json!({
-            "model": self.config.model,
+            "model": model,
             "messages": filtered_messages,
             "max_tokens": self.config.max_tokens,
             "temperature": 0.7
@@ -1556,7 +1583,6 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
 
         let message = &json_response["choices"][0]["message"];
         
-        // Try to get content, fallback to reasoning_content for thinking models
         let content = if let Some(c) = message["content"].as_str() {
             if !c.is_empty() {
                 c
@@ -1571,7 +1597,6 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
             return Err(anyhow::anyhow!("Invalid response format from API"));
         };
 
-        // Strip system-reminder blocks from LLM output
         let reminder_re = Regex::new(r"(?is)<system-reminder>.*?</system-reminder>").unwrap();
         let cleaned = reminder_re.replace_all(content, "").trim().to_string();
 
@@ -2028,6 +2053,21 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
     #[allow(dead_code)]
     pub fn get_active_skill_name(&self) -> Option<String> {
         self.skill_manager.get_active_skill_name()
+    }
+
+    pub fn get_app_store(&self) -> &Store<AppState> {
+        &self.app_store
+    }
+
+    pub fn get_app_state(&self) -> AppState {
+        self.app_store.get_state()
+    }
+
+    pub fn update_app_state<F>(&self, updater: F)
+    where
+        F: FnOnce(&AppState) -> AppState,
+    {
+        self.app_store.set_state(updater);
     }
 }
 

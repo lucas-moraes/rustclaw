@@ -1,8 +1,14 @@
 mod agent;
+mod app_state;
+mod app_store;
+mod auth;
+mod bridge;
 mod browser;
 mod cli;
 mod config;
+mod features;
 mod memory;
+mod prefetch;
 mod reminder_executor;
 mod security;
 mod skills;
