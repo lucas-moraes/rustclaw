@@ -1,560 +1,160 @@
-# RustClaw - Raspberry Pi Edition
+# RustClaw
 
-AI Agent in Rust optimized for Raspberry Pi 3 Model B with 1GB RAM. Interface via Telegram or CLI, with persistent memory in SQLite.
+AI Agent in Rust with persistent memory, skills, and ReAct architecture. Compatible with multiple LLM providers.
 
 ## ✨ Features
 
 - 🤖 **AI Agent** with ReAct architecture
 - 💾 **Persistent memory** via SQLite
-- 🔍 **Web search** via Tavily API
-- 💬 **Interface** via Telegram Bot or CLI
-- 🧠 **Embeddings** via OpenAI API (with offline fallback)
-- ⚡ **Optimized** for low RAM consumption (~150-250MB)
-- 🌐 **Browser automation** via Chromiumoxide (Chrome DevTools Protocol)
-- 🛡️ **Stealth mode** via Chaser-oxide (anti-detection)
-- 📺 **TMUX visualization** - Real-time session monitoring
+- 🔍 **Web search** via Tavily or web search
+- 🧠 **Semantic embeddings** for memory search
+- ⏰ **Reminder system** scheduled
+- 🎯 **Skills** - Customizable commands with YAML frontmatter
+- 📦 **MCP Client** - stdio and HTTP support
+- 🔐 **Credential chaining** - Environment, keychain, config file
+- 🎨 **Colored UI** - Terminal with colors
+- 💻 **CLI Mode** and **Telegram Bot**
+- 🔄 **Automatic fallback** - Multiple providers
+- 🛡️ **Workspace trust** - Trust system
 
-## 📋 Requirements
+## Supported Providers
 
-### Hardware
-- Raspberry Pi 3 Model B (or better)
-- 1GB RAM (shared with GPU)
-- 20GB+ storage (SD Card)
-- Internet connection
-
-### System
-- Raspberry Pi OS Lite (64-bit recommended)
-- 1GB swap configured
-- SSH access (for remote setup)
-
-### Required API Keys
-- [Hugging Face](https://huggingface.co/settings/tokens) - For LLM
-- [Tavily](https://app.tavily.com) - For web search
-- [OpenAI](https://platform.openai.com/api-keys) - For embeddings (optional, has fallback)
-- [Telegram Bot](https://t.me/botfather) - For Telegram bot
-
-### Required Software (for Browser Automation)
-- [Chrome/Chromium](https://www.google.com/chrome/) - Required for Chromiumoxide/Chaser-oxide
-- Or use the built-in browser fetcher
-
-### Browser Automation Features
-
-- **Chromiumoxide** - Chrome DevTools Protocol integration
-- **Chaser-oxide** - Stealth mode with anti-detection:
-  - Protocol-level stealth
-  - Fingerprint spoofing
-  - Random delays between actions
-  - Human-like typing simulation
-- **Screenshot capture** - Automatic saving to /tmp/
-
----
+| Provider | Model |
+|----------|-------|
+| **OpenCode Go** (default) | MiniMax M2.5 |
+| OpenRouter | MiniMax M2.5, Qwen |
+| VillaMarket | MiniMax M2.5 |
+| Moonshot | Kimi K2.5 |
+| HuggingFace | Qwen3-Coder-Next |
 
 ## 🚀 Installation
 
-### Option 1: Cross-Compile on PC (Recommended - 5 minutes)
-
-Faster! Compile on your computer and transfer to the Raspberry Pi.
-
-#### On PC (macOS/Linux):
-
 ```bash
-# 1. Enter the project directory
+# Clone the project
+git clone https://github.com/your-user/rustclaw
 cd rustclaw
 
-# 2. Install cross (if you don't have it)
-cargo install cross --git https://github.com/cross-rs/cross
+# Copy config template
+cp .env.example config/.env
 
-# 3. Build for ARM64
-cross build --target aarch64-unknown-linux-gnu --release
-
-# 4. Verify binary was created
-ls -lh target/aarch64-unknown-linux-gnu/release/rustclaw
+# Edit configuration
+nano config/.env
 ```
-
-#### Transfer to Raspberry Pi:
-
-```bash
-# Copy binary to Raspberry Pi
-scp target/aarch64-unknown-linux-gnu/release/rustclaw pi@raspberrypi.local:~/
-
-# Or copy to SD card directly
-```
-
-#### On Raspberry Pi:
-
-```bash
-# Make executable
-chmod +x ~/rustclaw
-
-# Test
-./rustclaw --help
-```
-
----
-
-### Option 2: Native Build on Raspberry Pi (2-3 hours)
-
-Compile directly on Raspberry Pi (slower, but doesn't need a PC).
-
-#### 1. Prepare the System
-
-```bash
-# Update system
-sudo apt update && sudo apt upgrade -y
-
-# Install dependencies
-sudo apt install -y sqlite3 libsqlite3-dev pkg-config libssl-dev
-
-# Configure 1GB swap (ESSENTIAL!)
-sudo dphys-swapfile swapoff
-sudo nano /etc/dphys-swapfile
-# Change: CONF_SWAPSIZE=1024
-sudo dphys-swapfile setup
-sudo dphys-swapfile swapon
-```
-
-#### 2. Install Rust
-
-```bash
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-source $HOME/.cargo/env
-```
-
-#### 3. Clone and Compile
-
-```bash
-# Copy the project to the Raspberry Pi
-# (via git clone, scp, or USB drive)
-
-# Enter the directory
-cd rustclaw
-
-# Compile (use --jobs 1 to save RAM)
-cargo build --release --jobs 1
-
-# The binary will be at:
-# target/release/rustclaw
-```
-
-#### 4. Install Chromium Browser (Optional - for browser automation)
-
-```bash
-# Install Chromium if not present
-# On Debian/Ubuntu:
-sudo apt install chromium chromium-driver
-
-# Or the library will download Chrome automatically on first run
-```
-
----
 
 ## ⚙️ Configuration
 
-### 1. Folder Structure
-
-All configuration files are in the `config/` directory:
-
 ```bash
-# Create config directory structure
-mkdir -p config/github/keys
+# config/.env
 
-# Your config will look like:
-config/
-├── .env                  # Environment variables
-├── github/
-│   └── keys/
-│       └── github_key   # SSH private key for GitHub
-├── memory_cli.db         # SQLite database (created automatically)
-└── memory_telegram.db   # Telegram memories (created automatically)
+# API Key (required)
+OPENCODE_API_KEY=your_api_key_here
+
+# Provider (default: opencode-go)
+PROVIDER=opencode-go
+
+# Model (default: minimax-m2.5)
+MODEL=minimax-m2.5
+
+# Optional settings
+MAX_TOKENS=4000
+MAX_ITERATIONS=20
+TZ=America/Sao_Paulo
 ```
 
-### 2. Environment Variables
-
-Create `config/.env`:
+### Feature Flags
 
 ```bash
-# Hugging Face API Token (required)
-HF_TOKEN=your_hf_token_here
-
-# Tavily API Key (required for search)
-TAVILY_API_KEY=your_tavily_key_here
-
-# OpenAI API Key (optional, for embeddings)
-# If not provided, uses offline fallback
-OPENAI_API_KEY=your_openai_key_here
-
-# Telegram Bot Token (required for telegram mode)
-TELEGRAM_TOKEN=your_bot_token_here
-
-# Telegram Chat ID (optional, restricts access)
-# Leave empty to allow any chat
-TELEGRAM_CHAT_ID=your_chat_id_here
-
-# Max tokens for model responses (optional)
-# Default: 1200
-MAX_TOKENS=1200
-
-# TMUX Configuration (for real-time visualization)
-# Enable TMUX sessions for monitoring agent activity
-TMUX_ENABLED=false
-
-# Log level: debug, info, warn, error
-LOG_LEVEL=info
+# Enable features
+PROACTIVE=1          # Proactive mode
+BRIDGE_MODE=1        # IDE bridge
+DEBUG=1              # Debug mode
+VERBOSE=1            # Detailed logging
 ```
 
-### 3. GitHub SSH Setup (Optional)
+## 🤖 Usage
 
-If you want GitHub integration via SSH:
+### CLI Mode
 
 ```bash
-# Place your private SSH key
-cp ~/.ssh/id_rsa config/github/keys/github_key
-
-# Set permissions (IMPORTANT!)
-chmod 600 config/github/keys/github_key
-
-# Test connection
-ssh -i config/github/keys/github_key -T git@github.com
+cargo run -- --mode cli
 ```
 
----
-
-## 🤖 Running
-
-### CLI Mode (Terminal)
-
-```bash
-./rustclaw --mode cli
-
-# You will see:
-# > 
-# Type messages or commands:
-# - exit: Quit
-# - clear-memory: Clear memories
-# - clear-all: Clear memories and tasks
-# - status: Check status
-```
-
-### Telegram Mode
-
-```bash
-./rustclaw --mode telegram
-
-# The bot will run and respond to messages on Telegram
-```
-
-### Available commands on Telegram:
-- `/start` - Start the bot
-- `/status` - System status
-- `/tasks` - List scheduled tasks
-- `/clear_memory` - Clear memories
-- `/internet <query>` - Search the web
-- `/help` - Help
-
----
-
-## 📺 TMUX Real-Time Visualization
-
-Monitor agent activity in real-time with multiple TMUX sessions!
-
-### Enable TMUX
-
-```bash
-# In .env file
-TMUX_ENABLED=true
-LOG_LEVEL=debug
-```
-
-### Sessions Created
-
-When enabled, 4 sessions are created:
-
-| Session | Name | Content |
-|--------|------|---------|
-| Agent | `rustclaw-{skill}-agent` | Thoughts, actions, final answers |
-| Tools | `rustclaw-{skill}-tools` | Tool execution details |
-| Debug | `rustclaw-{skill}-debug` | Logs, timestamps, errors |
-| Browser | `rustclaw-{skill}-browser` | Screenshots in real-time |
-
-### Connect to Sessions
-
-```bash
-# List all sessions
-tmux ls
-
-# Connect to agent session
-tmux attach -t rustclaw-cli-agent
-
-# Connect to tools session
-tmux attach -t rustclaw-cli-tools
-
-# Connect to debug session
-tmux attach -t rustclaw-cli-debug
-
-# Connect to browser screenshots
-tmux attach -t rustclaw-cli-browser
-
-# View screenshots
-ls /tmp/rustclaw-cli/browser/
-```
-
-### Screenshot Auto-Save
-
-When browser tool takes screenshots with TMUX enabled:
-- Saves to `/tmp/rustclaw-{skill}/browser/`
-- Automatically numbered
-- Notified in TMUX session
-
----
-
-## ⚡ Configure Systemd (Start Automatically)
-
-For RustClaw to start automatically on boot:
-
-### 1. Copy Configuration Files
-
-```bash
-# Copy service file
-sudo cp rustclaw.service /etc/systemd/system/
-
-# Create directories
-sudo mkdir -p /etc/rustclaw /var/lib/rustclaw /var/log/rustclaw
-sudo chown -R pi:pi /var/lib/rustclaw /var/log/rustclaw
-```
-
-### 2. Configure Variables
-
-```bash
-sudo nano /etc/rustclaw/.env
-# (add the same variables as in ~/.env)
-```
-
-### 3. Enable Service
-
-```bash
-# Reload systemd
-sudo systemctl daemon-reload
-
-# Enable auto-start
-sudo systemctl enable rustclaw
-
-# Start service
-sudo systemctl start rustclaw
-
-# Check status
-sudo systemctl status rustclaw
-```
-
-### Useful Commands
-
-```bash
-# Start/Stop/Restart
-sudo systemctl start rustclaw
-sudo systemctl stop rustclaw
-sudo systemctl restart rustclaw
-
-# View logs
-sudo tail -f /var/log/rustclaw/rustclaw.log
-sudo tail -f /var/log/rustclaw/rustclaw-error.log
-
-# View full status
-sudo systemctl status rustclaw
-```
-
----
-
-## 🛠️ Troubleshooting
-
-### Error: "cannot find -lsqlite3"
-
-```bash
-sudo apt install libsqlite3-dev
-```
-
-### Error: "cannot find -lssl"
-
-```bash
-sudo apt install libssl-dev
-```
-
-### Error: "Out of memory" during compilation
-
-```bash
-# Increase swap to 2GB temporarily
-sudo dphys-swapfile swapoff
-sudo nano /etc/dphys-swapfile  # CONF_SWAPSIZE=2048
-sudo dphys-swapfile setup
-sudo dphys-swapfile swapon
-
-# Compile with single thread
-cargo build --release --jobs 1
-```
-
-### Service doesn't start
-
-```bash
-# Check error
-sudo systemctl status rustclaw
-
-# View logs
-sudo journalctl -u rustclaw --no-pager | tail -50
-
-# Check permissions
-ls -la /home/pi/rustclaw
-ls -la /etc/rustclaw/.env
-```
-
-### Bot doesn't respond on Telegram
-
-1. Check if `TELEGRAM_TOKEN` is correct
-2. Check if you started the bot with `/start`
-3. Check logs: `sudo tail -f /var/log/rustclaw/rustclaw.log`
-
-### TMUX sessions not created
-
-1. Check if TMUX is installed: `which tmux`
-2. Install if needed: `apt install tmux`
-3. Check `TMUX_ENABLED=true` in .env
-4. Check logs for errors
-
-### Browser blocked by websites
-
-- Enable stealth mode with Chaser-oxide (enabled by default)
-- Uses random delays and human-like behavior
-- For extreme cases, use headless=false (not implemented yet)
-
----
-
-## 📊 Resource Usage
-
-| Resource | Consumption |
-|---------|---------|
-| **RAM** | 150-250MB |
-| **CPU** | 5-15% (idle), 50-80% (processing) |
-| **Disk** | ~20MB (binary) + SQLite data |
-| **Swap** | 100-500MB (depends on load) |
-
----
-
-## 🔧 Available Features
-
-### Tools (18 total)
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `exit` | Exit |
+| `clear-memory` | Clear memories |
+| `/skill` | List skills |
+| `/skill:name` | Activate skill |
+| `/clear` | Clear conversation |
+
+### Skills
+
+Skills are in `skills/`:
+- `/SKILL.md` with YAML frontmatter
+- Supports `user_invocable`, `disable_model_invocation`
+- Resources: `scripts/`, `references/`, `assets/`
+
+## 🛠️ Available Tools
 
 1. **file_list** - List directories
 2. **file_read** - Read files
 3. **file_write** - Write files
 4. **file_search** - Search files
-5. **shell** - Execute shell commands (safe)
-6. **http_get** - HTTP GET requests
-7. **http_post** - HTTP POST requests
-8. **system_info** - System information
-9. **echo** - Test
-10. **capabilities** - List capabilities
-11. **browser** - Browser automation (Chromiumoxide + Chaser-oxide stealth)
-12. **skill_list** - List available skills
-13. **skill_create** - Create new skill
-14. **skill_delete** - Delete skill
-15. **skill_edit** - Edit skill
-16. **skill_validate** - Validate skill format
-17. **skill_import** - Import skill from URL
-18. **location** - Get location from IP
+5. **shell** - Shell commands (with security)
+6. **http_get/http_post** - HTTP requests
+7. **tavily_search** - Tavily search
+8. **web_search** - Web search
+9. **browser** - Browser automation
+10. **reminder** - Scheduled reminders
 
-### Memory
-- Persistent in SQLite
-- Semantic search with embeddings
-- History of 10 messages
-- Types: Fact, Episode, ToolResult
+## 📁 Structure
 
-### Integrations
-- ✅ Hugging Face (LLM)
-- ✅ Tavily (web search)
-- ✅ OpenAI (embeddings, optional)
-- ✅ Telegram Bot
-
----
-
-## 🔄 Updating
-
-### Update Binary
-
-```bash
-# 1. Stop service
-sudo systemctl stop rustclaw
-
-# 2. Copy new binary (from PC)
-scp target/aarch64-unknown-linux-gnu/release/rustclaw pi@raspberrypi.local:~/rustclaw
-
-# 3. On Raspberry Pi, set permission
-chmod +x ~/rustclaw
-
-# 4. Start service
-sudo systemctl start rustclaw
+```
+rustclaw/
+├── src/
+│   ├── agent.rs      # Main agent
+│   ├── config.rs     # Configuration
+│   ├── skills/      # Skills system
+│   ├── tools/       # Tools
+│   ├── memory/      # SQLite memory
+│   └── utils/       # Utilities
+├── skills/          # User skills
+├── config/          # Local config
+└── .env             # Environment variables
 ```
 
-### Backup Memories
+## 🔐 Security
+
+- **Shell**: Blocking dangerous commands (rm -rf, dd)
+- **Heredoc**: Support for `cat > file << EOF`
+- **Workspace Trust**: Trust levels per directory
+- **Credential Chaining**: Multiple API key sources
+
+## 📊 Comparison
+
+| Aspect | Claude Code | RustClaw |
+|--------|-------------|----------|
+| Language | TypeScript | Rust |
+| Store | Zustand | Custom (Zustand-like) |
+| Memory | SQLite/JSON | SQLite |
+| Skills | SKILL.md | SKILL.md |
+| MCP | stdio | stdio + HTTP |
+
+## 🧪 Development
 
 ```bash
-# Backup
-sudo tar -czf backup-$(date +%Y%m%d).tar.gz ~/config/
+# Development
+cargo run
 
-# Or copy to PC
-scp pi@raspberrypi.local:~/config/memory_cli.db ./backup/
+# Release build
+cargo build --release
+
+# Tests
+cargo test
 ```
 
----
+## 📝 License
 
-## 📝 Scheduling Configuration (Cron)
-
-Since the integrated scheduler was removed, use Linux cron:
-
-```bash
-# Edit crontab
-sudo crontab -e
-
-# Example: Daily heartbeat at 8am
-0 8 * * * /usr/bin/curl -X POST http://localhost:8080/heartbeat
-
-# Or custom script
-0 */6 * * * /home/pi/scripts/check-system.sh
-```
-
----
-
-## 🆚 Differences from Desktop Version
-
-| Feature | Desktop | Raspberry Pi |
-|---------|---------|--------------|
-| **Embeddings** | fastembed local | OpenAI API |
-| **Browser** | Chromiumoxide + Chaser-oxide | Chromiumoxide + Chaser-oxide |
-| **TMUX** | Optional | Optional |
-| **Scheduling** | Integrated | Linux Cron |
-| **RAM** | ~500-800MB | ~150-250MB |
-| **Size** | ~50-100MB | ~15-25MB |
-
----
-
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
----
-
-## 🤝 Contributing
-
-This is a project specifically optimized for Raspberry Pi. For the full desktop version, see the `main` branch.
-
----
-
-## 💡 Tips
-
-1. **Use 1GB swap** - Essential to avoid "Out of memory"
-2. **Prefer cross-compile** - Much faster than native build
-3. **Monitor logs** - `sudo tail -f /var/log/rustclaw/rustclaw.log`
-4. **Regular backups** - Backup the `config/` directory
-5. **Update the system** - `sudo apt update && sudo apt upgrade`
-
----
-
-**Ready!** You now have RustClaw running on Raspberry Pi 3! 🎉
-
-For questions or issues, check the `SYSTEMD-GUIDE.md` file or view the system logs.
+MIT License - see LICENSE file.
