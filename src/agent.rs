@@ -2127,11 +2127,11 @@ pub fn output_write_tool(tool: &str, input: &str, output: &str) {
     }
     print!("{}{}", Colors::CLEAR_LINE, Colors::ORANGE);
     print!("{} ", "⬡");
-    print!("{}{}", Colors::RESET, Colors::DIM);
+    print!("{}{}", Colors::RESET, Colors::LIGHT_GRAY);
     println!("{}  {}{}", tool, input, Colors::RESET);
     println!(
         "{}{}{}",
-        Colors::DIM, output, Colors::RESET
+        Colors::LIGHT_GRAY, output, Colors::RESET
     );
 }
 

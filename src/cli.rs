@@ -55,19 +55,19 @@ fn print_splash(model: &str, memory_count: usize) {
 
     println!(
         "{}{}{}",
-        Colors::DIM,
+        Colors::LIGHT_GRAY,
         "    ─────────────────────────────────────────────────────────────────────",
         Colors::RESET
     );
     println!();
     print!("    ");
-    print!("{}{}{}", Colors::DIM, "model", Colors::RESET);
+    print!("{}{}{}", Colors::LIGHT_GRAY, "model", Colors::RESET);
     print!("  {}", model);
     print!("      ");
-    print!("{}{}{}", Colors::DIM, "memories", Colors::RESET);
+    print!("{}{}{}", Colors::LIGHT_GRAY, "memories", Colors::RESET);
     print!("  {}", memory_count);
     print!("      ");
-    print!("{}{}{}", Colors::DIM, "v", Colors::RESET);
+    print!("{}{}{}", Colors::LIGHT_GRAY, "v", Colors::RESET);
     println!("{}{}{}", Colors::RESET, VERSION, Colors::RESET);
     println!();
 }
@@ -83,19 +83,19 @@ fn print_help() {
     println!();
     println!(
         "  {}{}/help{}        show this message",
-        Colors::DIM, Colors::AMBER, Colors::RESET
+        Colors::LIGHT_GRAY, Colors::AMBER, Colors::RESET
     );
     println!(
         "  {}{}/skills{}      list available skills",
-        Colors::DIM, Colors::AMBER, Colors::RESET
+        Colors::LIGHT_GRAY, Colors::AMBER, Colors::RESET
     );
     println!(
         "  {}{}/clear{}       clear context and memories",
-        Colors::DIM, Colors::AMBER, Colors::RESET
+        Colors::LIGHT_GRAY, Colors::AMBER, Colors::RESET
     );
     println!(
         "  {}{}/exit{}        exit RustClaw",
-        Colors::DIM, Colors::AMBER, Colors::RESET
+        Colors::LIGHT_GRAY, Colors::AMBER, Colors::RESET
     );
     println!();
     println!(
@@ -107,11 +107,11 @@ fn print_help() {
     println!();
     println!(
         "  {}{}/skill-name{}  activate a skill by name",
-        Colors::DIM, Colors::AMBER, Colors::RESET
+        Colors::LIGHT_GRAY, Colors::AMBER, Colors::RESET
     );
     println!(
         "  {}Use {}@reference.md{} to load references",
-        Colors::DIM, Colors::AMBER, Colors::RESET
+        Colors::LIGHT_GRAY, Colors::AMBER, Colors::RESET
     );
     println!();
     println!(
@@ -123,15 +123,15 @@ fn print_help() {
     println!();
     println!(
         "  {}End a line with {}\\{} to continue on the next line",
-        Colors::DIM, Colors::AMBER, Colors::RESET
+        Colors::LIGHT_GRAY, Colors::AMBER, Colors::RESET
     );
     println!(
         "  {}Use {}<<<{} to start a multiline block, {}>>>{} to close it",
-        Colors::DIM, Colors::AMBER, Colors::RESET, Colors::AMBER, Colors::RESET
+        Colors::LIGHT_GRAY, Colors::AMBER, Colors::RESET, Colors::AMBER, Colors::RESET
     );
     println!(
         "  {}↑↓{} for command history{}",
-        Colors::DIM, Colors::AMBER, Colors::RESET
+        Colors::LIGHT_GRAY, Colors::AMBER, Colors::RESET
     );
     println!();
 }
@@ -198,7 +198,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
 
     println!(
         "{}{}{}  Welcome to RustClaw! Type {}/help{} for commands",
-        Colors::DIM,
+        Colors::LIGHT_GRAY,
         "✻",
         Colors::RESET,
         Colors::AMBER,
@@ -218,7 +218,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
         let trimmed = line.trim();
 
         if trimmed.eq_ignore_ascii_case("/exit") || trimmed.eq_ignore_ascii_case("sair") {
-            println!("{}Goodbye.{}", Colors::DIM, Colors::RESET);
+            println!("{}Goodbye.{}", Colors::LIGHT_GRAY, Colors::RESET);
             break;
         }
 
@@ -232,7 +232,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
         }
 
         if trimmed.eq_ignore_ascii_case("/clear") || trimmed.to_lowercase().contains("limpar memória") || trimmed.to_lowercase().contains("clean memory") {
-            println!("{}🧹 Limpando todas as memórias...{}", Colors::DIM, Colors::RESET);
+            println!("{}🧹 Limpando todas as memórias...{}", Colors::LIGHT_GRAY, Colors::RESET);
             match agent.clear_all_memory().await {
                 Ok(msg) => println!("{}✓ {}{}", Colors::AMBER, msg, Colors::RESET),
                 Err(e) => println!("{}✗ Erro ao limpar: {}{}", Colors::RED, e, Colors::RESET),
@@ -246,10 +246,10 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
             println!("{}{}{}  Available Skills", Colors::ORANGE, "⬡", Colors::RESET);
             println!();
             if skills.is_empty() {
-                println!("  {}No skills found{}", Colors::DIM, Colors::RESET);
+                println!("  {}No skills found{}", Colors::LIGHT_GRAY, Colors::RESET);
             } else {
                 for skill in skills {
-                    println!("  {}{}/{}  {}", Colors::DIM, Colors::AMBER, skill, Colors::RESET);
+                    println!("  {}{}/{}  {}", Colors::LIGHT_GRAY, Colors::AMBER, skill, Colors::RESET);
                 }
             }
             println!();
@@ -262,13 +262,13 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
             if let Some(skill_name) = cmd.split_whitespace().next() {
                 let available_skills = agent.list_skills();
                 if available_skills.contains(&skill_name.to_string()) {
-                    println!("{}Activating skill: {}{}", Colors::DIM, skill_name, Colors::RESET);
+                    println!("{}Activating skill: {}{}", Colors::LIGHT_GRAY, skill_name, Colors::RESET);
                     let _ = agent.force_skill(skill_name);
                 } else {
                     // Not a valid skill, show available skills
                     println!("{}{}: skill '{}' not found. Available skills:", Colors::AMBER, skill_name, Colors::RESET);
                     for skill in &available_skills {
-                        println!("  {}• {}{}", Colors::DIM, skill, Colors::RESET);
+                        println!("  {}• {}{}", Colors::LIGHT_GRAY, skill, Colors::RESET);
                     }
                 }
             }
@@ -278,7 +278,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
             let mut buf = String::new();
             let mut continuing = true;
             while continuing {
-                print!("{}...{} ", Colors::DIM, Colors::RESET);
+                print!("{}...{} ", Colors::LIGHT_GRAY, Colors::RESET);
                 io::stdout().flush()?;
                 match rl.readline("") {
                     Ok(cont_line) => {
@@ -298,7 +298,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
             buf.push('\n');
             let mut continuing = true;
             while continuing {
-                print!("{}...{} ", Colors::DIM, Colors::RESET);
+                print!("{}...{} ", Colors::LIGHT_GRAY, Colors::RESET);
                 io::stdout().flush()?;
                 match rl.readline("") {
                     Ok(cont_line) => {

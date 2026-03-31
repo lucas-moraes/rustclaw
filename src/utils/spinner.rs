@@ -61,7 +61,7 @@ impl Spinner {
                 print!(
                     "{}{}{}{}...{}\x1b[0m",
                     Colors::CLEAR_LINE,
-                    Colors::DIM,
+                    Colors::LIGHT_GRAY,
                     frame,
                     message,
                     Colors::RESET

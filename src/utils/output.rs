@@ -120,7 +120,7 @@ impl OutputManager {
             sink.write_line(&format!(
                 "{}{}{}{} {}{}{}",
                 Colors::CLEAR_LINE,
-                Colors::DIM,
+                Colors::LIGHT_GRAY,
                 "~",
                 Colors::RESET,
                 msg,
@@ -176,16 +176,16 @@ impl OutputSink for ConsoleSink {
     fn write_tool(&self, tool: &str, input: &str, output: &str) {
         print!("{}{}", Colors::CLEAR_LINE, Colors::ORANGE);
         print!("{} ", "⬡");
-        print!("{}{}", Colors::RESET, Colors::DIM);
+        print!("{}{}", Colors::RESET, Colors::LIGHT_GRAY);
         println!("{}  {}{}", tool, input, Colors::RESET);
-        println!("{}{}{}", Colors::DIM, output, Colors::RESET);
+        println!("{}{}{}", Colors::LIGHT_GRAY, output, Colors::RESET);
     }
 
     fn write_thought(&self, thought: &str) {
         println!(
             "{}{}{} {}{}{}",
             Colors::CLEAR_LINE,
-            Colors::DIM,
+            Colors::LIGHT_GRAY,
             "·",
             Colors::RESET,
             thought,
@@ -212,7 +212,7 @@ impl OutputSink for ConsoleSink {
             Colors::ORANGE,
             "⎙",
             Colors::RESET,
-            Colors::DIM,
+            Colors::LIGHT_GRAY,
             description,
             Colors::RESET,
             path

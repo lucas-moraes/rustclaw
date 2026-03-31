@@ -24,6 +24,9 @@ impl Colors {
     /// Dim gray for secondary text (labels, hints)
     pub const DIM: &'static str = "\x1b[90m";
 
+    /// Light gray for subtle text (250)
+    pub const LIGHT_GRAY: &'static str = "\x1b[38;5;250m";
+
     /// Bold attribute
     pub const BOLD: &'static str = "\x1b[1m";
 
