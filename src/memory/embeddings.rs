@@ -14,10 +14,6 @@ impl EmbeddingService {
             .or_else(|_| std::env::var("COHERE_API_KEY"))
             .unwrap_or_default();
         
-        if api_key.is_empty() {
-            tracing::warn!("No embedding API key found. Set OPENAI_API_KEY or COHERE_API_KEY");
-        }
-        
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .build()?;

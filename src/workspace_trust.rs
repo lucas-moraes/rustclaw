@@ -216,7 +216,22 @@ impl WorkspaceTrustStore {
         let json = std::fs::read_to_string(path).map_err(|e| format!("IO error: {}", e))?;
 
         self.workspaces =
-            serde_json::from_str(&json).map_err(|e| format!("Deserialization error: {}", e))
+            serde_json::from_str(&json).map_err(|e| format!("Deserialization error: {}", e))?;
+
+        Ok(())
+    }
+
+    pub fn load_from(path: &Path) -> Result<Self, String> {
+        let mut store = Self::new();
+        store.load(path)?;
+        Ok(store)
+    }
+
+    pub fn save_to(&self, path: &Path) -> Result<(), String> {
+        let json = serde_json::to_string_pretty(&self.workspaces)
+            .map_err(|e| format!("Serialization error: {}", e))?;
+
+        std::fs::write(path, json).map_err(|e| format!("IO error: {}", e))
     }
 }
 
@@ -289,6 +304,28 @@ impl TrustEvaluator {
             ),
         }
     }
+
+    pub fn can_write_file(&self, path: &Path) -> bool {
+        let trust = self.store.get_trust(path);
+        trust.can_write_files()
+    }
+
+    pub fn can_execute_shell(&self, path: &Path) -> bool {
+        let trust = self.store.get_trust(path);
+        trust.can_execute_shell()
+    }
+
+    pub fn set_trust(&mut self, path: &Path, level: TrustLevel) {
+        self.store.set_trust(path, level, Some("user".to_string()));
+    }
+
+    pub fn get_store_mut(&mut self) -> &mut WorkspaceTrustStore {
+        &mut self.store
+    }
+
+    pub fn get_store(&self) -> &WorkspaceTrustStore {
+        &self.store
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -299,6 +336,19 @@ pub enum Operation {
     InstallPackage,
     NetworkRequest,
     ReadSensitive,
+}
+
+impl std::fmt::Display for Operation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Operation::ReadFile => write!(f, "ReadFile"),
+            Operation::WriteFile => write!(f, "WriteFile"),
+            Operation::ExecuteShell => write!(f, "ExecuteShell"),
+            Operation::InstallPackage => write!(f, "InstallPackage"),
+            Operation::NetworkRequest => write!(f, "NetworkRequest"),
+            Operation::ReadSensitive => write!(f, "ReadSensitive"),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

@@ -34,6 +34,31 @@ use std::path::PathBuf;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
+/// Reads multi-line input from the user.
+/// Lines ending with `\` continue to the next line.
+/// Empty line (or line with just spaces) submits the input.
+fn read_multiline_input(rl: &mut Editor<(), FileHistory>, is_continuation: bool) -> Option<String> {
+    let prompt = if is_continuation {
+        format!("{}  · ", Colors::CONTINUATION)
+    } else {
+        format!("{}{} ", Colors::AMBER, "›")
+    };
+    
+    let line = match rl.readline(&prompt) {
+        Ok(l) => l,
+        Err(_) => return None,
+    };
+    
+    let trimmed = line.trim();
+    
+    // Empty line submits (unless it's the first line of continuation)
+    if trimmed.is_empty() && is_continuation {
+        return Some(String::new());
+    }
+    
+    Some(line)
+}
+
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn print_splash(model: &str, memory_count: usize) {
@@ -137,6 +162,7 @@ fn print_help() {
 }
 
 pub async fn run(config: Config) -> anyhow::Result<()> {
+    tracing::info!("Starting RustClaw CLI");
     let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let config_dir = current_dir.join("config");
     let memory_path = config_dir.join("memory_cli.db");
@@ -207,24 +233,62 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     println!();
 
     loop {
-        print!("{}{}{} ", Colors::AMBER, "›", Colors::RESET);
-        io::stdout().flush()?;
-
-        let line = match rl.readline("") {
-            Ok(l) => l,
-            Err(_) => break,
-        };
-
-        let trimmed = line.trim();
-
-        if trimmed.eq_ignore_ascii_case("/exit") || trimmed.eq_ignore_ascii_case("sair") {
+        let mut full_input = String::new();
+        let mut is_continuation = false;
+        let mut line_count = 0;
+        let mut input_lines: Vec<String> = Vec::new();
+        
+        loop {
+            let line = match read_multiline_input(&mut rl, is_continuation) {
+                Some(l) => l,
+                None => break,
+            };
+            
+            // Empty line ends multi-line input (except for first iteration)
+            if line.trim().is_empty() && is_continuation {
+                break;
+            }
+            
+            // Add line to collection
+            if line_count > 0 {
+                full_input.push('\n');
+            }
+            full_input.push_str(&line);
+            input_lines.push(line.clone());
+            line_count += 1;
+            
+            let trimmed = line.trim();
+            
+            // Check if line ends with backslash (continuation)
+            if trimmed.ends_with('\\') && !trimmed.ends_with("\\\\") {
+                // Remove the trailing backslash and continue
+                full_input.pop(); // Remove '\'
+                is_continuation = true;
+            } else if trimmed.ends_with("\\\\") {
+                // Double backslash = literal backslash at end, submit
+                full_input.pop(); // Remove one '\'
+                full_input.pop(); // Remove second '\'
+                break;
+            } else {
+                break;
+            }
+        }
+        
+        // Check for exit command in full input
+        if full_input.trim().eq_ignore_ascii_case("/exit") || full_input.trim().eq_ignore_ascii_case("sair") {
             println!("{}Goodbye.{}", Colors::LIGHT_GRAY, Colors::RESET);
             break;
         }
-
-        if trimmed.is_empty() {
+        
+        // Skip empty input
+        if full_input.trim().is_empty() {
             continue;
         }
+        
+        let trimmed = full_input.trim();
+
+        // Simple newline before processing
+        println!();
 
         if trimmed.eq_ignore_ascii_case("/help") {
             print_help();
@@ -252,6 +316,273 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
                     println!("  {}{}/{}  {}", Colors::LIGHT_GRAY, Colors::AMBER, skill, Colors::RESET);
                 }
             }
+            println!();
+            continue;
+        }
+
+        // Session management commands - Interactive selector with arrow keys
+        if trimmed.eq_ignore_ascii_case("/sessions") || trimmed.to_lowercase().starts_with("/session") {
+            let mut target_session_id: Option<String> = None;
+            
+            // If /session <id>, extract the ID
+            if trimmed.to_lowercase().starts_with("/session") {
+                let parts: Vec<&str> = trimmed.split_whitespace().collect();
+                if parts.len() >= 2 {
+                    target_session_id = Some(parts[1].to_string());
+                }
+            }
+            
+            println!();
+            let mut sessions = match agent.list_session_summaries() {
+                Ok(s) => s,
+                Err(e) => {
+                    println!("  {}Erro ao listar sessões: {}{}", Colors::RED, e, Colors::RESET);
+                    continue;
+                }
+            };
+            
+            if sessions.is_empty() {
+                println!("  {}Nenhuma sessão encontrada{}", Colors::LIGHT_GRAY, Colors::RESET);
+                println!();
+                continue;
+            }
+            
+            // Interactive selection with arrow keys (only on real TTY)
+            let is_tty = atty::is(atty::Stream::Stdin);
+            
+            if is_tty {
+                // Interactive mode with arrow keys
+                let mut selected = 0;
+                if let Some(ref tid) = target_session_id {
+                    if let Some(idx) = sessions.iter().position(|s| s.session_id.starts_with(tid)) {
+                        selected = idx;
+                    }
+                }
+                
+                // Save terminal settings and enable raw mode
+                #[cfg(unix)]
+                {
+                    use std::os::unix::io::AsRawFd;
+                    let stdin = std::io::stdin();
+                    let fd = stdin.as_raw_fd();
+                    let mut old_termios: libc::termios = unsafe { std::mem::zeroed() };
+                    unsafe {
+                        libc::tcgetattr(fd, &mut old_termios);
+                        let mut new_termios = old_termios;
+                        new_termios.c_lflag &= !(libc::ICANON | libc::ECHO);
+                        libc::tcsetattr(fd, libc::TCSANOW, &new_termios);
+                        
+                        let mut running = true;
+                        while running {
+                            // Clear and redraw
+                            print!("\x1b[2J\x1b[H");
+                            println!("{}Sessões anteriores{} - ↑↓ navegar, Enter continuar, q sair", Colors::ORANGE, Colors::RESET);
+                            println!();
+                            
+                            for (idx, session) in sessions.iter().enumerate() {
+                                let marker = if idx == selected { "▶" } else { "  " };
+                                let short_id = &session.session_id[..8.min(session.session_id.len())];
+                                let display_text = &session.summary;
+                                let task_short = if display_text.len() > 40 {
+                                    format!("{}...", &display_text[..40])
+                                } else {
+                                    display_text.clone()
+                                };
+                                
+                                // Format date: dd/mm HH:MM
+                                let date_str = session.updated_at.format("%d/%m %H:%M").to_string();
+                                
+                                if idx == selected {
+                                    println!("{}{} │ {} │ {:40} │ {}{}", Colors::AMBER, marker, short_id, task_short, date_str, Colors::RESET);
+                                } else {
+                                    println!("{}  │ {} │ {:40} │ {}", Colors::LIGHT_GRAY, short_id, task_short, date_str);
+                                }
+                            }
+                            println!();
+                            println!("{}Enter{} Cont.  │  {}D{}el Excluir  │  {}R{}en. Renomear  │  {}Q{} Sair", Colors::AMBER, Colors::RESET, Colors::AMBER, Colors::RESET, Colors::AMBER, Colors::RESET, Colors::AMBER, Colors::RESET);
+                            
+                            // Read key - blocking read
+                            let mut buf = [0u8; 1];
+                            let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, 1) };
+                            
+                            if n == 1 {
+                                match buf[0] {
+                                    27 => { // ESC - check for arrow sequence
+                                        let mut seq = [0u8; 2];
+                                        let m = unsafe { libc::read(fd, seq.as_mut_ptr() as *mut libc::c_void, 2) };
+                                        if m >= 2 && seq[0] == 91 {
+                                            match seq[1] {
+                                                65 if selected > 0 => selected -= 1, // Up
+                                                66 if selected < sessions.len() - 1 => selected += 1, // Down
+                                                _ => {}
+                                            }
+                                        }
+                                    }
+                                    10 | 13 => { // Enter (LF ou CR)
+                                        let selected_id = sessions[selected].session_id.clone();
+                                        println!("\n{}Continuando sessão...{}", Colors::LIGHT_GRAY, Colors::RESET);
+                                        std::io::stdout().flush().ok();
+                                        unsafe { libc::tcsetattr(fd, libc::TCSANOW, &old_termios); }
+                                        match tokio::time::timeout(
+                                            std::time::Duration::from_secs(60),
+                                            agent.resume_session(&selected_id)
+                                        ).await {
+                                            Ok(Ok(response)) => { println!(); println!("{}", response); }
+                                            Ok(Err(e)) => { println!("{}Erro: {}{}", Colors::RED, e, Colors::RESET); }
+                                            Err(_) => { println!("{}Timeout ao continuar sessão{}", Colors::RED, Colors::RESET); }
+                                        }
+                                        running = false;
+                                    }
+                                    4 => { // Cmd+D - delete (macOS) or 'd'
+                                        let selected_id = sessions[selected].session_id.clone();
+                                        tracing::debug!("Delete pressed for session: {}", selected_id);
+                                        match agent.delete_session(&selected_id).await {
+                                            Ok(msg) => println!("{}{}", Colors::AMBER, msg),
+                                            Err(e) => println!("{}Erro ao excluir: {}{}", Colors::RED, e, Colors::RESET),
+                                        }
+                                        match agent.list_session_summaries() {
+                                            Ok(new_sessions) => {
+                                                sessions = new_sessions;
+                                                if sessions.is_empty() {
+                                                    println!("\n{}Nenhuma sessão restante{}", Colors::LIGHT_GRAY, Colors::RESET);
+                                                    running = false;
+                                                } else if selected >= sessions.len() {
+                                                    selected = sessions.len() - 1;
+                                                }
+                                            }
+                                            Err(_) => running = false,
+                                        }
+                                    }
+                                    100 => { // lowercase 'd' - also delete
+                                        let selected_id = sessions[selected].session_id.clone();
+                                        tracing::debug!("Delete (lowercase) pressed for session: {}", selected_id);
+                                        match agent.delete_session(&selected_id).await {
+                                            Ok(msg) => println!("{}{}", Colors::AMBER, msg),
+                                            Err(e) => println!("{}Erro ao excluir: {}{}", Colors::RED, e, Colors::RESET),
+                                        }
+                                        match agent.list_session_summaries() {
+                                            Ok(new_sessions) => {
+                                                sessions = new_sessions;
+                                                if sessions.is_empty() {
+                                                    println!("\n{}Nenhuma sessão restante{}", Colors::LIGHT_GRAY, Colors::RESET);
+                                                    running = false;
+                                                } else if selected >= sessions.len() {
+                                                    selected = sessions.len() - 1;
+                                                }
+                                            }
+                                            Err(_) => running = false,
+                                        }
+                                    }
+                                    18 => { // Cmd+R - rename (macOS)
+                                        // Restore terminal first to allow input
+                                        unsafe { libc::tcsetattr(fd, libc::TCSANOW, &old_termios); }
+                                        print!("  {}Novo nome: {}", Colors::AMBER, Colors::RESET);
+                                        io::stdout().flush()?;
+                                        let new_name: String = rl.readline("").unwrap_or_default().trim().to_string();
+                                        
+                                        if !new_name.is_empty() {
+                                            match agent.rename_session(&sessions[selected].session_id, &new_name).await {
+                                                Ok(_) => {
+                                                    println!("{}Sessão renomeada para: {}{}", Colors::AMBER, new_name, Colors::RESET);
+                                                    // Reload sessions
+                                                    if let Ok(new_sessions) = agent.list_session_summaries() {
+                                                        sessions = new_sessions;
+                                                        if selected >= sessions.len() {
+                                                            selected = sessions.len().saturating_sub(1);
+                                                        }
+                                                    }
+                                                }
+                                                Err(e) => println!("{}Erro ao renomear: {}{}", Colors::RED, e, Colors::RESET),
+                                            }
+                                        }
+                                        
+                                        // Re-enable raw mode
+                                        let mut new_termios = old_termios;
+                                        new_termios.c_lflag &= !(libc::ICANON | libc::ECHO);
+                                        unsafe { libc::tcsetattr(fd, libc::TCSANOW, &new_termios); }
+                                    }
+                                    113 => { // 'q' - quit
+                                        println!();
+                                        running = false;
+                                    }
+                                    _ => {
+                                        eprintln!("Tecla pressionada: {} ({})", buf[0], buf[0] as char);
+                                    }
+                                }
+                            }
+                        }
+                        // Restore terminal
+                        unsafe { libc::tcsetattr(fd, libc::TCSANOW, &old_termios); }
+                    }
+                }
+                
+                #[cfg(not(unix))]
+                {
+                    // Non-Unix fallback - show list
+                    println!("{}Sessões anteriores{}:", Colors::ORANGE, Colors::RESET);
+                    println!();
+                    for (idx, session) in sessions.iter().enumerate() {
+                        let marker = if Some(session.session_id.clone()) == target_session_id { "▶" } else { "  " };
+                        let short_id = &session.session_id[..8.min(session.session_id.len())];
+                        let display_text = &session.summary;
+                        let task_short = if display_text.len() > 40 { format!("{}...", &display_text[..40]) } else { display_text.clone() };
+                        let phase = &session.phase;
+                        println!("{}{} │ {} │ {:40} │ {}{}", Colors::AMBER, marker, short_id, task_short, phase, Colors::RESET);
+                    }
+                }
+            } else {
+                // Non-TTY fallback - simple numbered list
+                println!("{}Sessões anteriores{}:", Colors::ORANGE, Colors::RESET);
+                println!();
+                
+                for (idx, session) in sessions.iter().enumerate() {
+                    let marker = if Some(session.session_id.clone()) == target_session_id { "▶" } else { "  " };
+                    let short_id = &session.session_id[..8.min(session.session_id.len())];
+                    let display_text = &session.summary;
+                    let task_short = if display_text.len() > 40 { format!("{}...", &display_text[..40]) } else { display_text.clone() };
+                    let phase_display = match session.phase.as_str() {
+                        "executing" => "▶ executando",
+                        "awaiting_approval" => "⏳ aguardando",
+                        "completed" => "✓ concluído",
+                        _ => "outro",
+                    };
+                    if Some(session.session_id.clone()) == target_session_id {
+                        println!("{}{} │ {:2} │ {} │ {:40} │ {}{}", Colors::AMBER, marker, idx + 1, short_id, task_short, phase_display, Colors::RESET);
+                    } else {
+                        println!("{}  │ {:2} │ {} │ {:40} │ {}", Colors::LIGHT_GRAY, idx + 1, short_id, task_short, phase_display);
+                    }
+                }
+                
+                println!();
+                if let Some(ref tid) = target_session_id {
+                    if let Some(idx) = sessions.iter().position(|s| s.session_id.starts_with(tid)) {
+                        println!("  {}Selecionada:{} {}", Colors::AMBER, Colors::RESET, sessions[idx].summary);
+                        println!();
+                        print!("  {}▸{} Enter p/ continuar, delete p/ excluir: ", Colors::AMBER, Colors::RESET);
+                        io::stdout().flush()?;
+                        let action: String = rl.readline("").unwrap_or_default().trim().to_lowercase();
+                        if action.is_empty() || action == "enter" {
+                            let selected_id = sessions[idx].session_id.clone();
+                            println!("\n{}Continuando sessão...{}", Colors::LIGHT_GRAY, Colors::RESET);
+                            match agent.resume_session(&selected_id).await {
+                                Ok(response) => { println!(); println!("{}", response); }
+                                Err(e) => { println!("{}Erro: {}{}", Colors::RED, e, Colors::RESET); }
+                            }
+                        } else if action == "delete" || action == "d" {
+                            let selected_id = sessions[idx].session_id.clone();
+                            match agent.delete_session(&selected_id).await {
+                                Ok(_) => println!("{}Sessão excluída{}", Colors::AMBER, Colors::RESET),
+                                Err(e) => println!("{}Erro: {}{}", Colors::RED, e, Colors::RESET),
+                            }
+                        }
+                    } else {
+                        println!("{}Sessão não encontrada: {}{}", Colors::RED, tid, Colors::RESET);
+                    }
+                } else {
+                    println!("  {}Digite /session <id> para selecionar{}", Colors::LIGHT_GRAY, Colors::RESET);
+                }
+            }
+            
             println!();
             continue;
         }

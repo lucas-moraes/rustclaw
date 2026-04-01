@@ -12,6 +12,7 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryEntry {
     pub id: String,
+    pub session_id: Option<String>,  // Links to session
     pub content: String,
     pub embedding: Vec<f32>,
     pub timestamp: DateTime<Utc>,
@@ -47,6 +48,7 @@ impl MemoryEntry {
     ) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
+            session_id: None,
             content,
             embedding,
             timestamp: Utc::now(),
@@ -58,6 +60,10 @@ impl MemoryEntry {
     }
 
     #[allow(dead_code)]
+    pub fn with_session(mut self, session_id: String) -> Self {
+        self.session_id = Some(session_id);
+        self
+    }
     pub fn with_metadata(mut self, metadata: serde_json::Value) -> Self {
         self.metadata = metadata;
         self

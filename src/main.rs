@@ -16,6 +16,7 @@ mod tavily;
 mod telegram;
 mod tools;
 mod utils;
+mod workspace_trust;
 
 use clap::Parser;
 use dotenv::dotenv;
@@ -29,15 +30,13 @@ use tracing::info;
     version = "0.1.0"
 )]
 struct Args {
-    
     #[arg(short, long, default_value = "cli")]
     mode: String,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    
-    // Load environment variables from config/.env
+    // Load environment variables FIRST, before any env::var calls
     let config_env = Path::new("config/.env");
     if config_env.exists() {
         dotenv::from_path(config_env).ok();
@@ -45,21 +44,24 @@ async fn main() -> anyhow::Result<()> {
         dotenv().ok();
     }
 
+    let _ = std::env::var("TOKEN").or_else(|_| std::env::var("OPENCODE_API_KEY"));
     
     let args = Args::parse();
 
     info!("Starting RustClaw in {} mode", args.mode);
 
-    
     let config = config::Config::from_env()?;
+
+    info!(
+        "Config loaded - provider: {}, model: {}",
+        config.provider, config.model
+    );
 
     match args.mode.as_str() {
         "cli" => {
-            
             cli::run(config).await?;
         }
         "telegram" => {
-            
             telegram::TelegramBot::run(config).await?;
         }
         _ => {

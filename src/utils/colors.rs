@@ -21,6 +21,9 @@ impl Colors {
     /// #840000 — Dark Red (decorative, borders, bottom of gradient)
     pub const DARK_RED: &'static str = "\x1b[38;5;88m";
 
+    /// #72a400 — Continuation prompt color
+    pub const CONTINUATION: &'static str = "\x1b[38;2;114;164;0m";
+
     /// Dim gray for secondary text (labels, hints)
     pub const DIM: &'static str = "\x1b[90m";
 
@@ -32,6 +35,9 @@ impl Colors {
 
     /// Reset all attributes
     pub const RESET: &'static str = "\x1b[0m";
+
+    /// Input background - #420000 (dark red)
+    pub const INPUT_BG: &'static str = "\x1b[48;2;66;0;0m";
 
     /// Erase to end of line (for spinner cleanup)
     pub const CLEAR_LINE: &'static str = "\r\x1b[K";

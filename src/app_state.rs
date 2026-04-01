@@ -136,7 +136,7 @@ pub fn create_app_store() -> Store<AppState> {
 pub fn get_default_settings() -> AppSettings {
     AppSettings {
         provider: "opencode-go".to_string(),
-        model: "minimax-m2.5".to_string(),
+        model: "minimax-m2.7".to_string(),
         max_tokens: 4000,
         max_iterations: 20,
         auto_approve: false,

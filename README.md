@@ -5,8 +5,8 @@ AI Agent in Rust with persistent memory, skills, and ReAct architecture. Compati
 ## ✨ Features
 
 - 🤖 **AI Agent** with ReAct architecture
-- 💾 **Persistent memory** via SQLite
-- 🔍 **Web search** via Tavily or web search
+- 💾 **Persistent memory** via SQLite (with session linking)
+- 🔍 **Web search** via Tavily (1000 queries/month free)
 - 🧠 **Semantic embeddings** for memory search
 - ⏰ **Reminder system** scheduled
 - 🎯 **Skills** - Customizable commands with YAML frontmatter
@@ -16,14 +16,18 @@ AI Agent in Rust with persistent memory, skills, and ReAct architecture. Compati
 - 💻 **CLI Mode** and **Telegram Bot**
 - 🔄 **Automatic fallback** - Multiple providers
 - 🛡️ **Workspace trust** - Trust system
+- 🔁 **Self-review loop** - Agent evaluates and refines responses
+- 🔧 **Agent loop config** - Configurable retry/validation behavior
+- 📋 **Session management** - List, resume, delete sessions via `/sessions`
+- 🗺️ **Structured development** - Parse PLANO.md and execute in stages
 
 ## Supported Providers
 
 | Provider | Model |
 |----------|-------|
-| **OpenCode Go** (default) | MiniMax M2.5 |
-| OpenRouter | MiniMax M2.5, Qwen |
-| VillaMarket | MiniMax M2.5 |
+| **OpenCode Go** (default) | MiniMax M2.7 |
+| OpenRouter | MiniMax M2.7, Qwen |
+| VillaMarket | MiniMax M2.7 |
 | Moonshot | Kimi K2.5 |
 | HuggingFace | Qwen3-Coder-Next |
 
@@ -46,19 +50,65 @@ nano config/.env
 ```bash
 # config/.env
 
-# API Key (required)
-OPENCODE_API_KEY=your_api_key_here
+# API Key (required) - Get from https://opencode.ai or your provider
+TOKEN=your_token_here
 
 # Provider (default: opencode-go)
+# Options: opencode-go, openrouter, villamarket, moonshot, huggingface, custom
 PROVIDER=opencode-go
 
-# Model (default: minimax-m2.5)
-MODEL=minimax-m2.5
+# Model (optional - uses provider default if empty)
+# Default for opencode-go: minimax-m2.7
+MODEL=
 
-# Optional settings
-MAX_TOKENS=4000
-MAX_ITERATIONS=20
+# Base URL (optional - uses provider default if empty)
+# Default for opencode-go: https://opencode.ai/zen/go/v1
+BASE_URL=
+
+# Tavily API Key (optional) - Get free key at https://tavily.com/api
+# Free tier: 1000 queries/month
+# TAVILY_API_KEY=
+
+# Max tokens per response (recommended: 16000-32000 for development)
+MAX_TOKENS=32000
+
+# Max iterations per conversation (default: 50 for complex projects)
+MAX_ITERATIONS=100
+
+# Timezone (default: America/Sao_Paulo)
 TZ=America/Sao_Paulo
+```
+
+### Agent Loop Configuration
+
+```bash
+# Auto-retry failed steps (default: true)
+AGENT_AUTO_RETRY=true
+
+# Max retries per failed step (default: 3)
+AGENT_MAX_RETRIES_PER_STEP=3
+
+# Require build validation before continuing (default: true)
+AGENT_VALIDATION_REQUIRED=true
+
+# Exit behavior on max retries: task, session, never (default: task)
+AGENT_EXIT_ON_ERROR=task
+
+# Force tool use for development tasks (default: true)
+AGENT_FORCE_TOOL_USE=true
+```
+
+### Self-Review Configuration
+
+```bash
+# Enable self-review loop (default: true)
+SELF_REVIEW_ENABLED=true
+
+# Max self-review loops (default: 3)
+SELF_REVIEW_MAX_LOOPS=3
+
+# Show self-review process to user (default: true)
+SELF_REVIEW_SHOW_PROCESS=true
 ```
 
 ### Feature Flags
@@ -79,6 +129,20 @@ VERBOSE=1            # Detailed logging
 cargo run -- --mode cli
 ```
 
+### Multi-line Input
+
+O CLI suporta entrada multi-linha:
+- **Linha terminada com `\`** = continua para próxima linha
+- **Linha vazia** = envia o prompt completo
+- **Duplo backslash `\\`** = literal `\` no final
+
+Exemplo:
+```
+› primeira linha \
+· segunda linha \
+· terceira linha
+```
+
 ### Commands
 
 | Command | Description |
@@ -88,6 +152,9 @@ cargo run -- --mode cli
 | `/skill` | List skills |
 | `/skill:name` | Activate skill |
 | `/clear` | Clear conversation |
+| `/sessions` | List/resume sessions (interactive) |
+| `/session <id>` | Resume specific session |
+| `/desenvolver` | Structured development (parse PLANO.md) |
 
 ### Skills
 

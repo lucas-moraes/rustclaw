@@ -2,7 +2,7 @@ pub mod tools;
 
 use std::time::Duration;
 use tavily::{Tavily, SearchRequest};
-use tracing::info;
+use tracing::{info, warn};
 
 pub struct TavilyClient {
     client: Tavily,

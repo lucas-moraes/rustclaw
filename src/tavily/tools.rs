@@ -1,7 +1,7 @@
 use crate::tavily::TavilyClient;
 use crate::tools::Tool;
 use serde_json::Value;
-use tracing::{info, error};
+use tracing::{debug, error, info, warn};
 
 pub struct TavilySearchTool {
     api_key: String,
@@ -36,8 +36,13 @@ impl Tool for TavilySearchTool {
 
         info!("Tavily search query: {}, depth: {}", query, search_depth);
 
-        let client = TavilyClient::new(&self.api_key)
-            .map_err(|e| format!("Erro ao criar cliente Tavily: {}", e))?;
+        let client = match TavilyClient::new(&self.api_key) {
+            Ok(c) => c,
+            Err(e) => {
+                warn!("Failed to initialize Tavily client: {}", e);
+                return Err(format!("Tavily não disponível: {}", e));
+            }
+        };
 
         let results = client
             .search(query, max_results, search_depth, include_answer)

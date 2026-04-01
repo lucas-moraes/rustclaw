@@ -14,6 +14,73 @@ pub struct Config {
     pub timezone: String,
     pub provider: String,
     pub fallback_models: Vec<FallbackModel>,
+    pub agent_loop: AgentLoopConfig,
+    pub self_review: SelfReviewConfig,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AgentLoopConfig {
+    pub auto_retry: bool,
+    pub max_retries_per_step: usize,
+    pub validation_required: bool,
+    pub exit_on_error: ExitBehavior,
+    pub force_tool_use: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub enum ExitBehavior {
+    Task,
+    Session,
+    Never,
+}
+
+impl Default for AgentLoopConfig {
+    fn default() -> Self {
+        Self {
+            auto_retry: true,
+            max_retries_per_step: 3,
+            validation_required: true,
+            exit_on_error: ExitBehavior::Task,
+            force_tool_use: true,
+        }
+    }
+}
+
+impl std::fmt::Display for ExitBehavior {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ExitBehavior::Task => write!(f, "task"),
+            ExitBehavior::Session => write!(f, "session"),
+            ExitBehavior::Never => write!(f, "never"),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SelfReviewConfig {
+    pub enabled: bool,
+    pub max_loops: usize,
+    pub show_process: bool,
+}
+
+impl Default for SelfReviewConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_loops: 3,
+            show_process: true,
+        }
+    }
+}
+
+impl From<&str> for ExitBehavior {
+    fn from(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "session" => ExitBehavior::Session,
+            "never" => ExitBehavior::Never,
+            _ => ExitBehavior::Task,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -24,11 +91,13 @@ pub struct FallbackModel {
 
 impl Config {
     pub fn from_env() -> anyhow::Result<Self> {
-        let api_key = std::env::var("OPENCODE_API_KEY")
-            .or_else(|_| std::env::var("TOKEN"))
-            .map_err(|_| {
-                anyhow::anyhow!("OPENCODE_API_KEY or TOKEN environment variable not set")
-            })?;
+        let api_key = std::env::var("TOKEN")
+            .or_else(|_| std::env::var("OPENCODE_API_KEY"))
+            .unwrap_or_default();
+
+        if api_key.is_empty() {
+            return Err(anyhow::anyhow!("TOKEN environment variable not set"));
+        }
 
         let tavily_api_key = std::env::var("TAVILY_API_KEY").ok();
         let timezone = std::env::var("TZ").unwrap_or_else(|_| "America/Sao_Paulo".to_string());
@@ -54,22 +123,23 @@ impl Config {
 
         let provider = std::env::var("PROVIDER").unwrap_or_else(|_| "opencode-go".to_string());
 
-        let (base_url, model) = match provider.as_str() {
+        // Get default base_url and model for the provider
+        let (default_base_url, default_model) = match provider.as_str() {
             "moonshot" => (
                 "https://api.moonshot.ai/v1".to_string(),
                 "kimi-k2.5".to_string(),
             ),
             "opencode-go" | "opencode" => (
                 "https://opencode.ai/zen/go/v1".to_string(),
-                "minimax-m2.5".to_string(),
+                "minimax-m2.7".to_string(),
             ),
             "openrouter" => (
                 "https://openrouter.ai/api/v1".to_string(),
-                "minimax/minimax-m2.5:free".to_string(),
+                "minimax-minimax-max".to_string(),
             ),
             "villamarket" => (
                 "https://api.minimax.villamarket.ai/v1".to_string(),
-                "minimax-m2.5".to_string(),
+                "minimax-m2.7".to_string(),
             ),
             "huggingface" => (
                 "https://router.huggingface.co/v1".to_string(),
@@ -77,11 +147,57 @@ impl Config {
             ),
             _ => (
                 "https://opencode.ai/zen/go/v1".to_string(),
-                "minimax-m2.5".to_string(),
+                "minimax-m2.7".to_string(),
             ),
         };
 
+        // Allow override from environment variables (only if non-empty)
+        let base_url = std::env::var("BASE_URL")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .unwrap_or(default_base_url);
+        let model = std::env::var("MODEL")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .unwrap_or(default_model);
+
         let fallback_models = Self::load_fallback_models();
+
+        // Agent loop configuration
+        let agent_loop = AgentLoopConfig {
+            auto_retry: std::env::var("AGENT_AUTO_RETRY")
+                .map(|v| v != "false")
+                .unwrap_or(true),
+            max_retries_per_step: std::env::var("AGENT_MAX_RETRIES_PER_STEP")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(3),
+            validation_required: std::env::var("AGENT_VALIDATION_REQUIRED")
+                .map(|v| v != "false")
+                .unwrap_or(true),
+            exit_on_error: ExitBehavior::from(
+                std::env::var("AGENT_EXIT_ON_ERROR")
+                    .as_deref()
+                    .unwrap_or("task"),
+            ),
+            force_tool_use: std::env::var("AGENT_FORCE_TOOL_USE")
+                .map(|v| v != "false")
+                .unwrap_or(true),
+        };
+
+        // Self-review configuration
+        let self_review = SelfReviewConfig {
+            enabled: std::env::var("SELF_REVIEW_ENABLED")
+                .map(|v| v != "false")
+                .unwrap_or(true),
+            max_loops: std::env::var("SELF_REVIEW_MAX_LOOPS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(3),
+            show_process: std::env::var("SELF_REVIEW_SHOW_PROCESS")
+                .map(|v| v != "false")
+                .unwrap_or(true),
+        };
 
         Ok(Self {
             api_key,
@@ -95,6 +211,8 @@ impl Config {
             timezone,
             provider,
             fallback_models,
+            agent_loop,
+            self_review,
         })
     }
 
@@ -111,16 +229,9 @@ impl Config {
                     });
                 }
             }
-        } else {
-            fallbacks.push(FallbackModel {
-                model: "minimax/minimax-m2.5:free".to_string(),
-                base_url: "https://openrouter.ai/api/v1".to_string(),
-            });
-            fallbacks.push(FallbackModel {
-                model: "Qwen/Qwen3-Coder-Next".to_string(),
-                base_url: "https://router.huggingface.co/v1".to_string(),
-            });
         }
+        // Default: empty - no fallbacks unless user configures them
+        // Fallbacks like OpenRouter/HuggingFace need their own API keys
 
         fallbacks
     }

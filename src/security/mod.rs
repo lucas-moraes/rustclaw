@@ -107,6 +107,11 @@ impl SecurityManager {
         defense_prompt::get_defense_prompt_short()
     }
 
+    /// Get minimal defense prompt
+    pub fn get_defense_prompt_minimal() -> String {
+        defense_prompt::get_defense_prompt_minimal()
+    }
+
     /// Validate tool arguments
     pub fn validate_tool_args(args: &serde_json::Value) -> ValidationResult {
         Validator::tool_args(args)

@@ -188,7 +188,7 @@ pub mod browser;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
+    use crate::config::{AgentLoopConfig, Config, SelfReviewConfig};
     use crate::tools::browser::BrowserTool;
     use crate::tools::capabilities::CapabilitiesTool;
     use crate::tools::clear_memory::ClearMemoryTool;
@@ -225,6 +225,8 @@ mod tests {
             timezone: "America/Sao_Paulo".to_string(),
             provider: "test".to_string(),
             fallback_models: vec![],
+            agent_loop: AgentLoopConfig::default(),
+            self_review: SelfReviewConfig::default(),
         }
     }
 

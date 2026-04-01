@@ -13,14 +13,12 @@ impl MemoryStore {
             std::fs::create_dir_all(parent)?;
         }
 
-        // Ensure file exists with correct permissions
         if !db_path.exists() {
             std::fs::File::create(db_path)?;
         }
 
         let conn = Connection::open(db_path)?;
 
-        // Enable WAL mode for better concurrency
         conn.execute_batch("PRAGMA journal_mode=WAL;")?;
 
         let store = Self { conn };
@@ -46,9 +44,9 @@ impl MemoryStore {
 
     fn init_schema(&self) -> Result<()> {
         self.conn.execute_batch(
-            r#"
-            CREATE TABLE IF NOT EXISTS memories (
+            "CREATE TABLE IF NOT EXISTS memories (
                 id TEXT PRIMARY KEY,
+                session_id TEXT,
                 content TEXT NOT NULL,
                 embedding BLOB NOT NULL,
                 timestamp TEXT NOT NULL,
@@ -61,6 +59,7 @@ impl MemoryStore {
             CREATE INDEX IF NOT EXISTS idx_timestamp ON memories(timestamp);
             CREATE INDEX IF NOT EXISTS idx_importance ON memories(importance);
             CREATE INDEX IF NOT EXISTS idx_memory_type ON memories(memory_type);
+            CREATE INDEX IF NOT EXISTS idx_session_id ON memories(session_id);
 
             CREATE TABLE IF NOT EXISTS scheduled_tasks (
                 id TEXT PRIMARY KEY,
@@ -90,8 +89,12 @@ impl MemoryStore {
             CREATE INDEX IF NOT EXISTS idx_reminder_time ON reminders(remind_at);
             CREATE INDEX IF NOT EXISTS idx_reminder_chat ON reminders(chat_id);
             CREATE INDEX IF NOT EXISTS idx_reminder_sent ON reminders(is_sent);
-            "#,
+            ",
         )?;
+
+        let _ = self
+            .conn
+            .execute("ALTER TABLE memories ADD COLUMN session_id TEXT", []);
 
         Ok(())
     }
@@ -104,11 +107,12 @@ impl MemoryStore {
         self.conn.execute(
             r#"
             INSERT OR REPLACE INTO memories 
-            (id, content, embedding, timestamp, importance, memory_type, metadata, search_count)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            (id, session_id, content, embedding, timestamp, importance, memory_type, metadata, search_count)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
             "#,
             params![
                 entry.id,
+                entry.session_id,
                 entry.content,
                 embedding_bytes,
                 timestamp,
@@ -124,24 +128,25 @@ impl MemoryStore {
 
     pub fn get_all(&self) -> Result<Vec<MemoryEntry>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, content, embedding, timestamp, importance, memory_type, metadata, search_count 
+            "SELECT id, session_id, content, embedding, timestamp, importance, memory_type, metadata, search_count 
              FROM memories ORDER BY timestamp DESC"
         )?;
 
         let entries = stmt.query_map([], |row| {
             let id: String = row.get(0)?;
-            let content: String = row.get(1)?;
-            let embedding_bytes: Vec<u8> = row.get(2)?;
-            let timestamp_str: String = row.get(3)?;
-            let importance: f32 = row.get(4)?;
-            let memory_type_str: String = row.get(5)?;
-            let metadata_str: String = row.get(6)?;
-            let search_count: i32 = row.get(7)?;
+            let session_id: Option<String> = row.get(1).ok();
+            let content: String = row.get(2)?;
+            let embedding_bytes: Vec<u8> = row.get(3)?;
+            let timestamp_str: String = row.get(4)?;
+            let importance: f32 = row.get(5)?;
+            let memory_type_str: String = row.get(6)?;
+            let metadata_str: String = row.get(7)?;
+            let search_count: i32 = row.get(8)?;
 
             let embedding = Self::bytes_to_vec_f32(&embedding_bytes);
             let timestamp = timestamp_str.parse().map_err(|e| {
                 rusqlite::Error::FromSqlConversionFailure(
-                    3,
+                    4,
                     rusqlite::types::Type::Text,
                     Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
                 )
@@ -156,7 +161,7 @@ impl MemoryStore {
 
             let metadata: serde_json::Value = serde_json::from_str(&metadata_str).map_err(|e| {
                 rusqlite::Error::FromSqlConversionFailure(
-                    6,
+                    7,
                     rusqlite::types::Type::Text,
                     Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
                 )
@@ -164,6 +169,7 @@ impl MemoryStore {
 
             Ok(MemoryEntry {
                 id,
+                session_id,
                 content,
                 embedding,
                 timestamp,
@@ -180,25 +186,26 @@ impl MemoryStore {
     #[allow(dead_code)]
     pub fn get_by_id(&self, id: &str) -> Result<Option<MemoryEntry>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, content, embedding, timestamp, importance, memory_type, metadata, search_count 
+            "SELECT id, session_id, content, embedding, timestamp, importance, memory_type, metadata, search_count 
              FROM memories WHERE id = ?1"
         )?;
 
         let entry = stmt
             .query_row([id], |row| {
                 let id: String = row.get(0)?;
-                let content: String = row.get(1)?;
-                let embedding_bytes: Vec<u8> = row.get(2)?;
-                let timestamp_str: String = row.get(3)?;
-                let importance: f32 = row.get(4)?;
-                let memory_type_str: String = row.get(5)?;
-                let metadata_str: String = row.get(6)?;
-                let search_count: i32 = row.get(7)?;
+                let session_id: Option<String> = row.get(1).ok();
+                let content: String = row.get(2)?;
+                let embedding_bytes: Vec<u8> = row.get(3)?;
+                let timestamp_str: String = row.get(4)?;
+                let importance: f32 = row.get(5)?;
+                let memory_type_str: String = row.get(6)?;
+                let metadata_str: String = row.get(7)?;
+                let search_count: i32 = row.get(8)?;
 
                 let embedding = Self::bytes_to_vec_f32(&embedding_bytes);
                 let timestamp = timestamp_str.parse().map_err(|e| {
                     rusqlite::Error::FromSqlConversionFailure(
-                        3,
+                        4,
                         rusqlite::types::Type::Text,
                         Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
                     )
@@ -214,7 +221,7 @@ impl MemoryStore {
                 let metadata: serde_json::Value =
                     serde_json::from_str(&metadata_str).map_err(|e| {
                         rusqlite::Error::FromSqlConversionFailure(
-                            6,
+                            7,
                             rusqlite::types::Type::Text,
                             Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
                         )
@@ -222,6 +229,7 @@ impl MemoryStore {
 
                 Ok(MemoryEntry {
                     id,
+                    session_id,
                     content,
                     embedding,
                     timestamp,
@@ -241,6 +249,72 @@ impl MemoryStore {
         self.conn
             .execute("DELETE FROM memories WHERE id = ?1", [id])?;
         Ok(())
+    }
+
+    /// Get all memories for a specific session
+    pub fn get_by_session_id(&self, session_id: &str) -> Result<Vec<MemoryEntry>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, session_id, content, embedding, timestamp, importance, memory_type, metadata, search_count 
+             FROM memories WHERE session_id = ?1 ORDER BY timestamp DESC"
+        )?;
+
+        let entries = stmt.query_map([session_id], |row| {
+            let id: String = row.get(0)?;
+            let session_id: Option<String> = row.get(1).ok();
+            let content: String = row.get(2)?;
+            let embedding_bytes: Vec<u8> = row.get(3)?;
+            let timestamp_str: String = row.get(4)?;
+            let importance: f32 = row.get(5)?;
+            let memory_type_str: String = row.get(6)?;
+            let metadata_str: String = row.get(7)?;
+            let search_count: i32 = row.get(8)?;
+
+            let embedding = Self::bytes_to_vec_f32(&embedding_bytes);
+            let timestamp = timestamp_str.parse().map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    4,
+                    rusqlite::types::Type::Text,
+                    Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
+                )
+            })?;
+
+            let memory_type = match memory_type_str.as_str() {
+                "fact" => MemoryType::Fact,
+                "episode" => MemoryType::Episode,
+                "tool_result" => MemoryType::ToolResult,
+                _ => MemoryType::Episode,
+            };
+
+            let metadata: serde_json::Value = serde_json::from_str(&metadata_str).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    7,
+                    rusqlite::types::Type::Text,
+                    Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
+                )
+            })?;
+
+            Ok(MemoryEntry {
+                id,
+                session_id,
+                content,
+                embedding,
+                timestamp,
+                importance,
+                memory_type,
+                metadata,
+                search_count,
+            })
+        })?;
+
+        entries.collect::<Result<Vec<_>, _>>().map_err(|e| e.into())
+    }
+
+    /// Delete all memories without a session_id (cleanup per user request)
+    pub fn delete_all_without_session(&self) -> Result<usize> {
+        let deleted = self
+            .conn
+            .execute("DELETE FROM memories WHERE session_id IS NULL", [])?;
+        Ok(deleted)
     }
 
     pub fn increment_search_count(&self, id: &str) -> Result<()> {

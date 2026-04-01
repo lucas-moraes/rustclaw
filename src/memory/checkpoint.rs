@@ -5,6 +5,18 @@ use std::path::Path;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionSummary {
+    pub session_id: String,
+    pub summary: String,     // First 500 chars of user_input or session_name
+    pub phase: String,       // Current phase
+    pub state: String,       // Current state
+    pub project_dir: String, // Project directory if any
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub last_user_input: String, // Last user input for context
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolExecution {
     pub tool_name: String,
     pub input: String,
@@ -14,9 +26,17 @@ pub struct ToolExecution {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanStage {
+    pub id: usize,
+    pub name: String,
+    pub description: String,
+    pub validation: Option<String>,
+}
+
 pub struct DevelopmentCheckpoint {
     pub id: String,
     pub user_input: String,
+    pub session_name: Option<String>, // Human-readable session title
     pub current_iteration: usize,
     pub messages_json: String,
     pub completed_tools_json: String,
@@ -141,10 +161,36 @@ impl CheckpointStore {
             .conn
             .execute("ALTER TABLE checkpoints ADD COLUMN active_skill TEXT", []);
 
-        // Migration: add active_skill column if it doesn't exist
+        // Migration: add retry_count column if it doesn't exist
+        let _ = self.conn.execute(
+            "ALTER TABLE checkpoints ADD COLUMN retry_count INTEGER DEFAULT 0",
+            [],
+        );
+
+        // Migration: add active_skill column if it doesn't exist (duplicate, safe to run)
         let _ = self
             .conn
             .execute("ALTER TABLE checkpoints ADD COLUMN active_skill TEXT", []);
+
+        // Migration: add session_name column for human-readable session titles
+        let _ = self
+            .conn
+            .execute("ALTER TABLE checkpoints ADD COLUMN session_name TEXT", []);
+
+        // Create session_summaries table for fast session listing
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS session_summaries (
+                session_id TEXT PRIMARY KEY,
+                summary TEXT NOT NULL,
+                phase TEXT NOT NULL DEFAULT 'executing',
+                state TEXT NOT NULL,
+                project_dir TEXT DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                last_user_input TEXT DEFAULT ''
+            )",
+            [],
+        )?;
 
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_checkpoints_state ON checkpoints(state)",
@@ -159,14 +205,105 @@ impl CheckpointStore {
         Ok(())
     }
 
+    /// Save or update a session summary
+    pub fn save_session_summary(&self, summary: &SessionSummary) -> SqliteResult<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO session_summaries (session_id, summary, phase, state, project_dir, created_at, updated_at, last_user_input)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                summary.session_id,
+                summary.summary,
+                summary.phase,
+                summary.state,
+                summary.project_dir,
+                summary.created_at.to_rfc3339(),
+                summary.updated_at.to_rfc3339(),
+                summary.last_user_input,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Get a session summary by session_id
+    pub fn get_session_summary(&self, session_id: &str) -> SqliteResult<Option<SessionSummary>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT session_id, summary, phase, state, project_dir, created_at, updated_at, last_user_input
+             FROM session_summaries WHERE session_id = ?1"
+        )?;
+
+        let mut rows = stmt.query(params![session_id])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(SessionSummary {
+                session_id: row.get(0)?,
+                summary: row.get(1)?,
+                phase: row.get(2)?,
+                state: row.get(3)?,
+                project_dir: row.get(4)?,
+                created_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(5)?)
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .unwrap_or_else(|_| Utc::now()),
+                updated_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(6)?)
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .unwrap_or_else(|_| Utc::now()),
+                last_user_input: row.get(7).ok().unwrap_or_default(),
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Delete a session summary
+    pub fn delete_session_summary(&self, session_id: &str) -> SqliteResult<()> {
+        tracing::debug!("Deleting session summary for: {}", session_id);
+        let deleted = self.conn.execute(
+            "DELETE FROM session_summaries WHERE session_id = ?1",
+            params![session_id],
+        )?;
+        tracing::debug!("Deleted {} session summary rows", deleted);
+        Ok(())
+    }
+
+    /// List all session summaries ordered by most recent
+    pub fn list_session_summaries(&self, limit: usize) -> SqliteResult<Vec<SessionSummary>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT session_id, summary, phase, state, project_dir, created_at, updated_at, last_user_input
+             FROM session_summaries
+             ORDER BY updated_at DESC
+             LIMIT ?1"
+        )?;
+
+        let rows = stmt.query_map(params![limit as i64], |row| {
+            Ok(SessionSummary {
+                session_id: row.get(0)?,
+                summary: row.get(1)?,
+                phase: row.get(2)?,
+                state: row.get(3)?,
+                project_dir: row.get(4)?,
+                created_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(5)?)
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .unwrap_or_else(|_| Utc::now()),
+                updated_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(6)?)
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .unwrap_or_else(|_| Utc::now()),
+                last_user_input: row.get(7).ok().unwrap_or_default(),
+            })
+        })?;
+
+        let mut summaries = Vec::new();
+        for summary in rows {
+            summaries.push(summary?);
+        }
+        Ok(summaries)
+    }
+
     pub fn save(&self, checkpoint: &DevelopmentCheckpoint) -> SqliteResult<()> {
         self.conn.execute(
-            "INSERT OR REPLACE INTO checkpoints 
-             (id, user_input, current_iteration, messages_json, completed_tools_json, plan_text, project_dir, plan_file, active_skill, phase, state, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            "INSERT OR REPLACE INTO checkpoints (id, user_input, session_name, current_iteration, messages_json, completed_tools_json, plan_text, project_dir, plan_file, active_skill, phase, state, created_at, updated_at, retry_count)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             params![
                 checkpoint.id,
                 checkpoint.user_input,
+                checkpoint.session_name,
                 checkpoint.current_iteration,
                 checkpoint.messages_json,
                 checkpoint.completed_tools_json,
@@ -178,14 +315,35 @@ impl CheckpointStore {
                 checkpoint.state.to_string(),
                 checkpoint.created_at.to_rfc3339(),
                 checkpoint.updated_at.to_rfc3339(),
+                checkpoint.retry_count,
             ],
         )?;
+
+        // Also update session summary
+        let summary = SessionSummary {
+            session_id: checkpoint.id.clone(),
+            summary: checkpoint.session_name.clone().unwrap_or_else(|| {
+                if checkpoint.user_input.len() > 500 {
+                    format!("{}...", &checkpoint.user_input[..500])
+                } else {
+                    checkpoint.user_input.clone()
+                }
+            }),
+            phase: checkpoint.phase.to_string(),
+            state: checkpoint.state.to_string(),
+            project_dir: checkpoint.project_dir.clone(),
+            created_at: checkpoint.created_at,
+            updated_at: chrono::Utc::now(),
+            last_user_input: checkpoint.user_input.clone(),
+        };
+        self.save_session_summary(&summary)?;
+
         Ok(())
     }
 
     pub fn get(&self, id: &str) -> SqliteResult<Option<DevelopmentCheckpoint>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, user_input, current_iteration, messages_json, completed_tools_json, plan_text, project_dir, plan_file, active_skill, phase, state, created_at, updated_at
+            "SELECT id, user_input, session_name, current_iteration, messages_json, completed_tools_json, plan_text, project_dir, plan_file, active_skill, phase, state, created_at, updated_at, retry_count
              FROM checkpoints WHERE id = ?1"
         )?;
 
@@ -200,8 +358,8 @@ impl CheckpointStore {
 
     pub fn get_active(&self) -> SqliteResult<Vec<DevelopmentCheckpoint>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, user_input, current_iteration, messages_json, completed_tools_json, plan_text, project_dir, plan_file, active_skill, phase, state, created_at, updated_at
-             FROM checkpoints WHERE state IN ('in_progress', 'interrupted')
+            "SELECT id, user_input, session_name, current_iteration, messages_json, completed_tools_json, plan_text, project_dir, plan_file, active_skill, phase, state, created_at, updated_at, retry_count
+             FROM checkpoints WHERE state IN ('in_progress', 'interrupted', 'completed') AND phase != 'executing'
              ORDER BY updated_at DESC"
         )?;
 
@@ -217,9 +375,25 @@ impl CheckpointStore {
 
     pub fn get_recent_with_plans(&self, limit: usize) -> SqliteResult<Vec<DevelopmentCheckpoint>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, user_input, current_iteration, messages_json, completed_tools_json, plan_text, project_dir, plan_file, active_skill, phase, state, created_at, updated_at
+            "SELECT id, user_input, session_name, current_iteration, messages_json, completed_tools_json, plan_text, project_dir, plan_file, active_skill, phase, state, created_at, updated_at, retry_count
              FROM checkpoints WHERE plan_text != ''
              ORDER BY updated_at DESC LIMIT ?1"
+        )?;
+
+        let rows = stmt.query_map(params![limit as i64], |row| self.row_to_checkpoint(row))?;
+        let mut checkpoints = Vec::new();
+        for checkpoint in rows {
+            checkpoints.push(checkpoint?);
+        }
+        Ok(checkpoints)
+    }
+
+    /// List all sessions ordered by most recent
+    pub fn list_all(&self, limit: usize) -> SqliteResult<Vec<DevelopmentCheckpoint>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, user_input, session_name, current_iteration, messages_json, completed_tools_json, plan_text, project_dir, plan_file, active_skill, phase, state, created_at, updated_at, retry_count
+             FROM checkpoints
+             ORDER BY created_at DESC LIMIT ?1"
         )?;
 
         let rows = stmt.query_map(params![limit as i64], |row| self.row_to_checkpoint(row))?;
@@ -233,7 +407,7 @@ impl CheckpointStore {
     pub fn find_by_id_prefix(&self, prefix: &str) -> SqliteResult<Option<DevelopmentCheckpoint>> {
         let search_pattern = format!("{}%", prefix);
         let mut stmt = self.conn.prepare(
-            "SELECT id, user_input, current_iteration, messages_json, completed_tools_json, plan_text, project_dir, plan_file, active_skill, phase, state, created_at, updated_at
+            "SELECT id, user_input, session_name, current_iteration, messages_json, completed_tools_json, plan_text, project_dir, plan_file, active_skill, phase, state, created_at, updated_at, retry_count
              FROM checkpoints WHERE id LIKE ?1
              ORDER BY updated_at DESC LIMIT 1"
         )?;
@@ -250,7 +424,7 @@ impl CheckpointStore {
         let search_pattern = format!("%{}%", user_input);
 
         let mut stmt = self.conn.prepare(
-            "SELECT id, user_input, current_iteration, messages_json, completed_tools_json, plan_text, project_dir, plan_file, active_skill, phase, state, created_at, updated_at
+            "SELECT id, user_input, session_name, current_iteration, messages_json, completed_tools_json, plan_text, project_dir, plan_file, active_skill, phase, state, created_at, updated_at, retry_count
              FROM checkpoints WHERE user_input LIKE ?1 AND state IN ('in_progress', 'interrupted')
              ORDER BY updated_at DESC LIMIT 1"
         )?;
@@ -265,8 +439,14 @@ impl CheckpointStore {
     }
 
     pub fn delete(&self, id: &str) -> SqliteResult<()> {
-        self.conn
+        // Try to delete from checkpoints first
+        let deleted = self
+            .conn
             .execute("DELETE FROM checkpoints WHERE id = ?1", params![id])?;
+
+        // Also try to delete session summary (works even if checkpoint doesn't exist)
+        let _ = self.delete_session_summary(id);
+
         Ok(())
     }
 
@@ -304,30 +484,31 @@ impl CheckpointStore {
     }
 
     fn row_to_checkpoint(&self, row: &rusqlite::Row) -> SqliteResult<DevelopmentCheckpoint> {
-        let state_str: String = row.get(9)?;
-        let phase_str: String = row.get(8)?;
+        let state_str: String = row.get(11)?;
+        let phase_str: String = row.get(10)?;
 
         Ok(DevelopmentCheckpoint {
             id: row.get(0)?,
             user_input: row.get(1)?,
-            current_iteration: row.get(2)?,
-            messages_json: row.get(3)?,
-            completed_tools_json: row.get(4)?,
-            plan_text: row.get(5)?,
-            project_dir: row.get(6)?,
-            plan_file: row.get(7)?,
-            active_skill: row.get(12).ok(),
+            session_name: row.get(2).ok(),
+            current_iteration: row.get(3)?,
+            messages_json: row.get(4)?,
+            completed_tools_json: row.get(5)?,
+            plan_text: row.get(6)?,
+            project_dir: row.get(7)?,
+            plan_file: row.get(8)?,
+            active_skill: row.get(9).ok(),
             phase: PlanPhase::from(phase_str.as_str()),
             state: DevelopmentState::from(state_str.as_str()),
             current_step: 0,
             completed_steps: vec![],
-            retry_count: 0,
+            retry_count: row.get(14).unwrap_or(0),
             last_error: None,
             auto_loop_enabled: false,
-            created_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(10)?)
+            created_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(12)?)
                 .map(|dt| dt.with_timezone(&Utc))
                 .unwrap_or_else(|_| Utc::now()),
-            updated_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(11)?)
+            updated_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(13)?)
                 .map(|dt| dt.with_timezone(&Utc))
                 .unwrap_or_else(|_| Utc::now()),
         })
@@ -337,9 +518,16 @@ impl CheckpointStore {
 impl DevelopmentCheckpoint {
     pub fn new(user_input: String) -> Self {
         let now = Utc::now();
+        // Generate a short session name from the user input (first 40 chars)
+        let session_name = if user_input.len() > 40 {
+            format!("{}...", &user_input[..40])
+        } else {
+            user_input.clone()
+        };
         Self {
             id: Uuid::new_v4().to_string(),
             user_input,
+            session_name: Some(session_name),
             current_iteration: 0,
             messages_json: "[]".to_string(),
             completed_tools_json: "[]".to_string(),

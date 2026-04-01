@@ -157,8 +157,8 @@ impl ChainedAuthProvider {
 
     pub fn standard() -> Self {
         Self::new()
-            .with_provider(Box::new(EnvironmentAuthProvider::new("OPENCODE_API_KEY")))
             .with_provider(Box::new(EnvironmentAuthProvider::new("TOKEN")))
+            .with_provider(Box::new(EnvironmentAuthProvider::new("OPENCODE_API_KEY")))
             .with_provider(Box::new(KeychainAuthProvider::new("rustclaw", "api_key")))
             .with_provider(Box::new(ConfigFileAuthProvider::new(".env")))
     }

@@ -37,8 +37,8 @@ impl PrefetchData {
     }
 
     async fn load_api_key() -> Option<String> {
-        std::env::var("OPENCODE_API_KEY")
-            .or_else(|_| std::env::var("TOKEN"))
+        std::env::var("TOKEN")
+            .or_else(|_| std::env::var("OPENCODE_API_KEY"))
             .ok()
     }
 

@@ -90,7 +90,6 @@ impl SkillLoader {
             .loaded_skills
             .contains_key(&Self::normalize_key("general"))
         {
-            warn!("No 'general' skill found. Creating default.");
             if let Ok(default_skill) = self.create_default_general_skill() {
                 let key = Self::normalize_key(&default_skill.name);
                 self.loaded_skills

@@ -3,6 +3,7 @@ use serde_json::Value;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
+use tracing::{debug, error};
 
 pub struct FileWriteTool;
 
@@ -34,12 +35,17 @@ impl Tool for FileWriteTool {
         let append = args["append"].as_bool().unwrap_or(false);
 
         let path = Path::new(path_str);
-
         
+        debug!("file_write: path={}, append={}, content_len={}", path_str, append, content.len());
+
         if let Some(parent) = path.parent() {
             if !parent.exists() {
+                debug!("Creating parent directory: {:?}", parent);
                 fs::create_dir_all(parent)
-                    .map_err(|e| format!("Erro ao criar diretórios: {}", e))?;
+                    .map_err(|e| {
+                        error!("Failed to create directories: {}", e);
+                        format!("Erro ao criar diretórios: {}", e)
+                    })?;
             }
         }
 
@@ -52,13 +58,21 @@ impl Tool for FileWriteTool {
         } else {
             fs::File::create(path)
         }
-        .map_err(|e| format!("Erro ao abrir/criar arquivo: {}", e))?;
+        .map_err(|e| {
+            error!("Failed to create/open file: {}", e);
+            format!("Erro ao abrir/criar arquivo: {}", e)
+        })?;
 
         file.write_all(content.as_bytes())
-            .map_err(|e| format!("Erro ao escrever arquivo: {}", e))?;
+            .map_err(|e| {
+                error!("Failed to write content: {}", e);
+                format!("Erro ao escrever arquivo: {}", e)
+            })?;
 
         let action = if append { "Atualizado" } else { "Criado" };
         let bytes = content.len();
+        
+        debug!("file_write: {} successfully", path_str);
 
         Ok(format!("{}: {} ({} bytes)", action, path_str, bytes))
     }

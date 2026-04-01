@@ -5,8 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::time::{interval, Duration};
 
 pub struct Spinner {
-    frame_bold: String,
-    frame_normal: String,
+    frames: Vec<String>,
     message: String,
     interval_ms: u64,
 }
@@ -19,21 +18,43 @@ impl Default for Spinner {
 
 impl Spinner {
     pub fn new() -> Self {
+        let frames = vec![
+            format!("{}{}⠋{}", Colors::BOLD, Colors::AMBER, Colors::RESET),
+            format!("{}{}⠙{}", Colors::BOLD, Colors::AMBER, Colors::RESET),
+            format!("{}{}⠹{}", Colors::BOLD, Colors::AMBER, Colors::RESET),
+            format!("{}{}⠸{}", Colors::BOLD, Colors::AMBER, Colors::RESET),
+            format!("{}{}⠼{}", Colors::BOLD, Colors::AMBER, Colors::RESET),
+            format!("{}{}⠴{}", Colors::BOLD, Colors::AMBER, Colors::RESET),
+            format!("{}{}⠦{}", Colors::BOLD, Colors::AMBER, Colors::RESET),
+            format!("{}{}⠧{}", Colors::BOLD, Colors::AMBER, Colors::RESET),
+            format!("{}{}⠇{}", Colors::BOLD, Colors::AMBER, Colors::RESET),
+            format!("{}{}⠏{}", Colors::BOLD, Colors::AMBER, Colors::RESET),
+        ];
         Self {
-            frame_bold: format!("{}{} {}", Colors::BOLD, Colors::AMBER, Colors::RESET),
-            frame_normal: format!("{} ", Colors::AMBER),
+            frames,
             message: "Thinking".to_string(),
-            interval_ms: 500,
+            interval_ms: 100,
         }
     }
 
     #[allow(dead_code)]
     pub fn with_message(message: impl Into<String>) -> Self {
+        let frames = vec![
+            format!("{}{}⠋{}", Colors::BOLD, Colors::AMBER, Colors::RESET),
+            format!("{}{}⠙{}", Colors::BOLD, Colors::AMBER, Colors::RESET),
+            format!("{}{}⠹{}", Colors::BOLD, Colors::AMBER, Colors::RESET),
+            format!("{}{}⠸{}", Colors::BOLD, Colors::AMBER, Colors::RESET),
+            format!("{}{}⠼{}", Colors::BOLD, Colors::AMBER, Colors::RESET),
+            format!("{}{}⠴{}", Colors::BOLD, Colors::AMBER, Colors::RESET),
+            format!("{}{}⠦{}", Colors::BOLD, Colors::AMBER, Colors::RESET),
+            format!("{}{}⠧{}", Colors::BOLD, Colors::AMBER, Colors::RESET),
+            format!("{}{}⠇{}", Colors::BOLD, Colors::AMBER, Colors::RESET),
+            format!("{}{}⠏{}", Colors::BOLD, Colors::AMBER, Colors::RESET),
+        ];
         Self {
-            frame_bold: format!("{}{} {}", Colors::BOLD, Colors::AMBER, Colors::RESET),
-            frame_normal: format!("{} ", Colors::AMBER),
+            frames,
             message: message.into(),
-            interval_ms: 500,
+            interval_ms: 100,
         }
     }
 
@@ -44,24 +65,23 @@ impl Spinner {
         let running = Arc::new(AtomicBool::new(true));
         let running_clone = running.clone();
         let interval_ms = self.interval_ms;
-        let frame_bold = self.frame_bold.clone();
-        let frame_normal = self.frame_normal.clone();
-        let message = self.message.clone();
+        let frames = self.frames;
+        let message = self.message;
 
         let spinner_task = tokio::spawn(async move {
             let mut ticker = interval(Duration::from_millis(interval_ms));
-            let mut bold = true;
+            let mut frame_idx = 0;
 
             while running_clone.load(Ordering::Relaxed) {
                 ticker.tick().await;
 
-                let frame = if bold { &frame_bold } else { &frame_normal };
-                bold = !bold;
+                let frame = &frames[frame_idx % frames.len()];
+                frame_idx += 1;
 
                 print!(
-                    "{}{}{}{}...{}\x1b[0m",
+                    "{}{}{} {}...{}",
                     Colors::CLEAR_LINE,
-                    Colors::LIGHT_GRAY,
+                    Colors::DIM,
                     frame,
                     message,
                     Colors::RESET
