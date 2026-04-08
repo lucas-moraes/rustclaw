@@ -53,8 +53,8 @@ O sistema atual:
 
 ### Feature 3: Event Sourcing para Checkpoints
 
-- [ ] **3.1** Criar enum `SessionEvent` com variantes (ToolExecuted, PhaseChanged, etc)
-- [ ] **3.2** Criar tabela `session_events`:
+- [x] **3.1** Criar enum `SessionEvent` com variantes (ToolExecuted, PhaseChanged, etc)
+- [x] **3.2** Criar tabela `session_events`:
   ```sql
   CREATE TABLE session_events (
     id TEXT PRIMARY KEY,
@@ -65,12 +65,12 @@ O sistema atual:
   );
   CREATE INDEX idx_session_events ON session_events(session_id, created_at);
   ```
-- [ ] **3.3** Criar `SessionEventStore` com métodos:
+- [x] **3.3** Criar `SessionEventStore` com métodos:
   - `append_event(session_id, event)`
   - `get_events(session_id, from_ts, to_ts)`
-  - `replay_events(session_id)` → reconstrói estado
+  - `get_session_timeline(session_id)` → analytics
 - [ ] **3.4** Migrar `save_checkpoint` para gerar eventos automaticamente
-- [ ] **3.5** Implementar `get_session_timeline(session_id)` para analytics
+- [x] **3.5** Implementar `get_session_timeline(session_id)` para analytics
 - [ ] **3.6** Adicionar compression para `event_data` JSON grande
 - [ ] **3.7** Deprecar snapshots full em favor de events (manter backward compat)
 

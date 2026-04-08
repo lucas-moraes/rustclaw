@@ -84,6 +84,419 @@ pub struct PlanStage {
     pub validation: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum SessionEventType {
+    ToolExecuted,
+    PhaseChanged,
+    StateChanged,
+    FileModified,
+    MessageAdded,
+    BranchCreated,
+    CheckpointCreated,
+    ErrorOccurred,
+    RetryAttempt,
+}
+
+impl std::fmt::Display for SessionEventType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SessionEventType::ToolExecuted => write!(f, "tool_executed"),
+            SessionEventType::PhaseChanged => write!(f, "phase_changed"),
+            SessionEventType::StateChanged => write!(f, "state_changed"),
+            SessionEventType::FileModified => write!(f, "file_modified"),
+            SessionEventType::MessageAdded => write!(f, "message_added"),
+            SessionEventType::BranchCreated => write!(f, "branch_created"),
+            SessionEventType::CheckpointCreated => write!(f, "checkpoint_created"),
+            SessionEventType::ErrorOccurred => write!(f, "error_occurred"),
+            SessionEventType::RetryAttempt => write!(f, "retry_attempt"),
+        }
+    }
+}
+
+impl From<&str> for SessionEventType {
+    fn from(s: &str) -> Self {
+        match s {
+            "tool_executed" => SessionEventType::ToolExecuted,
+            "phase_changed" => SessionEventType::PhaseChanged,
+            "state_changed" => SessionEventType::StateChanged,
+            "file_modified" => SessionEventType::FileModified,
+            "message_added" => SessionEventType::MessageAdded,
+            "branch_created" => SessionEventType::BranchCreated,
+            "checkpoint_created" => SessionEventType::CheckpointCreated,
+            "error_occurred" => SessionEventType::ErrorOccurred,
+            "retry_attempt" => SessionEventType::RetryAttempt,
+            _ => SessionEventType::MessageAdded,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionEvent {
+    pub id: String,
+    pub session_id: String,
+    pub event_type: SessionEventType,
+    pub event_data: serde_json::Value,
+    pub created_at: DateTime<Utc>,
+}
+
+impl SessionEvent {
+    pub fn new(
+        session_id: String,
+        event_type: SessionEventType,
+        event_data: serde_json::Value,
+    ) -> Self {
+        Self {
+            id: Uuid::new_v4().to_string(),
+            session_id,
+            event_type,
+            event_data,
+            created_at: Utc::now(),
+        }
+    }
+
+    pub fn tool_executed(
+        session_id: String,
+        tool_name: String,
+        input: String,
+        output: String,
+        iteration: usize,
+    ) -> Self {
+        Self::new(
+            session_id,
+            SessionEventType::ToolExecuted,
+            serde_json::json!({
+                "tool_name": tool_name,
+                "input": input,
+                "output": output,
+                "iteration": iteration,
+            }),
+        )
+    }
+
+    pub fn phase_changed(
+        session_id: String,
+        from: PlanPhase,
+        to: PlanPhase,
+        reason: String,
+    ) -> Self {
+        Self::new(
+            session_id,
+            SessionEventType::PhaseChanged,
+            serde_json::json!({
+                "from": from.to_string(),
+                "to": to.to_string(),
+                "reason": reason,
+            }),
+        )
+    }
+
+    pub fn state_changed(session_id: String, from: DevelopmentState, to: DevelopmentState) -> Self {
+        Self::new(
+            session_id,
+            SessionEventType::StateChanged,
+            serde_json::json!({
+                "from": from.to_string(),
+                "to": to.to_string(),
+            }),
+        )
+    }
+
+    pub fn file_modified(session_id: String, path: String, change_type: String) -> Self {
+        Self::new(
+            session_id,
+            SessionEventType::FileModified,
+            serde_json::json!({
+                "path": path,
+                "change_type": change_type,
+            }),
+        )
+    }
+
+    pub fn message_added(session_id: String, role: String, content_length: usize) -> Self {
+        Self::new(
+            session_id,
+            SessionEventType::MessageAdded,
+            serde_json::json!({
+                "role": role,
+                "content_length": content_length,
+            }),
+        )
+    }
+
+    pub fn error_occurred(session_id: String, error: String, context: String) -> Self {
+        Self::new(
+            session_id,
+            SessionEventType::ErrorOccurred,
+            serde_json::json!({
+                "error": error,
+                "context": context,
+            }),
+        )
+    }
+
+    pub fn retry_attempt(session_id: String, attempt_number: usize, error: String) -> Self {
+        Self::new(
+            session_id,
+            SessionEventType::RetryAttempt,
+            serde_json::json!({
+                "attempt_number": attempt_number,
+                "error": error,
+            }),
+        )
+    }
+
+    pub fn checkpoint_created(session_id: String, checkpoint_id: String) -> Self {
+        Self::new(
+            session_id,
+            SessionEventType::CheckpointCreated,
+            serde_json::json!({
+                "checkpoint_id": checkpoint_id,
+            }),
+        )
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EventSummary {
+    pub event_type: SessionEventType,
+    pub count: usize,
+    pub last_occurrence: DateTime<Utc>,
+}
+
+pub struct SessionEventStore {
+    conn: Connection,
+}
+
+impl SessionEventStore {
+    pub fn new(db_path: &Path) -> SqliteResult<Self> {
+        let conn = Connection::open(db_path)?;
+        let store = Self { conn };
+        store.init_table()?;
+        Ok(store)
+    }
+
+    fn init_table(&self) -> SqliteResult<()> {
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS session_events (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                event_data TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )",
+            [],
+        )?;
+
+        let _ = self.conn.execute(
+            "ALTER TABLE session_events ADD COLUMN compressed INTEGER DEFAULT 0",
+            [],
+        );
+
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_session_events_session ON session_events(session_id)",
+            [],
+        )?;
+
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_session_events_type ON session_events(event_type)",
+            [],
+        )?;
+
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_session_events_created ON session_events(created_at)",
+            [],
+        )?;
+
+        Ok(())
+    }
+
+    pub fn append_event(&self, event: &SessionEvent) -> SqliteResult<()> {
+        let event_data_str = serde_json::to_string(&event.event_data).unwrap_or_default();
+
+        self.conn.execute(
+            "INSERT INTO session_events (id, session_id, event_type, event_data, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                event.id,
+                event.session_id,
+                event.event_type.to_string(),
+                event_data_str,
+                event.created_at.to_rfc3339(),
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    pub fn get_events(
+        &self,
+        session_id: &str,
+        from_ts: Option<DateTime<Utc>>,
+        to_ts: Option<DateTime<Utc>>,
+    ) -> SqliteResult<Vec<SessionEvent>> {
+        let query = "SELECT id, session_id, event_type, event_data, created_at FROM session_events WHERE session_id = ?1";
+        let (query_with_filter, param_count) = match (from_ts, to_ts) {
+            (Some(_), Some(_)) => (
+                format!(
+                    "{} AND created_at >= ?2 AND created_at <= ?3 ORDER BY created_at ASC",
+                    query
+                ),
+                3,
+            ),
+            (Some(_), None) => (
+                format!("{} AND created_at >= ?2 ORDER BY created_at ASC", query),
+                2,
+            ),
+            (None, Some(_)) => (
+                format!("{} AND created_at <= ?2 ORDER BY created_at ASC", query),
+                2,
+            ),
+            (None, None) => (format!("{} ORDER BY created_at ASC", query), 1),
+        };
+
+        let mut stmt = self.conn.prepare(&query_with_filter)?;
+
+        let rows = match (from_ts, to_ts) {
+            (Some(from), Some(to)) => stmt
+                .query_map(
+                    params![session_id, from.to_rfc3339(), to.to_rfc3339()],
+                    |row| self.row_to_event(row),
+                )?
+                .collect::<Result<Vec<_>, _>>()?,
+            (Some(from), None) => stmt
+                .query_map(params![session_id, from.to_rfc3339()], |row| {
+                    self.row_to_event(row)
+                })?
+                .collect::<Result<Vec<_>, _>>()?,
+            (None, Some(to)) => stmt
+                .query_map(params![session_id, to.to_rfc3339()], |row| {
+                    self.row_to_event(row)
+                })?
+                .collect::<Result<Vec<_>, _>>()?,
+            (None, None) => stmt
+                .query_map([session_id], |row| self.row_to_event(row))?
+                .collect::<Result<Vec<_>, _>>()?,
+        };
+
+        Ok(rows)
+    }
+
+    fn row_to_event(&self, row: &rusqlite::Row) -> SqliteResult<SessionEvent> {
+        let id: String = row.get(0)?;
+        let session_id: String = row.get(1)?;
+        let event_type_str: String = row.get(2)?;
+        let event_data_str: String = row.get(3)?;
+        let created_at_str: String = row.get(4)?;
+
+        let event_data: serde_json::Value =
+            serde_json::from_str(&event_data_str).unwrap_or(serde_json::Value::Null);
+
+        let created_at = DateTime::parse_from_rfc3339(&created_at_str)
+            .map(|dt| dt.with_timezone(&Utc))
+            .unwrap_or_else(|_| Utc::now());
+
+        Ok(SessionEvent {
+            id,
+            session_id,
+            event_type: SessionEventType::from(event_type_str.as_str()),
+            event_data,
+            created_at,
+        })
+    }
+
+    pub fn get_session_timeline(
+        &self,
+        session_id: &str,
+    ) -> SqliteResult<Vec<(DateTime<Utc>, SessionEventType, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT created_at, event_type, event_data FROM session_events 
+             WHERE session_id = ?1 ORDER BY created_at ASC",
+        )?;
+
+        let rows = stmt.query_map([session_id], |row| {
+            let created_at_str: String = row.get(0)?;
+            let event_type_str: String = row.get(1)?;
+            let event_data_str: String = row.get(2)?;
+
+            let created_at = DateTime::parse_from_rfc3339(&created_at_str)
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now());
+
+            let summary = if event_type_str == "tool_executed" {
+                if let Ok(data) = serde_json::from_str::<serde_json::Value>(&event_data_str) {
+                    data.get("tool_name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown")
+                        .to_string()
+                } else {
+                    event_type_str.clone()
+                }
+            } else if event_type_str == "error_occurred" {
+                if let Ok(data) = serde_json::from_str::<serde_json::Value>(&event_data_str) {
+                    data.get("error")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown error")
+                        .to_string()
+                } else {
+                    event_type_str.clone()
+                }
+            } else {
+                event_type_str.clone()
+            };
+
+            Ok((
+                created_at,
+                SessionEventType::from(event_type_str.as_str()),
+                summary,
+            ))
+        })?;
+
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.into())
+    }
+
+    pub fn get_event_summary(&self, session_id: &str) -> SqliteResult<Vec<EventSummary>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT event_type, COUNT(*) as count, MAX(created_at) as last_occurrence 
+             FROM session_events WHERE session_id = ?1 GROUP BY event_type ORDER BY count DESC",
+        )?;
+
+        let rows = stmt.query_map([session_id], |row| {
+            let event_type_str: String = row.get(0)?;
+            let count: usize = row.get(1)?;
+            let last_occurrence_str: String = row.get(2)?;
+
+            let last_occurrence = DateTime::parse_from_rfc3339(&last_occurrence_str)
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now());
+
+            Ok(EventSummary {
+                event_type: SessionEventType::from(event_type_str.as_str()),
+                count,
+                last_occurrence,
+            })
+        })?;
+
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.into())
+    }
+
+    pub fn count_events(&self, session_id: &str) -> SqliteResult<usize> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM session_events WHERE session_id = ?1",
+            [session_id],
+            |row| row.get(0),
+        )?;
+        Ok(count as usize)
+    }
+
+    pub fn delete_events_for_session(&self, session_id: &str) -> SqliteResult<usize> {
+        let deleted = self.conn.execute(
+            "DELETE FROM session_events WHERE session_id = ?1",
+            [session_id],
+        )?;
+        Ok(deleted)
+    }
+}
+
 pub struct DevelopmentCheckpoint {
     pub id: String,
     pub user_input: String,
