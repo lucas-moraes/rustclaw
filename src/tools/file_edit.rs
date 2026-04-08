@@ -5,12 +5,31 @@ use std::path::Path;
 
 use super::Tool;
 
-/// FileEditTool: Edita um arquivo substituindo texto exato (old_str -> new_str)
 pub struct FileEditTool;
 
 impl FileEditTool {
     pub fn new() -> Self {
         Self
+    }
+
+    pub fn validate_path(path: &Path) -> Result<(), String> {
+        let path_str = path.to_string_lossy();
+
+        if path_str.contains("/etc/")
+            || path_str.contains("/usr/")
+            || path_str.contains("/bin/")
+            || path_str.contains("/sbin/")
+            || path_str.contains("/boot/")
+            || path_str.contains("/sys/")
+            || path_str.contains("/proc/")
+        {
+            return Err(format!(
+                "Acesso negado: caminho de sistema '{}' não permitido",
+                path.display()
+            ));
+        }
+
+        Ok(())
     }
 }
 
@@ -49,27 +68,24 @@ Parâmetros:
             .as_str()
             .ok_or_else(|| "Parâmetro 'new_str' é obrigatório".to_string())?;
 
-        let expected_replacements = args["expected_replacements"]
-            .as_u64()
-            .unwrap_or(1) as usize;
+        let expected_replacements = args["expected_replacements"].as_u64().unwrap_or(1) as usize;
 
-        // Verifica se arquivo existe
-        if !Path::new(path).exists() {
+        let path_obj = Path::new(path);
+        Self::validate_path(path_obj)?;
+
+        if !path_obj.exists() {
             return Err(format!("Arquivo não existe: {}", path));
         }
 
-        if !Path::new(path).is_file() {
+        if !path_obj.is_file() {
             return Err(format!("Caminho não é um arquivo: {}", path));
         }
 
-        // Lê conteúdo atual
         let content = fs::read_to_string(path)
             .map_err(|e| format!("Erro ao ler arquivo '{}': {}", path, e))?;
 
-        // Conta ocorrências
         let occurrences = content.matches(old_str).count();
 
-        // Valida número de ocorrências
         if occurrences == 0 {
             return Err(format!(
                 "old_str não encontrado no arquivo '{}'. Nenhuma ocorrência de:\n{}",
@@ -84,10 +100,8 @@ Parâmetros:
             ));
         }
 
-        // Faz a substituição
         let new_content = content.replace(old_str, new_str);
 
-        // Escreve de volta
         fs::write(path, new_content.as_bytes())
             .map_err(|e| format!("Erro ao escrever arquivo '{}': {}", path, e))?;
 

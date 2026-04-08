@@ -11,6 +11,48 @@ impl FileWriteTool {
     pub fn new() -> Self {
         Self
     }
+
+    pub fn validate_path(path: &Path) -> Result<(), String> {
+        let path_str = path.to_string_lossy();
+
+        if path_str.contains("/etc/")
+            || path_str.contains("/usr/")
+            || path_str.contains("/bin/")
+            || path_str.contains("/sbin/")
+            || path_str.contains("/boot/")
+            || path_str.contains("/sys/")
+            || path_str.contains("/proc/")
+        {
+            return Err(format!(
+                "Acesso negado: caminho de sistema '{}' não permitido",
+                path.display()
+            ));
+        }
+
+        if let Some(parent) = path.parent() {
+            if parent.exists() {
+                let canonical_parent = parent.canonicalize().map_err(|e| {
+                    format!("Erro ao resolver caminho '{}': {}", parent.display(), e)
+                })?;
+                let parent_str = canonical_parent.to_string_lossy();
+                if parent_str.starts_with("/etc")
+                    || parent_str.starts_with("/usr")
+                    || parent_str.starts_with("/bin")
+                    || parent_str.starts_with("/sbin")
+                    || parent_str.starts_with("/boot")
+                    || parent_str.starts_with("/proc")
+                    || parent_str.starts_with("/sys")
+                {
+                    return Err(format!(
+                        "Acesso negado: diretório de sistema '{}' não permitido",
+                        parent.display()
+                    ));
+                }
+            }
+        }
+
+        Ok(())
+    }
 }
 
 #[async_trait::async_trait]
@@ -35,26 +77,28 @@ impl Tool for FileWriteTool {
         let append = args["append"].as_bool().unwrap_or(false);
 
         let path = Path::new(path_str);
-        
-        debug!("file_write: path={}, append={}, content_len={}", path_str, append, content.len());
+
+        Self::validate_path(path)?;
+
+        debug!(
+            "file_write: path={}, append={}, content_len={}",
+            path_str,
+            append,
+            content.len()
+        );
 
         if let Some(parent) = path.parent() {
             if !parent.exists() {
                 debug!("Creating parent directory: {:?}", parent);
-                fs::create_dir_all(parent)
-                    .map_err(|e| {
-                        error!("Failed to create directories: {}", e);
-                        format!("Erro ao criar diretórios: {}", e)
-                    })?;
+                fs::create_dir_all(parent).map_err(|e| {
+                    error!("Failed to create directories: {}", e);
+                    format!("Erro ao criar diretórios: {}", e)
+                })?;
             }
         }
 
         let mut file = if append {
-            fs::OpenOptions::new()
-                .write(true)
-                .append(true)
-                .create(true)
-                .open(path)
+            fs::OpenOptions::new().append(true).create(true).open(path)
         } else {
             fs::File::create(path)
         }
@@ -63,15 +107,14 @@ impl Tool for FileWriteTool {
             format!("Erro ao abrir/criar arquivo: {}", e)
         })?;
 
-        file.write_all(content.as_bytes())
-            .map_err(|e| {
-                error!("Failed to write content: {}", e);
-                format!("Erro ao escrever arquivo: {}", e)
-            })?;
+        file.write_all(content.as_bytes()).map_err(|e| {
+            error!("Failed to write content: {}", e);
+            format!("Erro ao escrever arquivo: {}", e)
+        })?;
 
         let action = if append { "Atualizado" } else { "Criado" };
         let bytes = content.len();
-        
+
         debug!("file_write: {} successfully", path_str);
 
         Ok(format!("{}: {} ({} bytes)", action, path_str, bytes))

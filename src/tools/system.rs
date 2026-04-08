@@ -53,7 +53,6 @@ impl Tool for SystemInfoTool {
         let mut s = System::new_all();
         s.refresh_all();
 
-        
         let total_memory = s.total_memory();
         let used_memory = s.used_memory();
         let free_memory = total_memory - used_memory;
@@ -63,28 +62,27 @@ impl Tool for SystemInfoTool {
             0.0
         };
 
-        
         let cpu_count = s.cpus().len();
-        let cpu_usage: f32 = s.cpus().iter().map(|cpu| cpu.cpu_usage()).sum::<f32>() / cpu_count as f32;
+        let cpu_usage: f32 =
+            s.cpus().iter().map(|cpu| cpu.cpu_usage()).sum::<f32>() / cpu_count as f32;
 
-        
         let hostname = System::host_name().unwrap_or_else(|| "Desconhecido".to_string());
         let os_name = System::name().unwrap_or_else(|| "Desconhecido".to_string());
         let os_version = System::os_version().unwrap_or_else(|| "Desconhecido".to_string());
         let kernel_version = System::kernel_version().unwrap_or_else(|| "Desconhecido".to_string());
 
-        
         let uptime = System::uptime();
 
-        
         let disks = Disks::new_with_refreshed_list();
 
         match detail {
             Some("cpu") => {
-                let cpu_name = s.cpus().first()
+                let cpu_name = s
+                    .cpus()
+                    .first()
                     .map(|cpu| cpu.brand())
                     .unwrap_or("Desconhecido");
-                
+
                 Ok(format!(
                     "💻 CPU: {}\n  Cores: {}\n  Uso: {:.1}%\n  Frequência: {:?} MHz",
                     cpu_name,
@@ -93,15 +91,13 @@ impl Tool for SystemInfoTool {
                     s.cpus().first().map(|c| c.frequency())
                 ))
             }
-            Some("memory") | Some("ram") => {
-                Ok(format!(
-                    "🧠 Memória RAM:\n  Total: {}\n  Usada: {} ({:.1}%)\n  Livre: {}",
-                    Self::format_bytes(total_memory),
-                    Self::format_bytes(used_memory),
-                    memory_percent,
-                    Self::format_bytes(free_memory)
-                ))
-            }
+            Some("memory") | Some("ram") => Ok(format!(
+                "🧠 Memória RAM:\n  Total: {}\n  Usada: {} ({:.1}%)\n  Livre: {}",
+                Self::format_bytes(total_memory),
+                Self::format_bytes(used_memory),
+                memory_percent,
+                Self::format_bytes(free_memory)
+            )),
             Some("disk") | Some("disks") => {
                 let mut output = String::from("💾 Discos:\n\n");
                 for disk in &disks {
@@ -127,10 +123,7 @@ impl Tool for SystemInfoTool {
                 Ok(output.trim().to_string())
             }
             _ => {
-                
-                let mut output = format!(
-                    "🖥️  Informações do Sistema\n\n"
-                );
+                let mut output = "🖥️  Informações do Sistema\n\n".to_string();
 
                 output.push_str(&format!(
                     "📊 Geral:\n  Hostname: {}\n  OS: {} {}\n  Kernel: {}\n  Uptime: {}\n\n",
@@ -141,7 +134,6 @@ impl Tool for SystemInfoTool {
                     Self::format_duration(uptime)
                 ));
 
-                
                 output.push_str(&format!(
                     "🧠 Memória:\n  Total: {}\n  Usada: {} ({:.1}%)\n  Livre: {}\n\n",
                     Self::format_bytes(total_memory),
@@ -150,14 +142,11 @@ impl Tool for SystemInfoTool {
                     Self::format_bytes(free_memory)
                 ));
 
-                
                 output.push_str(&format!(
                     "💻 CPU:\n  Cores: {}\n  Uso médio: {:.1}%\n\n",
-                    cpu_count,
-                    cpu_usage
+                    cpu_count, cpu_usage
                 ));
 
-                
                 output.push_str("💾 Discos:\n");
                 for disk in &disks {
                     let total = disk.total_space();

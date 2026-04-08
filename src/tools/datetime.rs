@@ -22,7 +22,7 @@ impl Tool for DateTimeTool {
 
     async fn call(&self, _args: Value) -> Result<String, String> {
         let now = Local::now();
-        
+
         let result = format!(
             "Data: {}\nHora: {}\nDia da semana: {}\nTimezone: {}",
             now.format("%d/%m/%Y"),
@@ -30,7 +30,7 @@ impl Tool for DateTimeTool {
             now.format("%A"),
             now.format("%:z")
         );
-        
+
         Ok(result)
     }
 }

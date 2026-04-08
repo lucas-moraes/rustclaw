@@ -1,7 +1,6 @@
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use tracing::{debug, error, info};
+use tracing::{debug, error};
 
 #[derive(Debug, Clone)]
 pub struct ScriptInfo {

@@ -8,10 +8,12 @@ use super::{MemoryEntry, MemoryScope, MemoryType};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum SessionType {
     Project,
     Subtask,
     Research,
+    #[default]
     Chat,
 }
 
@@ -35,12 +37,6 @@ impl From<&str> for SessionType {
             "chat" => SessionType::Chat,
             _ => SessionType::Chat,
         }
-    }
-}
-
-impl Default for SessionType {
-    fn default() -> Self {
-        SessionType::Chat
     }
 }
 
@@ -337,7 +333,7 @@ impl SessionEventStore {
         to_ts: Option<DateTime<Utc>>,
     ) -> SqliteResult<Vec<SessionEvent>> {
         let query = "SELECT id, session_id, event_type, event_data, created_at FROM session_events WHERE session_id = ?1";
-        let (query_with_filter, param_count) = match (from_ts, to_ts) {
+        let (query_with_filter, _param_count) = match (from_ts, to_ts) {
             (Some(_), Some(_)) => (
                 format!(
                     "{} AND created_at >= ?2 AND created_at <= ?3 ORDER BY created_at ASC",
@@ -453,7 +449,7 @@ impl SessionEventStore {
             ))
         })?;
 
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.into())
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e)
     }
 
     pub fn get_event_summary(&self, session_id: &str) -> SqliteResult<Vec<EventSummary>> {
@@ -478,7 +474,7 @@ impl SessionEventStore {
             })
         })?;
 
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.into())
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e)
     }
 
     pub fn count_events(&self, session_id: &str) -> SqliteResult<usize> {
@@ -505,8 +501,6 @@ impl SessionEventStore {
             return data.to_string();
         }
 
-        use std::io::Read;
-
         let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
 
         if std::io::Write::write_all(&mut encoder, data.as_bytes()).is_ok() {
@@ -526,8 +520,6 @@ impl SessionEventStore {
         if !is_compressed {
             return data.to_string();
         }
-
-        use std::io::Read;
 
         let compressed =
             match base64::Engine::decode(&base64::engine::general_purpose::STANDARD, data) {
@@ -639,9 +631,9 @@ impl SnapshotPolicy {
             SnapshotTrigger::BeforeMajorRefactor => true,
             SnapshotTrigger::OnUserRequest => self.trigger_on_user_request,
             SnapshotTrigger::OnPhaseTransition => self.trigger_on_phase_change,
-            SnapshotTrigger::Periodic(n) => self
+            SnapshotTrigger::Periodic(_n) => self
                 .periodic_interval
-                .map_or(false, |interval| message_count % interval as usize == 0),
+                .is_some_and(|interval| message_count.is_multiple_of(interval as usize)),
             SnapshotTrigger::OnSessionResume => true,
         }
     }
@@ -1271,7 +1263,7 @@ impl SessionFingerprint {
                 .lines()
                 .find(|l| l.starts_with("module "))
                 .and_then(|l| l.split_whitespace().nth(1))
-                .map(|s| s.split('/').last().unwrap_or(s).to_string())
+                .map(|s| s.split('/').next_back().unwrap_or(s).to_string())
         } else {
             None
         }
@@ -1320,9 +1312,9 @@ impl ContextChange {
             None => false,
         };
 
-        let is_continuing = prev.as_ref().map_or(false, |p| {
-            p.project_name == current.project_name && !is_new_project
-        });
+        let is_continuing = prev
+            .as_ref()
+            .is_some_and(|p| p.project_name == current.project_name && !is_new_project);
 
         let suggestion = if is_new_project {
             Some(format!(
@@ -1990,7 +1982,7 @@ impl CheckpointStore {
 
     pub fn delete(&self, id: &str) -> SqliteResult<()> {
         // Try to delete from checkpoints first
-        let deleted = self
+        let _deleted = self
             .conn
             .execute("DELETE FROM checkpoints WHERE id = ?1", params![id])?;
 

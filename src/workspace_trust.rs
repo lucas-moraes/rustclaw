@@ -2,18 +2,13 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
 pub enum TrustLevel {
+    #[default]
     Untrusted,
     UntrustedReadOnly,
     Trusted,
     FullyTrusted,
-}
-
-impl Default for TrustLevel {
-    fn default() -> Self {
-        Self::Untrusted
-    }
 }
 
 impl TrustLevel {

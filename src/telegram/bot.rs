@@ -3,22 +3,33 @@ use crate::config::Config;
 use crate::reminder_executor::ReminderExecutor;
 use crate::tavily::tools::{TavilyQuickSearchTool, TavilySearchTool};
 use crate::tools::{
-    capabilities::CapabilitiesTool, datetime::DateTimeTool, echo::EchoTool,
-    file_edit::FileEditTool, file_list::FileListTool, file_read::FileReadTool, file_search::FileSearchTool,
-    file_write::FileWriteTool, http::{HttpGetTool, HttpPostTool},
-    location::LocationTool, reminder::{AddReminderTool, CancelReminderTool, ListRemindersTool},
-    shell::ShellTool, system::SystemInfoTool,
-    skill_manager::{SkillCreateTool, SkillDeleteTool, SkillEditTool, SkillListTool, SkillRenameTool, SkillValidateTool},
+    capabilities::CapabilitiesTool,
+    datetime::DateTimeTool,
+    echo::EchoTool,
+    file_edit::FileEditTool,
+    file_list::FileListTool,
+    file_read::FileReadTool,
+    file_search::FileSearchTool,
+    file_write::FileWriteTool,
+    http::{HttpGetTool, HttpPostTool},
+    location::LocationTool,
+    reminder::{AddReminderTool, CancelReminderTool, ListRemindersTool},
+    shell::ShellTool,
     skill_import::SkillImportFromUrlTool,
+    skill_manager::{
+        SkillCreateTool, SkillDeleteTool, SkillEditTool, SkillListTool, SkillRenameTool,
+        SkillValidateTool,
+    },
     skill_script::{SkillScriptTool, SkillScriptsListTool},
+    system::SystemInfoTool,
     Tool, ToolRegistry,
 };
-use teloxide::types::BotCommand;
 use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
 use sysinfo::System;
 use teloxide::prelude::*;
+use teloxide::types::BotCommand;
 use tokio::sync::Mutex;
 use tracing::{error, info};
 
@@ -93,8 +104,8 @@ pub struct BotState {
 
 impl TelegramBot {
     pub async fn run(config: Config) -> anyhow::Result<()> {
-        let token = env::var("TELEGRAM_TOKEN")
-            .map_err(|_| anyhow::anyhow!("TELEGRAM_TOKEN not set"))?;
+        let token =
+            env::var("TELEGRAM_TOKEN").map_err(|_| anyhow::anyhow!("TELEGRAM_TOKEN not set"))?;
 
         let authorized_chat_id = env::var("TELEGRAM_CHAT_ID")
             .ok()
@@ -105,7 +116,7 @@ impl TelegramBot {
         }
 
         let bot = Bot::new(token);
-        
+
         let commands = vec![
             BotCommand::new("start", "Iniciar o bot"),
             BotCommand::new("status", "Status do sistema"),
@@ -116,15 +127,15 @@ impl TelegramBot {
             BotCommand::new("internet", "Pesquisar na internet"),
             BotCommand::new("help", "Ajuda e comandos disponíveis"),
         ];
-        
+
         if let Err(e) = bot.set_my_commands(commands).await {
             error!("Failed to set commands: {}", e);
         } else {
             info!("Commands registered successfully");
         }
-        
+
         let config = Arc::new(config);
-        
+
         // Start reminder executor
         if let Some(chat_id) = authorized_chat_id {
             let memory_path = PathBuf::from(format!("config/memories_{}.db", chat_id));
@@ -135,7 +146,7 @@ impl TelegramBot {
             });
             info!("Reminder executor started for chat {}", chat_id);
         }
-        
+
         // Scheduler removed - module deleted
         let state = Arc::new(Mutex::new(BotState {}));
 
@@ -150,27 +161,23 @@ impl TelegramBot {
             .branch(
                 Update::filter_message()
                     .filter_command::<Command>()
-                    .endpoint(
-                        move |bot: Bot, msg: Message, cmd: Command| {
-                            let config = Arc::clone(&config_cmd);
-                            let state = Arc::clone(&state_cmd);
-                            async move {
-                                Self::handle_command(bot, msg, cmd, &config, authorized_chat_id, &state).await
-                            }
+                    .endpoint(move |bot: Bot, msg: Message, cmd: Command| {
+                        let config = Arc::clone(&config_cmd);
+                        let state = Arc::clone(&state_cmd);
+                        async move {
+                            Self::handle_command(bot, msg, cmd, &config, authorized_chat_id, &state)
+                                .await
                         }
-                    ),
+                    }),
             )
             .branch(
-                Update::filter_message()
-                    .endpoint(
-                        move |bot: Bot, msg: Message| {
-                            let config = Arc::clone(&config_msg);
-                            let state = Arc::clone(&state_msg);
-                            async move {
-                                Self::handle_message(bot, msg, &config, authorized_chat_id, &state).await
-                            }
-                        }
-                    ),
+                Update::filter_message().endpoint(move |bot: Bot, msg: Message| {
+                    let config = Arc::clone(&config_msg);
+                    let state = Arc::clone(&state_msg);
+                    async move {
+                        Self::handle_message(bot, msg, &config, authorized_chat_id, &state).await
+                    }
+                }),
             );
 
         Dispatcher::builder(bot, handler)
@@ -228,26 +235,30 @@ impl TelegramBot {
             }
             Command::Internet(query) => {
                 if query.is_empty() {
-                    bot.send_message(chat_id, "Use: /internet <consulta>").await?;
+                    bot.send_message(chat_id, "Use: /internet <consulta>")
+                        .await?;
                     return Ok(());
                 }
-                
-                bot.send_chat_action(chat_id, teloxide::types::ChatAction::Typing).await?;
-                
+
+                bot.send_chat_action(chat_id, teloxide::types::ChatAction::Typing)
+                    .await?;
+
                 if let Some(ref tavily_key) = config.tavily_api_key {
                     let tool = TavilyQuickSearchTool::new(tavily_key.clone());
                     let args = serde_json::json!({ "query": query });
-                    
+
                     match tool.call(args).await {
                         Ok(result) => {
-                            bot.send_message(chat_id, format!("Resultados:\n\n{}", result)).await?;
+                            bot.send_message(chat_id, format!("Resultados:\n\n{}", result))
+                                .await?;
                         }
                         Err(e) => {
                             bot.send_message(chat_id, format!("Erro: {}", e)).await?;
                         }
                     }
                 } else {
-                    bot.send_message(chat_id, "TAVILY_API_KEY não configurado").await?;
+                    bot.send_message(chat_id, "TAVILY_API_KEY não configurado")
+                        .await?;
                 }
             }
         }
@@ -280,7 +291,8 @@ impl TelegramBot {
         };
 
         info!("Message from {}: {}", chat_id, text);
-        bot.send_chat_action(chat_id, teloxide::types::ChatAction::Typing).await?;
+        bot.send_chat_action(chat_id, teloxide::types::ChatAction::Typing)
+            .await?;
 
         let config = config.clone();
         let text = text.to_string();
@@ -329,7 +341,11 @@ impl TelegramBot {
         tools.register(Box::new(HttpGetTool::new()));
         tools.register(Box::new(HttpPostTool::new()));
         tools.register(Box::new(LocationTool::new()));
-        tools.register(Box::new(AddReminderTool::new(config_arc.clone(), &memory_path, chat_id.0)));
+        tools.register(Box::new(AddReminderTool::new(
+            config_arc.clone(),
+            &memory_path,
+            chat_id.0,
+        )));
         tools.register(Box::new(ListRemindersTool::new(&memory_path, chat_id.0)));
         tools.register(Box::new(CancelReminderTool::new(&memory_path, chat_id.0)));
         tools.register(Box::new(ShellTool::new()));
@@ -378,7 +394,8 @@ Criar lembretes:
 • "Me lembre amanhã às 10h"
 • "Todo dia às 8h tomar remédio"
 
-Vamos conversar!"#.to_string()
+Vamos conversar!"#
+            .to_string()
     }
 
     fn help_message() -> String {
@@ -396,7 +413,8 @@ Exemplos de lembretes:
 • "Me lembre amanhã às 10h"
 • "Todo dia às 8h"
 • "Daqui 2 horas"
-• "Toda segunda às 9h""#.to_string()
+• "Toda segunda às 9h""#
+            .to_string()
     }
 
     async fn get_status(chat_id: ChatId) -> String {
@@ -428,33 +446,31 @@ Exemplos de lembretes:
 
     async fn get_reminders(chat_id: ChatId) -> String {
         let memory_path = PathBuf::from(format!("config/memories_{}.db", chat_id.0));
-        
+
         match crate::memory::store::MemoryStore::new(&memory_path) {
-            Ok(store) => {
-                match store.get_pending_reminders(chat_id.0) {
-                    Ok(reminders) => {
-                        if reminders.is_empty() {
-                            "📋 Nenhum lembrete.\n\nCrie um:\n• 'Me lembre amanhã às 10h'".to_string()
-                        } else {
-                            let mut output = String::from("📋 Lembretes:\n\n");
-                            for (i, reminder) in reminders.iter().enumerate() {
-                                let local_time = reminder.remind_at.with_timezone(&chrono::Local);
-                                let icon = if reminder.is_recurring { "🔄" } else { "⏰" };
-                                output.push_str(&format!(
-                                    "{}. {} {}\n   📅 {}\n   🆔 {}\n\n",
-                                    i + 1,
-                                    icon,
-                                    reminder.message,
-                                    local_time.format("%d/%m %H:%M"),
-                                    &reminder.id[..8]
-                                ));
-                            }
-                            output
+            Ok(store) => match store.get_pending_reminders(chat_id.0) {
+                Ok(reminders) => {
+                    if reminders.is_empty() {
+                        "📋 Nenhum lembrete.\n\nCrie um:\n• 'Me lembre amanhã às 10h'".to_string()
+                    } else {
+                        let mut output = String::from("📋 Lembretes:\n\n");
+                        for (i, reminder) in reminders.iter().enumerate() {
+                            let local_time = reminder.remind_at.with_timezone(&chrono::Local);
+                            let icon = if reminder.is_recurring { "🔄" } else { "⏰" };
+                            output.push_str(&format!(
+                                "{}. {} {}\n   📅 {}\n   🆔 {}\n\n",
+                                i + 1,
+                                icon,
+                                reminder.message,
+                                local_time.format("%d/%m %H:%M"),
+                                &reminder.id[..8]
+                            ));
                         }
+                        output
                     }
-                    Err(e) => format!("❌ Erro: {}", e),
                 }
-            }
+                Err(e) => format!("❌ Erro: {}", e),
+            },
             Err(e) => format!("❌ Erro: {}", e),
         }
     }
@@ -463,30 +479,27 @@ Exemplos de lembretes:
         if id.is_empty() {
             return "Use: /cancel_reminder <id>".to_string();
         }
-        
+
         let memory_path = PathBuf::from(format!("config/memories_{}.db", chat_id.0));
-        
+
         match crate::memory::store::MemoryStore::new(&memory_path) {
-            Ok(store) => {
-                match store.get_pending_reminders(chat_id.0) {
-                    Ok(reminders) => {
-                        let reminder_to_cancel = reminders.iter()
-                            .find(|r| r.id.starts_with(id));
-                        
-                        match reminder_to_cancel {
-                            Some(reminder) => {
-                                if let Err(e) = store.delete_reminder(&reminder.id) {
-                                    format!("❌ Erro: {}", e)
-                                } else {
-                                    format!("✅ Cancelado: {}", reminder.message)
-                                }
+            Ok(store) => match store.get_pending_reminders(chat_id.0) {
+                Ok(reminders) => {
+                    let reminder_to_cancel = reminders.iter().find(|r| r.id.starts_with(id));
+
+                    match reminder_to_cancel {
+                        Some(reminder) => {
+                            if let Err(e) = store.delete_reminder(&reminder.id) {
+                                format!("❌ Erro: {}", e)
+                            } else {
+                                format!("✅ Cancelado: {}", reminder.message)
                             }
-                            None => format!("❌ ID '{}' não encontrado", id)
                         }
+                        None => format!("❌ ID '{}' não encontrado", id),
                     }
-                    Err(e) => format!("❌ Erro: {}", e),
                 }
-            }
+                Err(e) => format!("❌ Erro: {}", e),
+            },
             Err(e) => format!("❌ Erro: {}", e),
         }
     }

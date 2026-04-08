@@ -1,7 +1,7 @@
 use crate::utils::colors::Colors;
 use std::io::Write;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tokio::time::{interval, Duration};
 
 pub struct Spinner {

@@ -13,11 +13,11 @@ impl EmbeddingService {
         let api_key = std::env::var("OPENAI_API_KEY")
             .or_else(|_| std::env::var("COHERE_API_KEY"))
             .unwrap_or_default();
-        
+
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .build()?;
-        
+
         Ok(Self {
             api_key,
             base_url: "https://api.openai.com/v1".to_string(),
@@ -30,29 +30,30 @@ impl EmbeddingService {
         if self.api_key.is_empty() {
             return Ok(self.fallback_embedding(text));
         }
-        
+
         let url = format!("{}/embeddings", self.base_url);
-        
+
         let body = json!({
             "model": self.model,
             "input": text,
             "encoding_format": "float"
         });
-        
-        let response = self.client
+
+        let response = self
+            .client
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
             .json(&body)
             .send()
             .await?;
-        
+
         if !response.status().is_success() {
             let error_text = response.text().await?;
             tracing::warn!("Embedding API error: {}. Using fallback.", error_text);
             return Ok(self.fallback_embedding(text));
         }
-        
+
         let json_response: serde_json::Value = response.json().await?;
         let embedding = json_response["data"][0]["embedding"]
             .as_array()
@@ -60,7 +61,7 @@ impl EmbeddingService {
             .iter()
             .filter_map(|v| v.as_f64().map(|f| f as f32))
             .collect();
-        
+
         Ok(embedding)
     }
 
@@ -76,13 +77,13 @@ impl EmbeddingService {
     fn fallback_embedding(&self, text: &str) -> Vec<f32> {
         let mut embedding = vec![0.0f32; 384];
         let words: Vec<&str> = text.split_whitespace().collect();
-        
-        for (_i, word) in words.iter().enumerate() {
+
+        for word in words.iter() {
             let hash = Self::simple_hash(word);
             let idx = (hash % 384) as usize;
             embedding[idx] += 1.0;
         }
-        
+
         Self::normalize(&mut embedding);
         embedding
     }

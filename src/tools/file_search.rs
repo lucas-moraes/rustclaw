@@ -46,39 +46,35 @@ impl Tool for FileSearchTool {
 
         let mut results = Vec::new();
 
-        
         if let Some(pattern) = pattern {
             let glob_pattern = format!("{}/{}", path_str, pattern);
 
-            for entry in glob(&glob_pattern).map_err(|e| format!("Pattern inválido: {}", e))? {
-                if let Ok(path) = entry {
-                    
-                    let depth = path
-                        .components()
-                        .count()
-                        .saturating_sub(path.components().count().min(3));
+            for path in glob(&glob_pattern)
+                .map_err(|e| format!("Pattern inválido: {}", e))?
+                .flatten()
+            {
+                let depth = path
+                    .components()
+                    .count()
+                    .saturating_sub(path.components().count().min(3));
 
-                    if depth <= max_depth {
-                        
-                        if let Some(search_content) = content {
-                            if let Ok(file_content) = fs::read_to_string(&path) {
-                                if file_content.contains(search_content) {
-                                    results.push(path.to_string_lossy().to_string());
-                                }
+                if depth <= max_depth {
+                    if let Some(search_content) = content {
+                        if let Ok(file_content) = fs::read_to_string(&path) {
+                            if file_content.contains(search_content) {
+                                results.push(path.to_string_lossy().to_string());
                             }
-                        } else {
-                            results.push(path.to_string_lossy().to_string());
                         }
+                    } else {
+                        results.push(path.to_string_lossy().to_string());
+                    }
 
-                        if results.len() >= MAX_RESULTS {
-                            break;
-                        }
+                    if results.len() >= MAX_RESULTS {
+                        break;
                     }
                 }
             }
-        }
-        
-        else if let Some(search_content) = content {
+        } else if let Some(search_content) = content {
             for entry in walkdir::WalkDir::new(path)
                 .max_depth(max_depth)
                 .into_iter()

@@ -1,6 +1,5 @@
 use crate::utils::colors::Colors;
 use std::sync::Arc;
-use std::sync::OnceLock;
 
 #[derive(Clone)]
 pub enum LogLevel {
@@ -175,7 +174,7 @@ impl OutputSink for ConsoleSink {
 
     fn write_tool(&self, tool: &str, input: &str, output: &str) {
         print!("{}{}", Colors::CLEAR_LINE, Colors::ORANGE);
-        print!("{} ", "⬡");
+        print!("⬡ ");
         print!("{}{}", Colors::RESET, Colors::LIGHT_GRAY);
         println!("{}  {}{}", tool, input, Colors::RESET);
         println!("{}{}{}", Colors::LIGHT_GRAY, output, Colors::RESET);
@@ -183,10 +182,9 @@ impl OutputSink for ConsoleSink {
 
     fn write_thought(&self, thought: &str) {
         println!(
-            "{}{}{} {}{}{}",
+            "{}{}· {}{}{}",
             Colors::CLEAR_LINE,
             Colors::LIGHT_GRAY,
-            "·",
             Colors::RESET,
             thought,
             Colors::RESET
@@ -195,9 +193,8 @@ impl OutputSink for ConsoleSink {
 
     fn write_error(&self, error: &str) {
         eprintln!(
-            "{}{}{} {}{}{}",
+            "{}⨯{} {}{}{}",
             Colors::RED,
-            "⨯",
             Colors::RESET,
             error,
             Colors::RESET,
@@ -207,10 +204,9 @@ impl OutputSink for ConsoleSink {
 
     fn write_browser(&self, path: &str, description: &str) {
         println!(
-            "{}{}{} {}{} {}{}{}",
+            "{}{}⎙ {}{} {}{}{}",
             Colors::CLEAR_LINE,
             Colors::ORANGE,
-            "⎙",
             Colors::RESET,
             Colors::LIGHT_GRAY,
             description,

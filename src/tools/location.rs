@@ -11,29 +11,23 @@ impl LocationTool {
 
     async fn get_location_from_ip(&self) -> Result<LocationInfo, String> {
         let client = reqwest::Client::new();
-        
-        match client.get("https://ipapi.co/json/").send().await {
-            Ok(response) => {
-                if response.status().is_success() {
-                    match response.json::<LocationInfo>().await {
-                        Ok(info) => return Ok(info),
-                        Err(e) => return Err(format!("Parse error: {}", e)),
-                    }
+
+        if let Ok(response) = client.get("https://ipapi.co/json/").send().await {
+            if response.status().is_success() {
+                match response.json::<LocationInfo>().await {
+                    Ok(info) => return Ok(info),
+                    Err(e) => return Err(format!("Parse error: {}", e)),
                 }
             }
-            Err(_) => {}
         }
 
-        match client.get("https://ipinfo.io/json").send().await {
-            Ok(response) => {
-                if response.status().is_success() {
-                    match response.json::<LocationInfo>().await {
-                        Ok(info) => return Ok(info),
-                        Err(e) => return Err(format!("Parse error: {}", e)),
-                    }
+        if let Ok(response) = client.get("https://ipinfo.io/json").send().await {
+            if response.status().is_success() {
+                match response.json::<LocationInfo>().await {
+                    Ok(info) => return Ok(info),
+                    Err(e) => return Err(format!("Parse error: {}", e)),
                 }
             }
-            Err(_) => {}
         }
 
         Err("Failed to get location".to_string())
@@ -71,7 +65,11 @@ impl Tool for LocationTool {
     async fn call(&self, _args: Value) -> Result<String, String> {
         match self.get_location_from_ip().await {
             Ok(info) => {
-                let city = if info.city.is_empty() { "Desconhecida" } else { &info.city };
+                let city = if info.city.is_empty() {
+                    "Desconhecida"
+                } else {
+                    &info.city
+                };
                 let country = if !info.country_name.is_empty() {
                     &info.country_name
                 } else if !info.country.is_empty() {
@@ -85,7 +83,7 @@ impl Tool for LocationTool {
                     city, country, info.timezone
                 ))
             }
-            Err(e) => Ok(format!("Não foi possível obter a localização: {}", e))
+            Err(e) => Ok(format!("Não foi possível obter a localização: {}", e)),
         }
     }
 }

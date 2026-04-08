@@ -1,8 +1,8 @@
 pub mod tools;
 
 use std::time::Duration;
-use tavily::{Tavily, SearchRequest};
-use tracing::{info, warn};
+use tavily::{SearchRequest, Tavily};
+use tracing::info;
 
 pub struct TavilyClient {
     client: Tavily,
@@ -18,8 +18,8 @@ impl TavilyClient {
             .map_err(|e| anyhow::anyhow!("Failed to build Tavily client: {}", e))?;
 
         info!("Tavily client initialized successfully");
-        
-        Ok(Self { 
+
+        Ok(Self {
             client,
             api_key: api_key.to_string(),
         })
@@ -40,22 +40,32 @@ impl TavilyClient {
             .include_answer(include_answer)
             .include_raw_content(false);
 
-        let results = self.client.call(&request).await
+        let results = self
+            .client
+            .call(&request)
+            .await
             .map_err(|e| anyhow::anyhow!("Tavily search failed: {}", e))?;
 
         let response = SearchResponse {
             query: results.query,
             answer: results.answer,
-            results: results.results.into_iter().map(|r| SearchResultItem {
-                title: r.title,
-                url: r.url,
-                content: r.content,
-                score: r.score as f64,
-            }).collect(),
+            results: results
+                .results
+                .into_iter()
+                .map(|r| SearchResultItem {
+                    title: r.title,
+                    url: r.url,
+                    content: r.content,
+                    score: r.score as f64,
+                })
+                .collect(),
         };
 
-        info!("Tavily search completed with {} results", response.results.len());
-        
+        info!(
+            "Tavily search completed with {} results",
+            response.results.len()
+        );
+
         Ok(response)
     }
 
@@ -89,7 +99,6 @@ impl SearchResponse {
     pub fn format_results(&self, max_chars: usize) -> String {
         let mut output = format!("🔍 Resultados da busca: '{}'\n\n", self.query);
 
-        
         if let Some(answer) = &self.answer {
             output.push_str(&format!("🤖 Resumo IA:\n{}\n\n", answer));
         }
@@ -106,8 +115,10 @@ impl SearchResponse {
             );
 
             if output.len() + entry.len() > max_chars {
-                output.push_str(&format!("\n... e mais {} resultados", 
-                    self.results.len() - i));
+                output.push_str(&format!(
+                    "\n... e mais {} resultados",
+                    self.results.len() - i
+                ));
                 break;
             }
 
@@ -127,14 +138,12 @@ mod tests {
         let response = SearchResponse {
             query: "test query".to_string(),
             answer: Some("This is a test answer".to_string()),
-            results: vec![
-                SearchResultItem {
-                    title: "Test Result".to_string(),
-                    url: "https://example.com".to_string(),
-                    content: "Test content here".to_string(),
-                    score: 0.95,
-                },
-            ],
+            results: vec![SearchResultItem {
+                title: "Test Result".to_string(),
+                url: "https://example.com".to_string(),
+                content: "Test content here".to_string(),
+                score: 0.95,
+            }],
         };
 
         let formatted = response.format_results(1000);

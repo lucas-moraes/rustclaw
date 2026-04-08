@@ -264,17 +264,14 @@ pub fn sanitize_with_trust_level(text: &str, trust_level: TrustLevel, context: &
             let sanitized = Sanitizer::user_input(text);
             sanitized.text
         }
-        TrustLevel::Untrusted => {
-            let sanitized = match context {
-                "skill" => Sanitizer::skill_context(text),
-                "tool" => Sanitizer::tool_output(text, "unknown"),
-                _ => {
-                    let s = Sanitizer::user_input(text);
-                    s.text
-                }
-            };
-            sanitized
-        }
+        TrustLevel::Untrusted => match context {
+            "skill" => Sanitizer::skill_context(text),
+            "tool" => Sanitizer::tool_output(text, "unknown"),
+            _ => {
+                let s = Sanitizer::user_input(text);
+                s.text
+            }
+        },
     }
 }
 

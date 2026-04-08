@@ -34,7 +34,8 @@ impl Tool for AddReminderTool {
     }
 
     async fn call(&self, args: Value) -> Result<String, String> {
-        let text = args["text"].as_str()
+        let text = args["text"]
+            .as_str()
             .ok_or("Formato inválido. Use: {\"text\": \"mensagem com data\"}")?;
 
         let parsed = match ReminderParser::parse(text, &self.config.timezone) {
@@ -64,30 +65,27 @@ impl Tool for AddReminderTool {
 
         let path = std::path::Path::new(&self.memory_path);
         let store = MemoryStore::new(path).map_err(|e| format!("Erro ao acessar banco: {}", e))?;
-        
-        store.save_reminder(&reminder)
+
+        store
+            .save_reminder(&reminder)
             .map_err(|e| format!("Erro ao salvar lembrete: {}", e))?;
 
         let local_time = reminder.remind_at.with_timezone(&chrono::Local);
         let formatted_time = local_time.format("%d/%m/%Y às %H:%M").to_string();
-        
+
         let response = if reminder.is_recurring {
             format!(
                 "✅ Lembrete recorrente criado!\n\
                 📝 Mensagem: {}\n\
                 📅 Próximo: {} ({})",
-                reminder.message,
-                formatted_time,
-                self.config.timezone
+                reminder.message, formatted_time, self.config.timezone
             )
         } else {
             format!(
                 "✅ Lembrete criado!\n\
                 📝 Mensagem: {}\n\
                 📅 Quando: {} ({})",
-                reminder.message,
-                formatted_time,
-                self.config.timezone
+                reminder.message, formatted_time, self.config.timezone
             )
         };
 
@@ -122,8 +120,9 @@ impl Tool for ListRemindersTool {
     async fn call(&self, _args: Value) -> Result<String, String> {
         let path = std::path::Path::new(&self.memory_path);
         let store = MemoryStore::new(path).map_err(|e| format!("Erro ao acessar banco: {}", e))?;
-        
-        let reminders = store.get_pending_reminders(self.chat_id)
+
+        let reminders = store
+            .get_pending_reminders(self.chat_id)
             .map_err(|e| format!("Erro ao buscar lembretes: {}", e))?;
 
         if reminders.is_empty() {
@@ -131,14 +130,18 @@ impl Tool for ListRemindersTool {
         }
 
         let mut output = String::from("📋 Seus Lembretes:\n\n");
-        
+
         for (i, reminder) in reminders.iter().enumerate() {
             let local_time = reminder.remind_at.with_timezone(&chrono::Local);
             let formatted_time = local_time.format("%d/%m/%Y %H:%M").to_string();
-            
+
             let icon = if reminder.is_recurring { "🔄" } else { "⏰" };
-            let rec_text = if reminder.is_recurring { " (recorrente)" } else { "" };
-            
+            let rec_text = if reminder.is_recurring {
+                " (recorrente)"
+            } else {
+                ""
+            };
+
             output.push_str(&format!(
                 "{}. {}\n   📝 {}{}\n   📅 {}\n   🆔 {}\n\n",
                 i + 1,
@@ -151,7 +154,7 @@ impl Tool for ListRemindersTool {
         }
 
         output.push_str(&format!("Total: {} lembrete(s)", reminders.len()));
-        
+
         Ok(output)
     }
 }
@@ -181,35 +184,33 @@ impl Tool for CancelReminderTool {
     }
 
     async fn call(&self, args: Value) -> Result<String, String> {
-        let id = args["id"].as_str()
-            .ok_or("ID do lembrete é obrigatório")?;
+        let id = args["id"].as_str().ok_or("ID do lembrete é obrigatório")?;
 
         let path = std::path::Path::new(&self.memory_path);
         let store = MemoryStore::new(path).map_err(|e| format!("Erro ao acessar banco: {}", e))?;
-        
-        let reminders = store.get_pending_reminders(self.chat_id)
+
+        let reminders = store
+            .get_pending_reminders(self.chat_id)
             .map_err(|e| format!("Erro ao buscar lembretes: {}", e))?;
-        
-        let reminder_to_cancel = reminders.iter()
-            .find(|r| r.id.starts_with(id));
-        
+
+        let reminder_to_cancel = reminders.iter().find(|r| r.id.starts_with(id));
+
         match reminder_to_cancel {
             Some(reminder) => {
-                store.delete_reminder(&reminder.id)
+                store
+                    .delete_reminder(&reminder.id)
                     .map_err(|e| format!("Erro ao cancelar: {}", e))?;
-                
+
                 Ok(format!(
                     "✅ Lembrete cancelado!\n📝 {}\n🆔 {}",
                     reminder.message,
                     &reminder.id[..8]
                 ))
             }
-            None => {
-                Err(format!(
-                    "❌ Lembrete não encontrado com ID '{}'. Use list_reminders para ver os IDs.",
-                    id
-                ))
-            }
+            None => Err(format!(
+                "❌ Lembrete não encontrado com ID '{}'. Use list_reminders para ver os IDs.",
+                id
+            )),
         }
     }
 }

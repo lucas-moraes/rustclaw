@@ -1,8 +1,8 @@
 use super::Tool;
+use crate::skills::parser::SkillParser;
 use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
-use crate::skills::parser::SkillParser;
 
 const SKILLS_DIR: &str = "skills";
 
@@ -27,13 +27,13 @@ impl Tool for SkillListTool {
     async fn call(&self, _args: Value) -> Result<String, String> {
         let current_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         let skills_path = current_dir.join(SKILLS_DIR);
-        
+
         if !skills_path.exists() {
             return Ok("Diretório de skills não encontrado.".to_string());
         }
 
         let mut skills = vec![];
-        
+
         if let Ok(entries) = fs::read_dir(skills_path) {
             for entry in entries.flatten() {
                 let path = entry.path();
@@ -65,7 +65,11 @@ impl Tool for SkillListTool {
             Ok("Nenhuma skill encontrada.".to_string())
         } else {
             skills.sort();
-            Ok(format!("Skills disponíveis ({}):\n{}", skills.len(), skills.join("\n")))
+            Ok(format!(
+                "Skills disponíveis ({}):\n{}",
+                skills.len(),
+                skills.join("\n")
+            ))
         }
     }
 }
@@ -84,7 +88,8 @@ impl SkillCreateTool {
     }
 
     fn get_skill_template(name: &str) -> String {
-        format!(r#"---
+        format!(
+            r#"---
 name: {}
 description: Descrição breve do que esta skill faz
 user_invocable: true
@@ -110,7 +115,9 @@ Explique a personalidade, tom de voz, e abordagem recomendada.
 ### Never
 - Comportamento proibido 1
 - Comportamento proibido 2
-"#, name, name)
+"#,
+            name, name
+        )
     }
 }
 
@@ -136,14 +143,13 @@ impl Tool for SkillCreateTool {
 
         let skills_path = Path::new(SKILLS_DIR);
         let skill_dir = skills_path.join(name);
-        
+
         if skill_dir.exists() {
             return Err(format!("Skill '{}' já existe", name));
         }
 
         // Create directory
-        fs::create_dir_all(&skill_dir)
-            .map_err(|e| format!("Erro ao criar diretório: {}", e))?;
+        fs::create_dir_all(&skill_dir).map_err(|e| format!("Erro ao criar diretório: {}", e))?;
 
         // Get content - either custom or template
         let content = args["content"]
@@ -152,18 +158,18 @@ impl Tool for SkillCreateTool {
             .unwrap_or_else(|| Self::get_skill_template(name));
 
         let skill_file = skill_dir.join("SKILL.md");
-        fs::write(&skill_file, &content)
-            .map_err(|e| format!("Erro ao escrever arquivo: {}", e))?;
+        fs::write(&skill_file, &content).map_err(|e| format!("Erro ao escrever arquivo: {}", e))?;
 
         // Check if validation is requested
-        let validate = args["validate"]
-            .as_bool()
-            .unwrap_or(false);
+        let validate = args["validate"].as_bool().unwrap_or(false);
 
         if validate {
             // Validate the created skill
             match SkillParser::parse(&skill_file) {
-                Ok(_) => Ok(format!("✅ Skill '{}' criada e validada com sucesso em {:?}", name, skill_file)),
+                Ok(_) => Ok(format!(
+                    "✅ Skill '{}' criada e validada com sucesso em {:?}",
+                    name, skill_file
+                )),
                 Err(e) => {
                     let _ = fs::remove_dir_all(&skill_dir);
                     Err(format!("Erro de validação: {}. Diretório removido.", e))
@@ -205,7 +211,7 @@ impl Tool for SkillDeleteTool {
             .ok_or_else(|| "Parâmetro 'name' é obrigatório".to_string())?;
 
         let confirmed = args["confirm"].as_bool().unwrap_or(false);
-        
+
         if !confirmed {
             return Err("Adicione 'confirm': true para confirmar a remoção".to_string());
         }
@@ -216,7 +222,7 @@ impl Tool for SkillDeleteTool {
         }
 
         let skill_dir = Path::new(SKILLS_DIR).join(name);
-        
+
         if !skill_dir.exists() {
             return Err(format!("Skill '{}' não encontrada", name));
         }
@@ -260,7 +266,7 @@ impl Tool for SkillValidateTool {
 
     async fn call(&self, args: Value) -> Result<String, String> {
         let skills_path = Path::new(SKILLS_DIR);
-        
+
         if !skills_path.exists() {
             return Ok("Diretório de skills não encontrado.".to_string());
         }
@@ -272,7 +278,7 @@ impl Tool for SkillValidateTool {
             } else {
                 skills_path.join(name).join("skill.md")
             };
-            
+
             if !skill_file.exists() {
                 return Err(format!("Skill '{}' não encontrada", name));
             }
@@ -307,10 +313,11 @@ impl Tool for SkillValidateTool {
                             path.join("skill.md")
                         };
                         if skill_file.exists() {
-                            let name = path.file_name()
+                            let name = path
+                                .file_name()
                                 .and_then(|n| n.to_str())
                                 .unwrap_or("unknown");
-                            
+
                             match SkillParser::parse(&skill_file) {
                                 Ok(_) => valid.push(name.to_string()),
                                 Err(e) => invalid.push(format!("{}: {}", name, e)),
@@ -321,13 +328,21 @@ impl Tool for SkillValidateTool {
             }
 
             let mut result = format!("Validação de {} skills:\n\n", valid.len() + invalid.len());
-            
+
             if !valid.is_empty() {
-                result.push_str(&format!("✅ Válidas ({}): {}\n", valid.len(), valid.join(", ")));
+                result.push_str(&format!(
+                    "✅ Válidas ({}): {}\n",
+                    valid.len(),
+                    valid.join(", ")
+                ));
             }
-            
+
             if !invalid.is_empty() {
-                result.push_str(&format!("\n❌ Com erros ({}):\n{}", invalid.len(), invalid.join("\n")));
+                result.push_str(&format!(
+                    "\n❌ Com erros ({}):\n{}",
+                    invalid.len(),
+                    invalid.join("\n")
+                ));
             }
 
             Ok(result)
@@ -379,13 +394,12 @@ impl Tool for SkillEditTool {
         }
 
         if let Some(content) = args["content"].as_str() {
-            fs::write(&skill_file, content)
-                .map_err(|e| format!("Erro ao salvar skill: {}", e))?;
+            fs::write(&skill_file, content).map_err(|e| format!("Erro ao salvar skill: {}", e))?;
             return Ok(format!("Skill '{}' atualizada com sucesso", name));
         }
 
-        let content = fs::read_to_string(&skill_file)
-            .map_err(|e| format!("Erro ao ler arquivo: {}", e))?;
+        let content =
+            fs::read_to_string(&skill_file).map_err(|e| format!("Erro ao ler arquivo: {}", e))?;
 
         Ok(format!(
             "Conteúdo atual da skill '{}':\n\n```markdown\n{}\n```\n\nPara editar, use skill_edit com o parâmetro 'content'.",
@@ -454,8 +468,7 @@ impl Tool for SkillRenameTool {
         }
 
         // Rename directory
-        fs::rename(&old_dir, &new_dir)
-            .map_err(|e| format!("Erro ao renomear: {}", e))?;
+        fs::rename(&old_dir, &new_dir).map_err(|e| format!("Erro ao renomear: {}", e))?;
 
         // Update skill name inside the file
         let skill_file = if new_dir.join("SKILL.md").exists() {
@@ -468,13 +481,16 @@ impl Tool for SkillRenameTool {
             let new_content = content.replacen(
                 &format!("# Skill: {}", old_name),
                 &format!("# Skill: {}", new_name),
-                1
+                1,
             );
-            
+
             let _ = fs::write(&skill_file, new_content);
         }
 
-        Ok(format!("✅ Skill '{}' renomeada para '{}'", old_name, new_name))
+        Ok(format!(
+            "✅ Skill '{}' renomeada para '{}'",
+            old_name, new_name
+        ))
     }
 }
 

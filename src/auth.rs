@@ -1,6 +1,5 @@
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
-use std::sync::RwLock;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthTokens {

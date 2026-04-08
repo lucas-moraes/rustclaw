@@ -1,5 +1,4 @@
 use crate::skills::Skill;
-use crate::tools::Tool;
 use std::collections::HashSet;
 use tracing::debug;
 

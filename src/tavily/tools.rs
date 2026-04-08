@@ -1,7 +1,7 @@
 use crate::tavily::TavilyClient;
 use crate::tools::Tool;
 use serde_json::Value;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 pub struct TavilySearchTool {
     api_key: String,
@@ -29,9 +29,7 @@ impl Tool for TavilySearchTool {
             .ok_or_else(|| "Parâmetro 'query' é obrigatório".to_string())?;
 
         let max_results = args["max_results"].as_i64().unwrap_or(5) as i32;
-        let search_depth = args["search_depth"]
-            .as_str()
-            .unwrap_or("basic");
+        let search_depth = args["search_depth"].as_str().unwrap_or("basic");
         let include_answer = args["include_answer"].as_bool().unwrap_or(true);
 
         info!("Tavily search query: {}, depth: {}", query, search_depth);
@@ -53,17 +51,15 @@ impl Tool for TavilySearchTool {
             })?;
 
         let formatted = results.format_results(3000);
-        
+
         info!("Tavily search completed successfully");
-        
+
         Ok(formatted)
     }
 }
 
 impl Default for TavilySearchTool {
     fn default() -> Self {
-        
-        
         let api_key = std::env::var("TAVILY_API_KEY").unwrap_or_default();
         Self::new(api_key)
     }
@@ -99,16 +95,13 @@ impl Tool for TavilyQuickSearchTool {
         let client = TavilyClient::new(&self.api_key)
             .map_err(|e| format!("Erro ao criar cliente Tavily: {}", e))?;
 
-        let results = client
-            .search_basic(query)
-            .await
-            .map_err(|e| {
-                error!("Tavily search failed: {}", e);
-                format!("Erro na busca: {}", e)
-            })?;
+        let results = client.search_basic(query).await.map_err(|e| {
+            error!("Tavily search failed: {}", e);
+            format!("Erro na busca: {}", e)
+        })?;
 
         let formatted = results.format_results(2000);
-        
+
         Ok(formatted)
     }
 }

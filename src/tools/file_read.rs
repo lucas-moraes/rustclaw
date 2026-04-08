@@ -12,6 +12,24 @@ impl FileReadTool {
     pub fn new() -> Self {
         Self
     }
+
+    pub fn validate_path(path: &Path) -> Result<(), String> {
+        let path_str = path.to_string_lossy();
+
+        if path_str.contains("/etc/shadow")
+            || path_str.contains("/etc/passwd")
+            || path_str.contains("/etc/ssh/")
+            || path_str.contains("/root/.ssh/")
+            || path_str.contains("/.ssh/")
+        {
+            return Err(format!(
+                "Acesso negado: arquivo sensível '{}' não permitido",
+                path.display()
+            ));
+        }
+
+        Ok(())
+    }
 }
 
 #[async_trait::async_trait]
@@ -31,6 +49,8 @@ impl Tool for FileReadTool {
 
         let path = Path::new(path_str);
 
+        Self::validate_path(path)?;
+
         if !path.exists() {
             return Err(format!("Arquivo não existe: {}", path_str));
         }
@@ -45,12 +65,10 @@ impl Tool for FileReadTool {
             .unwrap_or(DEFAULT_MAX_BYTES)
             .min(ABSOLUTE_MAX_BYTES);
 
-        let metadata = fs::metadata(path)
-            .map_err(|e| format!("Erro ao ler metadados: {}", e))?;
+        let metadata = fs::metadata(path).map_err(|e| format!("Erro ao ler metadados: {}", e))?;
 
         if metadata.len() > max_bytes as u64 {
-            let content = fs::read(path)
-                .map_err(|e| format!("Erro ao ler arquivo: {}", e))?;
+            let content = fs::read(path).map_err(|e| format!("Erro ao ler arquivo: {}", e))?;
             let truncated = String::from_utf8_lossy(&content[..max_bytes.min(content.len())]);
             return Ok(format!(
                 "{}\n\n[ARQUIVO TRUNCADO - {} bytes lidos de {} total]",
@@ -60,8 +78,8 @@ impl Tool for FileReadTool {
             ));
         }
 
-        let content = fs::read_to_string(path)
-            .map_err(|e| format!("Erro ao ler arquivo: {}", e))?;
+        let content =
+            fs::read_to_string(path).map_err(|e| format!("Erro ao ler arquivo: {}", e))?;
 
         Ok(content)
     }

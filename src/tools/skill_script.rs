@@ -87,7 +87,10 @@ impl Tool for SkillScriptsListTool {
         let scripts = self.executor.list_scripts(skill_name);
 
         if scripts.is_empty() {
-            return Ok(format!("Nenhum script encontrado na skill '{}'", skill_name));
+            return Ok(format!(
+                "Nenhum script encontrado na skill '{}'",
+                skill_name
+            ));
         }
 
         let list: Vec<String> = scripts

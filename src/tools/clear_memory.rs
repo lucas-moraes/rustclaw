@@ -1,5 +1,5 @@
-use crate::tools::Tool;
 use crate::memory::store::MemoryStore;
+use crate::tools::Tool;
 use serde_json::Value;
 use std::path::Path;
 
@@ -29,18 +29,22 @@ impl Tool for ClearMemoryTool {
         let confirm = args["confirm"].as_bool().unwrap_or(false);
 
         if !confirm {
-            return Ok("Para limpar a memória, use: clear_memory com {\"confirm\": true}".to_string());
+            return Ok(
+                "Para limpar a memória, use: clear_memory com {\"confirm\": true}".to_string(),
+            );
         }
 
         let path = std::path::Path::new(&self.memory_path);
-        
+
         if !path.exists() {
             return Ok("Não há memória para limpar".to_string());
         }
 
         match MemoryStore::new(path) {
             Ok(store) => {
-                store.clear_all().map_err(|e| format!("Erro ao limpar memória: {}", e))?;
+                store
+                    .clear_all()
+                    .map_err(|e| format!("Erro ao limpar memória: {}", e))?;
                 Ok("Memória limpa com sucesso (incluindo planos)".to_string())
             }
             Err(e) => Err(format!("Erro ao acessar banco: {}", e)),

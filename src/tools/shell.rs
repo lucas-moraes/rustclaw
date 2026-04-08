@@ -5,16 +5,39 @@ use std::process::Command;
 use std::time::Duration;
 
 const DANGEROUS_COMMANDS: &[&str] = &[
-    "rm", "del", "rd", "mkfs", "dd", "fdisk", "format",
+    "rm",
+    "del",
+    "rd",
+    "mkfs",
+    "dd",
+    "fdisk",
+    "format",
+    "chmod 777",
+    "chown root",
+    "mkfs.",
+    "wipe",
+    "shred",
+    "mv / ",
+    "mv /*",
+    ":(){:|:&};:",
 ];
 
 const SYSTEM_COMMANDS: &[&str] = &[
-    "shutdown", "reboot", "halt", "poweroff",
+    "shutdown",
+    "reboot",
+    "halt",
+    "poweroff",
+    "systemctl stop",
+    "systemctl disable",
+    "service --status-all",
+    "init 0",
+    "init 6",
+    "systemctl halt",
+    "systemctl poweroff",
+    "systemctl reboot",
 ];
 
-const SAFE_OUTPUT_COMMANDS: &[&str] = &[
-    "echo", "printf", "tee", "cat",
-];
+const SAFE_OUTPUT_COMMANDS: &[&str] = &["echo", "printf", "tee", "cat"];
 
 const MAX_OUTPUT_SIZE: usize = 10000; // 10KB max
 
@@ -25,7 +48,12 @@ impl ShellTool {
         Self
     }
 
-    fn is_blocked(&self, command: &str, force: bool, working_dir: Option<&str>) -> Result<(), String> {
+    fn is_blocked(
+        &self,
+        command: &str,
+        force: bool,
+        working_dir: Option<&str>,
+    ) -> Result<(), String> {
         let cmd_lower = command.to_lowercase();
 
         // Allow heredoc patterns: cat > file << 'EOF' or cat > file <<EOF
@@ -76,12 +104,17 @@ impl ShellTool {
     fn is_path_restricted(command: &str, working_dir: &str) -> bool {
         // Extract paths from the command
         let paths = Self::extract_paths_from_command(command);
-        
+
         if paths.is_empty() {
             return false; // No specific path, allow with force
         }
 
-        let work_dir = Path::new(working_dir).canonicalize().unwrap_or_else(|_| PathBuf::from(working_dir));
+        let work_dir = match Path::new(working_dir).canonicalize() {
+            Ok(p) => p,
+            Err(e) => {
+                return true;
+            }
+        };
 
         // Get home directory
         let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
@@ -89,14 +122,14 @@ impl ShellTool {
 
         // System directories that should never be modified
         let system_dirs = [
-            "/etc", "/usr", "/bin", "/sbin", "/var", "/boot", 
-            "/root", "/sys", "/proc", "/opt", "/srv", "/lib"
+            "/etc", "/usr", "/bin", "/sbin", "/var", "/boot", "/root", "/sys", "/proc", "/opt",
+            "/srv", "/lib",
         ];
 
         for path_str in paths {
             let target_path = Path::new(&path_str);
             let path_str_lower = path_str.to_lowercase();
-            
+
             // Check for dangerous system directories
             for sys_dir in &system_dirs {
                 let sys_dir_lower = sys_dir.to_lowercase();
@@ -129,7 +162,11 @@ impl ShellTool {
                     if let Ok(canonical_work) = work_dir.canonicalize() {
                         if !canonical_target.starts_with(&canonical_work) {
                             // Also check if it escapes home
-                            if !canonical_target.to_string_lossy().to_lowercase().starts_with(&home_str) {
+                            if !canonical_target
+                                .to_string_lossy()
+                                .to_lowercase()
+                                .starts_with(&home_str)
+                            {
                                 return true;
                             }
                         }
@@ -146,7 +183,7 @@ impl ShellTool {
         let mut current_path = String::new();
         let mut in_quotes = false;
         let mut in_single_quotes = false;
-        
+
         for c in command.chars() {
             match c {
                 '"' if !in_single_quotes => in_quotes = !in_quotes,
@@ -164,24 +201,24 @@ impl ShellTool {
                 }
             }
         }
-        
+
         if !current_path.is_empty() {
             paths.push(current_path);
         }
-        
+
         paths
     }
 
     fn is_heredoc_pattern(command: &str) -> bool {
         // Pattern: cat > filename << or cat > filename <<'
-        command.contains(">") 
+        command.contains(">")
             && command.contains("<<")
             && (command.starts_with("cat ") || command.starts_with("tee "))
     }
 
     fn is_safe_redirect(command: &str) -> bool {
         // Already checked heredoc above, now check other safe patterns
-        
+
         // Check for dangerous redirects to devices
         let dangerous_patterns = ["/dev/", "/sys/", "/proc/"];
         for pattern in &dangerous_patterns {
@@ -191,19 +228,19 @@ impl ShellTool {
         }
 
         // Allow: echo "text" > file
-        // Allow: printf "text" > file  
+        // Allow: printf "text" > file
         // Allow: command > file.log
         // Allow: command 2> error.txt
         // Allow: command >> file (append)
-        
+
         let has_redirect = command.contains("> ") || command.ends_with('>');
         let has_append = command.contains(">>");
         let has_stderr_redirect = command.contains("2>");
-        
+
         if has_redirect || has_append || has_stderr_redirect {
             // Check if it's a safe output command
             let is_safe_cmd = SAFE_OUTPUT_COMMANDS.iter().any(|&c| command.starts_with(c));
-            
+
             // Or has a space before > (indicating redirect to file)
             if is_safe_cmd || has_redirect || has_append || has_stderr_redirect {
                 return true;
@@ -216,13 +253,13 @@ impl ShellTool {
     fn sanitize_output(output: &[u8]) -> String {
         // Converte bytes para string, substituindo caracteres inválidos
         let text = String::from_utf8_lossy(output);
-        
+
         // Remove caracteres de controle exceto newline e tab
         let sanitized: String = text
             .chars()
             .filter(|&c| c == '\n' || c == '\t' || c == '\r' || !c.is_control())
             .collect();
-        
+
         // Limita tamanho
         if sanitized.len() > MAX_OUTPUT_SIZE {
             format!("{}\n... (output truncado)", &sanitized[..MAX_OUTPUT_SIZE])
@@ -265,7 +302,7 @@ impl Tool for ShellTool {
         // Check if it's a heredoc pattern - use shell -c for proper parsing
         if Self::is_heredoc_pattern(&command.to_lowercase()) {
             let mut cmd = Command::new("sh");
-            cmd.arg("-c").arg(&command);
+            cmd.arg("-c").arg(command);
 
             if let Some(dir) = working_dir {
                 cmd.current_dir(dir);
@@ -274,7 +311,7 @@ impl Tool for ShellTool {
             // Execute with timeout
             let result = tokio::time::timeout(
                 Duration::from_secs(30),
-                tokio::task::spawn_blocking(move || cmd.output())
+                tokio::task::spawn_blocking(move || cmd.output()),
             )
             .await;
 
@@ -306,7 +343,7 @@ impl Tool for ShellTool {
         // Execute with timeout
         let result = tokio::time::timeout(
             Duration::from_secs(30),
-            tokio::task::spawn_blocking(move || cmd.output())
+            tokio::task::spawn_blocking(move || cmd.output()),
         )
         .await;
 
@@ -336,7 +373,11 @@ impl ShellTool {
             Err(format!(
                 "❌ Erro (código {}): {}",
                 output.status.code().unwrap_or(-1),
-                if stderr.is_empty() { stdout.trim() } else { stderr.trim() }
+                if stderr.is_empty() {
+                    stdout.trim()
+                } else {
+                    stderr.trim()
+                }
             ))
         }
     }

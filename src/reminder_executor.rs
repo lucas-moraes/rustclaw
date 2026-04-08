@@ -51,12 +51,15 @@ impl ReminderExecutor {
             match self.send_reminder(&reminder).await {
                 Ok(_) => {
                     processed += 1;
-                    
+
                     if reminder.is_recurring {
                         if let Some(next_time) = reminder.calculate_next_reminder() {
                             match store.update_reminder_time(&reminder.id, next_time) {
                                 Ok(_) => {
-                                    info!("Rescheduled reminder '{}' for {}", reminder.message, next_time);
+                                    info!(
+                                        "Rescheduled reminder '{}' for {}",
+                                        reminder.message, next_time
+                                    );
                                 }
                                 Err(e) => {
                                     error!("Failed to reschedule: {}", e);
@@ -92,7 +95,10 @@ impl ReminderExecutor {
 
         match self.bot.send_message(chat_id, message).await {
             Ok(_) => {
-                info!("Sent reminder '{}' to chat {}", reminder.message, reminder.chat_id);
+                info!(
+                    "Sent reminder '{}' to chat {}",
+                    reminder.message, reminder.chat_id
+                );
                 Ok(())
             }
             Err(e) => {

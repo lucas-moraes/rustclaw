@@ -1,7 +1,9 @@
-use crate::app_store::Store;
 use crate::app_state::AppState;
+use crate::app_store::Store;
 use crate::config::Config;
-use crate::memory::checkpoint::{CheckpointStore, DevelopmentCheckpoint, DevelopmentState, PlanPhase, PlanStage, ToolExecution};
+use crate::memory::checkpoint::{
+    CheckpointStore, DevelopmentCheckpoint, DevelopmentState, PlanPhase, PlanStage, ToolExecution,
+};
 use crate::memory::embeddings::EmbeddingService;
 use crate::memory::search::{format_memories_for_prompt, search_similar_memories};
 use crate::memory::skill_context::SkillContextStore;
@@ -11,20 +13,20 @@ use crate::security::SecurityManager;
 use crate::skills::manager::SkillManager;
 use crate::skills::prompt_builder::SkillPromptBuilder;
 use crate::tools::ToolRegistry;
-use crate::utils::output::{OutputManager, OutputSink};
-use crate::utils::tmux::TmuxManager;
 use crate::utils::build_detector::BuildDetector;
-use crate::utils::error_parser::{ErrorParser, BuildValidation};
 use crate::utils::colors::Colors;
-use crate::workspace_trust::{TrustEvaluator, WorkspaceTrustStore, TrustLevel};
+use crate::utils::error_parser::{BuildValidation, ErrorParser};
+use crate::utils::output::OutputManager;
+use crate::utils::tmux::TmuxManager;
+use crate::workspace_trust::{TrustEvaluator, WorkspaceTrustStore};
 use chrono::{DateTime, Utc};
 use regex::Regex;
 use reqwest::Client;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tracing::{debug, info};
 use std::sync::OnceLock;
+use tracing::{debug, info};
 
 static OUTPUT_MANAGER: OnceLock<OutputManager> = OnceLock::new();
 static TMUX_MANAGER: OnceLock<TmuxManager> = OnceLock::new();
@@ -70,13 +72,13 @@ pub struct SessionDetails {
 impl Agent {
     pub fn new(config: Config, tools: ToolRegistry, memory_path: &Path) -> anyhow::Result<Self> {
         let memory_store = MemoryStore::new(memory_path)?;
-        
+
         if let Err(e) = memory_store.delete_all_without_session() {
             tracing::warn!("Failed to cleanup old memories: {}", e);
         } else {
             tracing::info!("Cleaned up old memories without session_id");
         }
-        
+
         let checkpoint_store = CheckpointStore::new(memory_path)?;
         let embedding_service = EmbeddingService::new()?;
         let skill_context_store = SkillContextStore::new(memory_path)?;
@@ -136,21 +138,23 @@ impl Agent {
 
     pub async fn prompt(&mut self, user_input: &str) -> anyhow::Result<String> {
         // ====== AUTO LOOP COMMAND ======
-        if user_input.to_lowercase().starts_with("auto loop:") 
-            || user_input.to_lowercase().starts_with("iniciar loop:") 
-            || user_input.to_lowercase().starts_with("dev loop:") {
-            
+        if user_input.to_lowercase().starts_with("auto loop:")
+            || user_input.to_lowercase().starts_with("iniciar loop:")
+            || user_input.to_lowercase().starts_with("dev loop:")
+        {
             // Extrai a tarefa após o comando
             let task = if let Some(idx) = user_input.find(':') {
                 user_input[idx + 1..].trim()
             } else {
                 return Ok("Formato: auto loop: <tarefa>".to_string());
             };
-            
+
             if task.is_empty() {
-                return Ok("Informe a tarefa. Ex: auto loop: implementar autenticação JWT".to_string());
+                return Ok(
+                    "Informe a tarefa. Ex: auto loop: implementar autenticação JWT".to_string(),
+                );
             }
-            
+
             // Verifica se tem um checkpoint ativo com project_dir
             let checkpoint = if let Some(mut cp) = self.get_last_active_checkpoint() {
                 if cp.project_dir.is_empty() {
@@ -162,22 +166,28 @@ impl Agent {
             } else {
                 return Ok("⚠️  Nenhum projeto ativo. Use 'criar plano' primeiro para definir o diretório.".to_string());
             };
-            
+
             info!("🔄 Auto loop iniciado: {}", task);
             return self.run_development(task.to_string(), checkpoint).await;
         }
-        
+
         // Comandos para ativar/desativar loop em checkpoint existente
-        if user_input.eq_ignore_ascii_case("ativar loop") || user_input.eq_ignore_ascii_case("enable loop") {
+        if user_input.eq_ignore_ascii_case("ativar loop")
+            || user_input.eq_ignore_ascii_case("enable loop")
+        {
             if let Some(mut checkpoint) = self.get_last_active_checkpoint() {
                 checkpoint.set_auto_loop(true);
                 self.checkpoint_store.save(&checkpoint)?;
-                return Ok("🔄 Auto loop ativado! O sistema validará o build após cada ação.".to_string());
+                return Ok(
+                    "🔄 Auto loop ativado! O sistema validará o build após cada ação.".to_string(),
+                );
             }
             return Ok("Nenhum projeto ativo.".to_string());
         }
-        
-        if user_input.eq_ignore_ascii_case("desativar loop") || user_input.eq_ignore_ascii_case("disable loop") {
+
+        if user_input.eq_ignore_ascii_case("desativar loop")
+            || user_input.eq_ignore_ascii_case("disable loop")
+        {
             if let Some(mut checkpoint) = self.get_last_active_checkpoint() {
                 checkpoint.set_auto_loop(false);
                 self.checkpoint_store.save(&checkpoint)?;
@@ -185,11 +195,12 @@ impl Agent {
             }
             return Ok("Nenhum projeto ativo.".to_string());
         }
-        
+
         if user_input.eq_ignore_ascii_case("status loop") {
             if let Some(checkpoint) = self.get_last_active_checkpoint() {
                 let status = if checkpoint.auto_loop_enabled {
-                    format!("🔄 Auto loop: ATIVADO\n📂 Diretório: {}\n🔢 Tentativas: {}/{}\n{}",
+                    format!(
+                        "🔄 Auto loop: ATIVADO\n📂 Diretório: {}\n🔢 Tentativas: {}/{}\n{}",
                         checkpoint.project_dir,
                         checkpoint.retry_count,
                         self.config.max_retries,
@@ -206,12 +217,12 @@ impl Agent {
             }
             return Ok("Nenhum projeto ativo.".to_string());
         }
-        
+
         // ====== NEW PLAN FLOW ======
         // Check for "criar plano" or "novo plano" or "criar novo" - more flexible matching
         let lower_input = user_input.to_lowercase();
-        if lower_input.contains("criar plano") 
-            || lower_input.contains("novo plano") 
+        if lower_input.contains("criar plano")
+            || lower_input.contains("novo plano")
             || lower_input.contains("criar novo")
             || lower_input.contains("outro plano")
             || lower_input.trim() == "criar"
@@ -221,21 +232,24 @@ impl Agent {
             // First, try to get any existing checkpoint to potentially clean up
             if let Some(old_checkpoint) = self.get_last_active_checkpoint() {
                 // If there's an in_progress checkpoint from a previous plan, clean it up
-                if old_checkpoint.state == DevelopmentState::InProgress 
-                    && old_checkpoint.phase != PlanPhase::Executing 
-                    && old_checkpoint.project_dir.is_empty() 
+                if old_checkpoint.state == DevelopmentState::InProgress
+                    && old_checkpoint.phase != PlanPhase::Executing
+                    && old_checkpoint.project_dir.is_empty()
                 {
                     // Delete old checkpoint to start fresh
                     let _ = self.checkpoint_store.delete(&old_checkpoint.id);
                 }
             }
-            
+
             let mut checkpoint = DevelopmentCheckpoint::new("criar plano".to_string());
             checkpoint.set_phase(PlanPhase::AwaitingDir);
             checkpoint.set_project_dir(String::new());
             checkpoint.set_plan_file(String::new());
             self.checkpoint_store.save(&checkpoint)?;
-            return Ok("📁 Informe o diretório do projeto:\nEx: /Users/macbook/projects/meu-projeto".to_string());
+            return Ok(
+                "📁 Informe o diretório do projeto:\nEx: /Users/macbook/projects/meu-projeto"
+                    .to_string(),
+            );
         }
 
         // Handle plan flow based on current phase
@@ -244,13 +258,15 @@ impl Agent {
                 PlanPhase::AwaitingDir => {
                     let dir = user_input.trim();
                     if dir.is_empty() {
-                        return Ok("Diretório inválido. Informe o caminho do diretório.".to_string());
+                        return Ok(
+                            "Diretório inválido. Informe o caminho do diretório.".to_string()
+                        );
                     }
 
                     // If it looks like a path (starts with / or contains common path chars), treat as directory
-                    let looks_like_path = dir.starts_with('/') 
-                        || dir.starts_with('.') 
-                        || dir.contains("Users") 
+                    let looks_like_path = dir.starts_with('/')
+                        || dir.starts_with('.')
+                        || dir.contains("Users")
                         || dir.contains("home")
                         || dir.contains("project")
                         || dir.contains("src")
@@ -291,8 +307,26 @@ impl Agent {
                     // Only accept as idea if it looks like a project description
                     // (at least 5 words, or contains keywords like criar, site, app, etc.)
                     let word_count = idea.split_whitespace().count();
-                    let dev_keywords = ["criar", "site", "app", "aplicativo", "projeto", "sistema", "api", "build", "make", "desenvolver", "implementar", "construir", "funcionalidade", "feature"];
-                    let looks_like_idea = word_count >= 5 || dev_keywords.iter().any(|kw| idea.to_lowercase().contains(kw));
+                    let dev_keywords = [
+                        "criar",
+                        "site",
+                        "app",
+                        "aplicativo",
+                        "projeto",
+                        "sistema",
+                        "api",
+                        "build",
+                        "make",
+                        "desenvolver",
+                        "implementar",
+                        "construir",
+                        "funcionalidade",
+                        "feature",
+                    ];
+                    let looks_like_idea = word_count >= 5
+                        || dev_keywords
+                            .iter()
+                            .any(|kw| idea.to_lowercase().contains(kw));
 
                     if looks_like_idea {
                         checkpoint.set_plan_text(idea.to_string());
@@ -305,7 +339,9 @@ impl Agent {
                         checkpoint.set_plan_text(plan.clone());
 
                         let plan_path = std::path::Path::new(&checkpoint.plan_file);
-                        let _ = std::fs::create_dir_all(plan_path.parent().unwrap_or(std::path::Path::new(".")));
+                        let _ = std::fs::create_dir_all(
+                            plan_path.parent().unwrap_or(std::path::Path::new(".")),
+                        );
                         let plan_content = format!(
                             "# Plano de Desenvolvimento\n\n**Ideia:** {}\n**Status:** Pendente de aprovação\n\n## Passos\n\n{}\n\n---\n*Edite o plano acima como desejar, depois digite: sincronizar plano",
                             idea, plan
@@ -341,11 +377,17 @@ impl Agent {
                         }
 
                         if lower.contains("sincronizar") || lower.contains("aprovar") {
-                            if !checkpoint.plan_file.is_empty() && std::path::Path::new(&checkpoint.plan_file).exists() {
-                                if let Ok(content) = std::fs::read_to_string(&checkpoint.plan_file) {
+                            if !checkpoint.plan_file.is_empty()
+                                && std::path::Path::new(&checkpoint.plan_file).exists()
+                            {
+                                if let Ok(content) = std::fs::read_to_string(&checkpoint.plan_file)
+                                {
                                     if let Some(steps_start) = content.find("## Passos\n\n") {
-                                        if let Some(steps_end) = content[steps_start..].find("\n\n---") {
-                                            let steps = &content[steps_start + 10..steps_start + steps_end];
+                                        if let Some(steps_end) =
+                                            content[steps_start..].find("\n\n---")
+                                        {
+                                            let steps =
+                                                &content[steps_start + 10..steps_start + steps_end];
                                             checkpoint.set_plan_text(steps.to_string());
                                         }
                                     }
@@ -360,11 +402,15 @@ impl Agent {
                             }
 
                             if !checkpoint.plan_file.is_empty() {
-                                let idea = checkpoint.plan_text.lines()
+                                let idea = checkpoint
+                                    .plan_text
+                                    .lines()
                                     .find(|l| l.starts_with("**Ideia:**"))
                                     .map(|l| l.replace("**Ideia:**", "").trim().to_string())
                                     .unwrap_or_default();
-                                let skill_info = checkpoint.active_skill.as_ref()
+                                let skill_info = checkpoint
+                                    .active_skill
+                                    .as_ref()
                                     .map(|s| format!("\n\n## Skill Ativa\n\n{}\n", s))
                                     .unwrap_or_default();
                                 let plan_content = format!(
@@ -387,7 +433,10 @@ impl Agent {
                             let plan_file = &checkpoint.plan_file;
                             if !plan_file.is_empty() && std::path::Path::new(plan_file).exists() {
                                 if let Ok(content) = std::fs::read_to_string(plan_file) {
-                                    return Ok(format!("📋 Plano em {}:\n\n{}", plan_file, content));
+                                    return Ok(format!(
+                                        "📋 Plano em {}:\n\n{}",
+                                        plan_file, content
+                                    ));
                                 }
                             }
                         }
@@ -462,8 +511,16 @@ impl Agent {
                     plan.phase,
                     step_count,
                     plan.user_input,
-                    if plan.project_dir.is_empty() { "(nao definido)" } else { plan.project_dir.as_str() },
-                    if plan.plan_file.is_empty() { "(nao definido)" } else { plan.plan_file.as_str() }
+                    if plan.project_dir.is_empty() {
+                        "(nao definido)"
+                    } else {
+                        plan.project_dir.as_str()
+                    },
+                    if plan.plan_file.is_empty() {
+                        "(nao definido)"
+                    } else {
+                        plan.plan_file.as_str()
+                    }
                 ));
             }
 
@@ -482,9 +539,21 @@ impl Agent {
                     plan.id,
                     plan.user_input,
                     plan.phase,
-                    if plan.project_dir.is_empty() { "(nao definido)" } else { plan.project_dir.as_str() },
-                    if plan.plan_file.is_empty() { "(nao definido)" } else { plan.plan_file.as_str() },
-                    if plan.plan_text.is_empty() { "(sem plano)" } else { plan.plan_text.as_str() }
+                    if plan.project_dir.is_empty() {
+                        "(nao definido)"
+                    } else {
+                        plan.project_dir.as_str()
+                    },
+                    if plan.plan_file.is_empty() {
+                        "(nao definido)"
+                    } else {
+                        plan.plan_file.as_str()
+                    },
+                    if plan.plan_text.is_empty() {
+                        "(sem plano)"
+                    } else {
+                        plan.plan_text.as_str()
+                    }
                 ));
             }
 
@@ -511,69 +580,84 @@ impl Agent {
         // Handle resume commands — resumes an Executing checkpoint
         // Also handles common typos like "cotinuar", "contiunar", etc.
         let lower = user_input.to_lowercase();
-        let is_resume = lower.starts_with("contin") 
-            || lower.starts_with("cotin") 
+        let is_resume = lower.starts_with("contin")
+            || lower.starts_with("cotin")
             || lower.starts_with("conti")
             || lower.starts_with("retom")
             || lower.starts_with("retome")
             || lower.starts_with("resum")
             || lower.starts_with("resume")
             || lower == "continue";
-        
+
         // Extract directory from input if specified
         let mut target_dir = String::new();
         // Extract directory from various patterns
         if lower.contains("diretório:") || lower.contains("diretorio:") || lower.contains("dir:") {
-            if let Some(dir) = user_input.split("diretório:").nth(1)
+            if let Some(dir) = user_input
+                .split("diretório:")
+                .nth(1)
                 .or_else(|| user_input.split("diretorio:").nth(1))
-                .or_else(|| user_input.split("dir:").nth(1)) 
+                .or_else(|| user_input.split("dir:").nth(1))
             {
                 target_dir = dir.trim().to_string();
             }
-        } else if lower.contains("no diretório") || lower.contains("no diretorio") || lower.contains("no dir") || lower.contains("em ") {
+        } else if lower.contains("no diretório")
+            || lower.contains("no diretorio")
+            || lower.contains("no dir")
+            || lower.contains("em ")
+        {
             // Try to extract after "no diretório", "no diretorio", "em", etc.
             let query_lower = user_input.to_lowercase();
-            if let Some(dir) = query_lower.split("no diretório").nth(1)
+            if let Some(dir) = query_lower
+                .split("no diretório")
+                .nth(1)
                 .or_else(|| query_lower.split("no diretorio").nth(1))
                 .or_else(|| query_lower.split("em ").nth(1))
             {
                 target_dir = dir.trim().to_string();
             }
         }
-        
+
         // Clean up - remove trailing punctuation
         if !target_dir.is_empty() {
-            target_dir = target_dir.trim_end_matches('.').trim_end_matches(',').trim_end_matches('!').trim_end_matches('?').to_string();
+            target_dir = target_dir
+                .trim_end_matches('.')
+                .trim_end_matches(',')
+                .trim_end_matches('!')
+                .trim_end_matches('?')
+                .to_string();
         }
-        
+
         if is_resume {
             // Try to find any checkpoint to resume
-            if let Some(checkpoints) = self.checkpoint_store.get_active().ok() {
-                for mut active in checkpoints {
+            if let Ok(checkpoints) = self.checkpoint_store.get_active() {
+                for active in checkpoints {
                     // Can resume from any phase with a plan
                     if !active.plan_text.is_empty() {
                         // Ensure .ai-dev directory exists
                         if let Some(parent) = std::path::Path::new(&active.plan_file).parent() {
                             let _ = std::fs::create_dir_all(parent);
                         }
-                        
+
                         // Restore active skill if saved
                         if let Some(ref skill_name) = active.active_skill {
                             info!("Restoring skill: {}", skill_name);
                             let _ = self.skill_manager.force_skill(skill_name);
                         }
-                        
-                        info!("Resuming checkpoint: {} in phase {:?}", active.id, active.phase);
+
+                        info!(
+                            "Resuming checkpoint: {} in phase {:?}",
+                            active.id, active.phase
+                        );
                         let task_input = format!(
                             "Execute o plano de desenvolvimento no diretorio {}:\n\n{}",
-                            active.project_dir,
-                            active.plan_text
+                            active.project_dir, active.plan_text
                         );
                         return self.run_development(task_input, active).await;
                     }
                 }
             }
-            
+
             // If directory was specified and no checkpoint found, try to read PLANO.md
             if !target_dir.is_empty() {
                 let plano_path = std::path::Path::new(&target_dir).join("PLANO.md");
@@ -585,18 +669,19 @@ impl Agent {
                             target_dir,
                             plano_content
                         );
-                        
+
                         // Create a new checkpoint for this development
-                        let mut checkpoint = DevelopmentCheckpoint::new("resume from PLANO.md".to_string());
+                        let mut checkpoint =
+                            DevelopmentCheckpoint::new("resume from PLANO.md".to_string());
                         checkpoint.set_project_dir(target_dir.clone());
                         checkpoint.set_plan_text(plano_content);
                         checkpoint.set_phase(PlanPhase::Executing);
-                        
+
                         return self.run_development(task_input, checkpoint).await;
                     }
                 }
             }
-            
+
             // If directory specified but no PLANO.md found
             if !target_dir.is_empty() {
                 let plano_path = std::path::Path::new(&target_dir).join("PLANO.md");
@@ -607,33 +692,35 @@ impl Agent {
                     ));
                 }
             }
-            
+
             // Check for any recent checkpoints with plans
             if let Ok(checkpoints) = self.checkpoint_store.get_recent_with_plans(1) {
-                for mut active in checkpoints {
+                for active in checkpoints {
                     if !active.plan_text.is_empty() {
                         // Ensure .ai-dev directory exists
                         if let Some(parent) = std::path::Path::new(&active.plan_file).parent() {
                             let _ = std::fs::create_dir_all(parent);
                         }
-                        
+
                         // Restore active skill if saved
                         if let Some(ref skill_name) = active.active_skill {
                             info!("Restoring skill: {}", skill_name);
                             let _ = self.skill_manager.force_skill(skill_name);
                         }
-                        
-                        info!("Resuming from recent: {} in phase {:?}", active.id, active.phase);
+
+                        info!(
+                            "Resuming from recent: {} in phase {:?}",
+                            active.id, active.phase
+                        );
                         let task_input = format!(
                             "Execute o plano de desenvolvimento no diretorio {}:\n\n{}",
-                            active.project_dir,
-                            active.plan_text
+                            active.project_dir, active.plan_text
                         );
                         return self.run_development(task_input, active).await;
                     }
                 }
             }
-            
+
             // No plan found - try to retry the last task (max 3 attempts)
             // Instead of recursive call, just warn and let user re-enter
             if let Ok(checkpoints) = self.checkpoint_store.get_active() {
@@ -652,7 +739,7 @@ impl Agent {
                     }
                 }
             }
-            
+
             return Ok("Nenhum plano encontrado para continuar. Use 'criar plano' para iniciar um novo projeto.".to_string());
         }
 
@@ -661,11 +748,11 @@ impl Agent {
             || lower.starts_with("desenvolver ")
             || lower.starts_with("desenvolva ")
             || lower.starts_with("desenvolvedor ");
-        
+
         if is_structured_dev {
             // Extract directory - try various patterns
             let mut dev_dir = String::new();
-            
+
             // Pattern: /desenvolver /path
             if let Some(dir) = user_input.split("/desenvolver").nth(1) {
                 let d = dir.trim();
@@ -673,26 +760,38 @@ impl Agent {
                     dev_dir = d.to_string();
                 }
             }
-            
+
             // If not found, try other patterns
             if dev_dir.is_empty() {
                 if let Some(dir) = lower.split("desenvolver ").nth(1) {
                     let d = dir.trim();
-                    if !d.is_empty() && (d.starts_with('/') || d.starts_with("em ") || d.starts_with("no ")) {
-                        dev_dir = d.trim_start_matches("em ").trim_start_matches("no ").trim_start_matches("no ").trim().to_string();
+                    if !d.is_empty()
+                        && (d.starts_with('/') || d.starts_with("em ") || d.starts_with("no "))
+                    {
+                        dev_dir = d
+                            .trim_start_matches("em ")
+                            .trim_start_matches("no ")
+                            .trim_start_matches("no ")
+                            .trim()
+                            .to_string();
                     } else {
                         dev_dir = d.to_string();
                     }
                 }
             }
-            
+
             if dev_dir.is_empty() {
                 return Ok("📂 Por favor, especifique o diretório do projeto:\n\nEx: /desenvolver /Users/macbook/projects/meu-projeto\n   ou\n   desenvolva o projeto no /Users/macbook/projects/meu-projeto".to_string());
             }
-            
+
             // Clean up directory
-            dev_dir = dev_dir.trim_end_matches('.').trim_end_matches(',').trim_end_matches('!').trim_end_matches('?').to_string();
-            
+            dev_dir = dev_dir
+                .trim_end_matches('.')
+                .trim_end_matches(',')
+                .trim_end_matches('!')
+                .trim_end_matches('?')
+                .to_string();
+
             // Check if directory exists
             let path = std::path::Path::new(&dev_dir);
             if !path.exists() {
@@ -700,7 +799,7 @@ impl Agent {
                     return Ok(format!("❌ Erro ao criar diretório: {}", e));
                 }
             }
-            
+
             // Check for PLANO.md
             let plano_path = path.join("PLANO.md");
             if !plano_path.exists() {
@@ -724,34 +823,36 @@ impl Agent {
                 if let Err(e) = std::fs::write(&plano_path, default_plano) {
                     return Ok(format!("❌ Erro ao criar PLANO.md: {}", e));
                 }
-                
+
                 return Ok(format!(
                     "✅ Diretório configurado: {}\n\n📄 Criei um PLANO.md básico no diretório.\n\nPor favor, edite o arquivo com as etapas do seu projeto e depois digite:\n\ncontinuar\n\npara iniciar o desenvolvimento estruturado.",
                     dev_dir
                 ));
             }
-            
+
             // Read PLANO.md and start structured development
             if let Ok(plano_content) = std::fs::read_to_string(&plano_path) {
                 info!("Starting structured development in {}", dev_dir);
-                
+
                 // Create checkpoint for structured development
-                let mut checkpoint = DevelopmentCheckpoint::new("desenvolvimento estruturado".to_string());
+                let mut checkpoint =
+                    DevelopmentCheckpoint::new("desenvolvimento estruturado".to_string());
                 checkpoint.set_project_dir(dev_dir.clone());
                 checkpoint.set_plan_text(plano_content.clone());
                 checkpoint.set_phase(PlanPhase::Executing);
-                
+
                 // Save checkpoint
                 self.checkpoint_store.save(&checkpoint)?;
-                
+
                 // Start structured development
                 let task_input = format!(
                     "Desenvolva o projeto no diretório {} seguindo o PLANO.md:\n\n{}",
-                    dev_dir,
-                    plano_content
+                    dev_dir, plano_content
                 );
-                
-                return self.run_structured_development(task_input, checkpoint).await;
+
+                return self
+                    .run_structured_development(task_input, checkpoint)
+                    .await;
             } else {
                 return Ok(format!("❌ Erro ao ler PLANO.md em {}", dev_dir));
             }
@@ -759,8 +860,15 @@ impl Agent {
 
         // Handle clean memory commands
         let lower = user_input.to_lowercase();
-        if lower.contains("limpar memória") || lower.contains("clean memory") || lower.contains("limpar memoria") {
-            if lower.contains("confirm") || lower.contains("sim") || lower.contains("yes") || lower.contains("true") {
+        if lower.contains("limpar memória")
+            || lower.contains("clean memory")
+            || lower.contains("limpar memoria")
+        {
+            if lower.contains("confirm")
+                || lower.contains("sim")
+                || lower.contains("yes")
+                || lower.contains("true")
+            {
                 match self.clear_all_memory().await {
                     Ok(msg) => return Ok("✓ ".to_string() + &msg),
                     Err(e) => return Ok("✗ Erro ao limpar: ".to_string() + &e),
@@ -776,8 +884,7 @@ impl Agent {
         if checkpoint.phase == PlanPhase::Executing && !checkpoint.plan_text.is_empty() {
             task_input = format!(
                 "Execute o plano de desenvolvimento no diretorio {}:\n\n{}",
-                checkpoint.project_dir,
-                checkpoint.plan_text
+                checkpoint.project_dir, checkpoint.plan_text
             );
         }
 
@@ -804,10 +911,7 @@ impl Agent {
 
         // 1. Detecta skill (com hot reload automático)
         // Clone skill data immediately to avoid borrow issues
-        let skill_opt = self
-            .skill_manager
-            .process_message(user_input)
-            .map(|s| s.clone());
+        let skill_opt = self.skill_manager.process_message(user_input).cloned();
         let skill_name = skill_opt.as_ref().map(|s| s.name.clone());
 
         // 2. Recupera memórias
@@ -839,12 +943,15 @@ impl Agent {
         if checkpoint.is_plan_mode() {
             let steps = checkpoint.parse_plan_steps();
             if !steps.is_empty() {
-                return self.execute_plan_steps(&mut checkpoint, &system_prompt, &steps).await;
+                return self
+                    .execute_plan_steps(&mut checkpoint, &system_prompt, &steps)
+                    .await;
             }
         }
 
         // 7. Build messages
-        let mut current_messages = self.load_checkpoint_messages(&checkpoint)
+        let mut current_messages = self
+            .load_checkpoint_messages(&checkpoint)
             .unwrap_or_else(|| self.build_messages(&system_prompt));
 
         // 8. ReAct loop
@@ -869,12 +976,20 @@ impl Agent {
                     {
                         match self.validate_build(&checkpoint.project_dir).await? {
                             BuildValidation::Failed { errors } => {
-                                let error_summary = errors.iter()
+                                let error_summary = errors
+                                    .iter()
                                     .take(5) // Mostra até 5 erros
-                                    .map(|e| format!("- {} ({}:{})", e.message, e.file, e.line.unwrap_or(0)))
+                                    .map(|e| {
+                                        format!(
+                                            "- {} ({}:{})",
+                                            e.message,
+                                            e.file,
+                                            e.line.unwrap_or(0)
+                                        )
+                                    })
                                     .collect::<Vec<_>>()
                                     .join("\n");
-                                
+
                                 current_messages.push(json!({
                                     "role": "user",
                                     "content": format!(
@@ -905,10 +1020,19 @@ impl Agent {
                         fa
                     };
 
-                    self.save_conversation_to_memory(user_input, &final_answer, Some(&checkpoint.id))
-                        .await?;
+                    self.save_conversation_to_memory(
+                        user_input,
+                        &final_answer,
+                        Some(&checkpoint.id),
+                    )
+                    .await?;
 
-                    self.finalize_checkpoint(&mut checkpoint, DevelopmentState::Completed, &current_messages, &[])?;
+                    self.finalize_checkpoint(
+                        &mut checkpoint,
+                        DevelopmentState::Completed,
+                        &current_messages,
+                        &[],
+                    )?;
 
                     // Revisão final: listar arquivos criados no diretório
                     if !checkpoint.project_dir.is_empty() {
@@ -919,8 +1043,16 @@ impl Agent {
                                 Colors::AMBER, Colors::RESET, checkpoint.project_dir
                             );
                             // Usar echo para obter listagem
-                            let ls_result = self.execute_tool("shell", &format!("ls -la {}", checkpoint.project_dir)).await?;
-                            let final_with_review = format!("{}{}\n\n✅ Desenvolvimento concluído!", final_answer, review_msg);
+                            let _ls_result = self
+                                .execute_tool(
+                                    "shell",
+                                    &format!("ls -la {}", checkpoint.project_dir),
+                                )
+                                .await?;
+                            let final_with_review = format!(
+                                "{}{}\n\n✅ Desenvolvimento concluído!",
+                                final_answer, review_msg
+                            );
                             return Ok(final_with_review);
                         }
                     }
@@ -931,13 +1063,24 @@ impl Agent {
                         if project_path.exists() {
                             let build_info = BuildDetector::detect(&checkpoint.project_dir);
                             if !build_info.build_command.is_empty() {
-                                info!("Executando validação final do build: {}", build_info.build_command);
-                                
-                                let build_result = self.execute_tool("shell", &build_info.build_command).await?;
-                                
-                                if build_result.to_lowercase().contains("error") || build_result.to_lowercase().contains("failed") || build_result.to_lowercase().contains("erro") {
+                                info!(
+                                    "Executando validação final do build: {}",
+                                    build_info.build_command
+                                );
+
+                                let build_result = self
+                                    .execute_tool("shell", &build_info.build_command)
+                                    .await?;
+
+                                if build_result.to_lowercase().contains("error")
+                                    || build_result.to_lowercase().contains("failed")
+                                    || build_result.to_lowercase().contains("erro")
+                                {
                                     // Build falhou - informar mas não bloquear (já que provavelmente vai continuar desenvolvendo)
-                                    info!("⚠️ Build final possui warnings/erros: {}", &build_result[..build_result.len().min(200)]);
+                                    info!(
+                                        "⚠️ Build final possui warnings/erros: {}",
+                                        &build_result[..build_result.len().min(200)]
+                                    );
                                 } else {
                                     info!("✅ Build validado com sucesso!");
                                 }
@@ -965,12 +1108,19 @@ impl Agent {
                     info!("Tool observation (sanitized): {}", observation);
 
                     if action != "echo" {
-                        self.save_tool_result_to_memory(&action, &action_input, &observation, Some(&checkpoint.id))
-                            .await?;
+                        self.save_tool_result_to_memory(
+                            &action,
+                            &action_input,
+                            &observation,
+                            Some(&checkpoint.id),
+                        )
+                        .await?;
                     }
 
                     // VERIFICATION: Verifica automaticamente o resultado da ação
-                    let verification_result = self.verify_action_result(&action, &action_input, &observation).await?;
+                    let verification_result = self
+                        .verify_action_result(&action, &action_input, &observation)
+                        .await?;
 
                     let tool_execution = ToolExecution {
                         tool_name: action.clone(),
@@ -1020,7 +1170,12 @@ impl Agent {
         }
 
         info!("Max iterations reached, forcing final answer");
-        self.finalize_checkpoint(&mut checkpoint, DevelopmentState::Interrupted, &current_messages, &[])?;
+        self.finalize_checkpoint(
+            &mut checkpoint,
+            DevelopmentState::Interrupted,
+            &current_messages,
+            &[],
+        )?;
         let final_prompt = self
             .build_messages(&system_prompt)
             .iter()
@@ -1074,12 +1229,15 @@ impl Agent {
         if checkpoint.is_plan_mode() {
             let steps = checkpoint.parse_plan_steps();
             if !steps.is_empty() {
-                return self.execute_plan_steps(&mut checkpoint, &system_prompt, &steps).await;
+                return self
+                    .execute_plan_steps(&mut checkpoint, &system_prompt, &steps)
+                    .await;
             }
         }
 
         // Build messages
-        let mut current_messages = self.load_checkpoint_messages(&checkpoint)
+        let mut current_messages = self
+            .load_checkpoint_messages(&checkpoint)
             .unwrap_or_else(|| self.build_messages(&system_prompt));
 
         // ReAct loop
@@ -1100,12 +1258,20 @@ impl Agent {
                     {
                         match self.validate_build(&checkpoint.project_dir).await? {
                             BuildValidation::Failed { errors } => {
-                                let error_summary = errors.iter()
+                                let error_summary = errors
+                                    .iter()
                                     .take(5)
-                                    .map(|e| format!("- {} ({}:{})", e.message, e.file, e.line.unwrap_or(0)))
+                                    .map(|e| {
+                                        format!(
+                                            "- {} ({}:{})",
+                                            e.message,
+                                            e.file,
+                                            e.line.unwrap_or(0)
+                                        )
+                                    })
                                     .collect::<Vec<_>>()
                                     .join("\n");
-                                
+
                                 current_messages.push(json!({
                                     "role": "user",
                                     "content": format!(
@@ -1130,8 +1296,18 @@ impl Agent {
                     // Skip self-review for plan execution - just return answer
                     let final_answer = answer.clone();
 
-                    self.save_conversation_to_memory(&task_input, &final_answer, Some(&checkpoint.id)).await?;
-                    self.finalize_checkpoint(&mut checkpoint, DevelopmentState::Completed, &current_messages, &[])?;
+                    self.save_conversation_to_memory(
+                        &task_input,
+                        &final_answer,
+                        Some(&checkpoint.id),
+                    )
+                    .await?;
+                    self.finalize_checkpoint(
+                        &mut checkpoint,
+                        DevelopmentState::Completed,
+                        &current_messages,
+                        &[],
+                    )?;
 
                     return Ok(final_answer);
                 }
@@ -1150,11 +1326,19 @@ impl Agent {
                     let observation = SecurityManager::clean_tool_output(&raw_observation, &action);
 
                     if action != "echo" {
-                        self.save_tool_result_to_memory(&action, &action_input, &observation, Some(&checkpoint.id)).await?;
+                        self.save_tool_result_to_memory(
+                            &action,
+                            &action_input,
+                            &observation,
+                            Some(&checkpoint.id),
+                        )
+                        .await?;
                     }
 
                     // VERIFICATION: Verifica automaticamente o resultado da ação
-                    let verification_result = self.verify_action_result(&action, &action_input, &observation).await?;
+                    let verification_result = self
+                        .verify_action_result(&action, &action_input, &observation)
+                        .await?;
 
                     let tool_execution = ToolExecution {
                         tool_name: action.clone(),
@@ -1203,12 +1387,12 @@ impl Agent {
                     // AUTO LOOP: Valida build se habilitado
                     if checkpoint.auto_loop_enabled && !checkpoint.project_dir.is_empty() {
                         info!("Auto loop enabled, validating build...");
-                        
+
                         match self.validate_build(&checkpoint.project_dir).await? {
                             BuildValidation::Success => {
                                 info!("✅ Build passed!");
                                 checkpoint.reset_retry();
-                                
+
                                 // Adiciona feedback positivo ao LLM
                                 current_messages.push(json!({
                                     "role": "system",
@@ -1220,18 +1404,23 @@ impl Agent {
                                 let error_msg = format!(
                                     "❌ Build falhou com {} erro(s):\n\n{}",
                                     errors.len(),
-                                    errors.iter()
+                                    errors
+                                        .iter()
                                         .enumerate()
                                         .map(|(i, e)| format!("{}. {}", i + 1, e))
                                         .collect::<Vec<_>>()
                                         .join("\n")
                                 );
-                                
+
                                 checkpoint.set_last_error(error_msg.clone());
                                 let max_retries = self.config.agent_loop.max_retries_per_step;
-                                info!("❌ Build failed with {} errors (retry {}/{})", 
-                                      errors.len(), checkpoint.retry_count, max_retries);
-                                
+                                info!(
+                                    "❌ Build failed with {} errors (retry {}/{})",
+                                    errors.len(),
+                                    checkpoint.retry_count,
+                                    max_retries
+                                );
+
                                 if checkpoint.retry_count < max_retries {
                                     // Adiciona feedback de erro ao LLM para corrigir
                                     current_messages.push(json!({
@@ -1243,7 +1432,9 @@ impl Agent {
                                     }));
                                 } else {
                                     // Máximo de retries atingido
-                                    let failure_msg = if self.config.agent_loop.exit_on_error == crate::config::ExitBehavior::Never {
+                                    let failure_msg = if self.config.agent_loop.exit_on_error
+                                        == crate::config::ExitBehavior::Never
+                                    {
                                         // Never exit - just warn and continue
                                         format!(
                                             "⚠️ Máximo de {} tentativas atingido para este passo, mas continuando por configuração.\n\nÚltimo erro:\n{}",
@@ -1255,16 +1446,18 @@ impl Agent {
                                             max_retries, error_msg
                                         )
                                     };
-                                    
-                                    if self.config.agent_loop.exit_on_error == crate::config::ExitBehavior::Task {
+
+                                    if self.config.agent_loop.exit_on_error
+                                        == crate::config::ExitBehavior::Task
+                                    {
                                         self.finalize_checkpoint(
-                                            &mut checkpoint, 
-                                            DevelopmentState::Failed, 
-                                            &current_messages, 
-                                            &[]
+                                            &mut checkpoint,
+                                            DevelopmentState::Failed,
+                                            &current_messages,
+                                            &[],
                                         )?;
                                     }
-                                    
+
                                     return Ok(failure_msg);
                                 }
                             }
@@ -1275,8 +1468,16 @@ impl Agent {
         }
 
         info!("Max iterations reached");
-        self.finalize_checkpoint(&mut checkpoint, DevelopmentState::Interrupted, &current_messages, &[])?;
-        Ok(format!("Execução interrompida após {} iterações.", self.config.max_iterations))
+        self.finalize_checkpoint(
+            &mut checkpoint,
+            DevelopmentState::Interrupted,
+            &current_messages,
+            &[],
+        )?;
+        Ok(format!(
+            "Execução interrompida após {} iterações.",
+            self.config.max_iterations
+        ))
     }
 
     /// Structured development mode - parses PLANO.md and executes step by step
@@ -1286,24 +1487,28 @@ impl Agent {
         mut checkpoint: DevelopmentCheckpoint,
     ) -> anyhow::Result<String> {
         let project_dir = checkpoint.project_dir.clone();
-        
+
         // Parse PLANO.md into structured stages
         let stages = self.parse_plano_md(&checkpoint.plan_text)?;
-        
+
         if stages.is_empty() {
             return Ok("❌ Nenhuma etapa encontrada no PLANO.md. Por favor, defina as etapas usando headers ##.".to_string());
         }
-        
-        info!("Starting structured development with {} stages", stages.len());
-        
+
+        info!(
+            "Starting structured development with {} stages",
+            stages.len()
+        );
+
         // Build system prompt for structured development
         let memories = self.retrieve_relevant_memories(&task_input, None).await?;
         let memory_context = format_memories_for_prompt(&memories);
         let mut system_prompt = self.build_system_prompt(&memory_context, None);
         system_prompt.push_str(&SecurityManager::get_defense_prompt_minimal());
-        
+
         // Add structured development instructions
-        system_prompt.push_str(r#"
+        system_prompt.push_str(
+            r#"
         
 MODO DESENVOLVIMENTO ESTRUTURADO:
 - Execute as etapas uma por vez
@@ -1311,19 +1516,20 @@ MODO DESENVOLVIMENTO ESTRUTURADO:
 - Use ferramentas (file_write, shell, etc.) para criar arquivos
 - Ao final da etapa, diga "Etapa X Concluída" para passar para a próxima
 - Não mostre código completo, apenas confirme quando concluir
-"#);
-        
+"#,
+        );
+
         let mut current_messages = vec![
             json!({"role": "system", "content": system_prompt}),
             json!({"role": "user", "content": &task_input}),
         ];
-        
+
         // Execute each stage
         let total = stages.len();
         for (stage_idx, stage) in stages.iter().enumerate() {
             let stage_num = stage_idx + 1;
             info!("Executing stage {}/{}: {}", stage_num, total, stage.name);
-            
+
             // Stage prompt
             let stage_prompt = format!(
                 "## ETAPA {}/{}: {}\n\n{}\n\n**DIRETÓRIO:** {}\n\nExecute as ações necessárias para completar esta etapa. Quando terminar, responda: \"Etapa {} Concluída\"",
@@ -1334,37 +1540,43 @@ MODO DESENVOLVIMENTO ESTRUTURADO:
                 project_dir,
                 stage_num
             );
-            
+
             current_messages.push(json!({
-                "role": "user", 
+                "role": "user",
                 "content": stage_prompt
             }));
-            
+
             // ReAct loop for this stage (max 10 iterations per stage)
             let mut stage_complete = false;
             let mut stage_attempts = 0;
-            
+
             for iteration in 0..10 {
                 stage_attempts += 1;
                 info!("Stage {} iteration {}", stage_num, iteration + 1);
-                
+
                 let response = self.call_llm(&current_messages).await?;
                 let parsed = self.parse_response(&response)?;
-                
+
                 match parsed {
                     ParsedResponse::FinalAnswer(answer) => {
                         let lower = answer.to_lowercase();
-                        if lower.contains(&format!("etapa {} concluída", stage_num).to_lowercase()) 
-                            || lower.contains(&format!("etapa {} concluida", stage_num).to_lowercase()) {
+                        if lower.contains(&format!("etapa {} concluída", stage_num).to_lowercase())
+                            || lower
+                                .contains(&format!("etapa {} concluida", stage_num).to_lowercase())
+                        {
                             stage_complete = true;
-                            
+
                             // Validate stage
                             let build_info = BuildDetector::detect(&project_dir);
                             if !build_info.build_command.is_empty() {
                                 info!("Validating build for stage {}...", stage_num);
-                                let build_result = self.execute_tool("shell", &build_info.build_command).await?;
-                                
-                                if build_result.to_lowercase().contains("error") || build_result.to_lowercase().contains("failed") {
+                                let build_result = self
+                                    .execute_tool("shell", &build_info.build_command)
+                                    .await?;
+
+                                if build_result.to_lowercase().contains("error")
+                                    || build_result.to_lowercase().contains("failed")
+                                {
                                     info!("Build has errors, reporting to model...");
                                     current_messages.push(json!({
                                         "role": "user",
@@ -1374,23 +1586,28 @@ MODO DESENVOLVIMENTO ESTRUTURADO:
                                     continue;
                                 }
                             }
-                            
+
                             info!("Stage {} completed!", stage_num);
                             break;
                         }
-                        
+
                         // If answer doesn't contain "stage complete", continue
                         current_messages.push(json!({
                             "role": "user",
                             "content": "Por favor, finalize a etapa dizendo \"Etapa X Concluída\" quando terminar."
                         }));
                     }
-                    ParsedResponse::Action { action, action_input, .. } => {
+                    ParsedResponse::Action {
+                        action,
+                        action_input,
+                        ..
+                    } => {
                         info!("Executing tool: {}", action);
-                        
+
                         let raw_observation = self.execute_tool(&action, &action_input).await?;
-                        let observation = SecurityManager::clean_tool_output(&raw_observation, &action);
-                        
+                        let observation =
+                            SecurityManager::clean_tool_output(&raw_observation, &action);
+
                         current_messages.push(json!({
                             "role": "assistant",
                             "content": format!("Thought: Executando {}\nAction: {}\nAction Input: {}\n", action, action_input, observation)
@@ -1398,39 +1615,53 @@ MODO DESENVOLVIMENTO ESTRUTURADO:
                     }
                 }
             }
-            
+
             if !stage_complete && stage_attempts >= 10 {
-                info!("Stage {} reached max iterations without completing", stage_num);
+                info!(
+                    "Stage {} reached max iterations without completing",
+                    stage_num
+                );
                 return Ok(format!(
                     "⚠️ Etapa {} não pôde ser completada após 10 tentativas.\n\nEtapa: {}\n\nDeseja que eu:\n1. Continue tentando\n2. Pular para próxima etapa\n3. Parar aqui",
                     stage_num,
                     stage.name
                 ));
             }
-            
+
             // Save progress
             checkpoint.set_current_step(stage_idx);
             self.checkpoint_store.save(&checkpoint)?;
         }
-        
+
         // All stages complete - final validation
         info!("All stages complete, doing final validation...");
-        
+
         let build_info = BuildDetector::detect(&project_dir);
         if !build_info.build_command.is_empty() {
-            let final_build = self.execute_tool("shell", &build_info.build_command).await?;
-            
-            let build_status = if final_build.to_lowercase().contains("error") || final_build.to_lowercase().contains("failed") {
+            let final_build = self
+                .execute_tool("shell", &build_info.build_command)
+                .await?;
+
+            let build_status = if final_build.to_lowercase().contains("error")
+                || final_build.to_lowercase().contains("failed")
+            {
                 "⚠️ Build final tem warnings/erros"
             } else {
                 "✅ Build final passou!"
             };
-            
-            self.finalize_checkpoint(&mut checkpoint, DevelopmentState::Completed, &current_messages, &[])?;
-            
+
+            self.finalize_checkpoint(
+                &mut checkpoint,
+                DevelopmentState::Completed,
+                &current_messages,
+                &[],
+            )?;
+
             // List created files
-            let files_list = self.execute_tool("shell", &format!("ls -la {}", project_dir)).await?;
-            
+            let files_list = self
+                .execute_tool("shell", &format!("ls -la {}", project_dir))
+                .await?;
+
             return Ok(format!(
                 "🎉 Desenvolvimento Concluído!\n\n{}\n\n📁 Diretório: {}\n\n📋 Arquivos criados:\n{}\n\n✅ Desenvolvimento estruturado finalizado com sucesso!",
                 build_status,
@@ -1438,9 +1669,14 @@ MODO DESENVOLVIMENTO ESTRUTURADO:
                 files_list.lines().take(20).collect::<Vec<_>>().join("\n")
             ));
         }
-        
-        self.finalize_checkpoint(&mut checkpoint, DevelopmentState::Completed, &current_messages, &[])?;
-        
+
+        self.finalize_checkpoint(
+            &mut checkpoint,
+            DevelopmentState::Completed,
+            &current_messages,
+            &[],
+        )?;
+
         Ok(format!(
             "🎉 Desenvolvimento Concluído!\n\n📁 Diretório: {}\n\n✅ Todas as {} etapas foram executadas.",
             project_dir,
@@ -1452,18 +1688,22 @@ MODO DESENVOLVIMENTO ESTRUTURADO:
     fn parse_plano_md(&self, content: &str) -> anyhow::Result<Vec<PlanStage>> {
         let mut stages = Vec::new();
         let mut current_stage_idx: Option<usize> = None;
-        
+
         for line in content.lines() {
             let trimmed = line.trim();
-            
+
             // Match ## Etapa N: Name or ## Etapa N
             // Also match ### Fase 1: Name or ### 🔴 Fase 1: Name
             if trimmed.starts_with("##") || trimmed.starts_with("###") {
                 let header_content = trimmed.trim_start_matches('#').trim();
                 let lower = header_content.to_lowercase();
-                
+
                 // Check if it's a stage/phase header
-                if lower.contains("etapa") || lower.contains("fase") || lower.contains("stage") || lower.contains("phase") {
+                if lower.contains("etapa")
+                    || lower.contains("fase")
+                    || lower.contains("stage")
+                    || lower.contains("phase")
+                {
                     // Clean up emojis and extra chars
                     let clean_name = header_content
                         .replace("🔴", "")
@@ -1473,7 +1713,7 @@ MODO DESENVOLVIMENTO ESTRUTURADO:
                         .replace("🔵", "")
                         .trim()
                         .to_string();
-                    
+
                     stages.push(PlanStage {
                         id: stages.len() + 1,
                         name: clean_name.clone(),
@@ -1482,13 +1722,18 @@ MODO DESENVOLVIMENTO ESTRUTURADO:
                     });
                     current_stage_idx = Some(stages.len() - 1);
                 }
-            } else if !trimmed.is_empty() && !trimmed.starts_with('-') && !trimmed.starts_with('*') && !trimmed.starts_with('#') && !trimmed.starts_with("---") {
+            } else if !trimmed.is_empty()
+                && !trimmed.starts_with('-')
+                && !trimmed.starts_with('*')
+                && !trimmed.starts_with('#')
+                && !trimmed.starts_with("---")
+            {
                 // Add description to current stage
                 if let Some(idx) = current_stage_idx {
                     if stages[idx].description.is_empty() {
                         stages[idx].description = trimmed.to_string();
                     } else {
-                        stages[idx].description.push_str("\n");
+                        stages[idx].description.push('\n');
                         stages[idx].description.push_str(trimmed);
                     }
                 }
@@ -1498,13 +1743,13 @@ MODO DESENVOLVIMENTO ESTRUTURADO:
                     if stages[idx].description.is_empty() {
                         stages[idx].description = trimmed.to_string();
                     } else {
-                        stages[idx].description.push_str("\n");
+                        stages[idx].description.push('\n');
                         stages[idx].description.push_str(trimmed);
                     }
                 }
             }
         }
-        
+
         Ok(stages)
     }
 
@@ -1556,12 +1801,20 @@ MODO DESENVOLVIMENTO ESTRUTURADO:
                             if !checkpoint.project_dir.is_empty() {
                                 match self.validate_build(&checkpoint.project_dir).await? {
                                     BuildValidation::Failed { errors } => {
-                                        let error_summary = errors.iter()
+                                        let error_summary = errors
+                                            .iter()
                                             .take(3)
-                                            .map(|e| format!("- {} ({}:{})", e.message, e.file, e.line.unwrap_or(0)))
+                                            .map(|e| {
+                                                format!(
+                                                    "- {} ({}:{})",
+                                                    e.message,
+                                                    e.file,
+                                                    e.line.unwrap_or(0)
+                                                )
+                                            })
                                             .collect::<Vec<_>>()
                                             .join("\n");
-                                        
+
                                         step_messages.push(json!({
                                             "role": "user",
                                             "content": format!(
@@ -1572,14 +1825,21 @@ MODO DESENVOLVIMENTO ESTRUTURADO:
                                         continue; // Não marca como completo, continua o loop
                                     }
                                     BuildValidation::Success => {
-                                        info!("✅ Build validation passed for step {}/{}", step_num, total);
+                                        info!(
+                                            "✅ Build validation passed for step {}/{}",
+                                            step_num, total
+                                        );
                                     }
                                 }
                             }
 
                             checkpoint.mark_step_done(step_idx);
                             self.checkpoint_store.save(checkpoint)?;
-                            self.update_plan_progress(&plan_file, &steps, &checkpoint.completed_steps)?;
+                            self.update_plan_progress(
+                                &plan_file,
+                                steps,
+                                &checkpoint.completed_steps,
+                            )?;
                             info!("Step {}/{} completed: {}", step_num, total, answer);
                             step_complete = true;
                             break;
@@ -1609,15 +1869,24 @@ MODO DESENVOLVIMENTO ESTRUTURADO:
 
                         // Execute the tool
                         let raw_observation = self.execute_tool(&action, &action_input).await?;
-                        let observation = SecurityManager::clean_tool_output(&raw_observation, &action);
+                        let observation =
+                            SecurityManager::clean_tool_output(&raw_observation, &action);
 
                         // Save to memory
                         if action != "echo" {
-                            self.save_tool_result_to_memory(&action, &action_input, &observation, Some(&checkpoint.id)).await?;
+                            self.save_tool_result_to_memory(
+                                &action,
+                                &action_input,
+                                &observation,
+                                Some(&checkpoint.id),
+                            )
+                            .await?;
                         }
 
                         // VERIFICATION: Verifica automaticamente o resultado da ação
-                        let verification_result = self.verify_action_result(&action, &action_input, &observation).await?;
+                        let verification_result = self
+                            .verify_action_result(&action, &action_input, &observation)
+                            .await?;
 
                         // Add tool execution to checkpoint
                         let tool_execution = ToolExecution {
@@ -1670,10 +1939,13 @@ MODO DESENVOLVIMENTO ESTRUTURADO:
             }
 
             if !step_complete {
-                info!("Step {}/{} max iterations reached, marking as done anyway", step_num, total);
+                info!(
+                    "Step {}/{} max iterations reached, marking as done anyway",
+                    step_num, total
+                );
                 checkpoint.mark_step_done(step_idx);
                 self.checkpoint_store.save(checkpoint)?;
-                self.update_plan_progress(&plan_file, &steps, &checkpoint.completed_steps)?;
+                self.update_plan_progress(&plan_file, steps, &checkpoint.completed_steps)?;
             }
         }
 
@@ -1683,8 +1955,7 @@ MODO DESENVOLVIMENTO ESTRUTURADO:
 
         let summary = format!(
             "✅ Plano de desenvolvimento concluído!\n\n{} etapas executadas no diretório: {}",
-            total,
-            project_dir
+            total, project_dir
         );
 
         Ok(summary)
@@ -1702,19 +1973,25 @@ MODO DESENVOLVIMENTO ESTRUTURADO:
 
         let content = std::fs::read_to_string(plan_file)?;
         let step_re = Regex::new(r"(?m)^(\s*\d+)\.\s*(\[[ xX]\])\s+(.*)$").unwrap();
-        let done_re = Regex::new(r"\[x\]|\[X\]").unwrap();
+        let _done_re = Regex::new(r"\[x\]|\[X\]").unwrap();
 
-        let updated = step_re.replace_all(&content, |caps: &regex::Captures| {
-            let number = &caps[1];
-            let step_text = &caps[3];
-            let step_idx: usize = number.trim().parse::<usize>().unwrap_or(1).saturating_sub(1);
+        let updated = step_re
+            .replace_all(&content, |caps: &regex::Captures| {
+                let number = &caps[1];
+                let step_text = &caps[3];
+                let step_idx: usize = number
+                    .trim()
+                    .parse::<usize>()
+                    .unwrap_or(1)
+                    .saturating_sub(1);
 
-            if completed.contains(&step_idx) {
-                format!("{}. [x] {}", number, step_text)
-            } else {
-                format!("{}. [ ] {}", number, step_text)
-            }
-        }).to_string();
+                if completed.contains(&step_idx) {
+                    format!("{}. [x] {}", number, step_text)
+                } else {
+                    format!("{}. [ ] {}", number, step_text)
+                }
+            })
+            .to_string();
 
         std::fs::write(plan_file, updated)?;
 
@@ -1752,7 +2029,10 @@ MODO DESENVOLVIMENTO ESTRUTURADO:
         Ok(results)
     }
 
-    async fn load_or_create_checkpoint(&self, user_input: &str) -> anyhow::Result<DevelopmentCheckpoint> {
+    async fn load_or_create_checkpoint(
+        &self,
+        user_input: &str,
+    ) -> anyhow::Result<DevelopmentCheckpoint> {
         if DevelopmentCheckpoint::is_development_task(user_input) {
             if let Ok(Some(existing)) = self.checkpoint_store.find_by_input(user_input) {
                 info!("Resuming development checkpoint: {}", existing.id);
@@ -1769,12 +2049,10 @@ MODO DESENVOLVIMENTO ESTRUTURADO:
             user_input
         );
 
-        let messages = vec![
-            json!({
-                "role": "user",
-                "content": plan_prompt
-            })
-        ];
+        let messages = vec![json!({
+            "role": "user",
+            "content": plan_prompt
+        })];
 
         let response = self.call_llm(&messages).await?;
         Ok(response.trim().to_string())
@@ -1784,30 +2062,38 @@ MODO DESENVOLVIMENTO ESTRUTURADO:
     async fn validate_build(&mut self, project_dir: &str) -> anyhow::Result<BuildValidation> {
         // Detecta tipo de projeto e comando de build
         let build_info = BuildDetector::detect(project_dir);
-        
+
         if build_info.build_command.is_empty() {
-            info!("No build command detected for {}, skipping validation", project_dir);
+            info!(
+                "No build command detected for {}, skipping validation",
+                project_dir
+            );
             return Ok(BuildValidation::Success);
         }
-        
-        info!("Running build command: {} in {}", build_info.build_command, project_dir);
-        
+
+        info!(
+            "Running build command: {} in {}",
+            build_info.build_command, project_dir
+        );
+
         // Executa o comando de build via shell tool
-        let build_result = self.execute_tool("shell", &build_info.build_command).await?;
-        
+        let build_result = self
+            .execute_tool("shell", &build_info.build_command)
+            .await?;
+
         // Verifica se o build foi bem-sucedido através do status code
         let success = !build_result.contains("❌ Erro");
-        
+
         if success {
             info!("Build successful for {}", project_dir);
             return Ok(BuildValidation::Success);
         }
-        
+
         // Se falhou, parseia os erros
         info!("Build failed, parsing errors...");
         let project_type = format!("{:?}", build_info.project_type);
         let validation = ErrorParser::parse(&build_result, &project_type);
-        
+
         Ok(validation)
     }
 
@@ -1852,8 +2138,8 @@ MODO DESENVOLVIMENTO ESTRUTURADO:
             return Ok(());
         }
 
-        let mut all_tools: Vec<ToolExecution> = serde_json::from_str(&checkpoint.completed_tools_json)
-            .unwrap_or_default();
+        let mut all_tools: Vec<ToolExecution> =
+            serde_json::from_str(&checkpoint.completed_tools_json).unwrap_or_default();
         all_tools.extend_from_slice(tool_execs);
 
         checkpoint.messages_json = serde_json::to_string(messages)?;
@@ -1861,12 +2147,15 @@ MODO DESENVOLVIMENTO ESTRUTURADO:
         checkpoint.updated_at = chrono::Utc::now();
 
         self.checkpoint_store.save(checkpoint)?;
-        
+
         // Update session summary with message count
-        if let Err(e) = self.checkpoint_store.update_session_message(&checkpoint.id, &checkpoint.user_input) {
+        if let Err(e) = self
+            .checkpoint_store
+            .update_session_message(&checkpoint.id, &checkpoint.user_input)
+        {
             tracing::warn!("Failed to update session: {}", e);
         }
-        
+
         Ok(())
     }
 
@@ -1884,16 +2173,24 @@ MODO DESENVOLVIMENTO ESTRUTURADO:
         self.save_checkpoint(checkpoint, messages, tool_execs)?;
         checkpoint.set_state(state);
         self.checkpoint_store.save(checkpoint)?;
-        
+
         // Log para review
         if state == DevelopmentState::Completed {
             info!("=== REVISÃO DO DESENVOLVIMENTO ===");
             info!("Diretório: {}", checkpoint.project_dir);
-            info!("Plano: {}", checkpoint.plan_text.lines().take(5).collect::<Vec<_>>().join("\n"));
+            info!(
+                "Plano: {}",
+                checkpoint
+                    .plan_text
+                    .lines()
+                    .take(5)
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            );
             info!("Passos completados: {:?}", checkpoint.completed_steps);
             info!("===================================");
         }
-        
+
         Ok(())
     }
 
@@ -1925,7 +2222,8 @@ MODO DESENVOLVIMENTO ESTRUTURADO:
         let embedding = self.embedding_service.embed(&content).await?;
 
         let memory = if let Some(sid) = session_id {
-            MemoryEntry::new(content, embedding, MemoryType::Episode, 0.6).with_session(sid.to_string())
+            MemoryEntry::new(content, embedding, MemoryType::Episode, 0.6)
+                .with_session(sid.to_string())
         } else {
             MemoryEntry::new(content, embedding, MemoryType::Episode, 0.6)
         };
@@ -1957,7 +2255,8 @@ MODO DESENVOLVIMENTO ESTRUTURADO:
         let embedding = self.embedding_service.embed(&content).await?;
 
         let memory = if let Some(sid) = session_id {
-            MemoryEntry::new(content, embedding, MemoryType::ToolResult, 0.5).with_session(sid.to_string())
+            MemoryEntry::new(content, embedding, MemoryType::ToolResult, 0.5)
+                .with_session(sid.to_string())
         } else {
             MemoryEntry::new(content, embedding, MemoryType::ToolResult, 0.5)
         };
@@ -2039,16 +2338,31 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
 
     async fn call_llm(&mut self, messages: &[Value]) -> anyhow::Result<String> {
         // Try primary model first
-        let result = self.call_llm_with_config(messages, &self.config.model, &self.config.base_url, &self.config.provider).await;
-        
+        let result = self
+            .call_llm_with_config(
+                messages,
+                &self.config.model,
+                &self.config.base_url,
+                &self.config.provider,
+            )
+            .await;
+
         // If primary fails, try fallback models
         if result.is_err() && !self.config.fallback_models.is_empty() {
             tracing::warn!("Primary model failed, trying fallbacks...");
-            
+
             for fallback in &self.config.fallback_models {
                 tracing::info!("Trying fallback model: {}", fallback.model);
                 // Use "opencode-go" as provider to get /messages endpoint for MiniMax
-                match self.call_llm_with_config(messages, &fallback.model, &fallback.base_url, "opencode-go").await {
+                match self
+                    .call_llm_with_config(
+                        messages,
+                        &fallback.model,
+                        &fallback.base_url,
+                        "opencode-go",
+                    )
+                    .await
+                {
                     Ok(response) => {
                         tracing::info!("Fallback model {} succeeded", fallback.model);
                         return Ok(response);
@@ -2059,24 +2373,29 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
                 }
             }
         }
-        
+
         result
     }
 
     /// Self-review loop: evaluates and refines the response
-    async fn self_review(&self, draft_answer: &str, user_input: &str) -> anyhow::Result<(String, Vec<String>)> {
+    async fn self_review(
+        &self,
+        draft_answer: &str,
+        user_input: &str,
+    ) -> anyhow::Result<(String, Vec<String>)> {
         let mut current_answer = draft_answer.to_string();
         let mut review_history = Vec::new();
-        
+
         if !self.config.self_review.enabled {
             return Ok((current_answer, review_history));
         }
-        
+
         let max_loops = self.config.self_review.max_loops;
         let show_process = self.config.self_review.show_process;
-        
+
         for iteration in 1..=max_loops {
-            let review_prompt = format!(r#"Você é um revisor crítico. Analise a resposta abaixo e determine se ela atende completamente ao pedido do usuário.
+            let review_prompt = format!(
+                r#"Você é um revisor crítico. Analise a resposta abaixo e determine se ela atende completamente ao pedido do usuário.
 
 PEDIDO DO USUÁRIO:
 {}
@@ -2107,67 +2426,86 @@ SUGGESTION: [se inadequada, sugira]
 Seja justo. Aceite respostas de conclusão em qualquer formato."#,
                 user_input, current_answer
             );
-            
+
             let review_messages = vec![
                 json!({
                     "role": "system",
                     "content": "Você é um revisor crítico mas JUSTO de respostas de IA.\n\nDIRETRIZES:\n- Para tarefas de desenvolvimento: quando arquivos forem criados, a resposta pode ser:\n  * Uma mensagem breve de conclusão (\"Desenvolvimento concluído!\")\n  * Uma listagem de arquivos criados (ls, tree)\n  * Ambos\n- Mostrar código completo = INADEQUADO (muito longo)\n- Mostrar apenas confirmação = ADEQUADO\n- Mostrar estrutura de diretórios = ADEQUADO\n- Não mostrar código não é um problema!\n\nSEJA JUSTO: Aceite qualquer uma das formas acima como resposta válida."
                 }),
                 json!({
-                    "role": "user", 
+                    "role": "user",
                     "content": review_prompt
-                })
+                }),
             ];
-            
-            let review_response = self.call_llm_with_config(
-                &review_messages,
-                &self.config.model,
-                &self.config.base_url,
-                &self.config.provider
-            ).await?;
-            
+
+            let review_response = self
+                .call_llm_with_config(
+                    &review_messages,
+                    &self.config.model,
+                    &self.config.base_url,
+                    &self.config.provider,
+                )
+                .await?;
+
             let analysis = self.sanitize_model_response(&review_response);
             review_history.push(analysis.clone());
-            
+
             if show_process {
                 println!();
-                println!("{}🤔 [Auto-Revisão {}/{}]{}", Colors::AMBER, iteration, max_loops, Colors::RESET);
+                println!(
+                    "{}🤔 [Auto-Revisão {}/{}]{}",
+                    Colors::AMBER,
+                    iteration,
+                    max_loops,
+                    Colors::RESET
+                );
                 println!("  {}", Colors::LIGHT_GRAY);
                 for line in analysis.lines().take(5) {
                     println!("    {}", line);
                 }
                 println!("{}", Colors::RESET);
             }
-            
+
             // Parse the review response
             let review_re = Regex::new(r"(?i)REVIEW:\s*(ADEQUATE|INADEQUATE)").unwrap();
             let suggestion_re = Regex::new(r"(?i)SUGGESTION:\s*(.+)").unwrap();
-            
-            let is_adequate = review_re.captures(&analysis)
+
+            let is_adequate = review_re
+                .captures(&analysis)
                 .map(|c| c.get(1).map(|m| m.as_str() == "ADEQUATE").unwrap_or(false))
                 .unwrap_or(true);
-            
+
             if is_adequate {
                 if show_process {
-                    println!("{}  ✅ Revisão aprovada{} - continuando", Colors::AMBER, Colors::RESET);
+                    println!(
+                        "{}  ✅ Revisão aprovada{} - continuando",
+                        Colors::AMBER,
+                        Colors::RESET
+                    );
                 }
                 break;
             }
-            
+
             // Get suggestion for improvement
-            let suggestion = suggestion_re.captures(&analysis)
+            let suggestion = suggestion_re
+                .captures(&analysis)
                 .and_then(|c| c.get(1))
                 .map(|m| m.as_str().to_string())
                 .unwrap_or_else(|| "Revise a resposta".to_string());
-            
+
             if show_process {
-                println!("{}  ⚠️ Revisão encontrou problemas{} - refinando", Colors::AMBER, Colors::RESET);
+                println!(
+                    "{}  ⚠️ Revisão encontrou problemas{} - refinando",
+                    Colors::AMBER,
+                    Colors::RESET
+                );
                 println!("  Sugestão: {}", Colors::LIGHT_GRAY);
                 println!("    {}", suggestion);
             }
-            
+
             // Generate improved answer
-            let improve_prompt = format!(r#"Com base na seguinte análise, gere uma resposta melhorada:
+            let improve_prompt = format!(
+                r#"Com base na seguinte análise, gere uma resposta melhorada:
 
 PEDIDO ORIGINAL:
 {}
@@ -2181,44 +2519,61 @@ ANÁLISE DO PROBLEMA:
 Por favor, forneça a RESPOSTA MELHORADA que corrige os problemas identificados."#,
                 user_input, current_answer, suggestion
             );
-            
+
             let improve_messages = vec![
                 json!({
-                    "role": "system", 
+                    "role": "system",
                     "content": "Você é um assistente que melhora respostas com base em feedback."
                 }),
                 json!({
                     "role": "user",
                     "content": improve_prompt
-                })
+                }),
             ];
-            
-            let improved_response = self.call_llm_with_config(
-                &improve_messages,
-                &self.config.model,
-                &self.config.base_url,
-                &self.config.provider
-            ).await?;
-            
+
+            let improved_response = self
+                .call_llm_with_config(
+                    &improve_messages,
+                    &self.config.model,
+                    &self.config.base_url,
+                    &self.config.provider,
+                )
+                .await?;
+
             current_answer = self.sanitize_model_response(&improved_response);
         }
-        
+
         if show_process {
             println!();
         }
-        
+
         Ok((current_answer, review_history))
     }
 
-    async fn call_llm_with_config(&self, messages: &[Value], model: &str, base_url: &str, provider: &str) -> anyhow::Result<String> {
+    async fn call_llm_with_config(
+        &self,
+        messages: &[Value],
+        model: &str,
+        base_url: &str,
+        provider: &str,
+    ) -> anyhow::Result<String> {
         // Debug: log API key info
         let api_key_preview = if self.config.api_key.len() > 4 {
-            format!("{}...{}", &self.config.api_key[..4], &self.config.api_key[self.config.api_key.len()-4..])
+            format!(
+                "{}...{}",
+                &self.config.api_key[..4],
+                &self.config.api_key[self.config.api_key.len() - 4..]
+            )
         } else {
             "too_short".to_string()
         };
-        tracing::debug!("API Key preview: {}, URL: {}, Model: {}", api_key_preview, base_url, model);
-        
+        tracing::debug!(
+            "API Key preview: {}, URL: {}, Model: {}",
+            api_key_preview,
+            base_url,
+            model
+        );
+
         let endpoint = if provider == "opencode-go" || provider == "opencode" {
             if model.contains("minimax") {
                 "/messages"
@@ -2253,7 +2608,7 @@ Por favor, forneça a RESPOSTA MELHORADA que corrige os problemas identificados.
             "max_tokens": self.config.max_tokens,
             "temperature": 0.7
         });
-        
+
         tracing::debug!("Sending request to URL: {}", url);
         tracing::debug!("Request body: {:?}", body);
 
@@ -2272,7 +2627,7 @@ Por favor, forneça a RESPOSTA MELHORADA que corrige os problemas identificados.
             })?;
 
         if !response.status().is_success() {
-            let status = response.status();
+            let _status = response.status();
             let error_text = response.text().await?;
             return Err(anyhow::anyhow!("API error: {}", error_text));
         }
@@ -2296,8 +2651,13 @@ Por favor, forneça a RESPOSTA MELHORADA que corrige os problemas identificados.
             }
             if text_content.is_empty() {
                 // If no text found, try the first item
-                content_arr.first()
-                    .and_then(|i| i.get("text").and_then(|v| v.as_str()).or_else(|| i.get("thinking").and_then(|v| v.as_str())))
+                content_arr
+                    .first()
+                    .and_then(|i| {
+                        i.get("text")
+                            .and_then(|v| v.as_str())
+                            .or_else(|| i.get("thinking").and_then(|v| v.as_str()))
+                    })
                     .unwrap_or("")
                     .to_string()
             } else {
@@ -2344,9 +2704,15 @@ Por favor, forneça a RESPOSTA MELHORADA que corrige os problemas identificados.
 
         let thought_re = Regex::new(r"(?i)Thought:\s*(.+?)(?:\n|$)").unwrap();
         let retrieved_memory_re = Regex::new(r"(?i)Retrieved Memory:\s*(.+?)(?:\n(?:Revise Memory:|Reasoning:|Verification:|Action:|Final Answer:)|$)").unwrap();
-        let revise_memory_re = Regex::new(r"(?i)Revise Memory:\s*(.+?)(?:\n(?:Reasoning:|Verification:|Action:|Final Answer:)|$)").unwrap();
-        let reasoning_re = Regex::new(r"(?i)Reasoning:\s*(.+?)(?:\n(?:Verification:|Action:|Final Answer:)|$)").unwrap();
-        let verification_re = Regex::new(r"(?i)Verification:\s*(.+?)(?:\n(?:Action:|Final Answer:)|$)").unwrap();
+        let revise_memory_re = Regex::new(
+            r"(?i)Revise Memory:\s*(.+?)(?:\n(?:Reasoning:|Verification:|Action:|Final Answer:)|$)",
+        )
+        .unwrap();
+        let reasoning_re =
+            Regex::new(r"(?i)Reasoning:\s*(.+?)(?:\n(?:Verification:|Action:|Final Answer:)|$)")
+                .unwrap();
+        let verification_re =
+            Regex::new(r"(?i)Verification:\s*(.+?)(?:\n(?:Action:|Final Answer:)|$)").unwrap();
         let action_re = Regex::new(r"(?i)Action:\s*(.+?)(?:\n|$)").unwrap();
 
         let thought = thought_re
@@ -2407,6 +2773,39 @@ Por favor, forneça a RESPOSTA MELHORADA que corrige os problemas identificados.
     }
 
     async fn execute_tool(&mut self, action: &str, action_input: &str) -> anyhow::Result<String> {
+        if let Some(trust) = &self.workspace_trust {
+            let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            match action {
+                "file_write" | "file_edit" => {
+                    if let Ok(args) = self.parse_action_input_json(action_input) {
+                        if let Some(path_str) = args["path"].as_str() {
+                            let path = Path::new(path_str);
+                            let decision =
+                                trust.evaluate(path, &crate::workspace_trust::Operation::WriteFile);
+                            if !decision.allowed {
+                                return Ok(format!(
+                                    "Acesso negado: operação '{}' não permitida em '{}' (trust: {:?}). {}",
+                                    action,
+                                    path_str,
+                                    decision.trust_level,
+                                    decision.reason.unwrap_or_default()
+                                ));
+                            }
+                        }
+                    }
+                }
+                "shell" => {
+                    if !trust.can_execute_shell(&current_dir) {
+                        return Ok(format!(
+                            "Acesso negado: execução de comandos shell não permitida neste diretório (trust: {:?})",
+                            trust.evaluate(&current_dir, &crate::workspace_trust::Operation::ExecuteShell).trust_level
+                        ));
+                    }
+                }
+                _ => {}
+            }
+        }
+
         let tool = self
             .tools
             .get(action)
@@ -2417,12 +2816,15 @@ Por favor, forneça a RESPOSTA MELHORADA que corrige os problemas identificados.
             Err(e) => {
                 let err_msg = format!("Erro: {}", e);
                 output_write_error(&err_msg);
-                return Ok("Erro: Action Input inválido. Reenvie apenas o JSON válido para a ferramenta.".to_string());
+                return Ok(
+                    "Erro: Action Input inválido. Reenvie apenas o JSON válido para a ferramenta."
+                        .to_string(),
+                );
             }
         };
 
         output_write_tool(action, action_input, "...");
-        
+
         match tool.call(args).await {
             Ok(result) => {
                 let preview = if result.len() > 200 {
@@ -2481,11 +2883,22 @@ Por favor, forneça a RESPOSTA MELHORADA que corrige os problemas identificados.
             }
             "shell" => {
                 // Verifica se há indicadores de erro no output
-                let error_indicators = ["❌ Erro", "error:", "ERROR:", "FAILED", "failed", "panicked", "exception", "Exception"];
+                let error_indicators = [
+                    "❌ Erro",
+                    "error:",
+                    "ERROR:",
+                    "FAILED",
+                    "failed",
+                    "panicked",
+                    "exception",
+                    "Exception",
+                ];
                 let has_error = error_indicators.iter().any(|ind| observation.contains(ind));
-                
+
                 if has_error {
-                    Ok(Some(format!("Comando shell falhou. Output contém indicadores de erro")))
+                    Ok(Some(
+                        "Comando shell falhou. Output contém indicadores de erro".to_string(),
+                    ))
                 } else {
                     Ok(None)
                 }
@@ -2493,9 +2906,11 @@ Por favor, forneça a RESPOSTA MELHORADA que corrige os problemas identificados.
             "http_get" | "http_post" => {
                 // Verifica status code (procura por padrões tipo "status: 4xx" ou "status: 5xx")
                 if observation.contains("status: 4") || observation.contains("status: 5") {
-                    Ok(Some(format!("Requisição HTTP falhou com status code de erro")))
+                    Ok(Some(
+                        "Requisição HTTP falhou com status code de erro".to_string(),
+                    ))
                 } else if observation.contains("❌ Erro") {
-                    Ok(Some(format!("Requisição HTTP retornou erro")))
+                    Ok(Some("Requisição HTTP retornou erro".to_string()))
                 } else {
                     Ok(None)
                 }
@@ -2503,7 +2918,7 @@ Por favor, forneça a RESPOSTA MELHORADA que corrige os problemas identificados.
             "file_read" => {
                 // Se não retornou erro, passou
                 if observation.starts_with("❌ Erro") {
-                    Ok(Some(format!("Falha ao ler arquivo")))
+                    Ok(Some("Falha ao ler arquivo".to_string()))
                 } else {
                     Ok(None)
                 }
@@ -2525,7 +2940,8 @@ Por favor, forneça a RESPOSTA MELHORADA que corrige os problemas identificados.
 
     pub async fn clear_all_memory(&self) -> Result<String, String> {
         // Clear all memories
-        self.memory_store.clear_all()
+        self.memory_store
+            .clear_all()
             .map_err(|e| format!("Erro ao limpar memória: {}", e))?;
 
         // Clear checkpoints (get all recent ones)
@@ -2535,7 +2951,10 @@ Por favor, forneça a RESPOSTA MELHORADA que corrige os problemas identificados.
             }
         }
 
-        Ok("Todas as memórias foram limpas (conversas, planos, checkpoints, skills ativas)".to_string())
+        Ok(
+            "Todas as memórias foram limpas (conversas, planos, checkpoints, skills ativas)"
+                .to_string(),
+        )
     }
 
     pub fn get_skill_manager(&self) -> &SkillManager {
@@ -2548,26 +2967,46 @@ Por favor, forneça a RESPOSTA MELHORADA que corrige os problemas identificados.
 
     /// List all sessions (returns checkpoints for backward compat)
     pub fn list_sessions(&self) -> anyhow::Result<Vec<DevelopmentCheckpoint>> {
-        self.checkpoint_store.list_all(50).map_err(|e| anyhow::anyhow!("{}", e))
+        self.checkpoint_store
+            .list_all(50)
+            .map_err(|e| anyhow::anyhow!("{}", e))
     }
 
     /// List all session summaries (fast listing from session_summaries table)
-    pub fn list_session_summaries(&self) -> anyhow::Result<Vec<crate::memory::checkpoint::SessionSummary>> {
-        self.checkpoint_store.list_session_summaries(50).map_err(|e| anyhow::anyhow!("{}", e))
+    pub fn list_session_summaries(
+        &self,
+    ) -> anyhow::Result<Vec<crate::memory::checkpoint::SessionSummary>> {
+        self.checkpoint_store
+            .list_session_summaries(50)
+            .map_err(|e| anyhow::anyhow!("{}", e))
     }
 
     /// List session summaries with hierarchy depth for tree display
-    pub fn list_sessions_with_hierarchy(&self) -> anyhow::Result<Vec<(crate::memory::checkpoint::SessionSummary, usize)>> {
-        let sessions = self.checkpoint_store.list_session_summaries(100).map_err(|e| anyhow::anyhow!("{}", e))?;
-        
+    pub fn list_sessions_with_hierarchy(
+        &self,
+    ) -> anyhow::Result<Vec<(crate::memory::checkpoint::SessionSummary, usize)>> {
+        let sessions = self
+            .checkpoint_store
+            .list_session_summaries(100)
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
+
         let mut result = Vec::new();
-        let mut session_map: std::collections::HashMap<String, &crate::memory::checkpoint::SessionSummary> = std::collections::HashMap::new();
-        
+        let mut session_map: std::collections::HashMap<
+            String,
+            &crate::memory::checkpoint::SessionSummary,
+        > = std::collections::HashMap::new();
+
         for session in &sessions {
             session_map.insert(session.session_id.clone(), session);
         }
-        
-        fn get_depth(session: &crate::memory::checkpoint::SessionSummary, session_map: &std::collections::HashMap<String, &crate::memory::checkpoint::SessionSummary>) -> usize {
+
+        fn get_depth(
+            session: &crate::memory::checkpoint::SessionSummary,
+            session_map: &std::collections::HashMap<
+                String,
+                &crate::memory::checkpoint::SessionSummary,
+            >,
+        ) -> usize {
             let mut depth = 0;
             let mut current = session;
             while let Some(ref parent_id) = current.parent_id {
@@ -2580,12 +3019,12 @@ Por favor, forneça a RESPOSTA MELHORADA que corrige os problemas identificados.
             }
             depth
         }
-        
+
         for session in &sessions {
             let depth = get_depth(session, &session_map);
             result.push((session.clone(), depth));
         }
-        
+
         result.sort_by(|a, b| {
             let depth_cmp = a.1.cmp(&b.1);
             if depth_cmp == std::cmp::Ordering::Equal {
@@ -2594,7 +3033,7 @@ Por favor, forneça a RESPOSTA MELHORADA que corrige os problemas identificados.
                 depth_cmp
             }
         });
-        
+
         Ok(result)
     }
 
@@ -2669,48 +3108,62 @@ Por favor, forneça a RESPOSTA MELHORADA que corrige os problemas identificados.
         new_checkpoint.plan_file = checkpoint.plan_file.clone();
         new_checkpoint.active_skill = checkpoint.active_skill.clone();
         new_checkpoint.messages_json = checkpoint.messages_json.clone();
-        
+
         self.run_development(task_input, new_checkpoint).await
     }
 
     /// Delete a session by ID
     pub async fn delete_session(&mut self, session_id: &str) -> Result<String, String> {
         tracing::debug!("delete_session called with: {}", session_id);
-        
+
         // Try to delete from session_summaries directly first
         if let Err(e) = self.checkpoint_store.delete_session_summary(session_id) {
             tracing::warn!("Failed to delete session summary: {}", e);
         }
-        
+
         // Try to find and delete from checkpoints
         if let Ok(Some(cp)) = self.checkpoint_store.get(session_id) {
-            self.checkpoint_store.delete(&cp.id)
+            self.checkpoint_store
+                .delete(&cp.id)
                 .map_err(|e| format!("Erro ao excluir checkpoint: {}", e))?;
             return Ok(format!("Sessão {} excluída", &cp.id[..8]));
         }
         if let Ok(Some(cp)) = self.checkpoint_store.find_by_id_prefix(session_id) {
-            self.checkpoint_store.delete(&cp.id)
+            self.checkpoint_store
+                .delete(&cp.id)
                 .map_err(|e| format!("Erro ao excluir checkpoint: {}", e))?;
             return Ok(format!("Sessão {} excluída", &cp.id[..8]));
         }
-        
+
         // If we get here, session was deleted from summaries
-        tracing::debug!("Session {} not found in checkpoints but removed from summaries", session_id);
-        Ok(format!("Sessão {} excluída", &session_id[..8.min(session_id.len())]))
+        tracing::debug!(
+            "Session {} not found in checkpoints but removed from summaries",
+            session_id
+        );
+        Ok(format!(
+            "Sessão {} excluída",
+            &session_id[..8.min(session_id.len())]
+        ))
     }
 
     /// Rename a session by ID
-    pub async fn rename_session(&mut self, session_id: &str, new_name: &str) -> Result<String, String> {
+    pub async fn rename_session(
+        &mut self,
+        session_id: &str,
+        new_name: &str,
+    ) -> Result<String, String> {
         // Try to find and update
         if let Ok(Some(mut cp)) = self.checkpoint_store.get(session_id) {
             cp.session_name = Some(new_name.to_string());
-            self.checkpoint_store.save(&cp)
+            self.checkpoint_store
+                .save(&cp)
                 .map_err(|e| format!("Erro ao renomear: {}", e))?;
             return Ok(format!("Sessão renomeada para: {}", new_name));
         }
         if let Ok(Some(mut cp)) = self.checkpoint_store.find_by_id_prefix(session_id) {
             cp.session_name = Some(new_name.to_string());
-            self.checkpoint_store.save(&cp)
+            self.checkpoint_store
+                .save(&cp)
                 .map_err(|e| format!("Erro ao renomear: {}", e))?;
             return Ok(format!("Sessão renomeada para: {}", new_name));
         }
@@ -2783,39 +3236,37 @@ Por favor, forneça a RESPOSTA MELHORADA que corrige os problemas identificados.
         // Check if this is a shell command trying to create a file
         if input.contains("cat >") || input.contains("tee >") {
             // Try to find heredoc pattern: cat > file << EOF ... EOF
-            let heredoc_re = Regex::new(
-                r#""command"\s*:\s*"cat\s+>\s+([^"]+)\s+<<\s*'?\w+'?\s*\n(.*?)\n\w+""#
-            ).ok()?;
-            
+            let heredoc_re =
+                Regex::new(r#""command"\s*:\s*"cat\s+>\s+([^"]+)\s+<<\s*'?\w+'?\s*\n(.*?)\n\w+""#)
+                    .ok()?;
+
             if let Some(caps) = heredoc_re.captures(input) {
                 let file_path = caps.get(1)?.as_str();
                 let content = caps.get(2)?.as_str();
-                
+
                 // Use file_write instead of shell for creating files
                 return Some(json!({
                     "path": file_path,
                     "content": content
                 }));
             }
-            
+
             // Try alternative pattern without quotes around EOF
-            let alt_re = Regex::new(
-                r#""command"\s*:\s*"([^"]*cat[^"]*\bEOF\b[^"]*)""#
-            ).ok()?;
-            
+            let alt_re = Regex::new(r#""command"\s*:\s*"([^"]*cat[^"]*\bEOF\b[^"]*)""#).ok()?;
+
             if let Some(caps) = alt_re.captures(input) {
                 let command = caps.get(1)?.as_str();
-                
+
                 // Check if it's trying to write a file
                 let file_re = Regex::new(r"cat\s+>\s+(\S+)").ok()?;
                 if let Some(file_caps) = file_re.captures(command) {
                     let file_path = file_caps.get(1)?.as_str();
-                    
+
                     // Try to extract content between EOF markers
                     let eof_re = Regex::new(r"<<\s*'?(\w+)'?\s*\n(.*?)\n\1").ok()?;
                     if let Some(eof_caps) = eof_re.captures(input) {
                         let content = eof_caps.get(2)?.as_str();
-                        
+
                         return Some(json!({
                             "path": file_path,
                             "content": content
@@ -2824,7 +3275,7 @@ Por favor, forneça a RESPOSTA MELHORADA que corrige os problemas identificados.
                 }
             }
         }
-        
+
         None
     }
 
@@ -2833,7 +3284,10 @@ Por favor, forneça a RESPOSTA MELHORADA que corrige os problemas identificados.
         let command_re = Regex::new(r#"(?s)"command"\s*:\s*"([^"]*)""#).unwrap();
 
         if let Some(caps) = path_re.captures(input) {
-            let path = caps.get(1).map(|m| m.as_str().to_string()).unwrap_or_default();
+            let path = caps
+                .get(1)
+                .map(|m| m.as_str().to_string())
+                .unwrap_or_default();
             if let Some(content) = Self::extract_json_string_field(input, "content") {
                 return Some(json!({
                     "path": path,
@@ -2843,7 +3297,10 @@ Por favor, forneça a RESPOSTA MELHORADA que corrige os problemas identificados.
         }
 
         if let Some(caps) = command_re.captures(input) {
-            let command = caps.get(1).map(|m| m.as_str().to_string()).unwrap_or_default();
+            let command = caps
+                .get(1)
+                .map(|m| m.as_str().to_string())
+                .unwrap_or_default();
             if !command.is_empty() {
                 return Some(json!({
                     "command": command,
@@ -2988,10 +3445,10 @@ pub fn init_tmux(skill_name: &str) {
         if let Err(e) = manager.create_sessions() {
             eprintln!("⚠️  Erro ao criar sessões TMUX: {}", e);
         }
-        
+
         let mut output = OutputManager::new();
         output.add_sink(Arc::new(crate::utils::output::ConsoleSink::new()));
-        
+
         let _ = TMUX_MANAGER.set(manager);
         let _ = OUTPUT_MANAGER.set(output);
     }
@@ -3024,13 +3481,10 @@ pub fn output_write_tool(tool: &str, input: &str, output: &str) {
         out.write_tool(tool, input, output);
     }
     print!("{}{}", Colors::CLEAR_LINE, Colors::ORANGE);
-    print!("{} ", "⬡");
+    print!("⬡ ");
     print!("{}{}", Colors::RESET, Colors::LIGHT_GRAY);
     println!("{}  {}{}", tool, input, Colors::RESET);
-    println!(
-        "{}{}{}",
-        Colors::LIGHT_GRAY, output, Colors::RESET
-    );
+    println!("{}{}{}", Colors::LIGHT_GRAY, output, Colors::RESET);
 }
 
 pub fn output_write_thought(thought: &str) {
@@ -3044,8 +3498,9 @@ pub fn output_write_error(error: &str) {
         output.write_error(error);
     }
     eprintln!(
-        "{}{}{} {}{}{}",
-        Colors::RED, "⨯", Colors::RESET,
+        "{}⨯{} {}{}{}",
+        Colors::RED,
+        Colors::RESET,
         error,
         Colors::RESET,
         Colors::RESET

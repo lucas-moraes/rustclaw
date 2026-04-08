@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HookConfig {
@@ -17,7 +17,7 @@ pub struct HookConfig {
     pub description: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SettingsJson {
     #[serde(default)]
     pub hooks: HashMap<String, HookConfig>,
@@ -110,16 +110,6 @@ impl HookManager {
 
     pub fn get_allowed_tools_override(&self) -> Option<Vec<String>> {
         self.settings.allowed_tools.clone()
-    }
-}
-
-impl Default for SettingsJson {
-    fn default() -> Self {
-        Self {
-            hooks: HashMap::new(),
-            allowed_tools: None,
-            skills_dir: None,
-        }
     }
 }
 

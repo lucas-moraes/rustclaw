@@ -25,8 +25,7 @@ impl ReminderParser {
             let hour: u32 = caps.get(2)?.as_str().parse().ok()?;
             let minute: u32 = caps
                 .get(3)
-                .map(|m| m.as_str().parse().ok())
-                .flatten()
+                .and_then(|m| m.as_str().parse().ok())
                 .unwrap_or(0);
             let cron = format!("0 {} {} * * *", minute, hour);
             let next = Self::today_at(hour, minute, timezone)?;
@@ -46,8 +45,7 @@ impl ReminderParser {
             let hour: u32 = caps.get(3)?.as_str().parse().ok()?;
             let minute: u32 = caps
                 .get(4)
-                .map(|m| m.as_str().parse().ok())
-                .flatten()
+                .and_then(|m| m.as_str().parse().ok())
                 .unwrap_or(0);
             let cron_day = Self::day_to_cron(day_str)?;
             let cron = format!("0 {} {} * * {}", minute, hour, cron_day);
@@ -72,8 +70,7 @@ impl ReminderParser {
             let hour: u32 = caps.get(2)?.as_str().parse().ok()?;
             let minute: u32 = caps
                 .get(3)
-                .map(|m| m.as_str().parse().ok())
-                .flatten()
+                .and_then(|m| m.as_str().parse().ok())
                 .unwrap_or(0);
             let datetime = Self::tomorrow_at(hour, minute, timezone)?;
 
@@ -92,8 +89,7 @@ impl ReminderParser {
             let hour: u32 = caps.get(2)?.as_str().parse().ok()?;
             let minute: u32 = caps
                 .get(3)
-                .map(|m| m.as_str().parse().ok())
-                .flatten()
+                .and_then(|m| m.as_str().parse().ok())
                 .unwrap_or(0);
             let datetime = Self::today_at(hour, minute, timezone)?;
 
@@ -227,7 +223,7 @@ impl ReminderParser {
             "America/Denver" => Some(chrono::FixedOffset::west_opt(7 * 3600)?),
             "America/Los_Angeles" => Some(chrono::FixedOffset::west_opt(8 * 3600)?),
             "Europe/London" => Some(chrono::FixedOffset::west_opt(0)?),
-            "Europe/Paris" | "Europe/Berlin" => Some(chrono::FixedOffset::east_opt(1 * 3600)?),
+            "Europe/Paris" | "Europe/Berlin" => Some(chrono::FixedOffset::east_opt(3600)?),
             "Europe/Moscow" => Some(chrono::FixedOffset::east_opt(3 * 3600)?),
             "Asia/Tokyo" => Some(chrono::FixedOffset::east_opt(9 * 3600)?),
             "Asia/Shanghai" => Some(chrono::FixedOffset::east_opt(8 * 3600)?),

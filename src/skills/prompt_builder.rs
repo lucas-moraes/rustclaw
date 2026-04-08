@@ -12,13 +12,10 @@ impl SkillPromptBuilder {
         let mut prompt = base_prompt.to_string();
 
         if let Some(skill) = skill {
-            prompt.push_str(&format!(
-                "\n\n═══════════════════════════════════════════════════\n"
-            ));
+            prompt
+                .push_str(&"\n\n═══════════════════════════════════════════════════\n".to_string());
             prompt.push_str(&format!("🎭 MODO ATIVO: {}\n", skill.name.to_uppercase()));
-            prompt.push_str(&format!(
-                "═══════════════════════════════════════════════════\n\n"
-            ));
+            prompt.push_str(&"═══════════════════════════════════════════════════\n\n".to_string());
 
             // Contexto da skill
             prompt.push_str(&skill.context);
@@ -33,7 +30,7 @@ impl SkillPromptBuilder {
                     for item in &skill.behaviors.always {
                         prompt.push_str(&format!("  • {}\n", item));
                     }
-                    prompt.push_str("\n");
+                    prompt.push('\n');
                 }
 
                 if !skill.behaviors.never.is_empty() {
@@ -41,7 +38,7 @@ impl SkillPromptBuilder {
                     for item in &skill.behaviors.never {
                         prompt.push_str(&format!("  • {}\n", item));
                     }
-                    prompt.push_str("\n");
+                    prompt.push('\n');
                 }
             }
 
@@ -61,7 +58,7 @@ impl SkillPromptBuilder {
                             example.bad.chars().take(100).collect::<String>()
                         ));
                     }
-                    prompt.push_str("\n");
+                    prompt.push('\n');
                 }
             }
 

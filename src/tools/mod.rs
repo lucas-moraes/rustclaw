@@ -41,9 +41,7 @@ impl ToolRegistry {
             return self.list();
         }
 
-        let allowed: Vec<String> = allowed_tools.iter()
-            .map(|t| t.to_lowercase())
-            .collect();
+        let allowed: Vec<String> = allowed_tools.iter().map(|t| t.to_lowercase()).collect();
 
         self.tools
             .values()
@@ -65,9 +63,7 @@ impl ToolRegistry {
             return self.names();
         }
 
-        let allowed: Vec<String> = allowed_tools.iter()
-            .map(|t| t.to_lowercase())
-            .collect();
+        let allowed: Vec<String> = allowed_tools.iter().map(|t| t.to_lowercase()).collect();
 
         self.tools
             .keys()
@@ -86,13 +82,13 @@ impl ToolRegistry {
     pub fn register_with_dedup(&mut self, tool: Box<dyn Tool>) -> bool {
         let name = tool.name().to_string();
         let name_lower = name.to_lowercase();
-        
+
         for existing in self.tools.keys() {
             if existing.to_lowercase() == name_lower {
                 return false;
             }
         }
-        
+
         self.tools.insert(name, tool);
         true
     }
@@ -100,7 +96,7 @@ impl ToolRegistry {
     pub fn deduplicate(&mut self) -> usize {
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut duplicates: Vec<String> = Vec::new();
-        
+
         for name in self.tools.keys() {
             let name_lower = name.to_lowercase();
             if seen.contains(&name_lower) {
@@ -109,24 +105,26 @@ impl ToolRegistry {
                 seen.insert(name_lower);
             }
         }
-        
+
         let count = duplicates.len();
         for name in duplicates {
             self.tools.remove(&name);
         }
-        
+
         count
     }
 
     pub fn merge(&mut self, other: ToolRegistry, strategy: MergeStrategy) -> usize {
         let mut added = 0;
-        
+
         for (name, tool) in other.tools {
             let name_lower = name.to_lowercase();
-            
+
             match strategy {
                 MergeStrategy::Skip => {
-                    if !self.tools.contains_key(&name) && !self.tools.keys().any(|k| k.to_lowercase() == name_lower) {
+                    if !self.tools.contains_key(&name)
+                        && !self.tools.keys().any(|k| k.to_lowercase() == name_lower)
+                    {
                         self.tools.insert(name, tool);
                         added += 1;
                     }
@@ -138,7 +136,12 @@ impl ToolRegistry {
                 MergeStrategy::Rename => {
                     let mut new_name = name.clone();
                     let mut counter = 1;
-                    while self.tools.contains_key(&new_name) || self.tools.keys().any(|k| k.to_lowercase() == new_name.to_lowercase()) {
+                    while self.tools.contains_key(&new_name)
+                        || self
+                            .tools
+                            .keys()
+                            .any(|k| k.to_lowercase() == new_name.to_lowercase())
+                    {
                         new_name = format!("{}_{}", name, counter);
                         counter += 1;
                     }
@@ -147,7 +150,7 @@ impl ToolRegistry {
                 }
             }
         }
-        
+
         added
     }
 }
@@ -165,6 +168,7 @@ impl Default for ToolRegistry {
     }
 }
 
+pub mod browser;
 pub mod capabilities;
 pub mod clear_memory;
 pub mod datetime;
@@ -183,7 +187,6 @@ pub mod skill_import;
 pub mod skill_manager;
 pub mod skill_script;
 pub mod system;
-pub mod browser;
 
 #[cfg(test)]
 mod tests {
@@ -283,10 +286,7 @@ mod tests {
     #[tokio::test]
     async fn tool_shell() {
         let shell = ShellTool::new();
-        let output = shell
-            .call(json!({"command": "echo hello"}))
-            .await
-            .unwrap();
+        let output = shell.call(json!({"command": "echo hello"})).await.unwrap();
         assert!(output.contains("hello"));
     }
 
@@ -415,10 +415,7 @@ mod tests {
             .unwrap_or("");
         let id = id_line.split_whitespace().last().unwrap_or("invalid");
 
-        let cancel_resp = cancel
-            .call(json!({"id": id}))
-            .await
-            .unwrap();
+        let cancel_resp = cancel.call(json!({"id": id})).await.unwrap();
         assert!(cancel_resp.contains("cancelado") || cancel_resp.contains("Cancelado"));
     }
 
@@ -490,5 +487,96 @@ mod tests {
 
         assert!(resp.is_ok());
         std::env::set_current_dir(old_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn file_write_rejects_system_paths() {
+        let write = FileWriteTool::new();
+
+        let system_paths = vec![
+            "/etc/test.txt",
+            "/usr/bin/test.txt",
+            "/bin/test.txt",
+            "/sbin/test.txt",
+            "/boot/test.txt",
+            "/sys/test.txt",
+            "/proc/test.txt",
+        ];
+
+        for path in system_paths {
+            let res = write.call(json!({"path": path, "content": "test"})).await;
+            assert!(res.is_err(), "Should reject path: {}", path);
+            assert!(
+                res.unwrap_err().contains("Acesso negado"),
+                "Error should mention 'Acesso negado' for path: {}",
+                path
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn file_read_rejects_sensitive_files() {
+        let read = FileReadTool::new();
+
+        let sensitive_paths = vec![
+            "/etc/shadow",
+            "/etc/passwd",
+            "/etc/ssh/sshd_config",
+            "/root/.ssh/id_rsa",
+        ];
+
+        for path in sensitive_paths {
+            let res = read.call(json!({"path": path})).await;
+            assert!(res.is_err(), "Should reject path: {}", path);
+            assert!(
+                res.unwrap_err().contains("Acesso negado"),
+                "Error should mention 'Acesso negado' for path: {}",
+                path
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn file_edit_rejects_system_paths() {
+        let edit = FileEditTool::new();
+
+        let system_paths = vec!["/etc/hosts", "/usr/bin/app", "/bin/sh"];
+
+        for path in system_paths {
+            let res = edit
+                .call(json!({"path": path, "old_str": "a", "new_str": "b"}))
+                .await;
+            assert!(res.is_err(), "Should reject path: {}", path);
+            assert!(
+                res.unwrap_err().contains("Acesso negado"),
+                "Error should mention 'Acesso negado' for path: {}",
+                path
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn file_write_allows_normal_paths() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("test.txt");
+
+        let write = FileWriteTool::new();
+        let res = write
+            .call(json!({"path": file_path.to_string_lossy(), "content": "hello"}))
+            .await;
+        assert!(res.is_ok(), "Should allow writing to normal path");
+        assert!(res.unwrap().contains("Criado"));
+    }
+
+    #[tokio::test]
+    async fn shell_blocks_system_commands() {
+        let shell = ShellTool::new();
+
+        let blocked = vec!["shutdown now", "reboot", "halt", "poweroff"];
+
+        for cmd in blocked {
+            let res = shell.call(json!({"command": cmd})).await;
+            assert!(res.is_err(), "Should block command: {}", cmd);
+        }
     }
 }

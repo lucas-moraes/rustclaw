@@ -1,6 +1,6 @@
 use super::{MemoryEntry, MemoryScope, MemoryType};
 use anyhow::Result;
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
 

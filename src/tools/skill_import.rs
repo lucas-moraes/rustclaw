@@ -50,14 +50,14 @@ impl SkillImportFromUrlTool {
     }
 
     fn is_html(&self, content: &str) -> bool {
-        content.contains("<!DOCTYPE html>") ||
-        content.contains("<html") ||
-        content.contains("<body")
+        content.contains("<!DOCTYPE html>")
+            || content.contains("<html")
+            || content.contains("<body")
     }
 
     fn extract_markdown_from_html(&self, html: &str) -> Result<String, String> {
         let document = Html::parse_document(html);
-        
+
         // Try to find main content area
         let selectors = vec![
             "article",
@@ -94,7 +94,7 @@ impl SkillImportFromUrlTool {
 
     fn html_to_markdown(&self, element: &scraper::ElementRef) -> String {
         let mut markdown = String::new();
-        
+
         for child in element.children() {
             match child.value() {
                 scraper::Node::Text(text) => {
@@ -103,17 +103,36 @@ impl SkillImportFromUrlTool {
                 scraper::Node::Element(elem) => {
                     let tag_name = elem.name();
                     let child_ref = scraper::ElementRef::wrap(child).unwrap();
-                    
+
                     match tag_name {
-                        "h1" => markdown.push_str(&format!("\n# {}\n", self.html_to_markdown(&child_ref).trim())),
-                        "h2" => markdown.push_str(&format!("\n## {}\n", self.html_to_markdown(&child_ref).trim())),
-                        "h3" => markdown.push_str(&format!("\n### {}\n", self.html_to_markdown(&child_ref).trim())),
-                        "h4" => markdown.push_str(&format!("\n#### {}\n", self.html_to_markdown(&child_ref).trim())),
-                        "p" => markdown.push_str(&format!("\n{}\n", self.html_to_markdown(&child_ref).trim())),
+                        "h1" => markdown.push_str(&format!(
+                            "\n# {}\n",
+                            self.html_to_markdown(&child_ref).trim()
+                        )),
+                        "h2" => markdown.push_str(&format!(
+                            "\n## {}\n",
+                            self.html_to_markdown(&child_ref).trim()
+                        )),
+                        "h3" => markdown.push_str(&format!(
+                            "\n### {}\n",
+                            self.html_to_markdown(&child_ref).trim()
+                        )),
+                        "h4" => markdown.push_str(&format!(
+                            "\n#### {}\n",
+                            self.html_to_markdown(&child_ref).trim()
+                        )),
+                        "p" => markdown
+                            .push_str(&format!("\n{}\n", self.html_to_markdown(&child_ref).trim())),
                         "br" => markdown.push('\n'),
-                        "strong" | "b" => markdown.push_str(&format!("**{}**", self.html_to_markdown(&child_ref))),
-                        "em" | "i" => markdown.push_str(&format!("*{}*", self.html_to_markdown(&child_ref))),
-                        "code" => markdown.push_str(&format!("`{}`", self.html_to_markdown(&child_ref))),
+                        "strong" | "b" => {
+                            markdown.push_str(&format!("**{}**", self.html_to_markdown(&child_ref)))
+                        }
+                        "em" | "i" => {
+                            markdown.push_str(&format!("*{}*", self.html_to_markdown(&child_ref)))
+                        }
+                        "code" => {
+                            markdown.push_str(&format!("`{}`", self.html_to_markdown(&child_ref)))
+                        }
                         "pre" => {
                             let code = self.html_to_markdown(&child_ref);
                             markdown.push_str(&format!("\n```\n{}\n```\n", code.trim()));
@@ -129,7 +148,9 @@ impl SkillImportFromUrlTool {
                             let items: Vec<String> = child_ref
                                 .select(&Selector::parse("li").unwrap())
                                 .enumerate()
-                                .map(|(i, li)| format!("{}. {}", i + 1, self.html_to_markdown(&li).trim()))
+                                .map(|(i, li)| {
+                                    format!("{}. {}", i + 1, self.html_to_markdown(&li).trim())
+                                })
                                 .collect();
                             markdown.push_str(&format!("\n{}\n", items.join("\n")));
                         }
@@ -187,28 +208,29 @@ impl SkillImportFromUrlTool {
         }
 
         if description.is_empty() {
-            description = format!("Skill importada de {}", Self::extract_domain(url).unwrap_or_else(|| "URL".to_string()));
+            description = format!(
+                "Skill importada de {}",
+                Self::extract_domain(url).unwrap_or_else(|| "URL".to_string())
+            );
         }
 
         // Extract keywords from content
         let common_words: HashSet<&str> = [
-            "the", "be", "to", "of", "and", "a", "in", "that", "have",
-            "i", "it", "for", "not", "on", "with", "he", "as", "you",
-            "do", "at", "this", "but", "his", "by", "from", "they",
-            "we", "say", "her", "she", "or", "an", "will", "my",
-            "one", "all", "would", "there", "their", "what", "so",
-            "up", "out", "if", "about", "who", "get", "which", "go",
-            "me", "when", "make", "can", "like", "time", "no", "just",
-            "him", "know", "take", "people", "into", "year", "your",
-            "good", "some", "could", "them", "see", "other", "than",
-            "then", "now", "look", "only", "come", "its", "over",
-            "think", "also", "back", "after", "use", "two", "how",
-            "our", "work", "first", "well", "way", "even", "new",
-            "want", "because", "any", "these", "give", "day", "most",
-            "us", "é", "o", "a", "os", "as", "um", "uma", "para",
-            "de", "da", "do", "dos", "das", "no", "na", "nos", "nas",
+            "the", "be", "to", "of", "and", "a", "in", "that", "have", "i", "it", "for", "not",
+            "on", "with", "he", "as", "you", "do", "at", "this", "but", "his", "by", "from",
+            "they", "we", "say", "her", "she", "or", "an", "will", "my", "one", "all", "would",
+            "there", "their", "what", "so", "up", "out", "if", "about", "who", "get", "which",
+            "go", "me", "when", "make", "can", "like", "time", "no", "just", "him", "know", "take",
+            "people", "into", "year", "your", "good", "some", "could", "them", "see", "other",
+            "than", "then", "now", "look", "only", "come", "its", "over", "think", "also", "back",
+            "after", "use", "two", "how", "our", "work", "first", "well", "way", "even", "new",
+            "want", "because", "any", "these", "give", "day", "most", "us", "é", "o", "a", "os",
+            "as", "um", "uma", "para", "de", "da", "do", "dos", "das", "no", "na", "nos", "nas",
             "em", "com", "por", "que", "se", "ou", "mas", "como",
-        ].iter().cloned().collect();
+        ]
+        .iter()
+        .cloned()
+        .collect();
 
         let word_regex = Regex::new(r"\b[a-zA-Záéíóúàèìòùãõâêîôûäëïöüç]{4,}\b").unwrap();
         for cap in word_regex.captures_iter(&content.to_lowercase()) {
@@ -222,7 +244,8 @@ impl SkillImportFromUrlTool {
         let keywords_vec: Vec<String> = keywords.into_iter().take(7).collect();
 
         // Build skill content
-        format!(r#"# Skill: {}
+        format!(
+            r#"# Skill: {}
 
 ## Descrição
 {}
@@ -270,7 +293,11 @@ Use este contexto quando o usuário estiver trabalhando com tópicos relacionado
             skill_name,
             description,
             url,
-            keywords_vec.iter().map(|k| format!("- {}", k)).collect::<Vec<_>>().join("\n"),
+            keywords_vec
+                .iter()
+                .map(|k| format!("- {}", k))
+                .collect::<Vec<_>>()
+                .join("\n"),
             content,
             url
         )
@@ -318,7 +345,10 @@ impl Tool for SkillImportFromUrlTool {
         // Check if skill already exists
         let skill_dir = Path::new(SKILLS_DIR).join(skill_name);
         if skill_dir.exists() {
-            return Err(format!("Skill '{}' já existe. Use outro nome ou remova a existente primeiro.", skill_name));
+            return Err(format!(
+                "Skill '{}' já existe. Use outro nome ou remova a existente primeiro.",
+                skill_name
+            ));
         }
 
         // Fetch content
@@ -335,8 +365,7 @@ impl Tool for SkillImportFromUrlTool {
         let skill_content = self.convert_to_skill_format(&markdown_content, skill_name, url);
 
         // Create skill directory and file
-        fs::create_dir_all(&skill_dir)
-            .map_err(|e| format!("Erro ao criar diretório: {}", e))?;
+        fs::create_dir_all(&skill_dir).map_err(|e| format!("Erro ao criar diretório: {}", e))?;
 
         let skill_file = skill_dir.join("SKILL.md");
         fs::write(&skill_file, &skill_content)
@@ -358,7 +387,10 @@ impl Tool for SkillImportFromUrlTool {
             Err(e) => {
                 // Clean up on validation error
                 let _ = fs::remove_dir_all(&skill_dir);
-                Err(format!("❌ Skill criada mas com erro de validação: {}. Diretório removido.", e))
+                Err(format!(
+                    "❌ Skill criada mas com erro de validação: {}. Diretório removido.",
+                    e
+                ))
             }
         }
     }

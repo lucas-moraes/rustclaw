@@ -71,7 +71,7 @@ impl Tool for FileListTool {
             })
             .collect();
 
-        dirs.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+        dirs.sort_by_key(|a| a.to_lowercase());
         files.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
 
         let mut output = format!("📁 {} ({} itens)\n\n", path_str, entries.len());

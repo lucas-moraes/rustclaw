@@ -3,7 +3,6 @@ use chrono::Local;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::Mutex;
 
 pub struct TmuxSink {
     session_name: String,
@@ -17,7 +16,7 @@ impl TmuxSink {
 
         let log_file = log_dir.join(format!(
             "{}.log",
-            session_name.split('-').last().unwrap_or("log")
+            session_name.split('-').next_back().unwrap_or("log")
         ));
 
         Self {
@@ -150,7 +149,7 @@ impl TmuxManager {
 
                 // Create log directory
                 let log_dir =
-                    PathBuf::from("/tmp/rustclaw").join(&session_name.replace("rustclaw-", ""));
+                    PathBuf::from("/tmp/rustclaw").join(session_name.replace("rustclaw-", ""));
                 std::fs::create_dir_all(&log_dir).ok();
 
                 // Add sink to output manager

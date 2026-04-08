@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-use tracing::{debug, error, info, warn};
+use tracing::{info, warn};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MarketplaceSkill {
@@ -71,7 +71,7 @@ impl SkillMarketplace {
                     }
                 },
                 SourceType::GitHub => {
-                    if let Some(repo) = source.url.split('/').last() {
+                    if let Some(repo) = source.url.split('/').next_back() {
                         let github_url =
                             format!("https://api.github.com/repos/{}/contents/skills", repo);
                         match Self::fetch_from_github(&github_url) {
@@ -96,11 +96,11 @@ impl SkillMarketplace {
         Ok(all_skills)
     }
 
-    fn fetch_from_http(url: &str) -> Result<Vec<MarketplaceSkill>, String> {
+    fn fetch_from_http(_url: &str) -> Result<Vec<MarketplaceSkill>, String> {
         Ok(vec![])
     }
 
-    fn fetch_from_github(url: &str) -> Result<Vec<MarketplaceSkill>, String> {
+    fn fetch_from_github(_url: &str) -> Result<Vec<MarketplaceSkill>, String> {
         Ok(vec![])
     }
 
@@ -162,7 +162,7 @@ impl SkillMarketplace {
         Err("No valid source for installation".to_string())
     }
 
-    fn install_from_url(&self, url: &str, name: &str) -> Result<String, String> {
+    fn install_from_url(&self, url: &str, _name: &str) -> Result<String, String> {
         Err(format!(
             "HTTP installation not implemented yet. URL: {}",
             url
@@ -206,7 +206,7 @@ impl SkillMarketplace {
     }
 
     pub fn search(&self, query: &str) -> Vec<MarketplaceSkill> {
-        let query_lower = query.to_lowercase();
+        let _query_lower = query.to_lowercase();
         vec![]
     }
 

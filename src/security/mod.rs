@@ -40,12 +40,8 @@ pub mod sanitizer;
 pub mod validator;
 
 // Re-export main types
-pub use constants::{SanitizationLevel, TrustLevel};
-pub use defense_prompt::{
-    get_defense_prompt, get_defense_prompt_minimal, get_defense_prompt_short,
-};
-pub use injection_detector::{AttackType, InjectionDetector, InjectionResult, Severity};
-pub use output_cleaner::{clean_tool_output, OutputCleaner};
+pub use constants::TrustLevel;
+pub use injection_detector::{InjectionDetector, InjectionResult};
 pub use sanitizer::{sanitize_with_trust_level, SanitizedInput, Sanitizer};
 pub use validator::{ValidationResult, Validator};
 

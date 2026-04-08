@@ -20,13 +20,13 @@ impl BrowserTool {
 
     async fn get_manager(&self) -> Result<Arc<RwLock<Option<BrowserManager>>>, String> {
         let mut manager = self.manager.write().await;
-        
+
         if manager.is_none() {
             let mut bm = BrowserManager::new(self.data_dir.clone());
             bm.initialize().await?;
             *manager = Some(bm);
         }
-        
+
         Ok(self.manager.clone())
     }
 }
@@ -77,7 +77,7 @@ impl Tool for BrowserTool {
 
             "screenshot" => {
                 let custom_path = args["path"].as_str();
-                
+
                 let path = if let Some(path) = custom_path {
                     path.to_string()
                 } else if let Some(tmux) = crate::agent::get_tmux_manager() {
@@ -90,7 +90,7 @@ impl Tool for BrowserTool {
                 } else {
                     "screenshot.png".to_string()
                 };
-                
+
                 manager.screenshot(&path).await
             }
 

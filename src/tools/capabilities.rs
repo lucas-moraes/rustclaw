@@ -9,8 +9,7 @@ impl CapabilitiesTool {
     }
 
     fn get_capabilities() -> String {
-        format!(
-            r#"🦀 RustClaw - Capacidades do Sistema
+        r#"🦀 RustClaw - Capacidades do Sistema
 
 ╔════════════════════════════════════════════════════════════╗
 ║                     FERRAMENTAS DISPONÍVEIS                ║
@@ -60,9 +59,9 @@ impl CapabilitiesTool {
        • Sistema Operacional, hostname, uptime
    
    🔍 Filtros disponíveis:
-       • {{"detail": "cpu"}}     - Apenas CPU
-       • {{"detail": "memory"}}  - Apenas RAM
-       • {{"detail": "disk"}}    - Apenas discos
+       • {"detail": "cpu"}     - Apenas CPU
+       • {"detail": "memory"}  - Apenas RAM
+       • {"detail": "disk"}    - Apenas discos
 
 🔊 UTILITÁRIOS:
    ✅ echo         - Repetir texto (para testes)
@@ -109,7 +108,7 @@ impl CapabilitiesTool {
 
 Digite 'sair' para encerrar a sessão.
 "#
-        )
+        .to_string()
     }
 }
 

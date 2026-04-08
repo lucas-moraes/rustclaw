@@ -36,112 +36,19 @@
 
 ---
 
-## 1. Arquivos Mortos — Remover
+## 1. Bugs (Referência — Ver CPs)
 
-Os seguintes arquivos **não estão declarados em `main.rs`** e **não são importados** por nenhum outro módulo. São código morto totalizando ~1.419 linhas.
+> Bugs 2.1–2.4 foram corrigidos no CP-1.
 
-| Arquivo | Linhas | Motivo |
-|---------|--------|--------|
-| `src/ab_testing.rs` | 328 | Nunca compilado. `FeatureFlags` duplica `features.rs`. `ABTestingEngine` não é thread-safe. |
-| `src/wither.rs` | 313 | Nunca compilado. `TaskState`, `Notification`, `AppSettings` duplicam `app_state.rs`. |
-| `src/lazy_loader.rs` | 232 | Nunca compilado. `clone_tool()` panica com `todo!()`. `LazyToolWrapper` hardcoded para `EchoTool`. |
-| `src/context_compactor.rs` | 305 | Nunca compilado. Nenhuma importação no projeto. |
-| `src/time_travel.rs` | 241 | Nunca compilado. `undo()`/`redo()`/`go_to()` são no-ops (modificam `&self`). |
-
-### Arquivos declarados mas nunca usados
-
-| Arquivo | Linhas | Motivo |
-|---------|--------|--------|
-| `src/bridge.rs` | 162 | Declarado em `main.rs` mas nunca importado. Nenhum modo "bridge" existe. |
-| `src/prefetch.rs` | 82 | Declarado em `main.rs` mas `start_background_prefetch()` nunca é chamado. |
-
-### Diretórios vazios
-
-| Diretório | Motivo |
-|-----------|--------|
-| `src/agent/` | Diretório vazio, vestigial |
-| `src/cli/` | Diretório vazio, vestigial |
-
-### Ações de limpeza
-
-```bash
-# Remover arquivos mortos
-rm src/ab_testing.rs src/wither.rs src/lazy_loader.rs src/context_compactor.rs src/time_travel.rs
-
-# Remover arquivos declarados mas não usados
-rm src/bridge.rs src/prefetch.rs
-
-# Remover diretórios vazios
-rmdir src/agent/ src/cli/
-```
-
-Remover de `src/main.rs`:
-```rust
-// Remover estas linhas:
-mod bridge;
-mod prefetch;
-```
-
-Remover de `Cargo.toml`:
-```toml
-# Dependências não usadas:
-chaser-oxide = "0.1"    # nunhum arquivo importa esta crate
-futures = "0.3"          # uso mínimo, substituível por tokio
-```
-
----
-
-## 2. Bugs Críticos
-
-### 2.1 `time_travel.rs` — undo/redo são no-ops (REMOVER)
-
-Os métodos `undo()`, `redo()` e `go_to()` recebem `&self` mas tentam modificar `current_index`. Como não há mutabilidade interior (`Cell<isize>`), as modificações são descartadas.
-
-> **Decisão:** Remover o arquivo inteiro. A funcionalidade nunca foi integrada.
-
-### 2.2 `lazy_loader.rs` — sistema inteiramente quebrado (REMOVER)
-
-- `clone_tool()` panica com `todo!()`
-- `LazyToolWrapper` sempre cria `EchoTool` independentemente do tipo
-
-> **Decisão:** Remover. Se lazy loading for necessário no futuro, reimplementar do zero.
-
-### 2.3 Bug SQL em `memory/store.rs:337-346`
-
-`update_memory_access()` usa `?1` na subquery de importância mas `?2` no WHERE externo. O parâmetro `?1` na subquery deveria ser `?2` para referenciar o `importance` correto.
-
-```rust
-// Atual (bugado):
-let sql = "UPDATE memories SET importance = (
-    SELECT AVG(importance) * 0.95 FROM memories WHERE session_id = ?1
-), last_accessed = ?2 WHERE id = ?3";
-
-// Corrigir para:
-let sql = "UPDATE memories SET importance = importance * 0.95, last_accessed = ?1 WHERE id = ?2";
-```
-
-### 2.4 `shell.rs:262` — `is_blocked()` nunca retorna `Ok(true)`
-
-A lógica de bloqueio de comandos perigosos (linha 73) sempre retorna `Ok(false)`, tornando `Ok(true) => unreachable!()` na linha 262 morto. O bloqueio de comandos está **desativado de fato**.
-
-```rust
-// Linha 73: is_command_dangerous() retorna false para tudo
-fn is_command_dangerous(cmd: &str) -> bool {
-    // lista não cobre comandos perigosos comuns
-}
-```
-
-> **Ação:** Revisar e implementar lista real de comandos bloqueados. Remover `unreachable!()`.
-
-### 2.5 `file_write.rs` — sem validação de caminho
+### 1.1 `file_write.rs` — sem validação de caminho (Ver CP-3)
 
 A ferramenta cria diretórios e escreve arquivos em qualquer caminho do filesystem sem verificar `workspace_trust`. Isso é uma vulnerabilidade de segurança.
 
-> **Ação:** Integrar validação com `workspace_trust` antes de qualquer operação de escrita.
+> **Ação:** Integrar validação com `workspace_trust` antes de qualquer operação de escrita. (CP-3)
 
 ---
 
-## 3. Problemas de Segurança
+## 2. Problemas de Segurança
 
 | Severidade | Problema | Local | Solução |
 |------------|----------|-------|---------|
@@ -154,7 +61,7 @@ A ferramenta cria diretórios e escreve arquivos em qualquer caminho do filesyst
 
 ---
 
-## 4. Problemas de Performance
+## 3. Problemas de Performance
 
 ### 4.1 Regex compilados em cada chamada (ALTA)
 
@@ -197,7 +104,7 @@ Cada operação de memória faz uma chamada HTTP para gerar embeddings.
 
 ---
 
-## 5. Arquitetura — Decompor God Objects
+## 4. Arquitetura — Decompor God Objects
 
 ### 5.1 `agent.rs` (3.114 linhas)
 
@@ -239,7 +146,7 @@ O projeto tem 4 padrões de estado:
 
 ---
 
-## 6. Tratamento de Erros
+## 5. Tratamento de Erros
 
 | Problema | Local | Solução |
 |----------|-------|---------|
@@ -249,29 +156,23 @@ O projeto tem 4 padrões de estado:
 | `RwLock` com `.unwrap()` | `src/app_store.rs:24,35,47,51,57` | Usar `.expect()` com contexto |
 | `embeddings.rs` — `.expect()` sem API key | `src/memory/embeddings.rs:116` | Retornar `Result` e fallback graceful |
 
-### Código comentado para remover
-
-- `src/agent.rs:858-863` — bloco comentado
-- `src/agent.rs:874-888` — bloco comentado
-- `src/agent.rs:1116-1119` — bloco comentado
-- `src/agent.rs:2453-2456` — bloco comentado
-- `src/agent.rs:852` — variável `force_tool_use` atribuída mas nunca usada significativamente
+### Código comentado (removido no CP-1)
 
 ---
 
-## 7. Dependências
+## 6. Dependências
 
 | Ação | Dependência | Motivo |
 |------|-------------|--------|
-| **Remover** | `chaser-oxide` | Nenhum arquivo fonte importa esta crate |
-| **Remover** | `futures` | Uso mínimo, substituível por `tokio` |
-| **Substituir** | `atty` → `is-terminal` | `atty` não é mais mantido |
-| **Adicionar** | `shell-words` | Para parsing seguro de comandos shell |
-| **Adicionar** | `crossterm` | Para substituir `unsafe` libc no CLI |
+| **Avaliar** | `chaser-oxide` | Usado em `browser/mod.rs` — avaliar se é necessário |
+| **Remover** ✅ | `futures` | Removido no CP-1 |
+| **Substituir** | `atty` → `is-terminal` | `atty` não é mais mantido (Ver CP-4) |
+| **Adicionar** | `shell-words` | Para parsing seguro de comandos shell (Ver CP-4) |
+| **Adicionar** | `crossterm` | Para substituir `unsafe` libc no CLI (Ver CP-12) |
 
 ---
 
-## 8. Testes
+## 7. Testes
 
 Cobertura atual estimada: **~15-20%** dos módulos.
 
@@ -293,24 +194,20 @@ Cobertura atual estimada: **~15-20%** dos módulos.
 
 - `src/tools/mod.rs` — testes de integração
 - `src/app_state.rs` — testes unitários
-- `src/ab_testing.rs` — **remover** (código morto)
-- `src/wither.rs` — **remover** (código morto)
-- `src/context_compactor.rs` — **remover** (código morto)
-- `src/time_travel.rs` — **remover** (código morto)
 - `src/workspace_trust.rs` — testes unitários
 - `src/memory/search.rs` — testes unitários
 - `src/memory/checkpoint.rs` — testes in-file
 - `src/security/*` — testes abrangentes
 
-### Meta de cobertura por fase:
+### Meta de cobertura por checkpoint:
 
-1. **Fase 1** — Testes unitários para `shell.rs` (validação de comandos), `file_write.rs` (validação de caminhos), `memory/store.rs` (CRUD)
-2. **Fase 2** — Testes de integração para o ReAct loop do agente
-3. **Fase 3** — Testes de segurança (injection, path traversal, sanitização)
+1. **CP-10** — Testes unitários para `shell.rs` (validação de comandos), `file_write.rs` (validação de caminhos), `memory/store.rs` (CRUD)
+2. **CP-11** — Testes de integração para o ReAct loop do agente + testes de segurança
+3. **CP-13** — Testes de segurança (injection, path traversal, sanitização)
 
 ---
 
-## 9. Documentação
+## 8. Documentação
 
 | Ação | Detalhe |
 |------|---------|
@@ -323,7 +220,7 @@ Cobertura atual estimada: **~15-20%** dos módulos.
 
 ## 10. Ordem de Execução
 
-### Fase 1 — Limpeza e Bugs Críticos (CONCLUÍDA)
+### CP-1 — Limpeza e Bugs Críticos ✅ CONCLUÍDO
 
 - [x] Remover `src/ab_testing.rs`, `src/wither.rs`, `src/lazy_loader.rs`, `src/context_compactor.rs`, `src/time_travel.rs`
 - [x] Remover `src/bridge.rs`, `src/prefetch.rs`
@@ -332,58 +229,236 @@ Cobertura atual estimada: **~15-20%** dos módulos.
 - [x] Remover `futures` de `Cargo.toml`
 - [x] Corrigir bug SQL em `src/memory/store.rs:337-346`
 - [x] Corrigir `is_blocked()` em `src/tools/shell.rs`
-- [x] Remover código comentado de `src/agent.rs` (linhas 858-863, 874-888, 1116-1119, 2453-2456)
-- [x] Remover variável `force_tool_use` não usada
+- [x] Remover código comentado de `src/agent.rs` (3 blocos + `forced_tool_use`)
 - [x] Remover linha morta `let _ = std::env::var("TOKEN")...` em `main.rs`
-- [ ] `cargo clippy` e `cargo fmt` (171 warnings restantes)
 
-### Fase 2 — Segurança (2-3 dias)
+**Verificação:** `cargo check` passa com 0 erros.
 
-- [ ] Adicionar validação de caminho em `file_write.rs` e `file_read.rs`
-- [ ] Integrar `workspace_trust` no fluxo de execução de ferramentas do `agent.rs`
-- [ ] Corrigir fallback de `canonicalize()` em `shell.rs`
-- [ ] Substituir `atty` por `is-terminal`
-- [ ] Planejar substituição de `unsafe` libc por `crossterm`
+---
 
-### Fase 3 — Performance (2-3 dias)
+### CP-2 — Lint e Formatação ✅ CONCLUÍDO
 
-- [ ] Pré-compilar regex com `OnceLock<Regex>` em `agent.rs` e `security/sanitizer.rs`
-- [ ] Adicionar cache de embeddings em memória
-- [ ] Otimizar `search_similar_memories` com índice SQLite ou ANN
-- [ ] Cachear `canonicalize()` em `workspace_trust.rs`
+- [x] Executar `cargo fmt`
+- [x] Executar `cargo clippy --fix` (corrigiu ~100 warnings automaticamente)
+- [x] Remover imports não usados (`OutputSink`, `crate::tools::Tool`, e ~30 outros via clippy fix)
+- [x] Remover `unsafe` aninhados desnecessários em `cli.rs` (6 blocos)
+- [x] Verificar: `cargo check` com 122 warnings restantes (majoritariamente dead code — CP-9)
 
-### Fase 4 — Arquitetura (1-2 semanas)
+**Verificação:** `cargo check` passa. `cargo test` passa com 67 testes.
 
-- [ ] Decompor `agent.rs` em submódulos (`llm_client`, `response_parser`, `plan_executor`, `development`, `session`, `build_validator`, `output`)
-- [ ] Decompor `memory/checkpoint.rs` em submódulos
-- [ ] Unificar gerenciamento de estado (`AppState` + `Store<T>` como padrão único)
-- [ ] Migrar globais `OnceLock` para dentro de `AppState`
-- [ ] Melhorar tratamento de erros (remover `unwrap()`, usar `expect()` com contexto)
+---
 
-### Fase 5 — Testes e Documentação (1-2 semanas)
+### CP-3 — Segurança Crítica (EM PROGRESSO)
 
-- [ ] Testes unitários para `shell.rs`, `file_write.rs`, `file_read.rs`
-- [ ] Testes para `memory/store.rs` (CRUD + search)
-- [ ] Testes de integração para ReAct loop
-- [ ] Testes de segurança (injection, path traversal)
-- [ ] Doc comments em módulos e métodos públicos
-- [ ] Criar `ARCHITECTURE.md`
-- [ ] Extrair strings hardcoded para constantes ou i18n
+- [x] Integrar `workspace_trust` no fluxo de ferramentas em `agent.rs::execute_tool()`
+- [x] Adicionar validação de caminho em `file_write.rs` — bloqueia paths de sistema (/etc, /usr, /bin, etc.)
+- [x] Adicionar validação de caminho em `file_read.rs` — bloqueia arquivos sensíveis (/etc/shadow, .ssh, etc.)
+- [x] Adicionar validação de caminho em `file_edit.rs` — bloqueia paths de sistema
+- [x] Corrigir fallback de `canonicalize()` em `shell.rs:84` — agora retorna `true` (restrito) em vez de usar path bruto
+- [x] Expandir lista de comandos bloqueados em `shell.rs` — `DANGEROUS_COMMANDS` e `SYSTEM_COMMANDS`
+- [x] Escrever testes unitários para `shell.rs::is_blocked()` (testes shell_blocks_system_commands)
+- [x] Escrever testes para `file_write.rs` e `file_read.rs` validação de paths (testes file_write_rejects, file_read_rejects, file_edit_rejects, file_write_allows)
+
+**Verificação:** `cargo test` passa com 72 testes (5 novos de segurança). `file_write` rejeita paths de sistema. `file_read` bloqueia arquivos sensíveis. `shell` bloqueia comandos do sistema.
+
+### CP-3 — Segurança Crítica
+
+- [ ] Integrar `workspace_trust` no fluxo de ferramentas em `agent.rs` — verificar trust antes de `execute_tool()` para `file_write`, `file_read`, `file_edit`, `shell`
+- [ ] Adicionar validação de caminho em `file_write.rs` — rejeitar paths fora do workspace
+- [ ] Adicionar validação de caminho em `file_read.rs` — rejeitar paths fora do workspace
+- [ ] Adicionar validação de caminho em `file_edit.rs` — rejeitar paths fora do workspace
+- [ ] Corrigir fallback de `canonicalize()` em `shell.rs:84` — retornar erro em vez de path bruto
+- [ ] Expandir lista de comandos bloqueados em `shell.rs` — `DANGEROUS_COMMANDS` e `SYSTEM_COMMANDS`
+- [ ] Escrever testes unitários para `shell.rs::is_blocked()` — cobrir comandos perigosos, paths restritos, heredoc, redirect
+
+**Verificação:** `cargo test` passa. `file_write` rejeita paths fora do workspace. `shell` bloqueia comandos perigosos.
+
+---
+
+### CP-4 — Dependências e Depreciações
+
+- [ ] Substituir `atty` por `is-terminal` em `cli.rs`
+- [ ] Adicionar crate `shell-words` ao `Cargo.toml`
+- [ ] Usar `shell-words::split()` em `shell.rs` em vez de `split_whitespace()`
+- [ ] Avaliar se `chaser-oxide` é realmente necessário (usado em `browser/mod.rs`) — se não, remover
+- [ ] Avaliar se `keyring` e `libc` são necessários — se `auth.rs` for removido, podem sair
+- [ ] Verificar: `cargo check` passa
+
+**Verificação:** `cargo check` sem warnings de depreciação. `shell.rs` faz parsing correto de argumentos com aspas.
+
+---
+
+### CP-5 — Performance — Regex e Cache
+
+- [ ] Extrair todos os regex de `parse_response()` em `agent.rs` para `OnceLock<Regex>` estáticos
+- [ ] Extrair regex de `sanitize_model_response()` em `agent.rs` para `OnceLock<Regex>`
+- [ ] Extrair regex de `security/sanitizer.rs` para `OnceLock<Regex>`
+- [ ] Adicionar cache de embeddings em `memory/embeddings.rs` — `HashMap<String, Vec<f32>>` com LRU
+- [ ] Cachear `canonicalize()` em `workspace_trust.rs` — `HashMap<PathBuf, PathBuf>`
+- [ ] Benchmark antes/depois: tempo de uma iteração do ReAct loop com regex compilados vs dinâmicos
+
+**Verificação:** Benchmark mostra redução mensurável em alocações por iteração. `cargo test` passa.
+
+---
+
+### CP-6 — Tratamento de Erros
+
+- [ ] Substituir `.unwrap()` em `app_store.rs` por `.expect("contexto")`
+- [ ] Substituir `.expect("Failed to create HTTP client")` em `config.rs` por `Result` propagável
+- [ ] Substituir `.unwrap()` em `RwLock` de `features.rs` por `.expect()` com contexto
+- [ ] Converter erro de tool em `agent.rs::execute_tool()` — logar como erro em vez de mascarar em `Ok(err_msg)`
+- [ ] Converter `.expect()` em `memory/embeddings.rs:116` para `Result` com fallback graceful
+- [ ] Rotular todos os `unwrap()` restantes com issue tracker ou converter para `expect()`
+- [ ] Verificar: `cargo check` passa
+
+**Verificação:** `grep -r "\.unwrap()" src/` mostra apenas testes ou casos explicitamente seguros.
+
+---
+
+### CP-7 — Arquitetura — Decompor `agent.rs`
+
+- [ ] Criar `src/agent/mod.rs` com `Agent` struct e re-exports
+- [ ] Extrair `src/agent/llm_client.rs` — funções `call_llm()`, `create_http_client()`
+- [ ] Extrair `src/agent/response_parser.rs` — `parse_response()`, `sanitize_model_response()`, todos os regex
+- [ ] Extrair `src/agent/plan_executor.rs` — `execute_plan_steps()`, lógica de planos
+- [ ] Extrair `src/agent/development.rs` — `run_structured_development()`, `DevelopmentCheckpoint` helpers
+- [ ] Extrair `src/agent/session.rs` — `session_save()`, `session_load()`, gerenciamento de sessões
+- [ ] Extrair `src/agent/build_validator.rs` — `validate_build()`, detecção de erros de compilação
+- [ ] Extrair `src/agent/output.rs` — funções `output_write_*`, `OutputManager`, `OutputSink`
+- [ ] Atualizar imports em todos os arquivos que referenciam `crate::agent::*`
+- [ ] Verificar: `cargo check` e `cargo test` passam
+
+**Verificação:** `agent.rs` original reduzido para < 200 linhas (apenas struct + constructor + métodos de orquestração). Todos os testes passam.
+
+---
+
+### CP-8 — Arquitetura — Decompor `checkpoint.rs`
+
+- [ ] Criar `src/memory/checkpoint/mod.rs` com re-exports
+- [ ] Extrair `src/memory/checkpoint/types.rs` — todos os structs e enums (`DevelopmentCheckpoint`, `SessionSummary`, etc.)
+- [ ] Extrair `src/memory/checkpoint/store.rs` — `CheckpointStore`, operações de banco
+- [ ] Extrair `src/memory/checkpoint/events.rs` — `SessionEventStore`, `SessionEvent`, compressão
+- [ ] Extrair `src/memory/checkpoint/lifecycle.rs` — `LifecycleManager`, `SnapshotManager`, políticas
+- [ ] Extrair `src/memory/checkpoint/migration.rs` — schema init e migrações
+- [ ] Atualizar imports em todos os arquivos que referenciam `crate::memory::checkpoint::*`
+- [ ] Verificar: `cargo check` e `cargo test` passam
+
+**Verificação:** `checkpoint.rs` original não existe mais (dividido em 5-6 arquivos). Todos os testes passam.
+
+---
+
+### CP-9 — Unificar Estado e Remover Código Morto Restante
+
+- [ ] Migrar `OnceLock<OutputManager>` e `OnceLock<TmuxManager>` globais de `agent.rs` para dentro de `AppState`
+- [ ] Remover ou marcar `features.rs` como `#[allow(dead_code)]` se não for usado — decidir se integra ou remove
+- [ ] Remover ou marcar `auth.rs` como `#[allow(dead_code)]` — decidir se integra ou remove
+- [ ] Remover `app_store.rs` se `Store<AppState>` não for usado — verificar usos reais
+- [ ] Remover structs não usados em `memory/checkpoint.rs`: `SessionContext`, `SessionEvent`, `EventSummary`, `SnapshotPolicy`, etc.
+- [ ] Remover funções não usadas em `security/`: `get_defense_prompt`, `Sanitizer::tool_output`, `mask_sensitive_data`, etc.
+- [ ] Remover `HookManager`, `McpClient` e structs associados em `skills/` se não forem usados
+- [ ] Verificar: `cargo check` com < 10 warnings (reduzidos de 171)
+
+**Verificação:** `cargo check` com número significativamente reduzido de warnings. Nenhuma struct/função morta visível.
+
+---
+
+### CP-10 — Testes — Ferramentas e Memória
+
+- [ ] Testes unitários para `shell.rs`: comandos bloqueados, paths restritos, heredoc, redirect seguro, parsing
+- [ ] Testes unitários para `file_write.rs`: escrita dentro do workspace, rejeitar path traversal (`../`), rejeitar paths absolutos fora
+- [ ] Testes unitários para `file_read.rs`: leitura dentro do workspace, rejeitar paths fora
+- [ ] Testes unitários para `file_edit.rs`: edição dentro do workspace
+- [ ] Testes unitários para `memory/store.rs`: CRUD, search, importância, cleanup
+- [ ] Testes unitários para `config.rs`: carregar de env, defaults, validação
+- [ ] Verificar: `cargo test` passa com nova cobertura
+
+**Verificação:** `cargo test` executa testes novos em `shell`, `file_write`, `file_read`, `file_edit`, `store`, `config`.
+
+---
+
+### CP-11 — Testes — Segurança e Integração
+
+- [ ] Testes de segurança para `security/injection_detector.rs`: prompt injection, JSON breakout, command injection
+- [ ] Testes de segurança para `security/sanitizer.rs`: sanitização de output, mascaramento de dados sensíveis
+- [ ] Testes de segurança para path traversal: `../../../etc/passwd`, symlinks, paths absolutos
+- [ ] Teste de integração para ReAct loop: simular chamada LLM, verificar parsing de ação, execução de ferramenta
+- [ ] Teste de integração para checkpoint: criar, salvar, carregar, retomar
+- [ ] Verificar: `cargo test` passa
+
+**Verificação:** Testes de segurança cobrem os vetores de ataque conhecidos. Teste de integração do ReAct loop passa.
+
+---
+
+### CP-12 — CLI — Migrar Unsafe para Crossterm
+
+- [ ] Adicionar `crossterm` ao `Cargo.toml`
+- [ ] Refatorar `cli.rs:406-573` para usar `crossterm` em vez de `libc::termios` + `libc::read`
+- [ ] Remover blocos `#[cfg(unix)]` e `#[cfg(not(unix))]` duplicados — `crossterm` é cross-platform
+- [ ] Refatorar `run()` function (>500 linhas) em funções menores
+- [ ] Remover dependência `libc` se não for mais necessária
+- [ ] Verificar: CLI funciona em macOS e Linux
+
+**Verificação:** `cargo test` passa. CLI interativo funciona sem `unsafe`. `libc` removido de `Cargo.toml`.
+
+---
+
+### CP-13 — Documentação
+
+- [ ] Adicionar `//!` doc comments em cada módulo (`agent`, `memory`, `tools`, `security`, `skills`, `cli`)
+- [ ] Adicionar `///` doc comments em métodos públicos de `Agent`, `MemoryStore`, `ToolRegistry`, `CheckpointStore`
+- [ ] Criar `ARCHITECTURE.md` com diagrama de módulos, fluxo de dados, sistema de trust
+- [ ] Extrair strings hardcoded (mistura PT/EN) para constantes ou arquivo de i18n
+- [ ] Atualizar `AGENTS.md` com comandos atuais e estrutura de módulos refletem o código pós-refatoração
+
+**Verificação:** `cargo doc --no-deps` gera documentação sem warnings. `ARCHITECTURE.md` reflete a estrutura real do código.
+
+---
+
+### CP-14 — Memory — Busca Escalável
+
+- [ ] Implementar índice FTS5 no SQLite para `search_similar_memories` em `memory/store.rs`
+- [ ] Benchmark: buscar entre 1000, 10000 e 100000 memórias
+- [ ] Adicionar migração de schema para criar tabela FTS5
+- [ ] Fallback para scan linear se FTS5 não estiver disponível
+- [ ] Verificar: `cargo test` passa. Busca é O(log n) com FTS5.
+
+**Verificação:** Benchmark mostra busca < 10ms com 10.000+ memórias.
+
+---
+
+### Resumo de Checkpoints
+
+| Checkpoint | Descrição | Status | Estimativa |
+|------------|-----------|--------|------------|
+| **CP-1** | Limpeza e Bugs Críticos | ✅ Concluído | — |
+| **CP-2** | Lint e Formatação | ✅ Concluído | — |
+| **CP-3** | Segurança Crítica | 🔄 Em progresso | 2-3 dias |
+| **CP-4** | Dependências e Depreciações | ⬜ Pendente | 1 dia |
+| **CP-5** | Performance — Regex e Cache | ⬜ Pendente | 2-3 dias |
+| **CP-6** | Tratamento de Erros | ⬜ Pendente | 1-2 dias |
+| **CP-7** | Decompor `agent.rs` | ⬜ Pendente | 3-5 dias |
+| **CP-8** | Decompor `checkpoint.rs` | ⬜ Pendente | 2-3 dias |
+| **CP-9** | Unificar Estado e Remover Morto | ⬜ Pendente | 2-3 dias |
+| **CP-10** | Testes — Ferramentas e Memória | ⬜ Pendente | 2-3 dias |
+| **CP-11** | Testes — Segurança e Integração | ⬜ Pendente | 2-3 dias |
+| **CP-12** | CLI — Migrar para Crossterm | ⬜ Pendente | 2-3 dias |
+| **CP-13** | Documentação | ⬜ Pendente | 2-3 dias |
+| **CP-14** | Memory — Busca Escalável | ⬜ Pendente | 2-3 dias |
 
 ---
 
 ## Referência Rápida — Problemas por Arquivo
 
-| Arquivo | Linhas | Rating | Problemas Principais |
-|---------|--------|--------|---------------------|
-| `agent.rs` | 3.114 | 1/5 | God object, regex hot, unwrap, dead code, duplicação |
-| `memory/checkpoint.rs` | 2.348 | 2/5 | Arquivo massivo, deve ser dividido |
-| `cli.rs` | 764 | 3/5 | Unsafe libc, display duplicado |
-| `tools/shell.rs` | 350 | 2/5 | Bloqueio quebrado, path traversal, sem testes |
-| `tools/file_write.rs` | 85 | 2/5 | Sem validação de caminho |
-| `memory/store.rs` | 595 | 3/5 | Bug SQL, ALTER TABLE silencioso |
-| `memory/embeddings.rs` | 118 | 3/5 | Fallback ingênuo, panic sem API key |
-| `config.rs` | 238 | 4/5 | Limpo e bem estruturado |
-| `security/*` | ~1.300 | 4/5 | Módulo bem projetado com testes |
-| `workspace_trust.rs` | 381 | 4/5 | Bom design, bom testes |
-| `tools/mod.rs` | 494 | 4/5 | Testes abrangentes |
+| Arquivo | Linhas | Rating | Problemas Principais | Checkpoint |
+|---------|--------|--------|----------------------|------------|
+| `agent.rs` | 3.072 | 1/5 | God object, regex hot, unwrap, duplicação | CP-5, CP-6, CP-7 |
+| `memory/checkpoint.rs` | 2.348 | 2/5 | Arquivo massivo, deve ser dividido | CP-8 |
+| `cli.rs` | 764 | 3/5 | Unsafe libc, display duplicado | CP-12 |
+| `tools/shell.rs` | 350 | 2/5 | Path traversal, sem testes | CP-3, CP-4 |
+| `tools/file_write.rs` | 85 | 2/5 | Sem validação de caminho | CP-3 |
+| `memory/store.rs` | 595 | 3/5 | ALTER TABLE silencioso | CP-10, CP-14 |
+| `memory/embeddings.rs` | 118 | 3/5 | Fallback ingênuo, panic sem API key | CP-6 |
+| `config.rs` | 238 | 4/5 | Limpo e bem estruturado | — |
+| `security/*` | ~1.300 | 4/5 | Módulo bem projetado com testes | — |
+| `workspace_trust.rs` | 381 | 4/5 | Bom design, bom testes | CP-3 |
+| `tools/mod.rs` | 494 | 4/5 | Testes abrangentes | — |

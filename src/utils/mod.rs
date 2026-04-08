@@ -1,6 +1,6 @@
-pub mod spinner;
-pub mod output;
-pub mod tmux;
 pub mod build_detector;
-pub mod error_parser;
 pub mod colors;
+pub mod error_parser;
+pub mod output;
+pub mod spinner;
+pub mod tmux;

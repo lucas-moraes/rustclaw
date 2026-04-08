@@ -1,4 +1,3 @@
-use crate::auth::get_api_key;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

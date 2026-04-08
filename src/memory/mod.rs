@@ -27,7 +27,9 @@ pub struct MemoryEntry {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum MemoryScope {
+    #[default]
     Session,
     Project,
     Global,
@@ -51,12 +53,6 @@ impl From<&str> for MemoryScope {
             "global" => MemoryScope::Global,
             _ => MemoryScope::Session,
         }
-    }
-}
-
-impl Default for MemoryScope {
-    fn default() -> Self {
-        MemoryScope::Session
     }
 }
 
