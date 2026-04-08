@@ -95,19 +95,19 @@ O sistema atual:
 
 ### Feature 5: TTL e Archive Policy
 
-- [ ] **5.1** Criar struct `LifecyclePolicy` com defaults
-- [ ] **5.2** Criar `cleanup_job()` que roda em background:
+- [x] **5.1** Criar struct `LifecyclePolicy` com defaults
+- [x] **5.2** Criar `cleanup_job()` que roda em background:
   - Delete checkpoints WHERE created_at < now() - checkpoint_ttl
   - Downgrade memories importance WHERE last_accessed < now() - session_memory_ttl
   - Mark sessions as archived WHERE last_accessed < now() - archive_after
-- [ ] **5.3** Criar `archive_session(session_id, location)`:
+- [x] **5.3** Criar `archive_session(session_id, location)`:
   - Serializa session + memories para JSON
   - Move para arquivo/archive
   - Remove do SQLite
-- [ ] **5.4** Criar `restore_session(archive_path)` para recovery
-- [ ] **5.5** Hook no startup: `LifecycleManager::new().run_cleanup()`
-- [ ] **5.6** Criar comando `/archive` ou via config para trigger manual
-- [ ] **5.7** Testar: criar dado antigo, rodar cleanup, verificar TTL applied
+- [x] **5.4** Criar `restore_session(archive_path)` para recovery
+- [x] **5.5** Hook no startup: `LifecycleManager::new().run_cleanup()`
+- [x] **5.6** Criar comando `/archive` ou via config para trigger manual
+- [x] **5.7** Testar: criar dado antigo, rodar cleanup, verificar TTL applied
 
 ### Feature 6: Session Fingerprinting
 

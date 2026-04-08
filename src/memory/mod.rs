@@ -77,6 +77,17 @@ impl std::fmt::Display for MemoryType {
     }
 }
 
+impl From<&str> for MemoryType {
+    fn from(s: &str) -> Self {
+        match s {
+            "fact" => MemoryType::Fact,
+            "episode" => MemoryType::Episode,
+            "tool_result" => MemoryType::ToolResult,
+            _ => MemoryType::Episode,
+        }
+    }
+}
+
 impl MemoryEntry {
     pub fn new(
         content: String,
