@@ -4,16 +4,67 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use uuid::Uuid;
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum SessionType {
+    Project,
+    Subtask,
+    Research,
+    Chat,
+}
+
+impl std::fmt::Display for SessionType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SessionType::Project => write!(f, "project"),
+            SessionType::Subtask => write!(f, "subtask"),
+            SessionType::Research => write!(f, "research"),
+            SessionType::Chat => write!(f, "chat"),
+        }
+    }
+}
+
+impl From<&str> for SessionType {
+    fn from(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "project" => SessionType::Project,
+            "subtask" => SessionType::Subtask,
+            "research" => SessionType::Research,
+            "chat" => SessionType::Chat,
+            _ => SessionType::Chat,
+        }
+    }
+}
+
+impl Default for SessionType {
+    fn default() -> Self {
+        SessionType::Chat
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionSummary {
     pub session_id: String,
-    pub summary: String,     // First 500 chars of user_input or session_name
+    pub title: String,       // Título da conversa
+    pub summary: String,     // Resumo da conversa (gerado por LLM)
     pub phase: String,       // Current phase
     pub state: String,       // Current state
     pub project_dir: String, // Project directory if any
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
-    pub last_user_input: String, // Last user input for context
+    pub first_input: String,       // Primeira mensagem do usuário
+    pub last_input: String,        // Última mensagem do usuário
+    pub message_count: usize,      // Total de mensagens trocadas
+    pub topics: Vec<String>,       // Tópicos discutidos
+    pub parent_id: Option<String>, // Parent session for hierarchy
+    pub session_type: SessionType, // Type of session
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionContext {
+    pub current: SessionSummary,
+    pub ancestors: Vec<SessionSummary>,
+    pub children: Vec<SessionSummary>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,6 +102,8 @@ pub struct DevelopmentCheckpoint {
     pub retry_count: usize,         // NEW: número de tentativas no step atual
     pub last_error: Option<String>, // NEW: último erro encontrado
     pub auto_loop_enabled: bool,    // NEW: se está em modo auto loop
+    pub parent_id: Option<String>,  // Parent session for hierarchy
+    pub session_type: Option<SessionType>, // Type of session
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -177,20 +230,65 @@ impl CheckpointStore {
             .conn
             .execute("ALTER TABLE checkpoints ADD COLUMN session_name TEXT", []);
 
+        // Migration: add parent_id for session hierarchy
+        let _ = self
+            .conn
+            .execute("ALTER TABLE checkpoints ADD COLUMN parent_id TEXT", []);
+
+        // Migration: add session_type for session type
+        let _ = self.conn.execute(
+            "ALTER TABLE checkpoints ADD COLUMN session_type TEXT DEFAULT 'chat'",
+            [],
+        );
+
         // Create session_summaries table for fast session listing
         self.conn.execute(
             "CREATE TABLE IF NOT EXISTS session_summaries (
                 session_id TEXT PRIMARY KEY,
+                title TEXT DEFAULT '',
                 summary TEXT NOT NULL,
                 phase TEXT NOT NULL DEFAULT 'executing',
                 state TEXT NOT NULL,
                 project_dir TEXT DEFAULT '',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
-                last_user_input TEXT DEFAULT ''
+                first_input TEXT DEFAULT '',
+                last_input TEXT DEFAULT '',
+                message_count INTEGER DEFAULT 0,
+                topics TEXT DEFAULT '[]'
             )",
             [],
         )?;
+
+        // Migration: add new columns if they don't exist
+        let _ = self.conn.execute(
+            "ALTER TABLE session_summaries ADD COLUMN title TEXT DEFAULT ''",
+            [],
+        );
+        let _ = self.conn.execute(
+            "ALTER TABLE session_summaries ADD COLUMN first_input TEXT DEFAULT ''",
+            [],
+        );
+        let _ = self.conn.execute(
+            "ALTER TABLE session_summaries ADD COLUMN last_input TEXT DEFAULT ''",
+            [],
+        );
+        let _ = self.conn.execute(
+            "ALTER TABLE session_summaries ADD COLUMN message_count INTEGER DEFAULT 0",
+            [],
+        );
+        let _ = self.conn.execute(
+            "ALTER TABLE session_summaries ADD COLUMN topics TEXT DEFAULT '[]'",
+            [],
+        );
+        let _ = self.conn.execute(
+            "ALTER TABLE session_summaries ADD COLUMN parent_id TEXT",
+            [],
+        );
+        let _ = self.conn.execute(
+            "ALTER TABLE session_summaries ADD COLUMN session_type TEXT DEFAULT 'chat'",
+            [],
+        );
 
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_checkpoints_state ON checkpoints(state)",
@@ -202,23 +300,37 @@ impl CheckpointStore {
             [],
         )?;
 
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_session_summaries_parent ON session_summaries(parent_id)",
+            [],
+        )?;
+
         Ok(())
     }
 
     /// Save or update a session summary
     pub fn save_session_summary(&self, summary: &SessionSummary) -> SqliteResult<()> {
+        let topics_json =
+            serde_json::to_string(&summary.topics).unwrap_or_else(|_| "[]".to_string());
         self.conn.execute(
-            "INSERT OR REPLACE INTO session_summaries (session_id, summary, phase, state, project_dir, created_at, updated_at, last_user_input)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT OR REPLACE INTO session_summaries 
+             (session_id, title, summary, phase, state, project_dir, created_at, updated_at, first_input, last_input, message_count, topics, parent_id, session_type)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             params![
                 summary.session_id,
+                summary.title,
                 summary.summary,
                 summary.phase,
                 summary.state,
                 summary.project_dir,
                 summary.created_at.to_rfc3339(),
                 summary.updated_at.to_rfc3339(),
-                summary.last_user_input,
+                summary.first_input,
+                summary.last_input,
+                summary.message_count as i64,
+                topics_json,
+                summary.parent_id,
+                summary.session_type.to_string(),
             ],
         )?;
         Ok(())
@@ -227,25 +339,36 @@ impl CheckpointStore {
     /// Get a session summary by session_id
     pub fn get_session_summary(&self, session_id: &str) -> SqliteResult<Option<SessionSummary>> {
         let mut stmt = self.conn.prepare(
-            "SELECT session_id, summary, phase, state, project_dir, created_at, updated_at, last_user_input
-             FROM session_summaries WHERE session_id = ?1"
+            "SELECT session_id, title, summary, phase, state, project_dir, created_at, updated_at, 
+                    first_input, last_input, message_count, topics, parent_id, session_type
+             FROM session_summaries WHERE session_id = ?1",
         )?;
 
         let mut rows = stmt.query(params![session_id])?;
         if let Some(row) = rows.next()? {
+            let topics_str: String = row.get(11).ok().unwrap_or_else(|| "[]".to_string());
+            let topics: Vec<String> = serde_json::from_str(&topics_str).unwrap_or_default();
+            let parent_id: Option<String> = row.get(12).ok();
+            let session_type_str: String = row.get(13).ok().unwrap_or_else(|| "chat".to_string());
             Ok(Some(SessionSummary {
                 session_id: row.get(0)?,
-                summary: row.get(1)?,
-                phase: row.get(2)?,
-                state: row.get(3)?,
-                project_dir: row.get(4)?,
-                created_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(5)?)
+                title: row.get(1).ok().unwrap_or_default(),
+                summary: row.get(2)?,
+                phase: row.get(3)?,
+                state: row.get(4)?,
+                project_dir: row.get(5)?,
+                created_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(6)?)
                     .map(|dt| dt.with_timezone(&Utc))
                     .unwrap_or_else(|_| Utc::now()),
-                updated_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(6)?)
+                updated_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(7)?)
                     .map(|dt| dt.with_timezone(&Utc))
                     .unwrap_or_else(|_| Utc::now()),
-                last_user_input: row.get(7).ok().unwrap_or_default(),
+                first_input: row.get(8).ok().unwrap_or_default(),
+                last_input: row.get(9).ok().unwrap_or_default(),
+                message_count: row.get::<_, i64>(10).ok().unwrap_or(0) as usize,
+                topics,
+                parent_id,
+                session_type: SessionType::from(session_type_str.as_str()),
             }))
         } else {
             Ok(None)
@@ -263,29 +386,67 @@ impl CheckpointStore {
         Ok(())
     }
 
+    /// Update session with new message (call after each exchange)
+    pub fn update_session_message(&self, session_id: &str, user_input: &str) -> SqliteResult<()> {
+        // Get current session
+        if let Some(mut session) = self.get_session_summary(session_id)? {
+            // Update last_input and increment message_count
+            session.last_input = user_input.to_string();
+            session.message_count += 1;
+            session.updated_at = Utc::now();
+
+            // If first_input is empty, set it
+            if session.first_input.is_empty() {
+                session.first_input = user_input.to_string();
+            }
+
+            // Auto-generate title from first input if empty
+            if session.title.is_empty() {
+                session.title = user_input.chars().take(40).collect::<String>();
+                if user_input.len() > 40 {
+                    session.title.push_str("...");
+                }
+            }
+
+            self.save_session_summary(&session)?;
+        }
+        Ok(())
+    }
+
     /// List all session summaries ordered by most recent
     pub fn list_session_summaries(&self, limit: usize) -> SqliteResult<Vec<SessionSummary>> {
         let mut stmt = self.conn.prepare(
-            "SELECT session_id, summary, phase, state, project_dir, created_at, updated_at, last_user_input
+            "SELECT session_id, title, summary, phase, state, project_dir, created_at, updated_at, 
+                    first_input, last_input, message_count, topics, parent_id, session_type
              FROM session_summaries
              ORDER BY updated_at DESC
-             LIMIT ?1"
+             LIMIT ?1",
         )?;
 
         let rows = stmt.query_map(params![limit as i64], |row| {
+            let topics_str: String = row.get(11).ok().unwrap_or_else(|| "[]".to_string());
+            let topics: Vec<String> = serde_json::from_str(&topics_str).unwrap_or_default();
+            let parent_id: Option<String> = row.get(12).ok();
+            let session_type_str: String = row.get(13).ok().unwrap_or_else(|| "chat".to_string());
             Ok(SessionSummary {
                 session_id: row.get(0)?,
-                summary: row.get(1)?,
-                phase: row.get(2)?,
-                state: row.get(3)?,
-                project_dir: row.get(4)?,
-                created_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(5)?)
+                title: row.get(1).ok().unwrap_or_default(),
+                summary: row.get(2)?,
+                phase: row.get(3)?,
+                state: row.get(4)?,
+                project_dir: row.get(5)?,
+                created_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(6)?)
                     .map(|dt| dt.with_timezone(&Utc))
                     .unwrap_or_else(|_| Utc::now()),
-                updated_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(6)?)
+                updated_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(7)?)
                     .map(|dt| dt.with_timezone(&Utc))
                     .unwrap_or_else(|_| Utc::now()),
-                last_user_input: row.get(7).ok().unwrap_or_default(),
+                first_input: row.get(8).ok().unwrap_or_default(),
+                last_input: row.get(9).ok().unwrap_or_default(),
+                message_count: row.get::<_, i64>(10).ok().unwrap_or(0) as usize,
+                topics,
+                parent_id,
+                session_type: SessionType::from(session_type_str.as_str()),
             })
         })?;
 
@@ -296,10 +457,107 @@ impl CheckpointStore {
         Ok(summaries)
     }
 
+    /// List session summaries filtered by parent_id
+    pub fn list_session_summaries_by_parent(
+        &self,
+        parent_id: &str,
+        limit: usize,
+    ) -> SqliteResult<Vec<SessionSummary>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT session_id, title, summary, phase, state, project_dir, created_at, updated_at, 
+                    first_input, last_input, message_count, topics, parent_id, session_type
+             FROM session_summaries
+             WHERE parent_id = ?1
+             ORDER BY updated_at DESC
+             LIMIT ?2",
+        )?;
+
+        let rows = stmt.query_map(params![parent_id, limit as i64], |row| {
+            let topics_str: String = row.get(11).ok().unwrap_or_else(|| "[]".to_string());
+            let topics: Vec<String> = serde_json::from_str(&topics_str).unwrap_or_default();
+            let parent_id: Option<String> = row.get(12).ok();
+            let session_type_str: String = row.get(13).ok().unwrap_or_else(|| "chat".to_string());
+            Ok(SessionSummary {
+                session_id: row.get(0)?,
+                title: row.get(1).ok().unwrap_or_default(),
+                summary: row.get(2)?,
+                phase: row.get(3)?,
+                state: row.get(4)?,
+                project_dir: row.get(5)?,
+                created_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(6)?)
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .unwrap_or_else(|_| Utc::now()),
+                updated_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(7)?)
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .unwrap_or_else(|_| Utc::now()),
+                first_input: row.get(8).ok().unwrap_or_default(),
+                last_input: row.get(9).ok().unwrap_or_default(),
+                message_count: row.get::<_, i64>(10).ok().unwrap_or(0) as usize,
+                topics,
+                parent_id,
+                session_type: SessionType::from(session_type_str.as_str()),
+            })
+        })?;
+
+        let mut summaries = Vec::new();
+        for summary in rows {
+            summaries.push(summary?);
+        }
+        Ok(summaries)
+    }
+
+    /// Get all ancestors of a session (parent chain to root)
+    pub fn get_ancestors(&self, session_id: &str) -> SqliteResult<Vec<SessionSummary>> {
+        let mut ancestors = Vec::new();
+        let mut current_id = Some(session_id.to_string());
+
+        while let Some(id) = current_id {
+            if let Some(summary) = self.get_session_summary(&id)? {
+                if summary.session_id == id
+                    && ancestors
+                        .iter()
+                        .any(|a: &SessionSummary| a.session_id == id)
+                {
+                    break;
+                }
+                if summary.session_id != session_id {
+                    ancestors.insert(0, summary.clone());
+                }
+                current_id = summary.parent_id.clone();
+            } else {
+                break;
+            }
+        }
+
+        Ok(ancestors)
+    }
+
+    /// Get the root session of a hierarchy
+    pub fn get_root_session(&self, session_id: &str) -> SqliteResult<Option<SessionSummary>> {
+        let ancestors = self.get_ancestors(session_id)?;
+        Ok(ancestors.into_iter().next())
+    }
+
+    /// Get full context for a session including parent context
+    pub fn get_full_context(&self, session_id: &str) -> SqliteResult<Option<SessionContext>> {
+        if let Some(current) = self.get_session_summary(session_id)? {
+            let ancestors = self.get_ancestors(session_id)?;
+            let children = self.list_session_summaries_by_parent(session_id, 10)?;
+
+            Ok(Some(SessionContext {
+                current,
+                ancestors,
+                children,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
     pub fn save(&self, checkpoint: &DevelopmentCheckpoint) -> SqliteResult<()> {
         self.conn.execute(
-            "INSERT OR REPLACE INTO checkpoints (id, user_input, session_name, current_iteration, messages_json, completed_tools_json, plan_text, project_dir, plan_file, active_skill, phase, state, created_at, updated_at, retry_count)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+            "INSERT OR REPLACE INTO checkpoints (id, user_input, session_name, current_iteration, messages_json, completed_tools_json, plan_text, project_dir, plan_file, active_skill, phase, state, created_at, updated_at, retry_count, parent_id, session_type)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
             params![
                 checkpoint.id,
                 checkpoint.user_input,
@@ -316,17 +574,21 @@ impl CheckpointStore {
                 checkpoint.created_at.to_rfc3339(),
                 checkpoint.updated_at.to_rfc3339(),
                 checkpoint.retry_count,
+                checkpoint.parent_id,
+                checkpoint.session_type.map(|t| t.to_string()),
             ],
         )?;
 
         // Also update session summary
         let summary = SessionSummary {
             session_id: checkpoint.id.clone(),
+            title: checkpoint.session_name.clone().unwrap_or_default(),
             summary: checkpoint.session_name.clone().unwrap_or_else(|| {
-                if checkpoint.user_input.len() > 500 {
-                    format!("{}...", &checkpoint.user_input[..500])
+                let truncated: String = checkpoint.user_input.chars().take(500).collect();
+                if truncated.len() == 500 {
+                    format!("{}...", truncated)
                 } else {
-                    checkpoint.user_input.clone()
+                    truncated
                 }
             }),
             phase: checkpoint.phase.to_string(),
@@ -334,7 +596,12 @@ impl CheckpointStore {
             project_dir: checkpoint.project_dir.clone(),
             created_at: checkpoint.created_at,
             updated_at: chrono::Utc::now(),
-            last_user_input: checkpoint.user_input.clone(),
+            first_input: checkpoint.user_input.clone(),
+            last_input: checkpoint.user_input.clone(),
+            message_count: checkpoint.current_iteration,
+            topics: vec![],
+            parent_id: checkpoint.parent_id.clone(),
+            session_type: checkpoint.session_type.unwrap_or_default(),
         };
         self.save_session_summary(&summary)?;
 
@@ -505,6 +772,10 @@ impl CheckpointStore {
             retry_count: row.get(14).unwrap_or(0),
             last_error: None,
             auto_loop_enabled: false,
+            parent_id: row.get(15).ok(),
+            session_type: row
+                .get::<_, Option<String>>(16)?
+                .map(|s| SessionType::from(s.as_str())),
             created_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(12)?)
                 .map(|dt| dt.with_timezone(&Utc))
                 .unwrap_or_else(|_| Utc::now()),
@@ -518,11 +789,11 @@ impl CheckpointStore {
 impl DevelopmentCheckpoint {
     pub fn new(user_input: String) -> Self {
         let now = Utc::now();
-        // Generate a short session name from the user input (first 40 chars)
-        let session_name = if user_input.len() > 40 {
-            format!("{}...", &user_input[..40])
+        let session_name: String = user_input.chars().take(40).collect();
+        let session_name = if session_name.len() == 40 {
+            format!("{}...", session_name)
         } else {
-            user_input.clone()
+            session_name
         };
         Self {
             id: Uuid::new_v4().to_string(),
@@ -542,6 +813,8 @@ impl DevelopmentCheckpoint {
             retry_count: 0,
             last_error: None,
             auto_loop_enabled: false,
+            parent_id: None,
+            session_type: None,
             created_at: now,
             updated_at: now,
         }
@@ -710,6 +983,38 @@ impl DevelopmentCheckpoint {
 
     pub fn should_retry(&self, max_retries: usize) -> bool {
         self.retry_count < max_retries
+    }
+
+    pub fn with_parent(mut self, parent_id: String) -> Self {
+        self.parent_id = Some(parent_id);
+        self
+    }
+
+    pub fn with_session_type(mut self, session_type: SessionType) -> Self {
+        self.session_type = Some(session_type);
+        self
+    }
+
+    pub fn as_subtask_of(parent: &SessionSummary, user_input: String) -> Self {
+        let mut checkpoint = Self::new(user_input);
+        checkpoint.parent_id = Some(parent.session_id.clone());
+        checkpoint.session_type = Some(SessionType::Subtask);
+        if parent.project_dir.is_empty() {
+            checkpoint.project_dir = parent.project_dir.clone();
+        }
+        checkpoint
+    }
+
+    pub fn as_project(user_input: String) -> Self {
+        let mut checkpoint = Self::new(user_input);
+        checkpoint.session_type = Some(SessionType::Project);
+        checkpoint
+    }
+
+    pub fn as_research(user_input: String) -> Self {
+        let mut checkpoint = Self::new(user_input);
+        checkpoint.session_type = Some(SessionType::Research);
+        checkpoint
     }
 }
 

@@ -46,7 +46,6 @@ impl MemoryStore {
         self.conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS memories (
                 id TEXT PRIMARY KEY,
-                session_id TEXT,
                 content TEXT NOT NULL,
                 embedding BLOB NOT NULL,
                 timestamp TEXT NOT NULL,
@@ -54,9 +53,15 @@ impl MemoryStore {
                 memory_type TEXT NOT NULL CHECK(memory_type IN ('fact', 'episode', 'tool_result')),
                 metadata TEXT NOT NULL DEFAULT '{}',
                 search_count INTEGER NOT NULL DEFAULT 0
-            );
+            )",
+        )?;
 
-            CREATE INDEX IF NOT EXISTS idx_timestamp ON memories(timestamp);
+        let _ = self
+            .conn
+            .execute("ALTER TABLE memories ADD COLUMN session_id TEXT", []);
+
+        self.conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_timestamp ON memories(timestamp);
             CREATE INDEX IF NOT EXISTS idx_importance ON memories(importance);
             CREATE INDEX IF NOT EXISTS idx_memory_type ON memories(memory_type);
             CREATE INDEX IF NOT EXISTS idx_session_id ON memories(session_id);
@@ -91,10 +96,6 @@ impl MemoryStore {
             CREATE INDEX IF NOT EXISTS idx_reminder_sent ON reminders(is_sent);
             ",
         )?;
-
-        let _ = self
-            .conn
-            .execute("ALTER TABLE memories ADD COLUMN session_id TEXT", []);
 
         Ok(())
     }

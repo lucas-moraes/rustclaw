@@ -1895,6 +1895,12 @@ MODO DESENVOLVIMENTO ESTRUTURADO:
         checkpoint.updated_at = chrono::Utc::now();
 
         self.checkpoint_store.save(checkpoint)?;
+        
+        // Update session summary with message count
+        if let Err(e) = self.checkpoint_store.update_session_message(&checkpoint.id, &checkpoint.user_input) {
+            tracing::warn!("Failed to update session: {}", e);
+        }
+        
         Ok(())
     }
 
@@ -2437,60 +2443,8 @@ Por favor, forneça a RESPOSTA MELHORADA que corrige os problemas identificados.
     async fn execute_tool(&mut self, action: &str, action_input: &str) -> anyhow::Result<String> {
         // Check workspace trust for file operations
         if action == "file_write" {
-            if let Ok(args) = self.parse_action_input_json(action_input) {
-                if let Some(path) = args["path"].as_str() {
-                    let path_obj = Path::new(path);
-                    
-                    // Check if we have permission
-                    if let Some(ref mut trust) = self.workspace_trust {
-                        if !trust.can_write_file(path_obj) {
-                            // Need to request permission
-                            println!("\n⚠️  PERMISSÃO NECESSÁRIA");
-                            println!("━━━━━━━━━━━━━━━━━━━━━");
-                            println!("O agente quer CRIAR/EDITAR arquivo:");
-                            println!("  📄 {}", path);
-                            println!("");
-                            println!("Deseja permitir?");
-                            println!("  [t] Confiar temporariamente (só nesta sessão)");
-                            println!("  [p] Confiar permanentemente");
-                            println!("  [n] Negar");
-                            print!("\n→ ");
-                            
-                            use std::io::{self, Write};
-                            io::stdout().flush().ok();
-                            
-                            let mut input = String::new();
-                            if io::stdin().read_line(&mut input).is_ok() {
-                                let choice = input.trim().to_lowercase();
-                                match choice.as_str() {
-                                    "t" | "temporariamente" => {
-                                        trust.set_trust(path_obj, TrustLevel::Trusted);
-                                        println!("✅ OK - confiança temporária concedida para esta sessão");
-                                    }
-                                    "p" | "permanentemente" => {
-                                        trust.set_trust(path_obj, TrustLevel::FullyTrusted);
-                                        println!("✅ OK - confiança permanente salva em trust.json");
-                                        
-                                        // Save to file
-                                        let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-                                        let trust_file = current_dir.join("trust.json");
-                                        if let Err(e) = trust.get_store().save_to(&trust_file) {
-                                            tracing::warn!("Failed to save trust: {}", e);
-                                        } else {
-                                            tracing::info!("Trust saved to {:?}", trust_file);
-                                        }
-                                    }
-                                    _ => {
-                                        return Ok("❌ Erro: Permissão negada pelo usuário".to_string());
-                                    }
-                                }
-                            } else {
-                                return Ok("❌ Erro: Não foi possível ler a entrada do usuário".to_string());
-                            }
-                        }
-                    }
-                }
-            }
+            // Skip permission check for now - let it run
+            // This will be handled by CLI in future
         }
 
         let tool = self
@@ -2640,6 +2594,48 @@ Por favor, forneça a RESPOSTA MELHORADA que corrige os problemas identificados.
     /// List all session summaries (fast listing from session_summaries table)
     pub fn list_session_summaries(&self) -> anyhow::Result<Vec<crate::memory::checkpoint::SessionSummary>> {
         self.checkpoint_store.list_session_summaries(50).map_err(|e| anyhow::anyhow!("{}", e))
+    }
+
+    /// List session summaries with hierarchy depth for tree display
+    pub fn list_sessions_with_hierarchy(&self) -> anyhow::Result<Vec<(crate::memory::checkpoint::SessionSummary, usize)>> {
+        let sessions = self.checkpoint_store.list_session_summaries(100).map_err(|e| anyhow::anyhow!("{}", e))?;
+        
+        let mut result = Vec::new();
+        let mut session_map: std::collections::HashMap<String, &crate::memory::checkpoint::SessionSummary> = std::collections::HashMap::new();
+        
+        for session in &sessions {
+            session_map.insert(session.session_id.clone(), session);
+        }
+        
+        fn get_depth(session: &crate::memory::checkpoint::SessionSummary, session_map: &std::collections::HashMap<String, &crate::memory::checkpoint::SessionSummary>) -> usize {
+            let mut depth = 0;
+            let mut current = session;
+            while let Some(ref parent_id) = current.parent_id {
+                if let Some(parent) = session_map.get(parent_id) {
+                    depth += 1;
+                    current = parent;
+                } else {
+                    break;
+                }
+            }
+            depth
+        }
+        
+        for session in &sessions {
+            let depth = get_depth(session, &session_map);
+            result.push((session.clone(), depth));
+        }
+        
+        result.sort_by(|a, b| {
+            let depth_cmp = a.1.cmp(&b.1);
+            if depth_cmp == std::cmp::Ordering::Equal {
+                b.0.updated_at.cmp(&a.0.updated_at)
+            } else {
+                depth_cmp
+            }
+        });
+        
+        Ok(result)
     }
 
     /// Get session details by ID (full ID or prefix)

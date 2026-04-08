@@ -34,6 +34,29 @@ use std::path::PathBuf;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
+const COMMAND_COMMANDS: &[(&str, &str)] = &[
+    ("/help", "Mostrar ajuda"),
+    ("/clear", "Limpar contexto e memórias"),
+    ("/skills", "Listar skills disponíveis"),
+    ("/skill:", "Ativar skill por nome"),
+    ("/sessions", "Listar sessões (interativo)"),
+    ("/session ", "Resumir sessão por ID"),
+    ("/desenvolver", "Desenvolvimento estruturado"),
+];
+
+fn print_command_suggestions(prefix: &str) {
+    println!();
+    println!("{}{}Comandos:{}", Colors::LIGHT_GRAY, Colors::AMBER, Colors::RESET);
+    
+    for (cmd, desc) in COMMAND_COMMANDS.iter() {
+        if cmd.starts_with(prefix) {
+            println!("  {}{:<16}{} - {}", Colors::AMBER, cmd, Colors::RESET, desc);
+        }
+    }
+    
+    println!();
+}
+
 /// Reads multi-line input from the user.
 /// Lines ending with `\` continue to the next line.
 /// Empty line (or line with just spaces) submits the input.
@@ -285,7 +308,27 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
             continue;
         }
         
-        let trimmed = full_input.trim();
+let trimmed = full_input.trim();
+
+        // If user just types "/" (no other characters), show suggestions and get MORE input
+        if trimmed == "/" {
+            print_command_suggestions(trimmed);
+            // Prompt for more input (don't execute yet)
+            let prompt = format!("{}{} / ", Colors::AMBER, "›");
+            if let Ok(more) = rl.readline(&prompt) {
+                if more.trim().starts_with("/") {
+                    // They started a new command - restart loop
+                    full_input = more;
+                } else {
+                    // Continue the command
+                    full_input.push_str(&more);
+                }
+                continue;
+            }
+        } else if trimmed.starts_with("/") {
+            // Show suggestions for partial commands (but still execute)
+            print_command_suggestions(trimmed);
+        }
 
         // Simple newline before processing
         println!();
@@ -333,7 +376,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
             }
             
             println!();
-            let mut sessions = match agent.list_session_summaries() {
+            let mut sessions_with_depth = match agent.list_sessions_with_hierarchy() {
                 Ok(s) => s,
                 Err(e) => {
                     println!("  {}Erro ao listar sessões: {}{}", Colors::RED, e, Colors::RESET);
@@ -341,7 +384,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
                 }
             };
             
-            if sessions.is_empty() {
+            if sessions_with_depth.is_empty() {
                 println!("  {}Nenhuma sessão encontrada{}", Colors::LIGHT_GRAY, Colors::RESET);
                 println!();
                 continue;
@@ -354,7 +397,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
                 // Interactive mode with arrow keys
                 let mut selected = 0;
                 if let Some(ref tid) = target_session_id {
-                    if let Some(idx) = sessions.iter().position(|s| s.session_id.starts_with(tid)) {
+                    if let Some(idx) = sessions_with_depth.iter().position(|(s, _)| s.session_id.starts_with(tid)) {
                         selected = idx;
                     }
                 }
@@ -379,23 +422,38 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
                             println!("{}Sessões anteriores{} - ↑↓ navegar, Enter continuar, q sair", Colors::ORANGE, Colors::RESET);
                             println!();
                             
-                            for (idx, session) in sessions.iter().enumerate() {
+                            for (idx, (session, depth)) in sessions_with_depth.iter().enumerate() {
                                 let marker = if idx == selected { "▶" } else { "  " };
                                 let short_id = &session.session_id[..8.min(session.session_id.len())];
-                                let display_text = &session.summary;
-                                let task_short = if display_text.len() > 40 {
-                                    format!("{}...", &display_text[..40])
+                                let display_text = &session.title;
+                                let task_short: String = display_text.chars().take(36).collect();
+                                let task_short = if task_short.len() == 36 {
+                                    format!("{}...", task_short)
                                 } else {
-                                    display_text.clone()
+                                    task_short
                                 };
+                                
+                                // Indentation based on depth
+                                let indent: String = "  ".repeat(depth.saturating_sub(1).min(5));
+                                let prefix = if *depth > 0 { "└─" } else { "" };
                                 
                                 // Format date: dd/mm HH:MM
                                 let date_str = session.updated_at.format("%d/%m %H:%M").to_string();
                                 
+                                // Session type indicator
+                                let type_indicator = match session.session_type {
+                                    crate::memory::checkpoint::SessionType::Project => "[P]",
+                                    crate::memory::checkpoint::SessionType::Subtask => "[S]",
+                                    crate::memory::checkpoint::SessionType::Research => "[R]",
+                                    crate::memory::checkpoint::SessionType::Chat => "[C]",
+                                };
+                                
                                 if idx == selected {
-                                    println!("{}{} │ {} │ {:40} │ {}{}", Colors::AMBER, marker, short_id, task_short, date_str, Colors::RESET);
+                                    println!("{}{}{}{} │ {} │ {}{} │ {:36} │ {}{}", 
+                                        Colors::AMBER, marker, indent, prefix, short_id, type_indicator, Colors::RESET, task_short, date_str, Colors::RESET);
                                 } else {
-                                    println!("{}  │ {} │ {:40} │ {}", Colors::LIGHT_GRAY, short_id, task_short, date_str);
+                                    println!("{}  {}{} │ {} │ {} │ {:36} │ {}", 
+                                        Colors::LIGHT_GRAY, indent, prefix, short_id, type_indicator, task_short, date_str);
                                 }
                             }
                             println!();
@@ -413,13 +471,13 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
                                         if m >= 2 && seq[0] == 91 {
                                             match seq[1] {
                                                 65 if selected > 0 => selected -= 1, // Up
-                                                66 if selected < sessions.len() - 1 => selected += 1, // Down
+                                                66 if selected < sessions_with_depth.len() - 1 => selected += 1, // Down
                                                 _ => {}
                                             }
                                         }
                                     }
                                     10 | 13 => { // Enter (LF ou CR)
-                                        let selected_id = sessions[selected].session_id.clone();
+                                        let selected_id = sessions_with_depth[selected].0.session_id.clone();
                                         println!("\n{}Continuando sessão...{}", Colors::LIGHT_GRAY, Colors::RESET);
                                         std::io::stdout().flush().ok();
                                         unsafe { libc::tcsetattr(fd, libc::TCSANOW, &old_termios); }
@@ -434,40 +492,40 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
                                         running = false;
                                     }
                                     4 => { // Cmd+D - delete (macOS) or 'd'
-                                        let selected_id = sessions[selected].session_id.clone();
+                                        let selected_id = sessions_with_depth[selected].0.session_id.clone();
                                         tracing::debug!("Delete pressed for session: {}", selected_id);
                                         match agent.delete_session(&selected_id).await {
                                             Ok(msg) => println!("{}{}", Colors::AMBER, msg),
                                             Err(e) => println!("{}Erro ao excluir: {}{}", Colors::RED, e, Colors::RESET),
                                         }
-                                        match agent.list_session_summaries() {
+                                        match agent.list_sessions_with_hierarchy() {
                                             Ok(new_sessions) => {
-                                                sessions = new_sessions;
-                                                if sessions.is_empty() {
+                                                sessions_with_depth = new_sessions;
+                                                if sessions_with_depth.is_empty() {
                                                     println!("\n{}Nenhuma sessão restante{}", Colors::LIGHT_GRAY, Colors::RESET);
                                                     running = false;
-                                                } else if selected >= sessions.len() {
-                                                    selected = sessions.len() - 1;
+                                                } else if selected >= sessions_with_depth.len() {
+                                                    selected = sessions_with_depth.len() - 1;
                                                 }
                                             }
                                             Err(_) => running = false,
                                         }
                                     }
                                     100 => { // lowercase 'd' - also delete
-                                        let selected_id = sessions[selected].session_id.clone();
+                                        let selected_id = sessions_with_depth[selected].0.session_id.clone();
                                         tracing::debug!("Delete (lowercase) pressed for session: {}", selected_id);
                                         match agent.delete_session(&selected_id).await {
                                             Ok(msg) => println!("{}{}", Colors::AMBER, msg),
                                             Err(e) => println!("{}Erro ao excluir: {}{}", Colors::RED, e, Colors::RESET),
                                         }
-                                        match agent.list_session_summaries() {
+                                        match agent.list_sessions_with_hierarchy() {
                                             Ok(new_sessions) => {
-                                                sessions = new_sessions;
-                                                if sessions.is_empty() {
+                                                sessions_with_depth = new_sessions;
+                                                if sessions_with_depth.is_empty() {
                                                     println!("\n{}Nenhuma sessão restante{}", Colors::LIGHT_GRAY, Colors::RESET);
                                                     running = false;
-                                                } else if selected >= sessions.len() {
-                                                    selected = sessions.len() - 1;
+                                                } else if selected >= sessions_with_depth.len() {
+                                                    selected = sessions_with_depth.len() - 1;
                                                 }
                                             }
                                             Err(_) => running = false,
@@ -481,14 +539,14 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
                                         let new_name: String = rl.readline("").unwrap_or_default().trim().to_string();
                                         
                                         if !new_name.is_empty() {
-                                            match agent.rename_session(&sessions[selected].session_id, &new_name).await {
+                                            match agent.rename_session(&sessions_with_depth[selected].0.session_id, &new_name).await {
                                                 Ok(_) => {
                                                     println!("{}Sessão renomeada para: {}{}", Colors::AMBER, new_name, Colors::RESET);
                                                     // Reload sessions
-                                                    if let Ok(new_sessions) = agent.list_session_summaries() {
-                                                        sessions = new_sessions;
-                                                        if selected >= sessions.len() {
-                                                            selected = sessions.len().saturating_sub(1);
+                                                    if let Ok(new_sessions) = agent.list_sessions_with_hierarchy() {
+                                                        sessions_with_depth = new_sessions;
+                                                        if selected >= sessions_with_depth.len() {
+                                                            selected = sessions_with_depth.len().saturating_sub(1);
                                                         }
                                                     }
                                                 }
@@ -521,13 +579,21 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
                     // Non-Unix fallback - show list
                     println!("{}Sessões anteriores{}:", Colors::ORANGE, Colors::RESET);
                     println!();
-                    for (idx, session) in sessions.iter().enumerate() {
+                    for (idx, (session, depth)) in sessions_with_depth.iter().enumerate() {
                         let marker = if Some(session.session_id.clone()) == target_session_id { "▶" } else { "  " };
                         let short_id = &session.session_id[..8.min(session.session_id.len())];
-                        let display_text = &session.summary;
-                        let task_short = if display_text.len() > 40 { format!("{}...", &display_text[..40]) } else { display_text.clone() };
-                        let phase = &session.phase;
-                        println!("{}{} │ {} │ {:40} │ {}{}", Colors::AMBER, marker, short_id, task_short, phase, Colors::RESET);
+                        let indent = "  ".repeat(depth.saturating_sub(1).min(5));
+                        let prefix = if *depth > 0 { "└─" } else { "" };
+                        let type_indicator = match session.session_type {
+                            crate::memory::checkpoint::SessionType::Project => "[P]",
+                            crate::memory::checkpoint::SessionType::Subtask => "[S]",
+                            crate::memory::checkpoint::SessionType::Research => "[R]",
+                            crate::memory::checkpoint::SessionType::Chat => "[C]",
+                        };
+                        println!("{}{}{} │ {} │ {} │ {:30} │ {} msgs │ {}", 
+                            Colors::AMBER, marker, indent, short_id, type_indicator,
+                            session.title.chars().take(30).collect::<String>(), 
+                            session.message_count, Colors::RESET);
                     }
                 }
             } else {
@@ -535,41 +601,50 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
                 println!("{}Sessões anteriores{}:", Colors::ORANGE, Colors::RESET);
                 println!();
                 
-                for (idx, session) in sessions.iter().enumerate() {
+                for (idx, (session, depth)) in sessions_with_depth.iter().enumerate() {
                     let marker = if Some(session.session_id.clone()) == target_session_id { "▶" } else { "  " };
                     let short_id = &session.session_id[..8.min(session.session_id.len())];
-                    let display_text = &session.summary;
-                    let task_short = if display_text.len() > 40 { format!("{}...", &display_text[..40]) } else { display_text.clone() };
+                    let display_text = &session.title;
+                    let task_short: String = display_text.chars().take(36).collect();
+                    let task_short = if task_short.len() == 36 { format!("{}...", task_short) } else { task_short };
+                    let indent = "  ".repeat(depth.saturating_sub(1).min(5));
+                    let prefix = if *depth > 0 { "└─" } else { "" };
+                    let type_indicator = match session.session_type {
+                        crate::memory::checkpoint::SessionType::Project => "[P]",
+                        crate::memory::checkpoint::SessionType::Subtask => "[S]",
+                        crate::memory::checkpoint::SessionType::Research => "[R]",
+                        crate::memory::checkpoint::SessionType::Chat => "[C]",
+                    };
                     let phase_display = match session.phase.as_str() {
-                        "executing" => "▶ executando",
-                        "awaiting_approval" => "⏳ aguardando",
-                        "completed" => "✓ concluído",
-                        _ => "outro",
+                        "executing" => "▶ exec",
+                        "awaiting_approval" => "⏳ agu",
+                        "completed" => "✓ con",
+                        _ => "out",
                     };
                     if Some(session.session_id.clone()) == target_session_id {
-                        println!("{}{} │ {:2} │ {} │ {:40} │ {}{}", Colors::AMBER, marker, idx + 1, short_id, task_short, phase_display, Colors::RESET);
+                        println!("{}{}{}{} │ {:2} │ {} │ {} │ {:36} │ {}{}", Colors::AMBER, marker, indent, prefix, idx + 1, short_id, type_indicator, task_short, phase_display, Colors::RESET);
                     } else {
-                        println!("{}  │ {:2} │ {} │ {:40} │ {}", Colors::LIGHT_GRAY, idx + 1, short_id, task_short, phase_display);
+                        println!("{}  {}{} │ {:2} │ {} │ {} │ {:36} │ {}", Colors::LIGHT_GRAY, indent, prefix, idx + 1, short_id, type_indicator, task_short, phase_display);
                     }
                 }
                 
                 println!();
                 if let Some(ref tid) = target_session_id {
-                    if let Some(idx) = sessions.iter().position(|s| s.session_id.starts_with(tid)) {
-                        println!("  {}Selecionada:{} {}", Colors::AMBER, Colors::RESET, sessions[idx].summary);
+                    if let Some(idx) = sessions_with_depth.iter().position(|(s, _)| s.session_id.starts_with(tid)) {
+                        println!("  {}Selecionada:{} {}", Colors::AMBER, Colors::RESET, sessions_with_depth[idx].0.summary);
                         println!();
                         print!("  {}▸{} Enter p/ continuar, delete p/ excluir: ", Colors::AMBER, Colors::RESET);
                         io::stdout().flush()?;
                         let action: String = rl.readline("").unwrap_or_default().trim().to_lowercase();
                         if action.is_empty() || action == "enter" {
-                            let selected_id = sessions[idx].session_id.clone();
+                            let selected_id = sessions_with_depth[idx].0.session_id.clone();
                             println!("\n{}Continuando sessão...{}", Colors::LIGHT_GRAY, Colors::RESET);
                             match agent.resume_session(&selected_id).await {
                                 Ok(response) => { println!(); println!("{}", response); }
                                 Err(e) => { println!("{}Erro: {}{}", Colors::RED, e, Colors::RESET); }
                             }
                         } else if action == "delete" || action == "d" {
-                            let selected_id = sessions[idx].session_id.clone();
+                            let selected_id = sessions_with_depth[idx].0.session_id.clone();
                             match agent.delete_session(&selected_id).await {
                                 Ok(_) => println!("{}Sessão excluída{}", Colors::AMBER, Colors::RESET),
                                 Err(e) => println!("{}Erro: {}{}", Colors::RED, e, Colors::RESET),
