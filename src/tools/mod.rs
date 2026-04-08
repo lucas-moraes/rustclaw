@@ -579,4 +579,91 @@ mod tests {
             assert!(res.is_err(), "Should block command: {}", cmd);
         }
     }
+
+    #[tokio::test]
+    async fn file_read_nonexistent_returns_error() {
+        let read = FileReadTool::new();
+        let res = read.call(json!({"path": "/nonexistent/file/that/does/not/exist.txt"}))
+            .await;
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("não existe"));
+    }
+
+    #[tokio::test]
+    async fn file_edit_wrong_old_str_returns_error() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("test.txt");
+        
+        std::fs::write(&file_path, "original content").unwrap();
+        
+        let edit = FileEditTool::new();
+        let res = edit.call(json!({
+            "path": file_path.to_string_lossy(),
+            "old_str": "this does not exist",
+            "new_str": "replacement"
+        })).await;
+        
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("não encontrado"));
+    }
+
+    #[tokio::test]
+    async fn file_write_with_append() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("append.txt");
+        
+        let write = FileWriteTool::new();
+        
+        // First write
+        let res1 = write.call(json!({
+            "path": file_path.to_string_lossy(),
+            "content": "line1\n",
+            "append": false
+        })).await;
+        assert!(res1.is_ok());
+        
+        // Append
+        let res2 = write.call(json!({
+            "path": file_path.to_string_lossy(),
+            "content": "line2\n",
+            "append": true
+        })).await;
+        assert!(res2.is_ok());
+        assert!(res2.unwrap().contains("Atualizado"));
+        
+        // Verify content
+        let content = std::fs::read_to_string(&file_path).unwrap();
+        assert!(content.contains("line1"));
+        assert!(content.contains("line2"));
+    }
+
+    #[tokio::test]
+    async fn file_read_with_max_bytes() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("large.txt");
+        
+        let large_content = "x".repeat(1000);
+        std::fs::write(&file_path, &large_content).unwrap();
+        
+        let read = FileReadTool::new();
+        
+        // Read with limit
+        let res = read.call(json!({
+            "path": file_path.to_string_lossy(),
+            "max_bytes": 100
+        })).await;
+        
+        assert!(res.is_ok());
+        let result = res.unwrap();
+        assert!(result.contains("TRUNCADO"));
+        assert!(result.len() < 1000);
+    }
+
+    #[tokio::test]
+    async fn shell_handles_empty_command() {
+        let shell = ShellTool::new();
+        let res = shell.call(json!({"command": ""})).await;
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("vazio"));
+    }
 }
