@@ -69,10 +69,10 @@ O sistema atual:
   - `append_event(session_id, event)`
   - `get_events(session_id, from_ts, to_ts)`
   - `get_session_timeline(session_id)` → analytics
-- [ ] **3.4** Migrar `save_checkpoint` para gerar eventos automaticamente
+- [x] **3.4** Migrar `save_checkpoint` para gerar eventos automaticamente
 - [x] **3.5** Implementar `get_session_timeline(session_id)` para analytics
-- [ ] **3.6** Adicionar compression para `event_data` JSON grande
-- [ ] **3.7** Deprecar snapshots full em favor de events (manter backward compat)
+- [x] **3.6** Adicionar compression para `event_data` JSON grande
+- [x] **3.7** Deprecar snapshots full em favor de events (manter backward compat)
 
 ### Feature 4: Auto-Snapshot Inteligente
 

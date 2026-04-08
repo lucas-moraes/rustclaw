@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use rusqlite::{params, Connection, Result as SqliteResult};
+use rusqlite::{params, Connection, OptionalExtension, Result as SqliteResult};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use uuid::Uuid;
@@ -495,6 +495,87 @@ impl SessionEventStore {
         )?;
         Ok(deleted)
     }
+
+    pub fn compress_event_data(data: &str) -> String {
+        const COMPRESSION_THRESHOLD: usize = 500;
+
+        if data.len() < COMPRESSION_THRESHOLD {
+            return data.to_string();
+        }
+
+        use std::io::Read;
+
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+
+        if std::io::Write::write_all(&mut encoder, data.as_bytes()).is_ok() {
+            let compressed = encoder.finish().unwrap_or_default();
+            if compressed.len() < data.len() {
+                return base64::Engine::encode(
+                    &base64::engine::general_purpose::STANDARD,
+                    &compressed,
+                );
+            }
+        }
+
+        data.to_string()
+    }
+
+    pub fn decompress_event_data(data: &str, is_compressed: bool) -> String {
+        if !is_compressed {
+            return data.to_string();
+        }
+
+        use std::io::Read;
+
+        let compressed =
+            match base64::Engine::decode(&base64::engine::general_purpose::STANDARD, data) {
+                Ok(c) => c,
+                Err(_) => return data.to_string(),
+            };
+
+        let mut decoder = flate2::read::GzDecoder::new(&compressed[..]);
+        let mut decompressed = String::new();
+
+        if std::io::Read::read_to_string(&mut decoder, &mut decompressed).is_ok() {
+            decompressed
+        } else {
+            data.to_string()
+        }
+    }
+
+    pub fn should_compress(data: &str) -> bool {
+        data.len() > 500
+    }
+
+    pub fn compress_stored_event(&self, event_id: &str) -> SqliteResult<bool> {
+        let result = self.conn.query_row(
+            "SELECT event_data, LENGTH(event_data) FROM session_events WHERE id = ?1 AND compressed = 0",
+            [event_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+        );
+
+        let (data, current_len) = match result.optional() {
+            Ok(Some(pair)) => pair,
+            Ok(None) => return Ok(false),
+            Err(e) => return Err(e),
+        };
+
+        if current_len < 500 {
+            return Ok(false);
+        }
+
+        let compressed = Self::compress_event_data(&data);
+
+        if compressed.len() < data.len() {
+            self.conn.execute(
+                "UPDATE session_events SET event_data = ?1, compressed = 1 WHERE id = ?2",
+                params![compressed, event_id],
+            )?;
+            return Ok(true);
+        }
+
+        Ok(false)
+    }
 }
 
 pub struct DevelopmentCheckpoint {
@@ -719,6 +800,86 @@ impl CheckpointStore {
         )?;
 
         Ok(())
+    }
+
+    pub fn emit_event(
+        &self,
+        session_id: &str,
+        event_type: &SessionEventType,
+        event_data: &serde_json::Value,
+    ) -> SqliteResult<()> {
+        let id = Uuid::new_v4().to_string();
+        let now = Utc::now();
+
+        self.conn.execute(
+            "INSERT INTO session_events (id, session_id, event_type, event_data, created_at, compressed)
+             VALUES (?1, ?2, ?3, ?4, ?5, 0)",
+            params![
+                id,
+                session_id,
+                event_type.to_string(),
+                event_data.to_string(),
+                now.to_rfc3339(),
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    pub fn emit_checkpoint_created(&self, checkpoint: &DevelopmentCheckpoint) -> SqliteResult<()> {
+        let event_data = serde_json::json!({
+            "checkpoint_id": checkpoint.id,
+            "phase": checkpoint.phase.to_string(),
+            "state": checkpoint.state.to_string(),
+            "iteration": checkpoint.current_iteration,
+            "has_plan": !checkpoint.plan_text.is_empty(),
+            "project_dir": checkpoint.project_dir,
+        });
+
+        self.emit_event(
+            &checkpoint.id,
+            &SessionEventType::CheckpointCreated,
+            &event_data,
+        )
+    }
+
+    pub fn emit_phase_changed(
+        &self,
+        session_id: &str,
+        from: &PlanPhase,
+        to: &PlanPhase,
+        reason: &str,
+    ) -> SqliteResult<()> {
+        let event_data = serde_json::json!({
+            "from": from.to_string(),
+            "to": to.to_string(),
+            "reason": reason,
+        });
+
+        self.emit_event(session_id, &SessionEventType::PhaseChanged, &event_data)
+    }
+
+    pub fn emit_state_changed(
+        &self,
+        session_id: &str,
+        from: &DevelopmentState,
+        to: &DevelopmentState,
+    ) -> SqliteResult<()> {
+        let event_data = serde_json::json!({
+            "from": from.to_string(),
+            "to": to.to_string(),
+        });
+
+        self.emit_event(session_id, &SessionEventType::StateChanged, &event_data)
+    }
+
+    pub fn emit_error(&self, session_id: &str, error: &str, context: &str) -> SqliteResult<()> {
+        let event_data = serde_json::json!({
+            "error": error,
+            "context": context,
+        });
+
+        self.emit_event(session_id, &SessionEventType::ErrorOccurred, &event_data)
     }
 
     /// Save or update a session summary
@@ -1017,6 +1178,10 @@ impl CheckpointStore {
             session_type: checkpoint.session_type.unwrap_or_default(),
         };
         self.save_session_summary(&summary)?;
+
+        if let Err(e) = self.emit_checkpoint_created(checkpoint) {
+            tracing::warn!("Failed to emit checkpoint created event: {}", e);
+        }
 
         Ok(())
     }
