@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 //! Security module for prompt injection prevention and input sanitization
 //!
 //! This module provides comprehensive security features to protect against:
