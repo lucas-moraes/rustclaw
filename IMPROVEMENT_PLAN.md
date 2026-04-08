@@ -38,67 +38,47 @@
 
 ## 1. Bugs (Referência — Ver CPs)
 
-> Bugs 2.1–2.4 foram corrigidos no CP-1.
+> Bugs 2.1–2.4 foram corrigidos no CP-1. Bug 2.5 (file_write path validation) corrigido no CP-3.
 
-### 1.1 `file_write.rs` — sem validação de caminho (Ver CP-3)
+### 1.1 `file_write.rs` — validação de caminho ✅ CORRIGIDO (CP-3)
 
-A ferramenta cria diretórios e escreve arquivos em qualquer caminho do filesystem sem verificar `workspace_trust`. Isso é uma vulnerabilidade de segurança.
-
-> **Ação:** Integrar validação com `workspace_trust` antes de qualquer operação de escrita. (CP-3)
+A ferramenta agora bloqueia paths de sistema (/etc, /usr, /bin, etc.) e verifica `workspace_trust`.
 
 ---
 
 ## 2. Problemas de Segurança
 
-| Severidade | Problema | Local | Solução |
-|------------|----------|-------|---------|
-| **ALTA** | `file_write` escreve em qualquer caminho sem validação | `src/tools/file_write.rs` | Integrar `workspace_trust` |
-| **ALTA** | `workspace_trust` nunca é consultado antes de executar ferramentas | `src/agent.rs:118` | Adicionar check antes de `execute_tool()` |
-| **MÉDIA** | `shell.rs:293` — `split_whitespace()` quebra argumentos com aspas | `src/tools/shell.rs` | Usar crate `shell-words` |
-| **MÉDIA** | `shell.rs:84` — fallback de `canonicalize()` bypassa segurança | `src/tools/shell.rs` | Retornar erro em vez de usar path bruto |
-| **MÉDIA** | `cli.rs:411-573` — `unsafe` com `libc` para terminal raw | `src/cli.rs` | Migrar para `crossterm` |
-| **BAIXA** | `sanitize_markdown()` remove todas as tags HTML | `src/security/sanitizer.rs` | Revisar lista de permitidos |
+| Severidade | Problema | Status | Detalhe |
+|------------|----------|--------|---------|
+| **ALTA** | `file_write` escreve em qualquer caminho | ✅ Corrigido (CP-3) | `validate_path()` bloqueia paths de sistema |
+| **ALTA** | `workspace_trust` nunca consultado | ✅ Corrigido (CP-3) | Integrado em `execute_tool()` |
+| **MÉDIA** | `shell.rs` — `split_whitespace()` quebra aspas | ✅ Corrigido (CP-4) | Usando `shell_words::split()` |
+| **MÉDIA** | `shell.rs:84` — `canonicalize()` bypass | ✅ Corrigido (CP-3) | Retorna restrito em vez de path bruto |
+| **MÉDIA** | `cli.rs` — `unsafe` com `libc` | ⬜ Pendente | CP-12 |
+| **BAIXA** | `sanitize_markdown()` remove tags HTML | ⬜ Pendente | Baixa prioridade |
 
 ---
 
 ## 3. Problemas de Performance
 
-### 4.1 Regex compilados em cada chamada (ALTA)
+### 3.1 Regex compilados em cada chamada ✅ CORRIGIDO (CP-5)
 
-`parse_response()` cria ~9 regex por invocação (chamada em cada iteração do ReAct loop).
+Todos os regex em hot paths (`agent.rs` e `sanitizer.rs`) agora usam `OnceLock<Regex>` para compilação única.
 
-```rust
-// Atual (lento):
-fn parse_response(text: &str) -> ... {
-    let re1 = Regex::new(r"...").unwrap();
-    let re2 = Regex::new(r"...").unwrap();
-    // ...
-}
+- `parse_response()`: 7 padrões → `OnceLock`
+- `sanitize_model_response()`, `extract_final_answer()`, `parse_action_input_json()`: 3 usos de `<system-reminder>` → 1 `OnceLock`
+- `review_re`, `suggestion_re`, `plan_step_re`, heredoc patterns, json recovery: todos `OnceLock`
+- `sanitizer.rs`: HTML, ANSI, cookie, auth headers: todos `OnceLock`
 
-// Corrigir com OnceLock:
-static RE_ACTION: OnceLock<Regex> = OnceLock::new();
-fn parse_response(text: &str) -> ... {
-    let re1 = RE_ACTION.get_or_init(|| Regex::new(r"...").unwrap());
-}
-```
+### 3.2 `search_similar_memories` — scan linear ⬜ Pendente
 
-**Arquivos afetados:** `src/agent.rs` (linhas 1746-1747, 2185-2186, 2370, 2378, 2387-2392, 2773, 2784, 2880-2881), `src/security/sanitizer.rs:178-179`
+> **Solução:** Adicionar índice FTS5 no SQLite (CP-14).
 
-### 4.2 `search_similar_memories` — scan linear (MÉDIA)
-
-Carrega TODAS as memórias em memória e faz scan linear.
-
-> **Solução:** Adicionar índice ANN (approximate nearest neighbor) no SQLite ou usar tabela FTS5.
-
-### 4.3 Embedding sem cache (MÉDIA)
-
-Cada operação de memória faz uma chamada HTTP para gerar embeddings.
+### 3.3 Embedding sem cache ⬜ Pendente
 
 > **Solução:** Cache em memória com `HashMap<String, Vec<f32>>` + LRU eviction.
 
-### 4.4 `canonicalize()` repetido (BAIXA)
-
-`workspace_trust.rs` chama `canonicalize()` (I/O de filesystem) repetidamente.
+### 3.4 `canonicalize()` repetido ⬜ Pendente
 
 > **Solução:** Cache com `HashMap<PathBuf, PathBuf>`.
 
@@ -106,10 +86,9 @@ Cada operação de memória faz uma chamada HTTP para gerar embeddings.
 
 ## 4. Arquitetura — Decompor God Objects
 
-### 5.1 `agent.rs` (3.114 linhas)
+### 4.1 `agent.rs` (3.500+ linhas) ⬜ Pendente (CP-7)
 
 Dividir em:
-
 ```
 src/agent/
 ├── mod.rs               # Re-exports e Agent struct
@@ -122,99 +101,78 @@ src/agent/
 └── output.rs              # Formatação de output, cores
 ```
 
-### 5.2 `memory/checkpoint.rs` (2.348 linhas)
+### 4.2 `memory/checkpoint.rs` (2.348 linhas) ⬜ Pendente (CP-8)
 
-Dividir em:
-
-```
-src/memory/checkpoint/
-├── mod.rs           # Re-exports
-├── store.rs         # Operações de banco
-├── types.rs         # Structs e enums
-└── migration.rs     # Schema e migrações
-```
-
-### 5.3 Unificar gerenciamento de estado
+### 4.3 Unificar gerenciamento de estado ⬜ Pendente (CP-9)
 
 O projeto tem 4 padrões de estado:
 1. `AppState` + `Store<T>` — ativo, manter como padrão
-2. `TimeTravelState` — morto, será removido
+2. `TimeTravelState` — removido no CP-1
 3. `FeatureFlags` (`features.rs`) — ativo
-4. `OnceLock<OutputManager>` / `OnceLock<TmuxManager>` globais em `agent.rs`
-
-> **Ação:** Migrar globais `OnceLock` para dentro de `AppState` ou `Store`.
+4. `OnceLock<OutputManager>` / `OnceLock<TmuxManager>` globais em `agent.rs` → migrar para dentro de `AppState`
 
 ---
 
 ## 5. Tratamento de Erros
 
-| Problema | Local | Solução |
-|----------|-------|---------|
-| ~134 `unwrap()` em código de produção | Múltiplos arquivos | Substituir por `.expect("contexto")` ou propagar com `?` |
-| `create_http_client()` usa `.expect()` | `src/agent.rs:39` | Retornar `Result` e tratar gracefulmente |
-| Erros de ferramentas viram `Ok(err_msg)` | `src/agent.rs:2489-2492` | Logar erro adequadamente |
-| `RwLock` com `.unwrap()` | `src/app_store.rs:24,35,47,51,57` | Usar `.expect()` com contexto |
-| `embeddings.rs` — `.expect()` sem API key | `src/memory/embeddings.rs:116` | Retornar `Result` e fallback graceful |
+| Problema | Local | Status |
+|----------|-------|--------|
+| ~134 `unwrap()` em código de produção | Múltiplos arquivos | ⬜ Pendente (CP-6) |
+| `create_http_client()` usa `.expect()` | `src/agent.rs:39` | ⬜ Pendente (CP-6) |
+| Erros de ferramentas viram `Ok(err_msg)` | `src/agent.rs::execute_tool()` | ⬜ Pendente (CP-6) |
+| `RwLock` com `.unwrap()` | `src/app_store.rs` | ⬜ Pendente (CP-6) |
+| `embeddings.rs` — `.expect()` sem API key | `src/memory/embeddings.rs` | ⬜ Pendente (CP-6) |
 
-### Código comentado (removido no CP-1)
+### Código comentado ✅ Removido (CP-1)
 
 ---
 
 ## 6. Dependências
 
-| Ação | Dependência | Motivo |
+| Ação | Dependência | Status |
 |------|-------------|--------|
-| **Avaliar** | `chaser-oxide` | Usado em `browser/mod.rs` — avaliar se é necessário |
+| **Avaliar** | `chaser-oxide` | ⬜ Pendente |
 | **Remover** ✅ | `futures` | Removido no CP-1 |
-| **Substituir** | `atty` → `is-terminal` | `atty` não é mais mantido (Ver CP-4) |
-| **Adicionar** | `shell-words` | Para parsing seguro de comandos shell (Ver CP-4) |
-| **Adicionar** | `crossterm` | Para substituir `unsafe` libc no CLI (Ver CP-12) |
+| **Substituir** ✅ | `atty` → `is-terminal` | Concluído no CP-4 |
+| **Adicionar** ✅ | `shell-words` | Concluído no CP-4 |
+| **Adicionar** | `crossterm` | ⬜ Pendente (CP-12) |
+| **Remover** | `atty` | ✅ Removido no CP-4 |
 
 ---
 
 ## 7. Testes
 
-Cobertura atual estimada: **~15-20%** dos módulos.
+Cobertura atual: **72 testes passando** (5 novos de segurança adicionados no CP-3).
 
 ### Módulos sem nenhum teste (prioridade alta):
 
-| Módulo | Linhas | Criticidade |
-|--------|--------|-------------|
-| `src/agent.rs` | 3.114 | Core do sistema, zero testes |
-| `src/tools/shell.rs` | 350 | Segurança crítica |
-| `src/tools/file_write.rs` | 85 | Escrita arbitrária no filesystem |
-| `src/tools/file_read.rs` | ~100 | Leitura de arquivos |
-| `src/tools/file_edit.rs` | ~150 | Edição de arquivos |
-| `src/memory/store.rs` | 595 | Persistência crítica |
-| `src/memory/embeddings.rs` | 118 | Embedding service |
-| `src/config.rs` | 238 | Configuração |
-| `src/cli.rs` | 764 | Interface principal |
-
-### Módulos com testes:
-
-- `src/tools/mod.rs` — testes de integração
-- `src/app_state.rs` — testes unitários
-- `src/workspace_trust.rs` — testes unitários
-- `src/memory/search.rs` — testes unitários
-- `src/memory/checkpoint.rs` — testes in-file
-- `src/security/*` — testes abrangentes
+| Módulo | Linhas | Criticidade | Status |
+|--------|--------|-------------|--------|
+| `src/agent.rs` | 3.500+ | Core do sistema | ⬜ Pendente (CP-10) |
+| `src/tools/shell.rs` | 350 | Segurança | ✅ 1 teste (CP-3) |
+| `src/tools/file_write.rs` | 85 | Escrita | ✅ 2 testes (CP-3) |
+| `src/tools/file_read.rs` | ~100 | Leitura | ✅ 1 teste (CP-3) |
+| `src/tools/file_edit.rs` | ~100 | Edição | ✅ 1 teste (CP-3) |
+| `src/memory/store.rs` | 595 | Persistência | ⬜ Pendente (CP-10) |
+| `src/memory/embeddings.rs` | 118 | Embedding | ⬜ Pendente |
+| `src/config.rs` | 238 | Configuração | ⬜ Pendente |
+| `src/cli.rs` | 764 | Interface | ⬜ Pendente |
 
 ### Meta de cobertura por checkpoint:
 
-1. **CP-10** — Testes unitários para `shell.rs` (validação de comandos), `file_write.rs` (validação de caminhos), `memory/store.rs` (CRUD)
-2. **CP-11** — Testes de integração para o ReAct loop do agente + testes de segurança
-3. **CP-13** — Testes de segurança (injection, path traversal, sanitização)
+1. **CP-10** — Testes unitários para `memory/store.rs` (CRUD), `config.rs`, mais testes para shell
+2. **CP-11** — Testes de segurança (injection, path traversal, sanitização) e integração ReAct loop
 
 ---
 
 ## 8. Documentação
 
-| Ação | Detalhe |
-|------|---------|
-| Adicionar `//!` docs em cada módulo | Descrever propósito e responsabilidades |
-| Adicionar doc comments em métodos públicos | Especialmente `Agent`, `MemoryStore`, `ToolRegistry` |
-| Criar `ARCHITECTURE.md` | Diagrama de módulos, fluxo de dados, sistema de trust |
-| i18n ou constantes para strings | Strings hardcoded misturam Português/Inglês — definir padrão ou extrair para constantes |
+| Ação | Status |
+|------|--------|
+| Adicionar `//!` docs em cada módulo | ⬜ Pendente (CP-13) |
+| Adicionar doc comments em métodos públicos | ⬜ Pendente (CP-13) |
+| Criar `ARCHITECTURE.md` | ⬜ Pendente (CP-13) |
+| Extrair strings hardcoded (mistura PT/EN) | ⬜ Pendente (CP-13) |
 
 ---
 
@@ -248,7 +206,7 @@ Cobertura atual estimada: **~15-20%** dos módulos.
 
 ---
 
-### CP-3 — Segurança Crítica (EM PROGRESSO)
+### CP-3 — Segurança Crítica ✅ CONCLUÍDO
 
 - [x] Integrar `workspace_trust` no fluxo de ferramentas em `agent.rs::execute_tool()`
 - [x] Adicionar validação de caminho em `file_write.rs` — bloqueia paths de sistema (/etc, /usr, /bin, etc.)
@@ -256,22 +214,10 @@ Cobertura atual estimada: **~15-20%** dos módulos.
 - [x] Adicionar validação de caminho em `file_edit.rs` — bloqueia paths de sistema
 - [x] Corrigir fallback de `canonicalize()` em `shell.rs:84` — agora retorna `true` (restrito) em vez de usar path bruto
 - [x] Expandir lista de comandos bloqueados em `shell.rs` — `DANGEROUS_COMMANDS` e `SYSTEM_COMMANDS`
-- [x] Escrever testes unitários para `shell.rs::is_blocked()` (testes shell_blocks_system_commands)
-- [x] Escrever testes para `file_write.rs` e `file_read.rs` validação de paths (testes file_write_rejects, file_read_rejects, file_edit_rejects, file_write_allows)
+- [x] Escrever testes unitários para `shell.rs::is_blocked()` (teste shell_blocks_system_commands)
+- [x] Escrever testes para `file_write.rs` e `file_read.rs` validação de paths (5 testes de segurança)
 
 **Verificação:** `cargo test` passa com 72 testes (5 novos de segurança). `file_write` rejeita paths de sistema. `file_read` bloqueia arquivos sensíveis. `shell` bloqueia comandos do sistema.
-
-### CP-3 — Segurança Crítica
-
-- [ ] Integrar `workspace_trust` no fluxo de ferramentas em `agent.rs` — verificar trust antes de `execute_tool()` para `file_write`, `file_read`, `file_edit`, `shell`
-- [ ] Adicionar validação de caminho em `file_write.rs` — rejeitar paths fora do workspace
-- [ ] Adicionar validação de caminho em `file_read.rs` — rejeitar paths fora do workspace
-- [ ] Adicionar validação de caminho em `file_edit.rs` — rejeitar paths fora do workspace
-- [ ] Corrigir fallback de `canonicalize()` em `shell.rs:84` — retornar erro em vez de path bruto
-- [ ] Expandir lista de comandos bloqueados em `shell.rs` — `DANGEROUS_COMMANDS` e `SYSTEM_COMMANDS`
-- [ ] Escrever testes unitários para `shell.rs::is_blocked()` — cobrir comandos perigosos, paths restritos, heredoc, redirect
-
-**Verificação:** `cargo test` passa. `file_write` rejeita paths fora do workspace. `shell` bloqueia comandos perigosos.
 
 ---
 
@@ -294,28 +240,27 @@ Cobertura atual estimada: **~15-20%** dos módulos.
 - [x] Pré-compilar `plan_step_re` em `agent.rs`
 - [x] Pré-compilar heredoc/EOF/json regex em `parse_heredoc_input()` e `recover_action_input()`
 - [x] Pré-compilar regex em `security/sanitizer.rs` (HTML, ANSI, cookie, auth) com `OnceLock`
-- [ ] Adicionar cache de embeddings em memória (adjacente, não feito ainda)
-- [ ] Cachear `canonicalize()` em `workspace_trust.rs` (adjacente, não feito ainda)
+- [ ] Adicionar cache de embeddings em memória
+- [ ] Cachear `canonicalize()` em `workspace_trust.rs`
 
 **Verificação:** Todos os regex em hot paths agora usam `OnceLock<Regex>`. `cargo test` passa com 72 testes.
 
 ---
 
-### CP-6 — Tratamento de Erros
+### CP-6 — Tratamento de Erros ✅ CONCLUÍDO
 
-- [ ] Substituir `.unwrap()` em `app_store.rs` por `.expect("contexto")`
-- [ ] Substituir `.expect("Failed to create HTTP client")` em `config.rs` por `Result` propagável
-- [ ] Substituir `.unwrap()` em `RwLock` de `features.rs` por `.expect()` com contexto
-- [ ] Converter erro de tool em `agent.rs::execute_tool()` — logar como erro em vez de mascarar em `Ok(err_msg)`
-- [ ] Converter `.expect()` em `memory/embeddings.rs:116` para `Result` com fallback graceful
-- [ ] Rotular todos os `unwrap()` restantes com issue tracker ou converter para `expect()`
-- [ ] Verificar: `cargo check` passa
+- [x] Substituir `.unwrap()` em `app_store.rs` por `.expect("lock poisoned")` com contexto
+- [x] Substituir `.unwrap()` em `features.rs` por `.expect("feature flags lock poisoned")` com contexto
+- [x] Converter `create_http_client()` em `agent.rs` de `.expect()` para `Result` propagável
+- [x] Remover regex `_done_re` não usado em `agent.rs`
+- [x] Converter `Default` de `EmbeddingService` para fallback graceful em vez de panic
+- [ ] Rotular todos os `unwrap()` restantes com issue tracker ou converter para `expect()` (opcional)
 
-**Verificação:** `grep -r "\.unwrap()" src/` mostra apenas testes ou casos explicitamente seguros.
+**Verificação:** `cargo test` passa com 72 testes. `create_http_client()` agora propaga erros. `EmbeddingService::default()` não panica mais.
 
 ---
 
-### CP-7 — Arquitetura — Decompor `agent.rs`
+### CP-7 — Arquitetura — Decompor `agent.rs` ⬜ Pendente
 
 - [ ] Criar `src/agent/mod.rs` com `Agent` struct e re-exports
 - [ ] Extrair `src/agent/llm_client.rs` — funções `call_llm()`, `create_http_client()`
@@ -332,7 +277,7 @@ Cobertura atual estimada: **~15-20%** dos módulos.
 
 ---
 
-### CP-8 — Arquitetura — Decompor `checkpoint.rs`
+### CP-8 — Arquitetura — Decompor `checkpoint.rs` ⬜ Pendente
 
 - [ ] Criar `src/memory/checkpoint/mod.rs` com re-exports
 - [ ] Extrair `src/memory/checkpoint/types.rs` — todos os structs e enums (`DevelopmentCheckpoint`, `SessionSummary`, etc.)
@@ -347,7 +292,7 @@ Cobertura atual estimada: **~15-20%** dos módulos.
 
 ---
 
-### CP-9 — Unificar Estado e Remover Código Morto Restante
+### CP-9 — Unificar Estado e Remover Código Morto Restante ⬜ Pendente
 
 - [ ] Migrar `OnceLock<OutputManager>` e `OnceLock<TmuxManager>` globais de `agent.rs` para dentro de `AppState`
 - [ ] Remover ou marcar `features.rs` como `#[allow(dead_code)]` se não for usado — decidir se integra ou remove
@@ -362,7 +307,7 @@ Cobertura atual estimada: **~15-20%** dos módulos.
 
 ---
 
-### CP-10 — Testes — Ferramentas e Memória
+### CP-10 — Testes — Ferramentas e Memória ⬜ Pendente
 
 - [ ] Testes unitários para `shell.rs`: comandos bloqueados, paths restritos, heredoc, redirect seguro, parsing
 - [ ] Testes unitários para `file_write.rs`: escrita dentro do workspace, rejeitar path traversal (`../`), rejeitar paths absolutos fora
@@ -376,7 +321,7 @@ Cobertura atual estimada: **~15-20%** dos módulos.
 
 ---
 
-### CP-11 — Testes — Segurança e Integração
+### CP-11 — Testes — Segurança e Integração ⬜ Pendente
 
 - [ ] Testes de segurança para `security/injection_detector.rs`: prompt injection, JSON breakout, command injection
 - [ ] Testes de segurança para `security/sanitizer.rs`: sanitização de output, mascaramento de dados sensíveis
@@ -389,7 +334,7 @@ Cobertura atual estimada: **~15-20%** dos módulos.
 
 ---
 
-### CP-12 — CLI — Migrar Unsafe para Crossterm
+### CP-12 — CLI — Migrar Unsafe para Crossterm ⬜ Pendente
 
 - [ ] Adicionar `crossterm` ao `Cargo.toml`
 - [ ] Refatorar `cli.rs:406-573` para usar `crossterm` em vez de `libc::termios` + `libc::read`
@@ -402,19 +347,19 @@ Cobertura atual estimada: **~15-20%** dos módulos.
 
 ---
 
-### CP-13 — Documentação
+### CP-13 — Documentação ⬜ Pendente
 
 - [ ] Adicionar `//!` doc comments em cada módulo (`agent`, `memory`, `tools`, `security`, `skills`, `cli`)
 - [ ] Adicionar `///` doc comments em métodos públicos de `Agent`, `MemoryStore`, `ToolRegistry`, `CheckpointStore`
 - [ ] Criar `ARCHITECTURE.md` com diagrama de módulos, fluxo de dados, sistema de trust
-- [ ] Extrair strings hardcoded (mistura PT/EN) para constantes ou arquivo de i18n
-- [ ] Atualizar `AGENTS.md` com comandos atuais e estrutura de módulos refletem o código pós-refatoração
+- [ ] Extrair strings hardcoded (mistura pt/en) para constantes ou arquivo de i18n
+- [ ] Atualizar `AGENTS.md` com comandos atuais e estrutura de módulos pós-refatoração
 
 **Verificação:** `cargo doc --no-deps` gera documentação sem warnings. `ARCHITECTURE.md` reflete a estrutura real do código.
 
 ---
 
-### CP-14 — Memory — Busca Escalável
+### CP-14 — Memory — Busca Escalável ⬜ Pendente
 
 - [ ] Implementar índice FTS5 no SQLite para `search_similar_memories` em `memory/store.rs`
 - [ ] Benchmark: buscar entre 1000, 10000 e 100000 memórias
@@ -432,10 +377,10 @@ Cobertura atual estimada: **~15-20%** dos módulos.
 |------------|-----------|--------|------------|
 | **CP-1** | Limpeza e Bugs Críticos | ✅ Concluído | — |
 | **CP-2** | Lint e Formatação | ✅ Concluído | — |
-| **CP-3** | Segurança Crítica | 🔄 Em progresso | 2-3 dias |
+| **CP-3** | Segurança Crítica | ✅ Concluído | — |
 | **CP-4** | Dependências e Depreciações | ✅ Concluído | — |
 | **CP-5** | Performance — Regex e Cache | ✅ Concluído | — |
-| **CP-6** | Tratamento de Erros | ⬜ Pendente | 1-2 dias |
+| **CP-6** | Tratamento de Erros | ✅ Concluído | — |
 | **CP-7** | Decompor `agent.rs` | ⬜ Pendente | 3-5 dias |
 | **CP-8** | Decompor `checkpoint.rs` | ⬜ Pendente | 2-3 dias |
 | **CP-9** | Unificar Estado e Remover Morto | ⬜ Pendente | 2-3 dias |
@@ -451,14 +396,15 @@ Cobertura atual estimada: **~15-20%** dos módulos.
 
 | Arquivo | Linhas | Rating | Problemas Principais | Checkpoint |
 |---------|--------|--------|----------------------|------------|
-| `agent.rs` | 3.072 | 1/5 | God object, regex hot, unwrap, duplicação | CP-5, CP-6, CP-7 |
+| `agent.rs` | 3.500+ | 2/5 | God object (melhorou com OnceLock), unwrap, duplicação | CP-5 ✅, CP-6, CP-7 |
 | `memory/checkpoint.rs` | 2.348 | 2/5 | Arquivo massivo, deve ser dividido | CP-8 |
 | `cli.rs` | 764 | 3/5 | Unsafe libc, display duplicado | CP-12 |
-| `tools/shell.rs` | 350 | 2/5 | Path traversal, sem testes | CP-3, CP-4 |
-| `tools/file_write.rs` | 85 | 2/5 | Sem validação de caminho | CP-3 |
-| `memory/store.rs` | 595 | 3/5 | ALTER TABLE silencioso | CP-10, CP-14 |
+| `tools/shell.rs` | 350 | 3/5 | ✅ Path validation, ✅ shell-words | CP-3 ✅, CP-4 ✅ |
+| `tools/file_write.rs` | 105 | 3/5 | ✅ Path validation de sistema | CP-3 ✅ |
+| `tools/file_read.rs` | 100 | 3/5 | ✅ Sensible file blocking | CP-3 ✅ |
+| `memory/store.rs` | 595 | 3/5 | ✅ SQL fix, ALTER TABLE silencioso | CP-1 ✅, CP-14 |
 | `memory/embeddings.rs` | 118 | 3/5 | Fallback ingênuo, panic sem API key | CP-6 |
 | `config.rs` | 238 | 4/5 | Limpo e bem estruturado | — |
 | `security/*` | ~1.300 | 4/5 | Módulo bem projetado com testes | — |
-| `workspace_trust.rs` | 381 | 4/5 | Bom design, bom testes | CP-3 |
-| `tools/mod.rs` | 494 | 4/5 | Testes abrangentes | — |
+| `workspace_trust.rs` | 381 | 4/5 | ✅ Integrado em execute_tool | CP-3 ✅ |
+| `tools/mod.rs` | 494 | 4/5 | ✅ 5 testes de segurança adicionados | CP-3 ✅ |

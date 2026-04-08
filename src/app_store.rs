@@ -21,7 +21,7 @@ where
     }
 
     pub fn get_state(&self) -> T {
-        self.state.read().unwrap().clone()
+        self.state.read().expect("app state lock poisoned").clone()
     }
 
     pub fn set_state<F>(&self, updater: F)
@@ -32,7 +32,7 @@ where
         let new = updater(&old);
 
         if new != old {
-            *self.state.write().unwrap() = new.clone();
+            *self.state.write().expect("app state lock poisoned") = new.clone();
             self.notify_subscribers(&old, &new);
         }
     }
@@ -44,17 +44,19 @@ where
         let subs = self.subscribers.clone();
         let wrapper: Arc<dyn Fn(&T, &T) + Send + Sync> = Arc::new(callback);
         let wrapper_for_closure = wrapper.clone();
-        subs.write().unwrap().push(wrapper);
+        subs.write()
+            .expect("subscribers lock poisoned")
+            .push(wrapper);
 
         move || {
             subs.write()
-                .unwrap()
+                .expect("subscribers lock poisoned")
                 .retain(|s| !Arc::ptr_eq(s, &wrapper_for_closure));
         }
     }
 
     fn notify_subscribers(&self, old_state: &T, new_state: &T) {
-        let subs = self.subscribers.read().unwrap();
+        let subs = self.subscribers.read().expect("subscribers lock poisoned");
         for sub in subs.iter() {
             sub(new_state, old_state);
         }

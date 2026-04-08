@@ -53,11 +53,11 @@ static RE_JSON_COMMAND: OnceLock<Regex> = OnceLock::new();
 const USER_AGENT: &str = "RustClaw/1.0";
 const SKILLS_DIR: &str = "skills";
 
-fn create_http_client() -> reqwest::Client {
+fn create_http_client() -> anyhow::Result<reqwest::Client> {
     Client::builder()
         .user_agent(USER_AGENT)
         .build()
-        .expect("Failed to create HTTP client")
+        .map_err(|e| anyhow::anyhow!("Failed to create HTTP client: {}", e))
 }
 
 pub struct Agent {
@@ -139,7 +139,7 @@ impl Agent {
         };
 
         Ok(Self {
-            client: create_http_client(),
+            client: create_http_client()?,
             config,
             tools,
             conversation_history: Vec::new(),
@@ -1993,7 +1993,6 @@ MODO DESENVOLVIMENTO ESTRUTURADO:
         let content = std::fs::read_to_string(plan_file)?;
         let step_re = RE_PLAN_STEP
             .get_or_init(|| Regex::new(r"(?m)^(\s*\d+)\.\s*(\[[ xX]\])\s+(.*)$").unwrap());
-        let _done_re = Regex::new(r"\[x\]|\[X\]").unwrap();
 
         let updated = step_re
             .replace_all(&content, |caps: &regex::Captures| {

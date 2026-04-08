@@ -98,22 +98,34 @@ static FEATURE_FLAGS: Lazy<RwLock<FeatureFlags>> =
     Lazy::new(|| RwLock::new(FeatureFlags::load_from_env()));
 
 pub fn get_feature_flags() -> FeatureFlags {
-    FEATURE_FLAGS.read().unwrap().clone()
+    FEATURE_FLAGS
+        .read()
+        .expect("feature flags lock poisoned")
+        .clone()
 }
 
 pub fn is_feature_enabled(feature: &str) -> bool {
-    FEATURE_FLAGS.read().unwrap().is_enabled(feature)
+    FEATURE_FLAGS
+        .read()
+        .expect("feature flags lock poisoned")
+        .is_enabled(feature)
 }
 
 pub fn enable_feature(feature: &str) {
-    FEATURE_FLAGS.write().unwrap().enable(feature)
+    FEATURE_FLAGS
+        .write()
+        .expect("feature flags lock poisoned")
+        .enable(feature)
 }
 
 pub fn disable_feature(feature: &str) {
-    FEATURE_FLAGS.write().unwrap().disable(feature)
+    FEATURE_FLAGS
+        .write()
+        .expect("feature flags lock poisoned")
+        .disable(feature)
 }
 
 pub fn reload_features() {
-    let mut flags = FEATURE_FLAGS.write().unwrap();
+    let mut flags = FEATURE_FLAGS.write().expect("feature flags lock poisoned");
     *flags = FeatureFlags::load_from_env();
 }

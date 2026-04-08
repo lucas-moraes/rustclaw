@@ -114,6 +114,14 @@ impl EmbeddingService {
 
 impl Default for EmbeddingService {
     fn default() -> Self {
-        Self::new().expect("Failed to initialize embedding service")
+        Self::new().unwrap_or_else(|e| {
+            tracing::warn!("Failed to initialize embedding service: {}. Using fallback mode.", e);
+            Self {
+                api_key: String::new(),
+                base_url: String::new(),
+                model: String::new(),
+                client: reqwest::Client::new(),
+            }
+        })
     }
 }
