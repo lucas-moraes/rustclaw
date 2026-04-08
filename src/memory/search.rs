@@ -73,10 +73,17 @@ pub fn format_memories_for_prompt(memories: &[(MemoryEntry, f32)]) -> String {
             super::MemoryType::ToolResult => "🔧",
         };
 
+        let scope_indicator = match memory.scope {
+            super::MemoryScope::Session => "",
+            super::MemoryScope::Project => " [projeto]",
+            super::MemoryScope::Global => " [global]",
+        };
+
         output.push_str(&format!(
-            "\n{}. {} {} (relevância: {}%)\n   {}",
+            "\n{}. {}{} {} (relevância: {}%)\n   {}",
             i + 1,
             mem_type_emoji,
+            scope_indicator,
             memory.timestamp.format("%d/%m/%Y"),
             relevance,
             memory.content.lines().next().unwrap_or(&memory.content)

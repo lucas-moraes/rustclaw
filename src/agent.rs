@@ -811,7 +811,7 @@ impl Agent {
         let skill_name = skill_opt.as_ref().map(|s| s.name.clone());
 
         // 2. Recupera memórias
-        let memories = self.retrieve_relevant_memories(user_input).await?;
+        let memories = self.retrieve_relevant_memories(user_input, None).await?;
         let memory_context = format_memories_for_prompt(&memories);
 
         // 3. Constrói system prompt com skill e defense instructions
@@ -1080,7 +1080,7 @@ impl Agent {
         mut checkpoint: DevelopmentCheckpoint,
     ) -> anyhow::Result<String> {
         // Retrieve memories
-        let memories = self.retrieve_relevant_memories(&task_input).await?;
+        let memories = self.retrieve_relevant_memories(&task_input, None).await?;
         let memory_context = format_memories_for_prompt(&memories);
 
         // Build system prompt
@@ -1339,7 +1339,7 @@ impl Agent {
         info!("Starting structured development with {} stages", stages.len());
         
         // Build system prompt for structured development
-        let memories = self.retrieve_relevant_memories(&task_input).await?;
+        let memories = self.retrieve_relevant_memories(&task_input, None).await?;
         let memory_context = format_memories_for_prompt(&memories);
         let mut system_prompt = self.build_system_prompt(&memory_context, None);
         system_prompt.push_str(&SecurityManager::get_defense_prompt_minimal());
@@ -1766,10 +1766,18 @@ MODO DESENVOLVIMENTO ESTRUTURADO:
     async fn retrieve_relevant_memories(
         &self,
         query: &str,
+        session_id: Option<&str>,
     ) -> anyhow::Result<Vec<(MemoryEntry, f32)>> {
         let query_embedding = self.embedding_service.embed(query).await?;
 
-        let all_memories = self.memory_store.get_all()?;
+        let mut all_memories = self.memory_store.get_all()?;
+
+        let cross_session = self.memory_store.get_cross_session_memories(session_id)?;
+        for memory in cross_session {
+            if !all_memories.iter().any(|m| m.id == memory.id) {
+                all_memories.push(memory);
+            }
+        }
 
         if all_memories.is_empty() {
             return Ok(vec![]);
@@ -1778,8 +1786,8 @@ MODO DESENVOLVIMENTO ESTRUTURADO:
         let results = search_similar_memories(&query_embedding, &all_memories, 5, 0.3);
 
         for (memory, _) in &results {
-            if let Err(e) = self.memory_store.increment_search_count(&memory.id) {
-                tracing::warn!("Failed to increment search count: {}", e);
+            if let Err(e) = self.memory_store.touch_memory(&memory.id) {
+                tracing::warn!("Failed to touch memory: {}", e);
             }
         }
 

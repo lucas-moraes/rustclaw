@@ -36,20 +36,20 @@ O sistema atual:
 - [x] **1.6** Atualizar CLI `/sessions` para mostrar hierarchy com indentação
 - [x] **1.7** Testar resume de subtask inclui contexto do parent
 
-### Feature 2: Cross-Session Memory
+### Feature 2: Cross-Session Memory ✅
 
-- [ ] **2.1** Criar migration para adicionar colunas em `memories`:
+- [x] **2.1** Criar migration para adicionar colunas em `memories`:
   - `scope TEXT` (session/project/global)
   - `importance REAL DEFAULT 0.5`
   - `access_count INTEGER DEFAULT 0`
   - `last_accessed TIMESTAMP`
-- [ ] **2.2** Criar enum `MemoryScope` com variant paths
-- [ ] **2.3** Implementar `calculate_importance(entry)` based on access_count + age
-- [ ] **2.4** Criar `MemoryStore::get_global_memories(project_filter)`
-- [ ] **2.5** Criar `MemoryStore::get_project_memories(repo_path)`
-- [ ] **2.6** Modificar `format_memories_for_prompt()` para incluir memórias globais
-- [ ] **2.7** Adicionar config `GLOBAL_MEMORY_TTL_DAYS` (default: never)
-- [ ] **2.8** Testar cross-session: memória criada em sessao A visível em sessao B
+- [x] **2.2** Criar enum `MemoryScope` com variant paths
+- [x] **2.3** Implementar `calculate_importance(entry)` based on access_count + age
+- [x] **2.4** Criar `MemoryStore::get_global_memories(project_filter)`
+- [x] **2.5** Criar `MemoryStore::get_project_memories(repo_path)`
+- [x] **2.6** Modificar `format_memories_for_prompt()` para incluir memórias globais
+- [x] **2.7** Adicionar config `GLOBAL_MEMORY_TTL_DAYS` (default: never)
+- [x] **2.8** Testar cross-session: memória criada em sessao A visível em sessao B
 
 ### Feature 3: Event Sourcing para Checkpoints
 
