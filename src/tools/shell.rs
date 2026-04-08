@@ -1,5 +1,6 @@
 use super::Tool;
 use serde_json::Value;
+use shell_words::split;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -325,13 +326,19 @@ impl Tool for ShellTool {
             return Self::handle_output(output);
         }
 
-        // Parse command more carefully
-        let parts: Vec<&str> = command.split_whitespace().collect();
+        // Parse command using shell-words for proper quote handling
+        let parts = match split(command) {
+            Ok(p) => p,
+            Err(_) => {
+                let parts: Vec<&str> = command.split_whitespace().collect();
+                parts.into_iter().map(String::from).collect()
+            }
+        };
         if parts.is_empty() {
             return Err("Comando vazio".to_string());
         }
 
-        let mut cmd = Command::new(parts[0]);
+        let mut cmd = Command::new(&parts[0]);
         if parts.len() > 1 {
             cmd.args(&parts[1..]);
         }

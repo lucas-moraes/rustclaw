@@ -27,6 +27,7 @@ use crate::tools::{
 };
 use crate::utils::colors::Colors;
 use crate::utils::spinner::Spinner;
+use is_terminal::IsTerminal;
 use rustyline::history::FileHistory;
 use rustyline::Editor;
 use std::io::{self, Write};
@@ -425,7 +426,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
             }
 
             // Interactive selection with arrow keys (only on real TTY)
-            let is_tty = atty::is(atty::Stream::Stdin);
+            let is_tty = std::io::stdin().is_terminal();
 
             if is_tty {
                 // Interactive mode with arrow keys

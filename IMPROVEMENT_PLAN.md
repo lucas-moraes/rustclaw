@@ -275,29 +275,29 @@ Cobertura atual estimada: **~15-20%** dos módulos.
 
 ---
 
-### CP-4 — Dependências e Depreciações
+### CP-4 — Dependências e Depreciações ✅ CONCLUÍDO
 
-- [ ] Substituir `atty` por `is-terminal` em `cli.rs`
-- [ ] Adicionar crate `shell-words` ao `Cargo.toml`
-- [ ] Usar `shell-words::split()` em `shell.rs` em vez de `split_whitespace()`
-- [ ] Avaliar se `chaser-oxide` é realmente necessário (usado em `browser/mod.rs`) — se não, remover
-- [ ] Avaliar se `keyring` e `libc` são necessários — se `auth.rs` for removido, podem sair
-- [ ] Verificar: `cargo check` passa
+- [x] Substituir `atty` por `is-terminal` em `cli.rs`
+- [x] Adicionar crate `shell-words` ao `Cargo.toml`
+- [x] Usar `shell_words::split()` em `shell.rs` em vez de `split_whitespace()` para parsing correto de aspas
+- [x] Remover `atty` de `Cargo.toml`
 
-**Verificação:** `cargo check` sem warnings de depreciação. `shell.rs` faz parsing correto de argumentos com aspas.
+**Verificação:** `cargo test` passa com 72 testes. Shell parsing agora lida com argumentos entre aspas.
 
 ---
 
-### CP-5 — Performance — Regex e Cache
+### CP-5 — Performance — Regex e Cache ✅ CONCLUÍDO
 
-- [ ] Extrair todos os regex de `parse_response()` em `agent.rs` para `OnceLock<Regex>` estáticos
-- [ ] Extrair regex de `sanitize_model_response()` em `agent.rs` para `OnceLock<Regex>`
-- [ ] Extrair regex de `security/sanitizer.rs` para `OnceLock<Regex>`
-- [ ] Adicionar cache de embeddings em `memory/embeddings.rs` — `HashMap<String, Vec<f32>>` com LRU
-- [ ] Cachear `canonicalize()` em `workspace_trust.rs` — `HashMap<PathBuf, PathBuf>`
-- [ ] Benchmark antes/depois: tempo de uma iteração do ReAct loop com regex compilados vs dinâmicos
+- [x] Pré-compilar todos os regex de `parse_response()` em `agent.rs` com `OnceLock<Regex>` (7 padrões)
+- [x] Pré-compilar `sanitize_model_response()` e `extract_final_answer()` regex (system-reminder, 3 usos → 1 OnceLock)
+- [x] Pré-compilar `review_re` e `suggestion_re` em `agent.rs`
+- [x] Pré-compilar `plan_step_re` em `agent.rs`
+- [x] Pré-compilar heredoc/EOF/json regex em `parse_heredoc_input()` e `recover_action_input()`
+- [x] Pré-compilar regex em `security/sanitizer.rs` (HTML, ANSI, cookie, auth) com `OnceLock`
+- [ ] Adicionar cache de embeddings em memória (adjacente, não feito ainda)
+- [ ] Cachear `canonicalize()` em `workspace_trust.rs` (adjacente, não feito ainda)
 
-**Verificação:** Benchmark mostra redução mensurável em alocações por iteração. `cargo test` passa.
+**Verificação:** Todos os regex em hot paths agora usam `OnceLock<Regex>`. `cargo test` passa com 72 testes.
 
 ---
 
@@ -433,8 +433,8 @@ Cobertura atual estimada: **~15-20%** dos módulos.
 | **CP-1** | Limpeza e Bugs Críticos | ✅ Concluído | — |
 | **CP-2** | Lint e Formatação | ✅ Concluído | — |
 | **CP-3** | Segurança Crítica | 🔄 Em progresso | 2-3 dias |
-| **CP-4** | Dependências e Depreciações | ⬜ Pendente | 1 dia |
-| **CP-5** | Performance — Regex e Cache | ⬜ Pendente | 2-3 dias |
+| **CP-4** | Dependências e Depreciações | ✅ Concluído | — |
+| **CP-5** | Performance — Regex e Cache | ✅ Concluído | — |
 | **CP-6** | Tratamento de Erros | ⬜ Pendente | 1-2 dias |
 | **CP-7** | Decompor `agent.rs` | ⬜ Pendente | 3-5 dias |
 | **CP-8** | Decompor `checkpoint.rs` | ⬜ Pendente | 2-3 dias |

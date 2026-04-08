@@ -1,5 +1,12 @@
+use std::sync::OnceLock;
+
 use crate::security::constants::*;
 use crate::security::TrustLevel;
+
+static RE_HTML_TAG: OnceLock<regex::Regex> = OnceLock::new();
+static RE_ANSI_ESCAPE: OnceLock<regex::Regex> = OnceLock::new();
+static RE_COOKIE_HEADER: OnceLock<regex::Regex> = OnceLock::new();
+static RE_AUTH_HEADER: OnceLock<regex::Regex> = OnceLock::new();
 
 /// Result of sanitization
 #[derive(Debug, Clone)]
@@ -175,7 +182,7 @@ impl Sanitizer {
         }
 
         // Remove HTML tags
-        let html_re = regex::Regex::new(r"<[^>]+>").unwrap();
+        let html_re = RE_HTML_TAG.get_or_init(|| regex::Regex::new(r"<[^>]+>").unwrap());
         result = html_re.replace_all(&result, "").to_string();
 
         result
@@ -220,7 +227,7 @@ impl Sanitizer {
     /// Sanitize shell command output
     fn sanitize_shell_output(text: &str) -> String {
         // Remove potential ANSI escape sequences
-        let ansi_re = regex::Regex::new(r"\x1b\[[0-9;]*m").unwrap();
+        let ansi_re = RE_ANSI_ESCAPE.get_or_init(|| regex::Regex::new(r"\x1b\[[0-9;]*m").unwrap());
         ansi_re.replace_all(text, "").to_string()
     }
 
@@ -246,10 +253,13 @@ impl Sanitizer {
         let mut result = text.to_string();
 
         // Mask cookies and auth headers
-        let cookie_re = regex::Regex::new(r"(?i)(Set-Cookie|Cookie):\s*[^\r\n]+").unwrap();
+        let cookie_re = RE_COOKIE_HEADER
+            .get_or_init(|| regex::Regex::new(r"(?i)(Set-Cookie|Cookie):\s*[^\r\n]+").unwrap());
         result = cookie_re.replace_all(&result, "$1: [REDACTED]").to_string();
 
-        let auth_re = regex::Regex::new(r"(?i)(Authorization|X-API-Key):\s*[^\r\n]+").unwrap();
+        let auth_re = RE_AUTH_HEADER.get_or_init(|| {
+            regex::Regex::new(r"(?i)(Authorization|X-API-Key):\s*[^\r\n]+").unwrap()
+        });
         result = auth_re.replace_all(&result, "$1: [REDACTED]").to_string();
 
         result

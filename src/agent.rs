@@ -31,6 +31,25 @@ use tracing::{debug, info};
 static OUTPUT_MANAGER: OnceLock<OutputManager> = OnceLock::new();
 static TMUX_MANAGER: OnceLock<TmuxManager> = OnceLock::new();
 
+// Pre-compiled regex patterns for hot paths
+static RE_SYSTEM_REMINDER: OnceLock<Regex> = OnceLock::new();
+static RE_FINAL_ANSWER: OnceLock<Regex> = OnceLock::new();
+static RE_THOUGHT: OnceLock<Regex> = OnceLock::new();
+static RE_RETRIEVED_MEMORY: OnceLock<Regex> = OnceLock::new();
+static RE_REVISE_MEMORY: OnceLock<Regex> = OnceLock::new();
+static RE_REASONING: OnceLock<Regex> = OnceLock::new();
+static RE_VERIFICATION: OnceLock<Regex> = OnceLock::new();
+static RE_ACTION: OnceLock<Regex> = OnceLock::new();
+static RE_REVIEW: OnceLock<Regex> = OnceLock::new();
+static RE_SUGGESTION: OnceLock<Regex> = OnceLock::new();
+static RE_PLAN_STEP: OnceLock<Regex> = OnceLock::new();
+static RE_HEREDOC: OnceLock<Regex> = OnceLock::new();
+static RE_HEREDOC_ALT: OnceLock<Regex> = OnceLock::new();
+static RE_CAT_REDIRECT: OnceLock<Regex> = OnceLock::new();
+static RE_EOF_MARKER: OnceLock<Regex> = OnceLock::new();
+static RE_JSON_PATH: OnceLock<Regex> = OnceLock::new();
+static RE_JSON_COMMAND: OnceLock<Regex> = OnceLock::new();
+
 const USER_AGENT: &str = "RustClaw/1.0";
 const SKILLS_DIR: &str = "skills";
 
@@ -1972,7 +1991,8 @@ MODO DESENVOLVIMENTO ESTRUTURADO:
         }
 
         let content = std::fs::read_to_string(plan_file)?;
-        let step_re = Regex::new(r"(?m)^(\s*\d+)\.\s*(\[[ xX]\])\s+(.*)$").unwrap();
+        let step_re = RE_PLAN_STEP
+            .get_or_init(|| Regex::new(r"(?m)^(\s*\d+)\.\s*(\[[ xX]\])\s+(.*)$").unwrap());
         let _done_re = Regex::new(r"\[x\]|\[X\]").unwrap();
 
         let updated = step_re
@@ -2467,8 +2487,10 @@ Seja justo. Aceite respostas de conclusão em qualquer formato."#,
             }
 
             // Parse the review response
-            let review_re = Regex::new(r"(?i)REVIEW:\s*(ADEQUATE|INADEQUATE)").unwrap();
-            let suggestion_re = Regex::new(r"(?i)SUGGESTION:\s*(.+)").unwrap();
+            let review_re = RE_REVIEW
+                .get_or_init(|| Regex::new(r"(?i)REVIEW:\s*(ADEQUATE|INADEQUATE)").unwrap());
+            let suggestion_re =
+                RE_SUGGESTION.get_or_init(|| Regex::new(r"(?i)SUGGESTION:\s*(.+)").unwrap());
 
             let is_adequate = review_re
                 .captures(&analysis)
@@ -2685,7 +2707,8 @@ Por favor, forneça a RESPOSTA MELHORADA que corrige os problemas identificados.
             return Err(anyhow::anyhow!("Invalid response format"));
         };
 
-        let reminder_re = Regex::new(r"(?is)<system-reminder>.*?</system-reminder>").unwrap();
+        let reminder_re = RE_SYSTEM_REMINDER
+            .get_or_init(|| Regex::new(r"(?is)<system-reminder>.*?</system-reminder>").unwrap());
         let cleaned = reminder_re.replace_all(&content, "").trim().to_string();
 
         Ok(cleaned)
@@ -2693,7 +2716,8 @@ Por favor, forneça a RESPOSTA MELHORADA que corrige os problemas identificados.
 
     fn parse_response(&self, response: &str) -> anyhow::Result<ParsedResponse> {
         let sanitized = self.sanitize_model_response(response);
-        let final_answer_re = Regex::new(r"(?si)Final Answer:\s*(.+)$").unwrap();
+        let final_answer_re =
+            RE_FINAL_ANSWER.get_or_init(|| Regex::new(r"(?si)Final Answer:\s*(.+)$").unwrap());
         if let Some(caps) = final_answer_re.captures(&sanitized) {
             let answer = caps
                 .get(1)
@@ -2702,18 +2726,19 @@ Por favor, forneça a RESPOSTA MELHORADA que corrige os problemas identificados.
             return Ok(ParsedResponse::FinalAnswer(answer));
         }
 
-        let thought_re = Regex::new(r"(?i)Thought:\s*(.+?)(?:\n|$)").unwrap();
-        let retrieved_memory_re = Regex::new(r"(?i)Retrieved Memory:\s*(.+?)(?:\n(?:Revise Memory:|Reasoning:|Verification:|Action:|Final Answer:)|$)").unwrap();
-        let revise_memory_re = Regex::new(
-            r"(?i)Revise Memory:\s*(.+?)(?:\n(?:Reasoning:|Verification:|Action:|Final Answer:)|$)",
-        )
-        .unwrap();
-        let reasoning_re =
+        let thought_re =
+            RE_THOUGHT.get_or_init(|| Regex::new(r"(?i)Thought:\s*(.+?)(?:\n|$)").unwrap());
+        let retrieved_memory_re = RE_RETRIEVED_MEMORY.get_or_init(|| Regex::new(r"(?i)Retrieved Memory:\s*(.+?)(?:\n(?:Revise Memory:|Reasoning:|Verification:|Action:|Final Answer:)|$)").unwrap());
+        let revise_memory_re = RE_REVISE_MEMORY.get_or_init(|| Regex::new(r"(?i)Revise Memory:\s*(.+?)(?:\n(?:Reasoning:|Verification:|Action:|Final Answer:)|$)").unwrap());
+        let reasoning_re = RE_REASONING.get_or_init(|| {
             Regex::new(r"(?i)Reasoning:\s*(.+?)(?:\n(?:Verification:|Action:|Final Answer:)|$)")
-                .unwrap();
-        let verification_re =
-            Regex::new(r"(?i)Verification:\s*(.+?)(?:\n(?:Action:|Final Answer:)|$)").unwrap();
-        let action_re = Regex::new(r"(?i)Action:\s*(.+?)(?:\n|$)").unwrap();
+                .unwrap()
+        });
+        let verification_re = RE_VERIFICATION.get_or_init(|| {
+            Regex::new(r"(?i)Verification:\s*(.+?)(?:\n(?:Action:|Final Answer:)|$)").unwrap()
+        });
+        let action_re =
+            RE_ACTION.get_or_init(|| Regex::new(r"(?i)Action:\s*(.+?)(?:\n|$)").unwrap());
 
         let thought = thought_re
             .captures(&sanitized)
@@ -3175,7 +3200,8 @@ Por favor, forneça a RESPOSTA MELHORADA que corrige os problemas identificados.
     }
 
     fn sanitize_model_response(&self, response: &str) -> String {
-        let reminder_re = Regex::new(r"(?is)<system-reminder>.*?</system-reminder>").unwrap();
+        let reminder_re = RE_SYSTEM_REMINDER
+            .get_or_init(|| Regex::new(r"(?is)<system-reminder>.*?</system-reminder>").unwrap());
         reminder_re.replace_all(response, "").to_string()
     }
 
@@ -3186,7 +3212,8 @@ Por favor, forneça a RESPOSTA MELHORADA que corrige os problemas identificados.
             return Ok(value);
         }
 
-        let reminder_re = Regex::new(r"(?is)<system-reminder>.*?</system-reminder>").unwrap();
+        let reminder_re = RE_SYSTEM_REMINDER
+            .get_or_init(|| Regex::new(r"(?is)<system-reminder>.*?</system-reminder>").unwrap());
         let cleaned = reminder_re.replace_all(trimmed, "").to_string();
 
         let cleaned = cleaned
@@ -3236,9 +3263,10 @@ Por favor, forneça a RESPOSTA MELHORADA que corrige os problemas identificados.
         // Check if this is a shell command trying to create a file
         if input.contains("cat >") || input.contains("tee >") {
             // Try to find heredoc pattern: cat > file << EOF ... EOF
-            let heredoc_re =
+            let heredoc_re = RE_HEREDOC.get_or_init(|| {
                 Regex::new(r#""command"\s*:\s*"cat\s+>\s+([^"]+)\s+<<\s*'?\w+'?\s*\n(.*?)\n\w+""#)
-                    .ok()?;
+                    .unwrap()
+            });
 
             if let Some(caps) = heredoc_re.captures(input) {
                 let file_path = caps.get(1)?.as_str();
@@ -3252,18 +3280,22 @@ Por favor, forneça a RESPOSTA MELHORADA que corrige os problemas identificados.
             }
 
             // Try alternative pattern without quotes around EOF
-            let alt_re = Regex::new(r#""command"\s*:\s*"([^"]*cat[^"]*\bEOF\b[^"]*)""#).ok()?;
+            let alt_re = RE_HEREDOC_ALT.get_or_init(|| {
+                Regex::new(r#""command"\s*:\s*"([^"]*cat[^"]*\bEOF\b[^"]*)""#).unwrap()
+            });
 
             if let Some(caps) = alt_re.captures(input) {
                 let command = caps.get(1)?.as_str();
 
                 // Check if it's trying to write a file
-                let file_re = Regex::new(r"cat\s+>\s+(\S+)").ok()?;
+                let file_re =
+                    RE_CAT_REDIRECT.get_or_init(|| Regex::new(r"cat\s+>\s+(\S+)").unwrap());
                 if let Some(file_caps) = file_re.captures(command) {
                     let file_path = file_caps.get(1)?.as_str();
 
                     // Try to extract content between EOF markers
-                    let eof_re = Regex::new(r"<<\s*'?(\w+)'?\s*\n(.*?)\n\1").ok()?;
+                    let eof_re = RE_EOF_MARKER
+                        .get_or_init(|| Regex::new(r"<<\s*'?(\w+)'?\s*\n(.*?)\n\1").unwrap());
                     if let Some(eof_caps) = eof_re.captures(input) {
                         let content = eof_caps.get(2)?.as_str();
 
@@ -3280,8 +3312,10 @@ Por favor, forneça a RESPOSTA MELHORADA que corrige os problemas identificados.
     }
 
     fn recover_action_input(&self, input: &str) -> Option<Value> {
-        let path_re = Regex::new(r#"(?s)"path"\s*:\s*"([^"]*)""#).unwrap();
-        let command_re = Regex::new(r#"(?s)"command"\s*:\s*"([^"]*)""#).unwrap();
+        let path_re =
+            RE_JSON_PATH.get_or_init(|| Regex::new(r#"(?s)"path"\s*:\s*"([^"]*)""#).unwrap());
+        let command_re =
+            RE_JSON_COMMAND.get_or_init(|| Regex::new(r#"(?s)"command"\s*:\s*"([^"]*)""#).unwrap());
 
         if let Some(caps) = path_re.captures(input) {
             let path = caps
