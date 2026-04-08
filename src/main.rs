@@ -2,13 +2,11 @@ mod agent;
 mod app_state;
 mod app_store;
 mod auth;
-mod bridge;
 mod browser;
 mod cli;
 mod config;
 mod features;
 mod memory;
-mod prefetch;
 mod reminder_executor;
 mod security;
 mod skills;
@@ -44,8 +42,6 @@ async fn main() -> anyhow::Result<()> {
         dotenv().ok();
     }
 
-    let _ = std::env::var("TOKEN").or_else(|_| std::env::var("OPENCODE_API_KEY"));
-    
     let args = Args::parse();
 
     info!("Starting RustClaw in {} mode", args.mode);

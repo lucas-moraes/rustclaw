@@ -25,17 +25,17 @@ impl ShellTool {
         Self
     }
 
-    fn is_blocked(&self, command: &str, force: bool, working_dir: Option<&str>) -> Result<bool, String> {
+    fn is_blocked(&self, command: &str, force: bool, working_dir: Option<&str>) -> Result<(), String> {
         let cmd_lower = command.to_lowercase();
 
         // Allow heredoc patterns: cat > file << 'EOF' or cat > file <<EOF
         if Self::is_heredoc_pattern(&cmd_lower) {
-            return Ok(false);
+            return Ok(());
         }
 
         // Allow safe redirect patterns: echo "text" > file, printf > file, etc.
         if Self::is_safe_redirect(&cmd_lower) {
-            return Ok(false);
+            return Ok(());
         }
 
         // System commands are always blocked
@@ -60,7 +60,7 @@ impl ShellTool {
                         ));
                     }
                 }
-                return Ok(false);
+                return Ok(());
             } else {
                 return Err(format!(
                     "Comando perigoso detectado: {:?}. Use force:true para confirmar.\n\
@@ -70,7 +70,7 @@ impl ShellTool {
             }
         }
 
-        Ok(false)
+        Ok(())
     }
 
     fn is_path_restricted(command: &str, working_dir: &str) -> bool {
@@ -258,8 +258,7 @@ impl Tool for ShellTool {
 
         // Check if blocked
         match self.is_blocked(command, force, working_dir) {
-            Ok(false) => {}
-            Ok(true) => unreachable!(),
+            Ok(()) => {}
             Err(msg) => return Err(msg),
         }
 

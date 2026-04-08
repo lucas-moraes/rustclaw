@@ -337,9 +337,7 @@ impl MemoryStore {
     pub fn update_memory_access(&self, id: &str) -> Result<()> {
         let now = Utc::now().to_rfc3339();
         self.conn.execute(
-            "UPDATE memories SET access_count = access_count + 1, last_accessed = ?1, importance = (
-                SELECT importance + 0.05 FROM memories WHERE id = ?1
-            ) * (1.0 + EXP(-(datetime('now') - timestamp) / 720.0) * 0.2) WHERE id = ?2",
+            "UPDATE memories SET access_count = access_count + 1, last_accessed = ?1, importance = importance * 0.95 WHERE id = ?2",
             params![now, id],
         )?;
         Ok(())

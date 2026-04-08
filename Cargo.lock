@@ -2333,7 +2333,6 @@ dependencies = [
  "dirs",
  "dotenv",
  "flate2",
- "futures",
  "glob",
  "keyring",
  "libc",

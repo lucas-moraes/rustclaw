@@ -849,18 +849,10 @@ impl Agent {
 
         // 8. ReAct loop
         let start_iteration = checkpoint.current_iteration;
-        let mut forced_tool_use = false;
         for iteration in start_iteration..self.config.max_iterations {
             info!("ReAct iteration {}", iteration + 1);
             checkpoint.current_iteration = iteration;
             self.save_checkpoint(&mut checkpoint, &current_messages, &[])?;
-
-            // if DevelopmentCheckpoint::is_development_task(user_input) {
-            //     current_messages.push(json!({
-            //         "role": "system",
-            //         "content": "IMPORTANTE: para tarefas de desenvolvimento, sempre execute pelo menos uma ferramenta por etapa."
-            //     }));
-            // }
 
             let response = self.call_llm(&current_messages).await?;
             debug!("LLM response:\n{}", response);
@@ -870,21 +862,6 @@ impl Agent {
             match parsed {
                 ParsedResponse::FinalAnswer(answer) => {
                     info!("Final answer received");
-
-                    // Disabled: force tool use for development tasks
-                    // Only trigger for actual development tasks with project_dir
-                    // if DevelopmentCheckpoint::is_development_task(user_input)
-                    //     && !checkpoint.project_dir.is_empty()
-                    //     && !self.checkpoint_has_tools(&checkpoint)
-                    //     && !forced_tool_use
-                    // {
-                    //     forced_tool_use = true;
-                    //     current_messages.push(json!({
-                    //         "role": "user",
-                    //         "content": "Para tarefas de desenvolvimento, use ferramentas (file_write, shell, file_read, etc.) antes de responder com a solução final."
-                    //     }));
-                    //     continue;
-                    // }
 
                     // BUILD VALIDATION GATE: Para dev tasks com project_dir, valida build antes de aceitar
                     if DevelopmentCheckpoint::is_development_task(user_input)
@@ -1107,35 +1084,16 @@ impl Agent {
 
         // ReAct loop
         let start_iteration = checkpoint.current_iteration;
-        let mut forced_tool_use = false;
         for iteration in start_iteration..self.config.max_iterations {
             info!("ReAct iteration {}", iteration + 1);
             checkpoint.current_iteration = iteration;
             self.save_checkpoint(&mut checkpoint, &current_messages, &[])?;
-
-            // current_messages.push(json!({
-            //     "role": "system",
-            //     "content": "IMPORTANTE: para tarefas de desenvolvimento, sempre execute pelo menos uma ferramenta por etapa."
-            // }));
 
             let response = self.call_llm(&current_messages).await?;
             let parsed = self.parse_response(&response)?;
 
             match parsed {
                 ParsedResponse::FinalAnswer(answer) => {
-                    // Disabled: force tool use for development tasks
-                    // if DevelopmentCheckpoint::is_development_task(&task_input)
-                    //     && !self.checkpoint_has_tools(&checkpoint)
-                    //     && !forced_tool_use
-                    // {
-                    //     forced_tool_use = true;
-                    //     current_messages.push(json!({
-                    //         "role": "user",
-                    //         "content": "Para tarefas de desenvolvimento, use ferramentas antes de responder."
-                    //     }));
-                    //     continue;
-                    // }
-
                     // BUILD VALIDATION GATE: Para dev tasks com project_dir, valida build antes de aceitar
                     if DevelopmentCheckpoint::is_development_task(&task_input)
                         && !checkpoint.project_dir.is_empty()
@@ -2449,12 +2407,6 @@ Por favor, forneça a RESPOSTA MELHORADA que corrige os problemas identificados.
     }
 
     async fn execute_tool(&mut self, action: &str, action_input: &str) -> anyhow::Result<String> {
-        // Check workspace trust for file operations
-        if action == "file_write" {
-            // Skip permission check for now - let it run
-            // This will be handled by CLI in future
-        }
-
         let tool = self
             .tools
             .get(action)
