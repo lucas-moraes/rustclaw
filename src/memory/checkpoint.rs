@@ -578,6 +578,171 @@ impl SessionEventStore {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum SnapshotTrigger {
+    AfterSuccessfulBuild,
+    AfterFailedBuild,
+    BeforeMajorRefactor,
+    OnUserRequest,
+    OnPhaseTransition,
+    Periodic(u32),
+    OnSessionResume,
+}
+
+impl std::fmt::Display for SnapshotTrigger {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SnapshotTrigger::AfterSuccessfulBuild => write!(f, "after_successful_build"),
+            SnapshotTrigger::AfterFailedBuild => write!(f, "after_failed_build"),
+            SnapshotTrigger::BeforeMajorRefactor => write!(f, "before_major_refactor"),
+            SnapshotTrigger::OnUserRequest => write!(f, "on_user_request"),
+            SnapshotTrigger::OnPhaseTransition => write!(f, "on_phase_transition"),
+            SnapshotTrigger::Periodic(n) => write!(f, "periodic_{}", n),
+            SnapshotTrigger::OnSessionResume => write!(f, "on_session_resume"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SnapshotPolicy {
+    pub trigger_on_build_success: bool,
+    pub trigger_on_build_fail: bool,
+    pub trigger_on_phase_change: bool,
+    pub trigger_on_user_request: bool,
+    pub periodic_interval: Option<u32>,
+    pub debounce_seconds: u64,
+    pub max_snapshots_per_session: usize,
+}
+
+impl Default for SnapshotPolicy {
+    fn default() -> Self {
+        Self {
+            trigger_on_build_success: true,
+            trigger_on_build_fail: false,
+            trigger_on_phase_change: true,
+            trigger_on_user_request: true,
+            periodic_interval: Some(50),
+            debounce_seconds: 60,
+            max_snapshots_per_session: 10,
+        }
+    }
+}
+
+impl SnapshotPolicy {
+    pub fn should_snapshot(&self, trigger: SnapshotTrigger, message_count: usize) -> bool {
+        match trigger {
+            SnapshotTrigger::AfterSuccessfulBuild => self.trigger_on_build_success,
+            SnapshotTrigger::AfterFailedBuild => self.trigger_on_build_fail,
+            SnapshotTrigger::BeforeMajorRefactor => true,
+            SnapshotTrigger::OnUserRequest => self.trigger_on_user_request,
+            SnapshotTrigger::OnPhaseTransition => self.trigger_on_phase_change,
+            SnapshotTrigger::Periodic(n) => self
+                .periodic_interval
+                .map_or(false, |interval| message_count % interval as usize == 0),
+            SnapshotTrigger::OnSessionResume => true,
+        }
+    }
+
+    pub fn from_env() -> Self {
+        Self {
+            trigger_on_build_success: std::env::var("SNAPSHOT_ON_SUCCESS")
+                .map(|v| v == "true")
+                .unwrap_or(true),
+            trigger_on_build_fail: std::env::var("SNAPSHOT_ON_FAILURE")
+                .map(|v| v == "true")
+                .unwrap_or(false),
+            trigger_on_phase_change: std::env::var("SNAPSHOT_ON_PHASE_CHANGE")
+                .map(|v| v == "true")
+                .unwrap_or(true),
+            trigger_on_user_request: true,
+            periodic_interval: std::env::var("SNAPSHOT_PERIODIC_MESSAGES")
+                .ok()
+                .and_then(|v| v.parse().ok()),
+            debounce_seconds: std::env::var("SNAPSHOT_DEBOUNCE_SECONDS")
+                .map(|v| v.parse().unwrap_or(60))
+                .unwrap_or(60),
+            max_snapshots_per_session: std::env::var("SNAPSHOT_MAX_PER_SESSION")
+                .map(|v| v.parse().unwrap_or(10))
+                .unwrap_or(10),
+        }
+    }
+}
+
+pub struct SnapshotManager {
+    policy: SnapshotPolicy,
+    last_snapshot_time: std::collections::HashMap<String, DateTime<Utc>>,
+    snapshot_counts: std::collections::HashMap<String, usize>,
+}
+
+impl SnapshotManager {
+    pub fn new(policy: SnapshotPolicy) -> Self {
+        Self {
+            policy,
+            last_snapshot_time: std::collections::HashMap::new(),
+            snapshot_counts: std::collections::HashMap::new(),
+        }
+    }
+
+    pub fn with_default_policy() -> Self {
+        Self::new(SnapshotPolicy::default())
+    }
+
+    pub fn from_env() -> Self {
+        Self::new(SnapshotPolicy::from_env())
+    }
+
+    pub fn should_snapshot(
+        &self,
+        session_id: &str,
+        trigger: SnapshotTrigger,
+        message_count: usize,
+    ) -> bool {
+        if !self.policy.should_snapshot(trigger, message_count) {
+            return false;
+        }
+
+        if let Some(&count) = self.snapshot_counts.get(session_id) {
+            if count >= self.policy.max_snapshots_per_session {
+                tracing::debug!("Max snapshots reached for session {}", session_id);
+                return false;
+            }
+        }
+
+        if let Some(&last_time) = self.last_snapshot_time.get(session_id) {
+            let elapsed = Utc::now() - last_time;
+            if elapsed.num_seconds() < self.policy.debounce_seconds as i64 {
+                tracing::debug!("Debouncing snapshot for session {}", session_id);
+                return false;
+            }
+        }
+
+        true
+    }
+
+    pub fn record_snapshot(&mut self, session_id: &str) {
+        let now = Utc::now();
+        self.last_snapshot_time.insert(session_id.to_string(), now);
+        *self
+            .snapshot_counts
+            .entry(session_id.to_string())
+            .or_insert(0) += 1;
+    }
+
+    pub fn get_snapshot_count(&self, session_id: &str) -> usize {
+        self.snapshot_counts.get(session_id).copied().unwrap_or(0)
+    }
+
+    pub fn get_last_snapshot_time(&self, session_id: &str) -> Option<DateTime<Utc>> {
+        self.last_snapshot_time.get(session_id).copied()
+    }
+
+    pub fn reset_session(&mut self, session_id: &str) {
+        self.last_snapshot_time.remove(session_id);
+        self.snapshot_counts.remove(session_id);
+    }
+}
+
 pub struct DevelopmentCheckpoint {
     pub id: String,
     pub user_input: String,

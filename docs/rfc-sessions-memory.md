@@ -76,22 +76,22 @@ O sistema atual:
 
 ### Feature 4: Auto-Snapshot Inteligente
 
-- [ ] **4.1** Criar enum `SnapshotTrigger` com variantes
-- [ ] **4.2** Criar `SnapshotPolicy` struct com config:
+- [x] **4.1** Criar enum `SnapshotTrigger` com variantes
+- [x] **4.2** Criar `SnapshotPolicy` struct com config:
   - `trigger_on_build_success: bool`
   - `trigger_on_build_fail: bool`
   - `trigger_on_phase_change: bool`
   - `periodic_interval: Option<u32>` (N mensagens)
-- [ ] **4.3** Hook no `BuildDetector` para detectar successful/failed builds
-- [ ] **4.4** Criar `SnapshotManager` que decide quando fazer snapshot
-- [ ] **4.5** Implementar debounce: não snapshotted mais que 1x por minuto
-- [ ] **4.6** Adicionar config ao `config.rs`:
+- [x] **4.3** Hook no `BuildDetector` para detectar successful/failed builds
+- [x] **4.4** Criar `SnapshotManager` que decide quando fazer snapshot
+- [x] **4.5** Implementar debounce: não snapshotted mais que 1x por minuto
+- [x] **4.6** Adicionar config ao `config.rs`:
   ```rust
   SNAPSHOT_ON_SUCCESS=true
   SNAPSHOT_ON_FAILURE=false
   SNAPSHOT_PERIODIC_MESSAGES=50
   ```
-- [ ] **4.7** Testar: build succeed → checkpoint criado automaticamente
+- [x] **4.7** Testar: build succeed → checkpoint criado automaticamente
 
 ### Feature 5: TTL e Archive Policy
 
