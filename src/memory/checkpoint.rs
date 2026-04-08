@@ -1209,6 +1209,141 @@ impl From<&str> for DevelopmentState {
     }
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SessionFingerprint {
+    pub has_git: bool,
+    pub has_cargo: bool,
+    pub has_package_json: bool,
+    pub has_requirements_txt: bool,
+    pub has_go_mod: bool,
+    pub has_pyproject_toml: bool,
+    pub language: Option<String>,
+    pub repo_url: Option<String>,
+    pub project_name: Option<String>,
+}
+
+impl SessionFingerprint {
+    pub fn detect(cwd: &Path) -> Self {
+        let mut fp = Self::default();
+
+        fp.has_git = cwd.join(".git").exists();
+
+        fp.has_cargo = cwd.join("Cargo.toml").exists();
+        fp.has_package_json = cwd.join("package.json").exists();
+        fp.has_requirements_txt = cwd.join("requirements.txt").exists();
+        fp.has_go_mod = cwd.join("go.mod").exists();
+        fp.has_pyproject_toml = cwd.join("pyproject.toml").exists();
+
+        if fp.has_cargo {
+            fp.language = Some("Rust".to_string());
+            fp.project_name = Self::extract_project_name(cwd, "Cargo.toml");
+        } else if fp.has_package_json {
+            fp.language = Some("JavaScript/TypeScript".to_string());
+            fp.project_name = Self::extract_project_name(cwd, "package.json");
+        } else if fp.has_go_mod {
+            fp.language = Some("Go".to_string());
+            fp.project_name = Self::extract_project_name(cwd, "go.mod");
+        } else if fp.has_pyproject_toml {
+            fp.language = Some("Python".to_string());
+        } else if fp.has_requirements_txt {
+            fp.language = Some("Python".to_string());
+        }
+
+        fp.repo_url = Self::detect_git_remote(cwd);
+
+        fp
+    }
+
+    fn extract_project_name(cwd: &Path, file: &str) -> Option<String> {
+        let content = std::fs::read_to_string(cwd.join(file)).ok()?;
+        if file == "Cargo.toml" {
+            content
+                .lines()
+                .find(|l| l.starts_with("name = "))
+                .and_then(|l| l.split('=').nth(1))
+                .map(|n| n.trim().trim_matches('"').to_string())
+        } else if file == "package.json" {
+            serde_json::from_str::<serde_json::Value>(&content)
+                .ok()
+                .and_then(|v| v.get("name").and_then(|n| n.as_str()).map(String::from))
+        } else if file == "go.mod" {
+            content
+                .lines()
+                .find(|l| l.starts_with("module "))
+                .and_then(|l| l.split_whitespace().nth(1))
+                .map(|s| s.split('/').last().unwrap_or(s).to_string())
+        } else {
+            None
+        }
+    }
+
+    fn detect_git_remote(cwd: &Path) -> Option<String> {
+        let output = std::process::Command::new("git")
+            .args(["remote", "get-url", "origin"])
+            .current_dir(cwd)
+            .output()
+            .ok()?;
+
+        if output.status.success() {
+            Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        } else {
+            None
+        }
+    }
+
+    pub fn is_project_mode(&self) -> bool {
+        self.has_git || self.has_cargo || self.has_package_json || self.has_go_mod
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContextChange {
+    pub is_new_project: bool,
+    pub is_new_language: bool,
+    pub is_continuing: bool,
+    pub previous_fingerprint: Option<SessionFingerprint>,
+    pub current_fingerprint: SessionFingerprint,
+    pub suggestion: Option<String>,
+}
+
+impl ContextChange {
+    pub fn detect(previous: Option<&SessionFingerprint>, current: &SessionFingerprint) -> Self {
+        let prev = previous.cloned();
+
+        let is_new_project = match &prev {
+            Some(p) => p.project_name.as_ref() != current.project_name.as_ref(),
+            None => current.is_project_mode(),
+        };
+
+        let is_new_language = match &prev {
+            Some(p) => p.language != current.language,
+            None => false,
+        };
+
+        let is_continuing = prev.as_ref().map_or(false, |p| {
+            p.project_name == current.project_name && !is_new_project
+        });
+
+        let suggestion = if is_new_project {
+            Some(format!(
+                "Novo projeto detectado: {}. Deseja criar uma nova sessão?",
+                current.project_name.as_deref().unwrap_or("desconhecido")
+            ))
+        } else {
+            None
+        };
+
+        Self {
+            is_new_project,
+            is_new_language,
+            is_continuing,
+            previous_fingerprint: prev,
+            current_fingerprint: current.clone(),
+            suggestion,
+        }
+    }
+}
+
 pub struct CheckpointStore {
     conn: Connection,
 }
