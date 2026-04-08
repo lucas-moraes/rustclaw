@@ -799,6 +799,38 @@ impl CheckpointStore {
             [],
         )?;
 
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS session_events (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                event_data TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                compressed INTEGER DEFAULT 0
+            )",
+            [],
+        )?;
+
+        let _ = self.conn.execute(
+            "ALTER TABLE session_events ADD COLUMN compressed INTEGER DEFAULT 0",
+            [],
+        );
+
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_session_events_session ON session_events(session_id)",
+            [],
+        )?;
+
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_session_events_type ON session_events(event_type)",
+            [],
+        )?;
+
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_session_events_created ON session_events(created_at)",
+            [],
+        )?;
+
         Ok(())
     }
 
