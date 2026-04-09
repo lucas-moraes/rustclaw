@@ -22,18 +22,22 @@ impl BuildValidator {
 
         tracing::info!(
             "Running build command: {} in {}",
-            build_info.build_command, project_dir
+            build_info.build_command,
+            project_dir
         );
 
-        let shell_tool = tools.get("shell").ok_or_else(|| {
-            anyhow::anyhow!("Shell tool not found")
-        })?;
+        let shell_tool = tools
+            .get("shell")
+            .ok_or_else(|| anyhow::anyhow!("Shell tool not found"))?;
 
         let args = serde_json::json!({
             "command": build_info.build_command
         });
 
-        let build_result = shell_tool.call(args).await.map_err(|e| anyhow::anyhow!("{}", e))?;
+        let build_result = shell_tool
+            .call(args)
+            .await
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
 
         let success = !build_result.contains("❌ Erro");
 
@@ -72,7 +76,7 @@ impl PlanExecutor {
         }
 
         let content = std::fs::read_to_string(plan_file)?;
-        
+
         let re = regex::Regex::new(r"(?m)^(\s*\d+)\.\s*(\[[ xX]\])\s+(.*)$")?;
 
         let updated = re

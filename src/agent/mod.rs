@@ -1,10 +1,10 @@
 //! RustClaw Agent Module
-//! 
+//!
 //! The Agent is the core component that orchestrates the ReAct loop, memory management,
 //! skill execution, and tool invocations.
 //!
 //! ## Submodules
-//! 
+//!
 //! - `llm_client` - LLM HTTP calls and client management
 //! - `response_parser` - Parse and sanitize LLM responses  
 //! - `session` - Session management and history
@@ -12,12 +12,12 @@
 //! - `build_validator` - Validate builds
 //! - `output` - Output formatting
 
+pub mod build_validator;
 pub mod llm_client;
+pub mod output;
+pub mod plan_executor;
 pub mod response_parser;
 pub mod session;
-pub mod plan_executor;
-pub mod build_validator;
-pub mod output;
 
 pub use response_parser::{ParsedResponse, ResponseParser};
 
@@ -1229,7 +1229,9 @@ impl Agent {
         ];
         let final_response = self.call_llm(&final_messages).await?;
 
-        if let ParsedResponse::FinalAnswer(answer) = ResponseParser::parse_response(&final_response)? {
+        if let ParsedResponse::FinalAnswer(answer) =
+            ResponseParser::parse_response(&final_response)?
+        {
             // Skip self-review for plan execution - just return answer
             let final_answer = answer.clone();
             self.save_conversation_to_memory(user_input, &final_answer, None)
@@ -2428,8 +2430,10 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
         let max_loops = self.config.self_review.max_loops;
         let show_process = self.config.self_review.show_process;
 
-        let review_re = RE_REVIEW.get_or_init(|| Regex::new(r"(?i)REVIEW:\s*(ADEQUATE|INADEQUATE)").unwrap());
-        let suggestion_re = RE_SUGGESTION.get_or_init(|| Regex::new(r"(?i)SUGGESTION:\s*(.+)").unwrap());
+        let review_re =
+            RE_REVIEW.get_or_init(|| Regex::new(r"(?i)REVIEW:\s*(ADEQUATE|INADEQUATE)").unwrap());
+        let suggestion_re =
+            RE_SUGGESTION.get_or_init(|| Regex::new(r"(?i)SUGGESTION:\s*(.+)").unwrap());
 
         for iteration in 1..=max_loops {
             let review_prompt = format!(
@@ -2485,7 +2489,8 @@ Seja justo. Aceite respostas de conclusão em qualquer formato."#,
                 )
                 .await?;
 
-            let analysis = response_parser::ResponseParser::sanitize_model_response(&review_response);
+            let analysis =
+                response_parser::ResponseParser::sanitize_model_response(&review_response);
             review_history.push(analysis.clone());
 
             if show_process {
@@ -2575,7 +2580,8 @@ Por favor, forneça a RESPOSTA MELHORADA que corrige os problemas identificados.
                 )
                 .await?;
 
-            current_answer = response_parser::ResponseParser::sanitize_model_response(&improved_response);
+            current_answer =
+                response_parser::ResponseParser::sanitize_model_response(&improved_response);
         }
 
         if show_process {
@@ -2720,7 +2726,9 @@ Por favor, forneça a RESPOSTA MELHORADA que corrige os problemas identificados.
             return Err(anyhow::anyhow!("Invalid response format"));
         };
 
-        let cleaned = response_parser::ResponseParser::sanitize_model_response(&content).trim().to_string();
+        let cleaned = response_parser::ResponseParser::sanitize_model_response(&content)
+            .trim()
+            .to_string();
 
         Ok(cleaned)
     }
@@ -2730,7 +2738,9 @@ Por favor, forneça a RESPOSTA MELHORADA que corrige os problemas identificados.
             let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
             match action {
                 "file_write" | "file_edit" => {
-                    if let Ok(args) = response_parser::ResponseParser::parse_action_input_json(action_input) {
+                    if let Ok(args) =
+                        response_parser::ResponseParser::parse_action_input_json(action_input)
+                    {
                         if let Some(path_str) = args["path"].as_str() {
                             let path = Path::new(path_str);
                             let decision =
@@ -2817,7 +2827,9 @@ Por favor, forneça a RESPOSTA MELHORADA que corrige os problemas identificados.
         match action {
             "file_write" => {
                 // Verifica se arquivo foi criado (apenas verifica existência)
-                if let Ok(args) = response_parser::ResponseParser::parse_action_input_json(action_input) {
+                if let Ok(args) =
+                    response_parser::ResponseParser::parse_action_input_json(action_input)
+                {
                     if let Some(path) = args["path"].as_str() {
                         if Path::new(path).exists() {
                             Ok(None) // Arquivo existe

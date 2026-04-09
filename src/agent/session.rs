@@ -89,7 +89,7 @@ impl<'a> SessionManager<'a> {
         session_id: &str,
     ) -> anyhow::Result<Option<crate::agent::SessionDetails>> {
         if let Ok(Some(cp)) = self.checkpoint_store.get(session_id) {
-            return             Ok(Some(crate::agent::SessionDetails {
+            return Ok(Some(crate::agent::SessionDetails {
                 id: cp.id.clone(),
                 user_input: cp.user_input.clone(),
                 phase: format!("{:?}", cp.phase),
@@ -102,7 +102,7 @@ impl<'a> SessionManager<'a> {
         }
 
         if let Ok(Some(cp)) = self.checkpoint_store.find_by_id_prefix(session_id) {
-            return             Ok(Some(crate::agent::SessionDetails {
+            return Ok(Some(crate::agent::SessionDetails {
                 id: cp.id.clone(),
                 user_input: cp.user_input.clone(),
                 phase: format!("{:?}", cp.phase),
@@ -127,12 +127,16 @@ impl<'a> SessionManager<'a> {
             return Ok(());
         }
 
-        let content = format!("Usuário: {}\nAssistente: {}", user_input, assistant_response);
+        let content = format!(
+            "Usuário: {}\nAssistente: {}",
+            user_input, assistant_response
+        );
 
         let embedding = self.embedding_service.embed(&content).await?;
 
         let memory = if let Some(sid) = session_id {
-            MemoryEntry::new(content, embedding, MemoryType::Episode, 0.6).with_session(sid.to_string())
+            MemoryEntry::new(content, embedding, MemoryType::Episode, 0.6)
+                .with_session(sid.to_string())
         } else {
             MemoryEntry::new(content, embedding, MemoryType::Episode, 0.6)
         };

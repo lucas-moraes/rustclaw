@@ -40,9 +40,12 @@ impl EmbeddingService {
 
     pub async fn embed(&self, text: &str) -> Result<Vec<f32>> {
         let cache_key = self.cache_key(text);
-        
+
         if let Some(embedding) = self.get_cached(&cache_key) {
-            tracing::debug!("Embedding cache hit for: {}...", &text[..text.len().min(50)]);
+            tracing::debug!(
+                "Embedding cache hit for: {}...",
+                &text[..text.len().min(50)]
+            );
             return Ok(embedding);
         }
 
@@ -77,10 +80,13 @@ impl EmbeddingService {
 
     fn put_cached(&self, key: &str, embedding: Vec<f32>) {
         if let Ok(mut cache) = self.cache.write() {
-            cache.insert(key.to_string(), CacheEntry {
-                embedding,
-                cached_at: std::time::Instant::now(),
-            });
+            cache.insert(
+                key.to_string(),
+                CacheEntry {
+                    embedding,
+                    cached_at: std::time::Instant::now(),
+                },
+            );
         }
     }
 
@@ -169,7 +175,10 @@ impl EmbeddingService {
 impl Default for EmbeddingService {
     fn default() -> Self {
         Self::new().unwrap_or_else(|e| {
-            tracing::warn!("Failed to initialize embedding service: {}. Using fallback mode.", e);
+            tracing::warn!(
+                "Failed to initialize embedding service: {}. Using fallback mode.",
+                e
+            );
             Self {
                 api_key: String::new(),
                 base_url: String::new(),

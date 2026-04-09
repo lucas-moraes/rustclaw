@@ -61,7 +61,12 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
             .replace("{tools}", &tool_list)
             .replace("{memory}", memory_context);
 
-        crate::skills::prompt_builder::SkillPromptBuilder::build(&base, skill, &tool_list, memory_context)
+        crate::skills::prompt_builder::SkillPromptBuilder::build(
+            &base,
+            skill,
+            &tool_list,
+            memory_context,
+        )
     }
 
     pub fn build_messages(system_prompt: &str, conversation_history: &[Value]) -> Vec<Value> {
@@ -191,7 +196,10 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
             return Err(anyhow::anyhow!("Invalid response format"));
         };
 
-        let cleaned = crate::agent::response_parser::ResponseParser::sanitize_model_response(&content).trim().to_string();
+        let cleaned =
+            crate::agent::response_parser::ResponseParser::sanitize_model_response(&content)
+                .trim()
+                .to_string();
 
         Ok(cleaned)
     }
