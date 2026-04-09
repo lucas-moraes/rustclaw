@@ -43,6 +43,8 @@ const COMMAND_COMMANDS: &[(&str, &str)] = &[
     ("/sessions", "Listar sessões (interativo)"),
     ("/session ", "Resumir sessão por ID"),
     ("/desenvolver", "Desenvolvimento estruturado"),
+    ("/trust", "Mostrar/atualizar trust level"),
+    ("/trust ", "Definir trust level (trusted/untrusted/fullytrusted)"),
 ];
 
 fn print_command_suggestions(prefix: &str) {
@@ -880,6 +882,68 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
                 }
             }
 
+            println!();
+            continue;
+        }
+
+        // Trust management command
+        if trimmed.eq_ignore_ascii_case("/trust") || trimmed.to_lowercase().starts_with("/trust ") {
+            println!();
+            let current_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+
+            if trimmed.to_lowercase().starts_with("/trust ") {
+                // Parse trust level
+                let parts: Vec<&str> = trimmed.split_whitespace().collect();
+                if parts.len() >= 2 {
+                    let level_str = parts[1].to_lowercase();
+                    let level = match level_str.as_str() {
+                        "untrusted" => Some(crate::workspace_trust::TrustLevel::Untrusted),
+                        "readonly" | "ro" => Some(crate::workspace_trust::TrustLevel::UntrustedReadOnly),
+                        "trusted" | "t" => Some(crate::workspace_trust::TrustLevel::Trusted),
+                        "fullytrusted" | "ft" => Some(crate::workspace_trust::TrustLevel::FullyTrusted),
+                        _ => {
+                            println!("{}✗ Nível de trust inválido: {}{}", Colors::RED, level_str, Colors::RESET);
+                            println!();
+                            println!("Níveis disponíveis: untrusted, readonly, trusted, fullytrusted");
+                            println!();
+                            continue;
+                        }
+                    };
+
+                    if let Some(level) = level {
+                        match agent.set_trust_level(&current_dir, level) {
+                            Ok(_) => {
+                                println!("{}✓ Trust level definido para: {:?}{}", Colors::AMBER, level, Colors::RESET);
+                            }
+                            Err(e) => {
+                                println!("{}✗ Erro ao definir trust: {}{}", Colors::RED, e, Colors::RESET);
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Show current trust level
+                let workspaces = agent.list_workspaces();
+                let current_level = agent.get_trust_level(&current_dir);
+
+                println!("{}⬡{}  Trust Status", Colors::ORANGE, Colors::RESET);
+                println!();
+                println!("  {}Diretório atual:{} {}", Colors::LIGHT_GRAY, Colors::RESET, current_dir.display());
+                println!("  {}Trust atual:{} {}", Colors::LIGHT_GRAY, Colors::RESET, current_level);
+                println!();
+
+                if !workspaces.is_empty() {
+                    println!("  {}Workspaces configurados:{}", Colors::LIGHT_GRAY, Colors::RESET);
+                    for ws in workspaces {
+                        println!("    - {}", ws);
+                    }
+                } else {
+                    println!("  {}Nenhum workspace configurado{} (usando default: Untrusted)", Colors::LIGHT_GRAY, Colors::RESET);
+                }
+                println!();
+                println!("  {}Usar:{} /trust <nivel>", Colors::LIGHT_GRAY, Colors::RESET);
+                println!("  {}Níveis:{} untrusted, readonly, trusted, fullytrusted", Colors::LIGHT_GRAY, Colors::RESET);
+            }
             println!();
             continue;
         }

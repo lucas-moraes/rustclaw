@@ -39,6 +39,7 @@ pub mod defense_prompt;
 pub mod injection_detector;
 pub mod output_cleaner;
 pub mod sanitizer;
+pub mod trust_checker;
 pub mod validator;
 
 // Re-export main types

@@ -2765,6 +2765,14 @@ Por favor, forneça a RESPOSTA MELHORADA que corrige os problemas identificados.
                         ));
                     }
                 }
+                "http_get" | "http_post" => {
+                    if !trust.can_access_network(&current_dir) {
+                        return Ok(format!(
+                            "Acesso negado: operações de rede não permitida neste diretório (trust: {:?})",
+                            trust.evaluate(&current_dir, &crate::workspace_trust::Operation::NetworkRequest).trust_level
+                        ));
+                    }
+                }
                 _ => {}
             }
         }
@@ -3141,6 +3149,35 @@ Por favor, forneça a RESPOSTA MELHORADA que corrige os problemas identificados.
 
     pub fn force_skill(&mut self, skill_name: &str) -> Result<(), String> {
         self.skill_manager.force_skill(skill_name)
+    }
+
+    pub fn get_trust_level(&self, path: &Path) -> String {
+        if let Some(ref trust) = self.workspace_trust {
+            format!("{:?}", trust.get_store().get_trust(path))
+        } else {
+            "None".to_string()
+        }
+    }
+
+    pub fn set_trust_level(&mut self, path: &Path, level: crate::workspace_trust::TrustLevel) -> Result<(), String> {
+        if let Some(ref mut trust) = self.workspace_trust {
+            trust.set_trust(path, level);
+            Ok(())
+        } else {
+            Err("Trust system not initialized".to_string())
+        }
+    }
+
+    pub fn list_workspaces(&self) -> Vec<String> {
+        if let Some(ref trust) = self.workspace_trust {
+            trust.get_store()
+                .list_workspaces()
+                .iter()
+                .map(|(path, level)| format!("{:?} - {:?}", level, path.display()))
+                .collect()
+        } else {
+            vec![]
+        }
     }
 
     pub fn model_name(&self) -> String {

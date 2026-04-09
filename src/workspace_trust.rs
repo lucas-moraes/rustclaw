@@ -339,6 +339,11 @@ impl TrustEvaluator {
         trust.can_execute_shell()
     }
 
+    pub fn can_access_network(&self, path: &Path) -> bool {
+        let trust = self.store.get_trust(path);
+        trust.can_access_network()
+    }
+
     pub fn set_trust(&mut self, path: &Path, level: TrustLevel) {
         self.store.set_trust(path, level, Some("user".to_string()));
     }
