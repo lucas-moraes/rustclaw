@@ -130,7 +130,7 @@ impl MemoryEntry {
         self
     }
 
-    pub fn as_global(mut self) -> Self {
+    pub fn to_global(mut self) -> Self {
         self.scope = MemoryScope::Global;
         self
     }

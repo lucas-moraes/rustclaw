@@ -2421,6 +2421,9 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
         let max_loops = self.config.self_review.max_loops;
         let show_process = self.config.self_review.show_process;
 
+        let review_re = RE_REVIEW.get_or_init(|| Regex::new(r"(?i)REVIEW:\s*(ADEQUATE|INADEQUATE)").unwrap());
+        let suggestion_re = RE_SUGGESTION.get_or_init(|| Regex::new(r"(?i)SUGGESTION:\s*(.+)").unwrap());
+
         for iteration in 1..=max_loops {
             let review_prompt = format!(
                 r#"Você é um revisor crítico. Analise a resposta abaixo e determine se ela atende completamente ao pedido do usuário.
@@ -2495,11 +2498,6 @@ Seja justo. Aceite respostas de conclusão em qualquer formato."#,
             }
 
             // Parse the review response
-            let review_re = RE_REVIEW
-                .get_or_init(|| Regex::new(r"(?i)REVIEW:\s*(ADEQUATE|INADEQUATE)").unwrap());
-            let suggestion_re =
-                RE_SUGGESTION.get_or_init(|| Regex::new(r"(?i)SUGGESTION:\s*(.+)").unwrap());
-
             let is_adequate = review_re
                 .captures(&analysis)
                 .map(|c| c.get(1).map(|m| m.as_str() == "ADEQUATE").unwrap_or(false))
