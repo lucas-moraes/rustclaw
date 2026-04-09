@@ -260,35 +260,69 @@ Cobertura atual: **72 testes passando** (5 novos de segurança adicionados no CP
 
 ---
 
-### CP-7 — Arquitetura — Decompor `agent.rs` ⬜ Pendente
+### CP-7 — Arquitetura — Decompor `agent.rs` (3.554 linhas)
 
-- [ ] Criar `src/agent/mod.rs` com `Agent` struct e re-exports
-- [ ] Extrair `src/agent/llm_client.rs` — funções `call_llm()`, `create_http_client()`
-- [ ] Extrair `src/agent/response_parser.rs` — `parse_response()`, `sanitize_model_response()`, todos os regex
-- [ ] Extrair `src/agent/plan_executor.rs` — `execute_plan_steps()`, lógica de planos
-- [ ] Extrair `src/agent/development.rs` — `run_structured_development()`, `DevelopmentCheckpoint` helpers
-- [ ] Extrair `src/agent/session.rs` — `session_save()`, `session_load()`, gerenciamento de sessões
-- [ ] Extrair `src/agent/build_validator.rs` — `validate_build()`, detecção de erros de compilação
-- [ ] Extrair `src/agent/output.rs` — funções `output_write_*`, `OutputManager`, `OutputSink`
-- [ ] Atualizar imports em todos os arquivos que referenciam `crate::agent::*`
-- [ ] Verificar: `cargo check` e `cargo test` passam
+#### CP-7.1 — Criar estrutura de diretório e `mod.rs`
+- [ ] Criar diretório `src/agent/`
+- [ ] Criar `src/agent/mod.rs` com re-exports públicos
+- [ ] Mover `pub struct Agent` e `pub fn new()` para `mod.rs`
+- [ ] Verificação: `cargo check`
 
-**Verificação:** `agent.rs` original reduzido para < 200 linhas (apenas struct + constructor + métodos de orquestração). Todos os testes passam.
+#### CP-7.2 — Extrair `response_parser.rs` (~300 linhas)
+- [ ] Mover `parse_response()`, `sanitize_model_response()`, `parse_action_input_json()`, `parse_heredoc_input()`, `recover_action_input()`, `extract_json_string_field()`, `extract_json_block()`
+- [ ] Mover `static RE_*: OnceLock<Regex>` 
+- [ ] Verificação: `cargo check`
+
+#### CP-7.3 — Extrair `llm_client.rs` (~150 linhas)
+- [ ] Mover `create_http_client()`, `call_llm()`, `call_llm_with_config()`, `build_system_prompt()`, `build_messages()`
+- [ ] Verificação: `cargo check`
+
+#### CP-7.4 — Extrair `session.rs` (~200 linhas)
+- [ ] Mover `list_sessions()`, `list_session_summaries()`, `list_sessions_with_hierarchy()`, `get_session_details()`, `resume_session()`, `delete_session()`, `rename_session()`, `save_conversation_to_memory()`, `save_tool_result_to_memory()`
+- [ ] Verificação: `cargo check`
+
+#### CP-7.5 — Extrair `plan_executor.rs` (~250 linhas)
+- [ ] Mover `run_structured_development()`, `execute_plan_steps()`, `update_plan_progress()`, `generate_plan()`, `count_plan_steps()`, `get_last_active_checkpoint()`, `count_tool_execs()`
+- [ ] Verificação: `cargo check`
+
+#### CP-7.6 — Extrair `build_validator.rs` (~100 linhas)
+- [ ] Mover `validate_build()`, estruturas `BuildValidation`
+- [ ] Verificação: `cargo check`
+
+#### CP-7.7 — Extrair `output.rs` (~80 linhas)
+- [ ] Mover `output_write()`, funções de output, `OutputManager`, `OutputSink`
+- [ ] Remover globais `OnceLock<OutputManager>` e `OnceLock<TmuxManager>`
+- [ ] Verificação: `cargo check` + `cargo test`
+
+**Verificação:** `agent.rs` < 500 linhas. Testes passam.
 
 ---
 
-### CP-8 — Arquitetura — Decompor `checkpoint.rs` ⬜ Pendente
+### CP-8 — Arquitetura — Decompor `checkpoint.rs` (2.342 linhas)
 
+#### CP-8.1 — Criar estrutura e `mod.rs`
+- [ ] Criar diretório `src/memory/checkpoint/`
 - [ ] Criar `src/memory/checkpoint/mod.rs` com re-exports
-- [ ] Extrair `src/memory/checkpoint/types.rs` — todos os structs e enums (`DevelopmentCheckpoint`, `SessionSummary`, etc.)
-- [ ] Extrair `src/memory/checkpoint/store.rs` — `CheckpointStore`, operações de banco
-- [ ] Extrair `src/memory/checkpoint/events.rs` — `SessionEventStore`, `SessionEvent`, compressão
-- [ ] Extrair `src/memory/checkpoint/lifecycle.rs` — `LifecycleManager`, `SnapshotManager`, políticas
-- [ ] Extrair `src/memory/checkpoint/migration.rs` — schema init e migrações
-- [ ] Atualizar imports em todos os arquivos que referenciam `crate::memory::checkpoint::*`
-- [ ] Verificar: `cargo check` e `cargo test` passam
+- [ ] Atualizar imports em `src/memory/mod.rs`
+- [ ] Verificação: estrutura compila
 
-**Verificação:** `checkpoint.rs` original não existe mais (dividido em 5-6 arquivos). Todos os testes passam.
+#### CP-8.2 — Extrair `types.rs` (~500 linhas)
+- [ ] Mover structs: `DevelopmentCheckpoint`, `DevelopmentState`, `PlanPhase`, `PlanStage`, `ToolExecution`, `SessionSummary`, `SessionDetails`
+- [ ] Verificação: `cargo check`
+
+#### CP-8.3 — Extrair `store.rs` (~800 linhas)
+- [ ] Mover `CheckpointStore` impl, `new()`, `save()`, `load()`, `get()`, `update()`, `create_tables()`, `migrate_schema()`
+- [ ] Verificação: `cargo check`
+
+#### CP-8.4 — Extrair `events.rs` (~300 linhas)
+- [ ] Mover `SessionEventStore`, `SessionEvent`, `EventSummary`, compressão
+- [ ] Verificação: `cargo check`
+
+#### CP-8.5 — Extrair `lifecycle.rs` (~200 linhas)
+- [ ] Mover `LifecycleManager`, `SnapshotManager`, `SnapshotPolicy`
+- [ ] Verificação: `cargo test`
+
+**Verificação:** `checkpoint.rs` dividido. 77 testes passando.
 
 ---
 
@@ -336,40 +370,81 @@ Cobertura atual: **72 testes passando** (5 novos de segurança adicionados no CP
 
 ---
 
-### CP-12 — CLI — Migrar Unsafe para Crossterm ⬜ Pendente
+### CP-12 — CLI — Migrar Unsafe para Crossterm
 
+#### CP-12.1 — Adicionar `crossterm` e criar estrutura
 - [ ] Adicionar `crossterm` ao `Cargo.toml`
-- [ ] Refatorar `cli.rs:406-573` para usar `crossterm` em vez de `libc::termios` + `libc::read`
-- [ ] Remover blocos `#[cfg(unix)]` e `#[cfg(not(unix))]` duplicados — `crossterm` é cross-platform
-- [ ] Refatorar `run()` function (>500 linhas) em funções menores
-- [ ] Remover dependência `libc` se não for mais necessária
-- [ ] Verificar: CLI funciona em macOS e Linux
+- [ ] Criar estrutura de diretório `src/cli/` se necessário
+- [ ] Verificação: `cargo check`
 
-**Verificação:** `cargo test` passa. CLI interativo funciona sem `unsafe`. `libc` removido de `Cargo.toml`.
+#### CP-12.2 — Refatorar terminal raw mode
+- [ ] Substituir `unsafe { libc::tcgetattr... }` (linhas 449-458) por `crossterm::terminal::enable_raw_mode()`
+- [ ] Substituir `libc::read()` (linhas 526-558) por leitura via crossterm
+- [ ] Substituir `libc::tcsetattr` de restore (linha 558) por `disable_raw_mode()`
+- [ ] Verificação: CLI funciona em macOS
+
+#### CP-12.3 — Limpar dependências libc
+- [ ] Remover blocos `#[cfg(unix)]` e `#[cfg(not(unix))]` duplicados
+- [ ] Remover `unsafe` blocks restantes
+- [ ] Verificar se `libc` ainda é necessário (grep por `libc::` fora de cli.rs)
+- [ ] Se não, remover `libc` do `Cargo.toml`
+- [ ] Verificação: `cargo test` + CLI interativo
+
+#### CP-12.4 — Dividir `run()` function
+- [ ] Extrair `fn handle_interactive_session()` (~100 linhas)
+- [ ] Extrair `fn handle_session_selection()` (~150 linhas)
+- [ ] Extrair `fn handle_auto_loop()` (~100 linhas)
+- [ ] Manter `run()` como orquestrador (~100 linhas)
+- [ ] Verificação: `cargo test`
+
+**Verificação:** CLI sem unsafe, 77 testes passando.
 
 ---
 
-### CP-13 — Documentação ⬜ Pendente
+### CP-13 — Documentação
 
-- [ ] Adicionar `//!` doc comments em cada módulo (`agent`, `memory`, `tools`, `security`, `skills`, `cli`)
-- [ ] Adicionar `///` doc comments em métodos públicos de `Agent`, `MemoryStore`, `ToolRegistry`, `CheckpointStore`
-- [ ] Criar `ARCHITECTURE.md` com diagrama de módulos, fluxo de dados, sistema de trust
-- [ ] Extrair strings hardcoded (mistura pt/en) para constantes ou arquivo de i18n
-- [ ] Atualizar `AGENTS.md` com comandos atuais e estrutura de módulos pós-refatoração
+#### CP-13.1 — Doc comments em módulos públicos
+- [ ] Adicionar `//!` em `src/agent/mod.rs`, `src/memory/mod.rs`, `src/tools/mod.rs`, `src/security/mod.rs`, `src/skills/mod.rs`
+- [ ] Adicionar `///` em 10-15 métodos públicos de `Agent`
+- [ ] Verificação: `cargo doc --no-deps` sem warnings
 
-**Verificação:** `cargo doc --no-deps` gera documentação sem warnings. `ARCHITECTURE.md` reflete a estrutura real do código.
+#### CP-13.2 — Criar `ARCHITECTURE.md`
+- [ ] Diagrama de módulos (ASCII ou mermaid)
+- [ ] Fluxo de dados: User → CLI/Telegram → Agent → LLM → Tool
+- [ ] Sistema de trust: `WorkspaceTrustStore` → `TrustEvaluator` → `execute_tool()`
+- [ ] Sistema de memória: `MemoryStore` → `EmbeddingService` → `search_similar_memories()`
+- [ ] Verificação: arquivo reflete estrutura real
+
+#### CP-13.3 — Atualizar `AGENTS.md`
+- [ ] Atualizar comandos
+- [ ] Atualizar estrutura de módulos
+- [ ] Adicionar seção de segurança
+- [ ] Verificação: arquivo atualizado
+
+#### CP-13.4 — Extrair strings hardcoded (opcional)
+- [ ] Identificar strings PT/EN em `agent.rs`, `cli.rs`, `tools/*.rs`
+- [ ] Criar `src/i18n.rs` com constantes
+- [ ] Verificação: strings consolidadas
 
 ---
 
-### CP-14 — Memory — Busca Escalável ⬜ Pendente
+### CP-14 — Memory — Busca Escalável
 
-- [ ] Implementar índice FTS5 no SQLite para `search_similar_memories` em `memory/store.rs`
-- [ ] Benchmark: buscar entre 1000, 10000 e 100000 memórias
-- [ ] Adicionar migração de schema para criar tabela FTS5
-- [ ] Fallback para scan linear se FTS5 não estiver disponível
-- [ ] Verificar: `cargo test` passa. Busca é O(log n) com FTS5.
+#### CP-14.1 — Adicionar tabela FTS5
+- [ ] Adicionar `CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(content, tokenize='unicode61')`
+- [ ] Adicionar triggers para INSERT/UPDATE/DELETE
+- [ ] Verificação: tabela criada, `cargo test` passa
 
-**Verificação:** Benchmark mostra busca < 10ms com 10.000+ memórias.
+#### CP-14.2 — Implementar busca FTS5
+- [ ] Adicionar `search_fts(query: &str) -> Result<Vec<MemoryEntry>>`
+- [ ] Modificar `search_similar_memories()` para usar FTS5
+- [ ] Fallback para scan linear se FTS5 indisponível
+- [ ] Verificação: busca funciona
+
+#### CP-14.3 — Benchmark
+- [ ] Criar benchmark para 1K, 10K, 100K memórias
+- [ ] Comparar scan linear vs FTS5
+- [ ] Verificação: busca < 10ms com 10K+ memórias
 
 ---
 
@@ -383,14 +458,14 @@ Cobertura atual: **72 testes passando** (5 novos de segurança adicionados no CP
 | **CP-4** | Dependências e Depreciações | ✅ Concluído | — |
 | **CP-5** | Performance — Regex e Cache | ✅ Concluído | — |
 | **CP-6** | Tratamento de Erros | ✅ Concluído | — |
-| **CP-7** | Decompor `agent.rs` | ⬜ Pendente | 3-5 dias |
-| **CP-8** | Decompor `checkpoint.rs` | ⬜ Pendente | 2-3 dias |
+| **CP-7** | Decompor `agent.rs` | 7 sub-tarefas | 3-5 dias |
+| **CP-8** | Decompor `checkpoint.rs` | 5 sub-tarefas | 2-3 dias |
 | **CP-9** | Unificar Estado e Remover Morto | ✅ Concluído | — |
-| **CP-10** | Testes — Ferramentas e Memória | ⬜ Pendente | 2-3 dias |
-| **CP-11** | Testes — Segurança e Integração | ⬜ Pendente | 2-3 dias |
-| **CP-12** | CLI — Migrar para Crossterm | ⬜ Pendente | 2-3 dias |
-| **CP-13** | Documentação | ⬜ Pendente | 2-3 dias |
-| **CP-14** | Memory — Busca Escalável | ⬜ Pendente | 2-3 dias |
+| **CP-10** | Testes — Ferramentas e Memória | ✅ Concluído | — |
+| **CP-11** | Testes — Segurança e Integração | 🔄 Parcial | — |
+| **CP-12** | CLI — Migrar para Crossterm | 4 sub-tarefas | 2-3 dias |
+| **CP-13** | Documentação | 4 sub-tarefas | 2-3 dias |
+| **CP-14** | Memory — Busca Escalável | 3 sub-tarefas | 2-3 dias |
 
 ---
 
@@ -398,15 +473,15 @@ Cobertura atual: **72 testes passando** (5 novos de segurança adicionados no CP
 
 | Arquivo | Linhas | Rating | Problemas Principais | Checkpoint |
 |---------|--------|--------|----------------------|------------|
-| `agent.rs` | 3.500+ | 2/5 | God object (melhorou com OnceLock), unwrap, duplicação | CP-5 ✅, CP-6, CP-7 |
-| `memory/checkpoint.rs` | 2.348 | 2/5 | Arquivo massivo, deve ser dividido | CP-8 |
-| `cli.rs` | 764 | 3/5 | Unsafe libc, display duplicado | CP-12 |
-| `tools/shell.rs` | 350 | 3/5 | ✅ Path validation, ✅ shell-words | CP-3 ✅, CP-4 ✅ |
-| `tools/file_write.rs` | 105 | 3/5 | ✅ Path validation de sistema | CP-3 ✅ |
-| `tools/file_read.rs` | 100 | 3/5 | ✅ Sensible file blocking | CP-3 ✅ |
-| `memory/store.rs` | 595 | 3/5 | ✅ SQL fix, ALTER TABLE silencioso | CP-1 ✅, CP-14 |
-| `memory/embeddings.rs` | 118 | 3/5 | Fallback ingênuo, panic sem API key | CP-6 |
-| `config.rs` | 238 | 4/5 | Limpo e bem estruturado | — |
-| `security/*` | ~1.300 | 4/5 | Módulo bem projetado com testes | — |
-| `workspace_trust.rs` | 381 | 4/5 | ✅ Integrado em execute_tool | CP-3 ✅ |
-| `tools/mod.rs` | 494 | 4/5 | ✅ 5 testes de segurança adicionados | CP-3 ✅ |
+| `agent.rs` | 3.554 | 2/5 | God object (CP-7), unwrap ✅, OnceLock ✅ | CP-5 ✅, CP-6, CP-7 |
+| `cli.rs` | 988 | 3/5 | Unsafe libc (CP-12) | CP-12 |
+| `memory/checkpoint.rs` | 2.342 | 2/5 | Arquivo massivo (CP-8) | CP-8 |
+| `tools/shell.rs` | 350 | 3/5 | ✅ Path validation | CP-3 ✅ |
+| `tools/file_write.rs` | 105 | 3/5 | ✅ Path validation | CP-3 ✅ |
+| `tools/file_read.rs` | 100 | 3/5 | ✅ Blocking | CP-3 ✅ |
+| `memory/store.rs` | 595 | 3/5 | SQL ✅, FTS5 (CP-14) | CP-1 ✅, CP-14 |
+| `memory/embeddings.rs` | 118 | 3/5 | Fallback ✅ (CP-6) | CP-6 |
+| `config.rs` | 237 | 4/5 | Limpo | — |
+| `security/*` | ~1.300 | 4/5 | ✅ | — |
+| `workspace_trust.rs` | 381 | 4/5 | ✅ Integrado | CP-3 ✅ |
+| `tools/mod.rs` | 582 | 4/5 | ✅ 10 testes | CP-3 ✅, CP-10 ✅ |
