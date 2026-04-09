@@ -270,6 +270,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
         let mut line_count = 0;
         let mut input_lines: Vec<String> = Vec::new();
 
+        #[allow(clippy::while_let_loop)]
         loop {
             let line = match read_multiline_input(&mut rl, is_continuation) {
                 Some(l) => l,

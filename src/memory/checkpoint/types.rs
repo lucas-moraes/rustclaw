@@ -141,6 +141,7 @@ pub struct SessionFingerprint {
 }
 
 impl SessionFingerprint {
+    #[allow(clippy::field_reassign_with_default)]
     pub fn detect(cwd: &Path) -> Self {
         let mut fp = Self::default();
 

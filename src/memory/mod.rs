@@ -133,7 +133,7 @@ impl MemoryEntry {
         self
     }
 
-    #[allow(dead_code)]
+    #[allow(dead_code, clippy::wrong_self_convention)]
     pub fn to_global(mut self) -> Self {
         self.scope = MemoryScope::Global;
         self

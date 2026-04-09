@@ -243,6 +243,7 @@ impl LifecycleManager {
         Self::new(db_path, LifecyclePolicy::from_env())
     }
 
+    #[allow(clippy::field_reassign_with_default)]
     pub fn run_cleanup(&self) -> SqliteResult<CleanupStats> {
         let mut stats = CleanupStats::default();
 
