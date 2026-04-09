@@ -269,15 +269,15 @@ Cobertura atual: **72 testes passando** (5 novos de segurança adicionados no CP
 - [x] Verificação: `cargo check` passa
 
 #### CP-7.2 — Extrair `response_parser.rs` (~400 linhas)
-- [ ] Mover `parse_response()`, `sanitize_model_response()`, `parse_action_input_json()`, `parse_heredoc_input()`, `recover_action_input()`, etc.
-- [ ] Mover `static RE_*: OnceLock<Regex>` para o arquivo
-- [ ] Verificação: `cargo check`
+- [x] Mover `parse_response()`, `sanitize_model_response()`, `parse_action_input_json()`, `parse_heredoc_input()`, `recover_action_input()`, etc.
+- [x] Mover `static RE_*: OnceLock<Regex>` para o arquivo
+- [x] Verificação: `cargo check` + 77 testes
 
 **Nota:** Esta tarefa requer mover ~400 linhas de código. Pode ser feita em sessões futuras.
 
 #### CP-7.3 — Extrair `llm_client.rs` (~150 linhas)
-- [ ] Mover `create_http_client()`, `call_llm()`, `call_llm_with_config()`, `build_system_prompt()`, `build_messages()`
-- [ ] Verificação: `cargo check`
+- [x] Mover `create_http_client()`, `call_llm()`, `call_llm_with_config()`, `build_system_prompt()`, `build_messages()`
+- [x] Verificação: `cargo check`
 
 #### CP-7.4 — Extrair `session.rs` (~200 linhas)
 - [ ] Mover `list_sessions()`, `list_session_summaries()`, `list_sessions_with_hierarchy()`, `get_session_details()`, `resume_session()`, `delete_session()`, `rename_session()`, `save_conversation_to_memory()`, `save_tool_result_to_memory()`
