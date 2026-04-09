@@ -1,49 +1,31 @@
 //! Terminal utilities module
 //! Provides cross-platform terminal operations using crossterm
 
-use std::io::{self, Read};
+use std::io::{self, Write};
 
 /// Enable raw mode for terminal input
 pub fn enable_raw() -> io::Result<()> {
     crossterm::terminal::enable_raw_mode()
 }
 
-/// Disable raw mode and restore normal terminal behavior
+/// Disable raw mode and restore normal terminal behavior  
 pub fn disable_raw() -> io::Result<()> {
     crossterm::terminal::disable_raw_mode()
 }
 
-/// Read a single byte from stdin (blocking) - useful for key detection
-pub fn read_byte() -> io::Result<u8> {
-    let mut buf = [0u8; 1];
-    io::stdin().read_exact(&mut buf)?;
-    Ok(buf[0])
+/// Check if raw mode is enabled
+pub fn is_raw_mode() -> bool {
+    crossterm::terminal::is_raw_mode_enabled().unwrap_or(false)
 }
 
-/// Check if a key is available (non-blocking)
-pub fn poll_key() -> io::Result<Option<u8>> {
-    use std::time::Duration;
+/// Read a key event (blocking) using crossterm
+pub fn read_key_event() -> io::Result<Option<crossterm::event::Event>> {
+    use crossterm::event;
 
-    // Use select to check if stdin has data
-    use std::os::unix::io::AsRawFd;
-
-    let mut fd_set = std::collections::HashSet::new();
-    fd_set.insert(std::io::stdin().as_raw_fd());
-
-    let mut timeout = std::time::Duration::ZERO;
-
-    // Use select-style polling via poll
-    let result = unsafe {
-        let mut poll_fd = libc::pollfd {
-            fd: std::io::stdin().as_raw_fd(),
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        libc::poll(&mut poll_fd, 1, 0)
-    };
-
-    if result > 0 {
-        Ok(Some(read_byte()?))
+    if event::poll(std::time::Duration::from_millis(100))? {
+        event::read()
+            .map(Some)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
     } else {
         Ok(None)
     }
@@ -65,4 +47,28 @@ impl Drop for RawModeGuard {
     fn drop(&mut self) {
         let _ = disable_raw();
     }
+}
+
+/// Clear the terminal screen
+pub fn clear_screen() {
+    print!("\x1b[2J\x1b[H");
+    let _ = std::io::stdout().flush();
+}
+
+/// Move cursor to position (1-indexed)
+pub fn move_cursor(row: u16, col: u16) {
+    print!("\x1b[{};{}H", row, col);
+    let _ = std::io::stdout().flush();
+}
+
+/// Hide the cursor
+pub fn hide_cursor() {
+    print!("\x1b[?25l");
+    let _ = std::io::stdout().flush();
+}
+
+/// Show the cursor
+pub fn show_cursor() {
+    print!("\x1b[?25h");
+    let _ = std::io::stdout().flush();
 }

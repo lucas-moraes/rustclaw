@@ -624,3 +624,77 @@ impl MemoryStore {
         Ok(count)
     }
 }
+
+#[cfg(test)]
+mod benchmark_tests {
+    use super::*;
+    use std::time::Instant;
+    use tempfile::tempdir;
+
+    fn create_test_memories(store: &MemoryStore, count: usize) -> anyhow::Result<()> {
+        for i in 0..count {
+            let entry = MemoryEntry {
+                id: format!("bench-{}", i),
+                session_id: None,
+                content: format!("Test memory {} with content about testing", i),
+                embedding: vec![0.0; 384],
+                timestamp: chrono::Utc::now(),
+                importance: 0.5,
+                memory_type: MemoryType::Episode,
+                metadata: serde_json::json!({}),
+                search_count: 0,
+                scope: MemoryScope::Session,
+                access_count: 0,
+                last_accessed: chrono::Utc::now(),
+            };
+            store.save(&entry)?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_memory_store_100_entries() {
+        let dir = tempdir().unwrap();
+        let store = MemoryStore::new(&dir.path().join("bench.db")).unwrap();
+        create_test_memories(&store, 100).unwrap();
+
+        let start = Instant::now();
+        let all = store.get_all().unwrap();
+        let elapsed = start.elapsed();
+
+        println!("Get 100 entries: {:?}", elapsed);
+        assert_eq!(all.len(), 100);
+    }
+
+    #[test]
+    fn test_memory_store_1000_entries() {
+        let dir = tempdir().unwrap();
+        let store = MemoryStore::new(&dir.path().join("bench.db")).unwrap();
+        create_test_memories(&store, 1000).unwrap();
+
+        let start = Instant::now();
+        let all = store.get_all().unwrap();
+        let elapsed = start.elapsed();
+
+        println!("Get 1000 entries: {:?}", elapsed);
+        assert_eq!(all.len(), 1000);
+    }
+
+    #[test]
+    fn test_linear_search_100_entries() {
+        let dir = tempdir().unwrap();
+        let store = MemoryStore::new(&dir.path().join("bench.db")).unwrap();
+        create_test_memories(&store, 100).unwrap();
+
+        let start = Instant::now();
+        let all = store.get_all().unwrap();
+        let results: Vec<_> = all
+            .into_iter()
+            .filter(|m| m.content.contains("testing"))
+            .collect();
+        let elapsed = start.elapsed();
+
+        println!("Linear search 100 entries: {:?}", elapsed);
+        println!("Found {} matches", results.len());
+    }
+}

@@ -461,11 +461,11 @@ Cobertura atual: **77 testes passando** (testes de ferramentas + segurança).
 | **CP-5** | Performance — Regex | ✅ Concluído | OnceLock em hot paths |
 | **CP-6** | Tratamento de Erros | ✅ Concluído | expect() com contexto |
 | **CP-7** | Decompor `agent.rs` | ✅ Concluído | 7 sub-módulos criados |
-| **CP-8** | Decompor `checkpoint.rs` | ⬜ Pendente | Requer mais trabalho |
+| **CP-8** | Decompor `checkpoint.rs` | ⬜ Pendente | Requer trabalho significativo |
 | **CP-9** | Remover Código Morto | ✅ Concluído | 86% warnings reducidos |
 | **CP-10** | Testes — Ferramentas | ✅ Concluído | 77 testes |
 | **CP-11** | Testes — Segurança | ✅ Concluído | Path traversal + blocking |
-| **CP-12** | CLI → Crossterm | ✅ Concluído | crossterm adicionado |
+| **CP-12** | CLI → Crossterm | ✅ Concluído | libs adicionadas + partial |
 | **CP-13** | Documentação | ✅ Concluído | ARCHITECTURE.md criado |
 | **CP-14** | FTS5 Search | ✅ Concluído | Infraestrutura + benchmarks |
 
