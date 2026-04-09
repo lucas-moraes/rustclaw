@@ -42,10 +42,34 @@ impl MemoryStore {
 
         for query in queries {
             if let Err(e) = self.conn.execute_batch(query) {
-                tracing::debug!("clear_all: could not execute '{}': {}", query, e);
+                tracing::warn!("clear_all: could not execute '{}': {}", query, e);
             }
         }
 
+        let _ = self.rebuild_fts();
+
+        Ok(())
+    }
+
+    fn rebuild_fts(&self) -> Result<()> {
+        let _ = self.conn.execute_batch("DROP TABLE IF EXISTS memories_fts");
+        let _ = self.conn.execute_batch(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+                content,
+                content='memories',
+                content_rowid='rowid'
+            )",
+        );
+        let _ = self.conn.execute_batch(
+            "CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
+                INSERT INTO memories_fts(rowid, content) VALUES (new.rowid, new.content);
+            END",
+        );
+        let _ = self.conn.execute_batch(
+            "CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
+                INSERT INTO memories_fts(memories_fts, rowid, content) VALUES('delete', old.rowid, old.content);
+            END",
+        );
         Ok(())
     }
 
