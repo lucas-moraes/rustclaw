@@ -38,6 +38,7 @@ impl LogLevel {
     }
 }
 
+#[allow(dead_code)]
 pub trait OutputSink: Send + Sync + 'static {
     fn name(&self) -> &str;
     fn write(&self, msg: &str);
@@ -138,6 +139,7 @@ impl OutputManager {
         }
     }
 
+    #[allow(dead_code)]
     pub fn flush(&self) {
         for sink in &self.sinks {
             sink.flush();

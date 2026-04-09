@@ -40,10 +40,12 @@ pub struct Skill {
 }
 
 impl Skill {
+    #[allow(dead_code)]
     pub fn load_level_1(&self) -> String {
         format!("Skill: {}\nDescription: {}", self.name, self.description)
     }
 
+    #[allow(dead_code)]
     pub fn load_level_2(&self) -> String {
         self.context.clone()
     }

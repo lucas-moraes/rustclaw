@@ -42,10 +42,12 @@ pub enum BuildValidation {
 }
 
 impl BuildValidation {
+    #[allow(dead_code)]
     pub fn is_success(&self) -> bool {
         matches!(self, BuildValidation::Success)
     }
 
+    #[allow(dead_code)]
     pub fn error_count(&self) -> usize {
         match self {
             BuildValidation::Success => 0,
@@ -53,6 +55,7 @@ impl BuildValidation {
         }
     }
 
+    #[allow(dead_code)]
     pub fn format_for_llm(&self) -> String {
         match self {
             BuildValidation::Success => "✅ Build passou com sucesso!".to_string(),

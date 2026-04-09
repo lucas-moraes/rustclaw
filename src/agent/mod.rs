@@ -2910,6 +2910,7 @@ Por favor, forneça a RESPOSTA MELHORADA que corrige os problemas identificados.
         )
     }
 
+    #[allow(dead_code)]
     pub fn get_skill_manager(&self) -> &SkillManager {
         &self.skill_manager
     }
@@ -2919,6 +2920,7 @@ Por favor, forneça a RESPOSTA MELHORADA que corrige os problemas identificados.
     }
 
     /// List all sessions (returns checkpoints for backward compat)
+    #[allow(dead_code)]
     pub fn list_sessions(&self) -> anyhow::Result<Vec<DevelopmentCheckpoint>> {
         self.checkpoint_store
             .list_all(50)
@@ -2926,6 +2928,7 @@ Por favor, forneça a RESPOSTA MELHORADA que corrige os problemas identificados.
     }
 
     /// List all session summaries (fast listing from session_summaries table)
+    #[allow(dead_code)]
     pub fn list_session_summaries(
         &self,
     ) -> anyhow::Result<Vec<crate::memory::checkpoint::SessionSummary>> {
@@ -2991,6 +2994,7 @@ Por favor, forneça a RESPOSTA MELHORADA que corrige os problemas identificados.
     }
 
     /// Get session details by ID (full ID or prefix)
+    #[allow(dead_code)]
     pub fn get_session_details(&self, session_id: &str) -> anyhow::Result<Option<SessionDetails>> {
         // Try exact match first
         if let Ok(Some(cp)) = self.checkpoint_store.get(session_id) {
@@ -3136,14 +3140,17 @@ Por favor, forneça a RESPOSTA MELHORADA que corrige os problemas identificados.
         self.skill_manager.get_active_skill_name()
     }
 
+    #[allow(dead_code)]
     pub fn get_app_store(&self) -> &Store<AppState> {
         &self.app_store
     }
 
+    #[allow(dead_code)]
     pub fn get_app_state(&self) -> AppState {
         self.app_store.get_state()
     }
 
+    #[allow(dead_code)]
     pub fn update_app_state<F>(&self, updater: F)
     where
         F: FnOnce(&AppState) -> AppState,

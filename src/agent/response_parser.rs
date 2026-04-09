@@ -358,8 +358,11 @@ static RE_REVISE_MEMORY: OnceLock<Regex> = OnceLock::new();
 static RE_REASONING: OnceLock<Regex> = OnceLock::new();
 static RE_VERIFICATION: OnceLock<Regex> = OnceLock::new();
 static RE_ACTION: OnceLock<Regex> = OnceLock::new();
+#[allow(dead_code)]
 static RE_REVIEW: OnceLock<Regex> = OnceLock::new();
+#[allow(dead_code)]
 static RE_SUGGESTION: OnceLock<Regex> = OnceLock::new();
+#[allow(dead_code)]
 static RE_PLAN_STEP: OnceLock<Regex> = OnceLock::new();
 static RE_HEREDOC: OnceLock<Regex> = OnceLock::new();
 static RE_HEREDOC_ALT: OnceLock<Regex> = OnceLock::new();

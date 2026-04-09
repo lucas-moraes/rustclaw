@@ -16,10 +16,12 @@ impl SkillScriptTool {
         }
     }
 
+    #[allow(dead_code)]
     pub fn list_scripts_for_skill(&self, skill: &Skill) -> Vec<ScriptInfo> {
         self.executor.list_scripts(&skill.name)
     }
 
+    #[allow(dead_code)]
     pub fn has_scripts(&self, skill: &Skill) -> bool {
         self.executor.has_scripts(&skill.name)
     }

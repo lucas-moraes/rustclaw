@@ -112,16 +112,19 @@ impl MemoryEntry {
         self.session_id = Some(session_id);
         self
     }
+    #[allow(dead_code)]
     pub fn with_metadata(mut self, metadata: serde_json::Value) -> Self {
         self.metadata = metadata;
         self
     }
 
+    #[allow(dead_code)]
     pub fn with_scope(mut self, scope: MemoryScope) -> Self {
         self.scope = scope;
         self
     }
 
+    #[allow(dead_code)]
     pub fn with_project_context(mut self, project_path: String) -> Self {
         self.scope = MemoryScope::Project;
         if let serde_json::Value::Object(ref mut map) = self.metadata {
@@ -130,6 +133,7 @@ impl MemoryEntry {
         self
     }
 
+    #[allow(dead_code)]
     pub fn to_global(mut self) -> Self {
         self.scope = MemoryScope::Global;
         self

@@ -147,10 +147,12 @@ impl SkillScriptExecutor {
         }
     }
 
+    #[allow(dead_code)]
     pub fn validate_script(&self, skill_name: &str, script_name: &str) -> bool {
         self.get_script(skill_name, script_name).is_some()
     }
 
+    #[allow(dead_code)]
     pub fn has_scripts(&self, skill_name: &str) -> bool {
         !self.list_scripts(skill_name).is_empty()
     }

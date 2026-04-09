@@ -181,10 +181,12 @@ impl TmuxManager {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn get_output_manager(&self) -> &OutputManager {
         &self.output_manager
     }
 
+    #[allow(dead_code)]
     pub fn get_output_manager_mut(&mut self) -> &mut OutputManager {
         &mut self.output_manager
     }
@@ -199,10 +201,12 @@ impl TmuxManager {
         self.session_dir().join("browser")
     }
 
+    #[allow(dead_code)]
     pub fn create_browser_screenshot(&self, path: &str, description: &str) {
         self.output_manager.write_browser(path, description);
     }
 
+    #[allow(dead_code)]
     pub fn write_agent(&self, msg: &str) {
         if let Some(session) = self.sessions.get("agent") {
             let escaped = msg.replace('\\', "\\\\").replace('"', "\\\"");

@@ -239,6 +239,7 @@ impl BrowserManager {
         Ok(html)
     }
 
+    #[allow(dead_code)]
     pub async fn close(&mut self) -> Result<(), String> {
         if let Some(page) = self.page.write().await.take() {
             let _ = page.close().await;

@@ -41,6 +41,7 @@ where
         }
     }
 
+    #[allow(dead_code)]
     pub fn subscribe<F>(&self, callback: F) -> impl FnMut() + Send + Sync
     where
         F: Fn(&T, &T) + Send + Sync + 'static,

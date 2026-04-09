@@ -310,6 +310,7 @@ impl MemoryStore {
     }
 
     /// Get all memories for a specific session
+    #[allow(dead_code)]
     pub fn get_by_session_id(&self, session_id: &str) -> Result<Vec<MemoryEntry>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, session_id, content, embedding, timestamp, importance, memory_type, metadata, search_count, scope, access_count, last_accessed
@@ -329,6 +330,7 @@ impl MemoryStore {
         Ok(deleted)
     }
 
+    #[allow(dead_code)]
     pub fn increment_search_count(&self, id: &str) -> Result<()> {
         self.conn.execute(
             "UPDATE memories SET search_count = search_count + 1 WHERE id = ?1",
@@ -353,6 +355,7 @@ impl MemoryStore {
         Ok(count)
     }
 
+    #[allow(dead_code)]
     pub fn get_global_memories(&self) -> Result<Vec<MemoryEntry>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, session_id, content, embedding, timestamp, importance, memory_type, metadata, search_count, scope, access_count, last_accessed
@@ -363,6 +366,7 @@ impl MemoryStore {
         entries.collect::<Result<Vec<_>, _>>().map_err(|e| e.into())
     }
 
+    #[allow(dead_code)]
     pub fn get_project_memories(&self, project_path: &str) -> Result<Vec<MemoryEntry>> {
         let pattern = format!("%{}%", project_path);
         let mut stmt = self.conn.prepare(
@@ -397,6 +401,7 @@ impl MemoryStore {
         entries.collect::<Result<Vec<_>, _>>().map_err(|e| e.into())
     }
 
+    #[allow(dead_code)]
     pub fn update_memory_access(&self, id: &str) -> Result<()> {
         let now = Utc::now().to_rfc3339();
         self.conn.execute(
@@ -406,6 +411,7 @@ impl MemoryStore {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn promote_to_project(&self, id: &str, project_path: &str) -> Result<()> {
         self.conn.execute(
             "UPDATE memories SET scope = 'project', metadata = json_set(COALESCE(metadata, '{}'), '$.project_path', ?1) WHERE id = ?2",
@@ -414,12 +420,14 @@ impl MemoryStore {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn promote_to_global(&self, id: &str) -> Result<()> {
         self.conn
             .execute("UPDATE memories SET scope = 'global' WHERE id = ?1", [id])?;
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn downgrade_low_importance(&self, threshold: f32) -> Result<usize> {
         let updated = self.conn.execute(
             "UPDATE memories SET importance = importance * 0.8 WHERE importance < ?1 AND access_count < 2",

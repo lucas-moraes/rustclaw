@@ -54,10 +54,12 @@ impl ToolRegistry {
             .join("\n")
     }
 
+    #[allow(dead_code)]
     pub fn names(&self) -> Vec<String> {
         self.tools.keys().cloned().collect()
     }
 
+    #[allow(dead_code)]
     pub fn filter_tools(&self, allowed_tools: &[String]) -> Vec<String> {
         if allowed_tools.is_empty() {
             return self.names();
@@ -79,6 +81,7 @@ impl ToolRegistry {
         self.tools.is_empty()
     }
 
+    #[allow(dead_code)]
     pub fn register_with_dedup(&mut self, tool: Box<dyn Tool>) -> bool {
         let name = tool.name().to_string();
         let name_lower = name.to_lowercase();
@@ -93,6 +96,7 @@ impl ToolRegistry {
         true
     }
 
+    #[allow(dead_code)]
     pub fn deduplicate(&mut self) -> usize {
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut duplicates: Vec<String> = Vec::new();
@@ -114,6 +118,7 @@ impl ToolRegistry {
         count
     }
 
+    #[allow(dead_code)]
     pub fn merge(&mut self, other: ToolRegistry, strategy: MergeStrategy) -> usize {
         let mut added = 0;
 
