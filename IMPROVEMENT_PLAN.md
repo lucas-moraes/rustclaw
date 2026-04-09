@@ -284,17 +284,17 @@ Cobertura atual: **72 testes passando** (5 novos de segurança adicionados no CP
 - [x] Verificação: `cargo check`
 
 #### CP-7.5 — Extrair `plan_executor.rs` (~250 linhas)
-- [ ] Mover `run_structured_development()`, `execute_plan_steps()`, `update_plan_progress()`, `generate_plan()`, `count_plan_steps()`, `get_last_active_checkpoint()`, `count_tool_execs()`
-- [ ] Verificação: `cargo check`
+- [x] Mover `run_structured_development()`, `execute_plan_steps()`, `update_plan_progress()`, `generate_plan()`, `count_plan_steps()`, `get_last_active_checkpoint()`, `count_tool_execs()`
+- [x] Verificação: `cargo check`
 
 #### CP-7.6 — Extrair `build_validator.rs` (~100 linhas)
-- [ ] Mover `validate_build()`, estruturas `BuildValidation`
-- [ ] Verificação: `cargo check`
+- [x] Mover `validate_build()`, estruturas `BuildValidation`
+- [x] Verificação: `cargo check`
 
 #### CP-7.7 — Extrair `output.rs` (~80 linhas)
-- [ ] Mover `output_write()`, funções de output, `OutputManager`, `OutputSink`
-- [ ] Remover globais `OnceLock<OutputManager>` e `OnceLock<TmuxManager>`
-- [ ] Verificação: `cargo check` + `cargo test`
+- [x] Mover `output_write()`, funções de output, `OutputManager`, `OutputSink`
+- [x] Remover globais `OnceLock<OutputManager>` e `OnceLock<TmuxManager>`
+- [x] Verificação: `cargo check` + `cargo test`
 
 **Verificação:** `agent.rs` < 500 linhas. Testes passam.
 
