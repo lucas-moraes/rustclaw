@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::utils::output::OutputManager;
 use crate::utils::tmux::TmuxManager;
 use std::sync::OnceLock;

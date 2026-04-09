@@ -123,10 +123,12 @@ pub struct DevelopmentState {
     pub auto_loop_enabled: bool,
 }
 
+#[allow(dead_code)]
 pub fn create_app_store() -> Store<AppState> {
     Store::new(AppState::default())
 }
 
+#[allow(dead_code)]
 pub fn get_default_settings() -> AppSettings {
     AppSettings {
         provider: "opencode-go".to_string(),

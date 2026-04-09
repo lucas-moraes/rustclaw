@@ -37,6 +37,7 @@ impl Colors {
     pub const RESET: &'static str = "\x1b[0m";
 
     /// Input background - #420000 (dark red)
+    #[allow(dead_code)]
     pub const INPUT_BG: &'static str = "\x1b[48;2;66;0;0m";
 
     /// Erase to end of line (for spinner cleanup)

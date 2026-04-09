@@ -146,6 +146,7 @@ impl MemoryEntry {
         (base + access_factor + recency).clamp(0.0, 1.0)
     }
 
+    #[allow(dead_code)]
     pub fn touch(&mut self) {
         self.access_count += 1;
         self.last_accessed = Utc::now();

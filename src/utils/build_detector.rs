@@ -14,6 +14,7 @@ pub enum ProjectType {
 
 /// Informações sobre como buildar e testar um projeto
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct BuildInfo {
     pub project_type: ProjectType,
     pub build_command: String,
@@ -116,6 +117,7 @@ impl BuildDetector {
     }
 
     /// Verifica se o diretório é um projeto buildável
+    #[allow(dead_code)]
     pub fn is_buildable(dir: &str) -> bool {
         let info = Self::detect(dir);
         info.project_type != ProjectType::Unknown

@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::utils::build_detector::BuildDetector;
 use crate::utils::error_parser::{BuildValidation, ErrorParser};
 

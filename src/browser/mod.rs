@@ -10,6 +10,7 @@ use chaser_oxide::{Browser, BrowserConfig, Page};
 pub struct BrowserManager {
     browser: Option<Browser>,
     page: Arc<RwLock<Option<Page>>>,
+    #[allow(dead_code)]
     data_dir: PathBuf,
 }
 

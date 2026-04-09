@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::skills::Skill;
 use std::collections::HashSet;
 use tracing::debug;

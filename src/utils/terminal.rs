@@ -1,6 +1,8 @@
 //! Terminal utilities module
 //! Provides cross-platform terminal operations using crossterm
 
+#![allow(dead_code)]
+
 use std::io::{self, Write};
 
 /// Enable raw mode for terminal input

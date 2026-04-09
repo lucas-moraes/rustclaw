@@ -7,7 +7,9 @@ pub struct Store<T>
 where
     T: Clone + PartialEq + Send + Sync + 'static,
 {
+    #[allow(dead_code)]
     state: RwLock<T>,
+    #[allow(dead_code)]
     subscribers: Arc<RwLock<Vec<StateChangeCallback<T>>>>,
 }
 

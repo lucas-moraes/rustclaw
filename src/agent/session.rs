@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::memory::checkpoint::{CheckpointStore, DevelopmentCheckpoint, SessionSummary};
 use crate::memory::embeddings::EmbeddingService;
 use crate::memory::store::MemoryStore;

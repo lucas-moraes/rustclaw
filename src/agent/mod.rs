@@ -55,8 +55,11 @@ static OUTPUT_MANAGER: OnceLock<OutputManager> = OnceLock::new();
 static TMUX_MANAGER: OnceLock<TmuxManager> = OnceLock::new();
 
 // Local regex patterns used in this module
+#[allow(dead_code)]
 static RE_PLAN_STEP: OnceLock<Regex> = OnceLock::new();
+#[allow(dead_code)]
 static RE_REVIEW: OnceLock<Regex> = OnceLock::new();
+#[allow(dead_code)]
 static RE_SUGGESTION: OnceLock<Regex> = OnceLock::new();
 
 const USER_AGENT: &str = "RustClaw/1.0";
@@ -80,12 +83,15 @@ pub struct Agent {
     skill_manager: SkillManager,
     skill_context_store: SkillContextStore,
     chat_id: Option<i64>,
+    #[allow(dead_code)]
     fallback_index: usize,
+    #[allow(dead_code)]
     app_store: Store<AppState>,
     workspace_trust: Option<TrustEvaluator>,
 }
 
 /// Session details for display
+#[allow(dead_code)]
 pub struct SessionDetails {
     pub id: String,
     pub user_input: String,
@@ -2222,6 +2228,7 @@ MODO DESENVOLVIMENTO ESTRUTURADO:
         Ok(())
     }
 
+    #[allow(dead_code)]
     fn checkpoint_has_tools(&self, checkpoint: &DevelopmentCheckpoint) -> bool {
         if checkpoint.completed_tools_json == "[]" {
             return false;
@@ -3160,14 +3167,17 @@ pub fn init_tmux(skill_name: &str) {
     }
 }
 
+#[allow(dead_code)]
 pub fn get_tmux_manager() -> Option<&'static TmuxManager> {
     TMUX_MANAGER.get()
 }
 
+#[allow(dead_code)]
 pub fn get_output_manager() -> Option<&'static OutputManager> {
     OUTPUT_MANAGER.get()
 }
 
+#[allow(dead_code)]
 pub fn output_write(msg: &str) {
     if let Some(output) = OUTPUT_MANAGER.get() {
         output.write(msg);
@@ -3175,6 +3185,7 @@ pub fn output_write(msg: &str) {
     print!("{}", msg);
 }
 
+#[allow(dead_code)]
 pub fn output_write_line(msg: &str) {
     if let Some(output) = OUTPUT_MANAGER.get() {
         output.write_line(msg);
@@ -3182,6 +3193,7 @@ pub fn output_write_line(msg: &str) {
     println!("{}", msg);
 }
 
+#[allow(dead_code)]
 pub fn output_write_tool(tool: &str, input: &str, output: &str) {
     if let Some(out) = OUTPUT_MANAGER.get() {
         out.write_tool(tool, input, output);
@@ -3193,12 +3205,14 @@ pub fn output_write_tool(tool: &str, input: &str, output: &str) {
     println!("{}{}{}", Colors::LIGHT_GRAY, output, Colors::RESET);
 }
 
+#[allow(dead_code)]
 pub fn output_write_thought(thought: &str) {
     if let Some(output) = OUTPUT_MANAGER.get() {
         output.write_thought(thought);
     }
 }
 
+#[allow(dead_code)]
 pub fn output_write_error(error: &str) {
     if let Some(output) = OUTPUT_MANAGER.get() {
         output.write_error(error);
@@ -3213,12 +3227,14 @@ pub fn output_write_error(error: &str) {
     );
 }
 
+#[allow(dead_code)]
 pub fn output_write_debug(msg: &str) {
     if let Some(output) = OUTPUT_MANAGER.get() {
         output.write_debug(msg);
     }
 }
 
+#[allow(dead_code)]
 pub fn output_write_browser(path: &str, description: &str) {
     if let Some(output) = OUTPUT_MANAGER.get() {
         output.write_browser(path, description);

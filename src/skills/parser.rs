@@ -37,6 +37,7 @@ struct YamlFrontmatter {
 }
 
 #[derive(Debug, Deserialize, Default)]
+#[allow(dead_code)]
 struct YamlMetadata {
     #[serde(default)]
     internal: bool,
@@ -85,10 +86,12 @@ impl SkillParser {
         }
     }
 
+    #[allow(dead_code)]
     pub fn supports_cli_invocation(skill: &Skill) -> bool {
         skill.user_invocable
     }
 
+    #[allow(dead_code)]
     pub fn allows_auto_invocation(skill: &Skill) -> bool {
         !skill.disable_model_invocation
     }

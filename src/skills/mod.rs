@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::time::SystemTime;
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct Skill {
     // Level 1: Always loaded at startup
     pub name: String,
@@ -19,6 +20,7 @@ pub struct Skill {
     // Claude Code fields
     pub user_invocable: bool,
     pub disable_model_invocation: bool,
+    #[allow(dead_code)]
     pub internal: bool,
     // Resource directories
     pub has_scripts: bool,

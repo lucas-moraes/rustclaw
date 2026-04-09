@@ -3,6 +3,7 @@ use std::process::Command;
 use tracing::{debug, error};
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct ScriptInfo {
     pub name: String,
     pub path: PathBuf,
@@ -18,6 +19,7 @@ pub enum ScriptLanguage {
 }
 
 impl ScriptLanguage {
+    #[allow(dead_code)]
     pub fn from_extension(ext: &str) -> Self {
         match ext.to_lowercase().as_str() {
             "sh" | "bash" => ScriptLanguage::Bash,
