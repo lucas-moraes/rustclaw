@@ -57,6 +57,39 @@ impl MemoryStore {
             )",
         )?;
 
+        // Create FTS5 virtual table for scalable text search
+        let _ = self.conn.execute(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+                content,
+                content='memories',
+                content_rowid='rowid'
+            )",
+            [],
+        );
+
+        // Create triggers to keep FTS in sync
+        let _ = self.conn.execute(
+            "CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
+                INSERT INTO memories_fts(rowid, content) VALUES (new.rowid, new.content);
+            END",
+            [],
+        );
+
+        let _ = self.conn.execute(
+            "CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
+                INSERT INTO memories_fts(memories_fts, rowid, content) VALUES('delete', old.rowid, old.content);
+            END",
+            [],
+        );
+
+        let _ = self.conn.execute(
+            "CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
+                INSERT INTO memories_fts(memories_fts, rowid, content) VALUES('delete', old.rowid, old.content);
+                INSERT INTO memories_fts(rowid, content) VALUES (new.rowid, new.content);
+            END",
+            [],
+        );
+
         let _ = self
             .conn
             .execute("ALTER TABLE memories ADD COLUMN session_id TEXT", []);

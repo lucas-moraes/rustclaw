@@ -406,16 +406,17 @@ Cobertura atual: **72 testes passando** (5 novos de segurança adicionados no CP
 ### CP-13 — Documentação
 
 #### CP-13.1 — Doc comments em módulos públicos
-- [ ] Adicionar `//!` em `src/agent/mod.rs`, `src/memory/mod.rs`, `src/tools/mod.rs`, `src/security/mod.rs`, `src/skills/mod.rs`
+- [x] Adicionar `//!` em `src/agent/mod.rs`, `src/memory/mod.rs`, `src/tools/mod.rs`, `src/security/mod.rs`, `src/skills/mod.rs`
+- [x] Verificação: `cargo doc`
 - [ ] Adicionar `///` em 10-15 métodos públicos de `Agent`
 - [ ] Verificação: `cargo doc --no-deps` sem warnings
 
 #### CP-13.2 — Criar `ARCHITECTURE.md`
-- [ ] Diagrama de módulos (ASCII ou mermaid)
-- [ ] Fluxo de dados: User → CLI/Telegram → Agent → LLM → Tool
-- [ ] Sistema de trust: `WorkspaceTrustStore` → `TrustEvaluator` → `execute_tool()`
-- [ ] Sistema de memória: `MemoryStore` → `EmbeddingService` → `search_similar_memories()`
-- [ ] Verificação: arquivo reflete estrutura real
+- [x] Diagrama de módulos (ASCII ou mermaid)
+- [x] Fluxo de dados: User → CLI/Telegram → Agent → LLM → Tool
+- [x] Sistema de trust: `WorkspaceTrustStore` → `TrustEvaluator` → `execute_tool()`
+- [x] Sistema de memória: `MemoryStore` → `EmbeddingService` → `search_similar_memories()`
+- [x] Verificação: arquivo reflete estrutura real
 
 #### CP-13.3 — Atualizar `AGENTS.md`
 - [ ] Atualizar comandos
@@ -433,15 +434,15 @@ Cobertura atual: **72 testes passando** (5 novos de segurança adicionados no CP
 ### CP-14 — Memory — Busca Escalável
 
 #### CP-14.1 — Adicionar tabela FTS5
-- [ ] Adicionar `CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(content, tokenize='unicode61')`
-- [ ] Adicionar triggers para INSERT/UPDATE/DELETE
-- [ ] Verificação: tabela criada, `cargo test` passa
+- [x] Adicionar `CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(content, tokenize='unicode61')`
+- [x] Adicionar triggers para INSERT/UPDATE/DELETE
+- [x] Verificação: tabela criada, `cargo test` passa
 
 #### CP-14.2 — Implementar busca FTS5
-- [ ] Adicionar `search_fts(query: &str) -> Result<Vec<MemoryEntry>>`
-- [ ] Modificar `search_similar_memories()` para usar FTS5
-- [ ] Fallback para scan linear se FTS5 indisponível
-- [ ] Verificação: busca funciona
+- [x] Adicionar `search_fts(query: &str) -> Result<Vec<MemoryEntry>>`
+- [x] Modificar `search_similar_memories()` para usar FTS5
+- [x] Fallback para scan linear se FTS5 indisponível
+- [x] Verificação: busca funciona
 
 #### CP-14.3 — Benchmark
 - [ ] Criar benchmark para 1K, 10K, 100K memórias
