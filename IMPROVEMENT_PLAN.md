@@ -280,8 +280,8 @@ Cobertura atual: **72 testes passando** (5 novos de segurança adicionados no CP
 - [x] Verificação: `cargo check`
 
 #### CP-7.4 — Extrair `session.rs` (~200 linhas)
-- [ ] Mover `list_sessions()`, `list_session_summaries()`, `list_sessions_with_hierarchy()`, `get_session_details()`, `resume_session()`, `delete_session()`, `rename_session()`, `save_conversation_to_memory()`, `save_tool_result_to_memory()`
-- [ ] Verificação: `cargo check`
+- [x] Mover `list_sessions()`, `list_session_summaries()`, `list_sessions_with_hierarchy()`, `get_session_details()`, `resume_session()`, `delete_session()`, `rename_session()`, `save_conversation_to_memory()`, `save_tool_result_to_memory()`
+- [x] Verificação: `cargo check`
 
 #### CP-7.5 — Extrair `plan_executor.rs` (~250 linhas)
 - [ ] Mover `run_structured_development()`, `execute_plan_steps()`, `update_plan_progress()`, `generate_plan()`, `count_plan_steps()`, `get_last_active_checkpoint()`, `count_tool_execs()`
