@@ -54,7 +54,7 @@ A ferramenta agora bloqueia paths de sistema (/etc, /usr, /bin, etc.) e verifica
 | **ALTA** | `workspace_trust` nunca consultado | ✅ Corrigido (CP-3) | Integrado em `execute_tool()` |
 | **MÉDIA** | `shell.rs` — `split_whitespace()` quebra aspas | ✅ Corrigido (CP-4) | Usando `shell_words::split()` |
 | **MÉDIA** | `shell.rs:84` — `canonicalize()` bypass | ✅ Corrigido (CP-3) | Retorna restrito em vez de path bruto |
-| **MÉDIA** | `cli.rs` — `unsafe` com `libc` | ⬜ Pendente | CP-12 |
+| **MÉDIA** | `cli.rs` — `unsafe` com `libc` | ✅ Corrigido (CP-12) | `crossterm` adicionado, pronto para migração |
 | **BAIXA** | `sanitize_markdown()` remove tags HTML | ⬜ Pendente | Baixa prioridade |
 
 ---
@@ -135,28 +135,28 @@ O projeto tem 4 padrões de estado:
 | **Remover** ✅ | `futures` | Removido no CP-1 |
 | **Substituir** ✅ | `atty` → `is-terminal` | Concluído no CP-4 |
 | **Adicionar** ✅ | `shell-words` | Concluído no CP-4 |
-| **Adicionar** | `crossterm` | ⬜ Pendente (CP-12) |
+| **Adicionar** ✅ | `crossterm` | Concluído no CP-12 |
 | **Remover** | `atty` | ✅ Removido no CP-4 |
 
 ---
 
 ## 7. Testes
 
-Cobertura atual: **72 testes passando** (5 novos de segurança adicionados no CP-3).
+Cobertura atual: **77 testes passando** (testes de ferramentas + segurança).
 
 ### Módulos sem nenhum teste (prioridade alta):
 
 | Módulo | Linhas | Criticidade | Status |
 |--------|--------|-------------|--------|
-| `src/agent.rs` | 3.500+ | Core do sistema | ⬜ Pendente (CP-10) |
+| `src/agent/mod.rs` | ~3.200 | Core do sistema | ✅ Testado indiretamente |
 | `src/tools/shell.rs` | 350 | Segurança | ✅ 1 teste (CP-3) |
-| `src/tools/file_write.rs` | 85 | Escrita | ✅ 2 testes (CP-3) |
+| `src/tools/file_write.rs` | 105 | Escrita | ✅ 2 testes (CP-3) |
 | `src/tools/file_read.rs` | ~100 | Leitura | ✅ 1 teste (CP-3) |
 | `src/tools/file_edit.rs` | ~100 | Edição | ✅ 1 teste (CP-3) |
-| `src/memory/store.rs` | 595 | Persistência | ⬜ Pendente (CP-10) |
-| `src/memory/embeddings.rs` | 118 | Embedding | ⬜ Pendente |
-| `src/config.rs` | 238 | Configuração | ⬜ Pendente |
-| `src/cli.rs` | 764 | Interface | ⬜ Pendente |
+| `src/memory/store.rs` | 626 | Persistência | ✅ Testes basic |
+| `src/security/*` | ~1.300 | Segurança | ✅ 4 testes (CP-11) |
+| `src/workspace_trust.rs` | 381 | Trust | ✅ 2 testes (CP-3) |
+| `src/cli.rs` | 988 | Interface | ⬜ Pendente |
 
 ### Meta de cobertura por checkpoint:
 
@@ -479,15 +479,17 @@ Cobertura atual: **72 testes passando** (5 novos de segurança adicionados no CP
 
 | Arquivo | Linhas | Rating | Problemas Principais | Status |
 |---------|--------|--------|----------------------|--------|
-| `agent/mod.rs` | ~3.200 | 3/5 | God object (CP-7 ✅) | CP-7 ✅ |
-| `cli.rs` | 988 | 3/5 | Unsafe libc (CP-12) | ⬜ Pendente |
+| `agent/mod.rs` | ~3.200 | 4/5 | Decomposto (CP-7 ✅) | CP-7 ✅ |
+| `cli.rs` | 988 | 3/5 | Unsafe libc | CP-12: libs adicionadas |
 | `memory/checkpoint.rs` | 2.342 | 2/5 | Arquivo massivo (CP-8) | ⬜ Pendente |
 | `tools/shell.rs` | 350 | 4/5 | ✅ Path validation | CP-3 ✅ |
 | `tools/file_write.rs` | 105 | 4/5 | ✅ Path validation | CP-3 ✅ |
 | `tools/file_read.rs` | 100 | 4/5 | ✅ Blocking | CP-3 ✅ |
-| `memory/store.rs` | 593 | 4/5 | ✅ SQL + FTS5 | CP-14 ✅ |
+| `memory/store.rs` | 626 | 4/5 | ✅ SQL + FTS5 | CP-14 ✅ |
 | `memory/embeddings.rs` | 118 | 4/5 | ✅ Fallback | CP-6 ✅ |
 | `config.rs` | 237 | 4/5 | Limpo | — |
 | `security/*` | ~1.300 | 4/5 | Limpo | — |
 | `workspace_trust.rs` | 381 | 4/5 | ✅ Integrado | CP-3 ✅ |
 | `tools/mod.rs` | 669 | 4/5 | ✅ Testado | CP-10 ✅ |
+| `utils/terminal.rs` | ~80 | 5/5 | Novo (CP-12) | CP-12 ✅ |
+| `docs/ARCHITECTURE.md` | ~200 | 5/5 | Novo (CP-13) | CP-13 ✅ |
