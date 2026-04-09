@@ -299,29 +299,95 @@ Cobertura atual: **77 testes passando** (testes de ferramentas + segurança).
 
 ### CP-8 — Arquitetura — Decompor `checkpoint.rs` (2.342 linhas)
 
-#### CP-8.1 — Criar estrutura e `mod.rs`
+#### Estratégia: Extração Incremental com Compatibilidade Reversa
+
+**Princípio:** Nunca quebrar compilação. Cada passo deve compilar isoladamente.
+
+#### CP-8.0 — Preparação (5 min)
 - [ ] Criar diretório `src/memory/checkpoint/`
-- [ ] Criar `src/memory/checkpoint/mod.rs` com re-exports
-- [ ] Atualizar imports em `src/memory/mod.rs`
-- [ ] Verificação: estrutura compila
+- [ ] Criar `src/memory/checkpoint/mod.rs` que re-exporta tudo de `checkpoint.rs`
+- [ ] Manter `checkpoint.rs` inalterado inicialmente
+- [ ] Verificação: `cargo check` passa
 
-#### CP-8.2 — Extrair `types.rs` (~500 linhas)
-- [ ] Mover structs: `DevelopmentCheckpoint`, `DevelopmentState`, `PlanPhase`, `PlanStage`, `ToolExecution`, `SessionSummary`, `SessionDetails`
-- [ ] Verificação: `cargo check`
+#### CP-8.1 — Extrair `types.rs` (~400 linhas) (30 min)
+Mover apenas tipos de dados puros (sem impl pesado):
+- [ ] `SessionType` (14-43) — sem dependências
+- [ ] `PlanPhase` (1139-1172) — sem dependências
+- [ ] `DevelopmentState` (1176-1203) — sem dependências
+- [ ] `ToolExecution` (71-77) — sem dependências
+- [ ] `PlanStage` (80-85) — sem dependências
+- [ ] `SessionFingerprint` (1207-1291) — sem dependências
+- [ ] `ContextChange` (1294-1339) — depende de `SessionFingerprint`
+- [ ] Converter `checkpoint.rs` para gateway com `mod types; pub use types::*;`
+- [ ] Verificação: `cargo check` + `cargo test`
 
-#### CP-8.3 — Extrair `store.rs` (~800 linhas)
-- [ ] Mover `CheckpointStore` impl, `new()`, `save()`, `load()`, `get()`, `update()`, `create_tables()`, `migrate_schema()`
-- [ ] Verificação: `cargo check`
+**Não mover ainda:** `DevelopmentCheckpoint`, `SessionSummary`, `SessionEvent`, `SessionEventStore`, `LifecycleManager` (fortemente acoplados ao CheckpointStore)
 
-#### CP-8.4 — Extrair `events.rs` (~300 linhas)
-- [ ] Mover `SessionEventStore`, `SessionEvent`, `EventSummary`, compressão
-- [ ] Verificação: `cargo check`
+#### CP-8.2 — Extrair `events.rs` (~300 linhas) (20 min)
+Mover unidades mais independentes primeiro:
+- [ ] `SessionEventType` (88-131)
+- [ ] `SessionEvent` (134-257) — depende de `SessionEventType`, `PlanPhase`, `DevelopmentState`
+- [ ] `EventSummary` (260-264)
+- [ ] `SessionEventStore` (266-575) — não referenciado por CheckpointStore internamente
+- [ ] Adicionar `mod events; pub use events::*;` em `checkpoint.rs`
+- [ ] Verificação: `cargo check` + `cargo test`
 
-#### CP-8.5 — Extrair `lifecycle.rs` (~200 linhas)
-- [ ] Mover `LifecycleManager`, `SnapshotManager`, `SnapshotPolicy`
-- [ ] Verificação: `cargo test`
+#### CP-8.3 — Extrair `lifecycle.rs` (~300 linhas) (15 min)
+- [ ] `SnapshotTrigger` (579-587)
+- [ ] `SnapshotPolicy` (604-626)
+- [ ] `SnapshotManager` (668-740)
+- [ ] `LifecyclePolicy` (768-788)
+- [ ] `LifecycleManager` (815-1119) — depende de `MemoryEntry`, `MemoryScope`, `MemoryType`
+- [ ] `CleanupStats` (1121-1126)
+- [ ] `SessionArchive` (1128-1135)
+- [ ] Adicionar `mod lifecycle; pub use lifecycle::*;`
+- [ ] Verificação: `cargo check` + `cargo test`
 
-**Verificação:** `checkpoint.rs` dividido. 77 testes passando.
+#### CP-8.4 — Extrair `store.rs` (~800 linhas) (45 min) — **FASE CRÍTICA**
+**Esta é a fase mais complexa — fazer em sessão separada:**
+- [ ] `CheckpointStore` (1341-2064)
+- [ ] `SessionSummary` (46-61) — consumido/produzido por CheckpointStore
+- [ ] `SessionContext` (64-68)
+- [ ] `DevelopmentCheckpoint` (743-765 + impl 2066-2296)
+- [ ] `row_to_checkpoint()` precisa de todos os tipos de `types.rs`
+- [ ] Converter `checkpoint.rs` para ter `mod store; pub use store::*;`
+- [ ] Verificação: `cargo check` + `cargo test`
+
+**Cuidados especiais:**
+- `SessionSummary` deve manter campo `.title` (não método)
+- `SessionType` deve manter variantes: `Project`, `Subtask`, `Research`, `Chat`
+- `PlanPhase` e `DevelopmentState` devem manter `from_str()` existente
+
+#### CP-8.5 — Limpeza Final (10 min)
+- [ ] Deletar `checkpoint.rs` original
+- [ ] `checkpoint/mod.rs` deve conter apenas:
+```rust
+pub mod types;
+pub mod events;
+pub mod lifecycle;
+pub mod store;
+
+pub use types::*;
+pub use events::*;
+pub use lifecycle::*;
+pub use store::*;
+```
+- [ ] Verificação: `cargo check` + `cargo test`
+
+**Resumo de Risco:**
+
+| Fase | Risco | Tempo | Status |
+|------|--------|-------|--------|
+| 8.0 | Muito baixo | 5 min | — |
+| 8.1 | Baixo | 30 min | — |
+| 8.2 | Baixo | 20 min | — |
+| 8.3 | Médio | 15 min | — |
+| 8.4 | **Alto** | 45 min | — |
+| 8.5 | Baixo | 10 min | — |
+
+**Recomendação:** Fazer fases 8.0-8.3 em uma sessão, 8.4 em outra, e 8.5 na terceira.
+
+**Verificação:** `checkpoint.rs` dividido em 4+ módulos. 80 testes passando.
 
 ---
 
