@@ -19,6 +19,8 @@ pub mod plan_executor;
 pub mod build_validator;
 pub mod output;
 
+pub use response_parser::{ParsedResponse, ResponseParser};
+
 use crate::app_state::AppState;
 use crate::app_store::Store;
 use crate::config::Config;
@@ -52,24 +54,10 @@ use tracing::{debug, info};
 static OUTPUT_MANAGER: OnceLock<OutputManager> = OnceLock::new();
 static TMUX_MANAGER: OnceLock<TmuxManager> = OnceLock::new();
 
-// Pre-compiled regex patterns for hot paths
-static RE_SYSTEM_REMINDER: OnceLock<Regex> = OnceLock::new();
-static RE_FINAL_ANSWER: OnceLock<Regex> = OnceLock::new();
-static RE_THOUGHT: OnceLock<Regex> = OnceLock::new();
-static RE_RETRIEVED_MEMORY: OnceLock<Regex> = OnceLock::new();
-static RE_REVISE_MEMORY: OnceLock<Regex> = OnceLock::new();
-static RE_REASONING: OnceLock<Regex> = OnceLock::new();
-static RE_VERIFICATION: OnceLock<Regex> = OnceLock::new();
-static RE_ACTION: OnceLock<Regex> = OnceLock::new();
+// Local regex patterns used in this module
+static RE_PLAN_STEP: OnceLock<Regex> = OnceLock::new();
 static RE_REVIEW: OnceLock<Regex> = OnceLock::new();
 static RE_SUGGESTION: OnceLock<Regex> = OnceLock::new();
-static RE_PLAN_STEP: OnceLock<Regex> = OnceLock::new();
-static RE_HEREDOC: OnceLock<Regex> = OnceLock::new();
-static RE_HEREDOC_ALT: OnceLock<Regex> = OnceLock::new();
-static RE_CAT_REDIRECT: OnceLock<Regex> = OnceLock::new();
-static RE_EOF_MARKER: OnceLock<Regex> = OnceLock::new();
-static RE_JSON_PATH: OnceLock<Regex> = OnceLock::new();
-static RE_JSON_COMMAND: OnceLock<Regex> = OnceLock::new();
 
 const USER_AGENT: &str = "RustClaw/1.0";
 const SKILLS_DIR: &str = "skills";
@@ -1004,7 +992,7 @@ impl Agent {
             let response = self.call_llm(&current_messages).await?;
             debug!("LLM response:\n{}", response);
 
-            let parsed = self.parse_response(&response)?;
+            let parsed = response_parser::ResponseParser::parse_response(&response)?;
 
             match parsed {
                 ParsedResponse::FinalAnswer(answer) => {
@@ -1235,7 +1223,7 @@ impl Agent {
         ];
         let final_response = self.call_llm(&final_messages).await?;
 
-        if let ParsedResponse::FinalAnswer(answer) = self.parse_response(&final_response)? {
+        if let ParsedResponse::FinalAnswer(answer) = ResponseParser::parse_response(&final_response)? {
             // Skip self-review for plan execution - just return answer
             let final_answer = answer.clone();
             self.save_conversation_to_memory(user_input, &final_answer, None)
@@ -1288,7 +1276,7 @@ impl Agent {
             self.save_checkpoint(&mut checkpoint, &current_messages, &[])?;
 
             let response = self.call_llm(&current_messages).await?;
-            let parsed = self.parse_response(&response)?;
+            let parsed = response_parser::ResponseParser::parse_response(&response)?;
 
             match parsed {
                 ParsedResponse::FinalAnswer(answer) => {
@@ -1595,7 +1583,7 @@ MODO DESENVOLVIMENTO ESTRUTURADO:
                 info!("Stage {} iteration {}", stage_num, iteration + 1);
 
                 let response = self.call_llm(&current_messages).await?;
-                let parsed = self.parse_response(&response)?;
+                let parsed = response_parser::ResponseParser::parse_response(&response)?;
 
                 match parsed {
                     ParsedResponse::FinalAnswer(answer) => {
@@ -1832,7 +1820,7 @@ MODO DESENVOLVIMENTO ESTRUTURADO:
             let mut step_complete = false;
             for _iteration in 0..5 {
                 let response = self.call_llm(&step_messages).await?;
-                let parsed = self.parse_response(&response)?;
+                let parsed = response_parser::ResponseParser::parse_response(&response)?;
 
                 match parsed {
                     ParsedResponse::FinalAnswer(answer) => {
@@ -2487,7 +2475,7 @@ Seja justo. Aceite respostas de conclusão em qualquer formato."#,
                 )
                 .await?;
 
-            let analysis = self.sanitize_model_response(&review_response);
+            let analysis = response_parser::ResponseParser::sanitize_model_response(&review_response);
             review_history.push(analysis.clone());
 
             if show_process {
@@ -2582,7 +2570,7 @@ Por favor, forneça a RESPOSTA MELHORADA que corrige os problemas identificados.
                 )
                 .await?;
 
-            current_answer = self.sanitize_model_response(&improved_response);
+            current_answer = response_parser::ResponseParser::sanitize_model_response(&improved_response);
         }
 
         if show_process {
@@ -2727,94 +2715,9 @@ Por favor, forneça a RESPOSTA MELHORADA que corrige os problemas identificados.
             return Err(anyhow::anyhow!("Invalid response format"));
         };
 
-        let reminder_re = RE_SYSTEM_REMINDER
-            .get_or_init(|| Regex::new(r"(?is)<system-reminder>.*?</system-reminder>").unwrap());
-        let cleaned = reminder_re.replace_all(&content, "").trim().to_string();
+        let cleaned = response_parser::ResponseParser::sanitize_model_response(&content).trim().to_string();
 
         Ok(cleaned)
-    }
-
-    fn parse_response(&self, response: &str) -> anyhow::Result<ParsedResponse> {
-        let sanitized = self.sanitize_model_response(response);
-        let final_answer_re =
-            RE_FINAL_ANSWER.get_or_init(|| Regex::new(r"(?si)Final Answer:\s*(.+)$").unwrap());
-        if let Some(caps) = final_answer_re.captures(&sanitized) {
-            let answer = caps
-                .get(1)
-                .map(|m| m.as_str().trim().to_string())
-                .unwrap_or_else(|| sanitized.to_string());
-            return Ok(ParsedResponse::FinalAnswer(answer));
-        }
-
-        let thought_re =
-            RE_THOUGHT.get_or_init(|| Regex::new(r"(?i)Thought:\s*(.+?)(?:\n|$)").unwrap());
-        let retrieved_memory_re = RE_RETRIEVED_MEMORY.get_or_init(|| Regex::new(r"(?i)Retrieved Memory:\s*(.+?)(?:\n(?:Revise Memory:|Reasoning:|Verification:|Action:|Final Answer:)|$)").unwrap());
-        let revise_memory_re = RE_REVISE_MEMORY.get_or_init(|| Regex::new(r"(?i)Revise Memory:\s*(.+?)(?:\n(?:Reasoning:|Verification:|Action:|Final Answer:)|$)").unwrap());
-        let reasoning_re = RE_REASONING.get_or_init(|| {
-            Regex::new(r"(?i)Reasoning:\s*(.+?)(?:\n(?:Verification:|Action:|Final Answer:)|$)")
-                .unwrap()
-        });
-        let verification_re = RE_VERIFICATION.get_or_init(|| {
-            Regex::new(r"(?i)Verification:\s*(.+?)(?:\n(?:Action:|Final Answer:)|$)").unwrap()
-        });
-        let action_re =
-            RE_ACTION.get_or_init(|| Regex::new(r"(?i)Action:\s*(.+?)(?:\n|$)").unwrap());
-
-        let thought = thought_re
-            .captures(&sanitized)
-            .and_then(|c| c.get(1))
-            .map(|m| m.as_str().trim().to_string())
-            .unwrap_or_default();
-
-        let retrieved_memory = retrieved_memory_re
-            .captures(&sanitized)
-            .and_then(|c| c.get(1))
-            .map(|m| m.as_str().trim().to_string());
-
-        let revise_memory = revise_memory_re
-            .captures(&sanitized)
-            .and_then(|c| c.get(1))
-            .map(|m| m.as_str().trim().to_string());
-
-        let reasoning = reasoning_re
-            .captures(&sanitized)
-            .and_then(|c| c.get(1))
-            .map(|m| m.as_str().trim().to_string());
-
-        let verification = verification_re
-            .captures(&sanitized)
-            .and_then(|c| c.get(1))
-            .map(|m| m.as_str().trim().to_string());
-
-        let action = action_re
-            .captures(&sanitized)
-            .and_then(|c| c.get(1))
-            .map(|m| m.as_str().trim().to_string());
-
-        let action_input = if let Some(pos) = sanitized.to_lowercase().find("action input:") {
-            let after = &sanitized[pos + "action input:".len()..];
-            if let Some(json_block) = Self::extract_json_block(after) {
-                json_block
-            } else {
-                after.trim().to_string()
-            }
-        } else {
-            "{}".to_string()
-        };
-
-        if let Some(action) = action {
-            return Ok(ParsedResponse::Action {
-                thought,
-                retrieved_memory,
-                revise_memory,
-                reasoning,
-                verification,
-                action,
-                action_input,
-            });
-        }
-
-        Ok(ParsedResponse::FinalAnswer(sanitized.trim().to_string()))
     }
 
     async fn execute_tool(&mut self, action: &str, action_input: &str) -> anyhow::Result<String> {
@@ -2822,7 +2725,7 @@ Por favor, forneça a RESPOSTA MELHORADA que corrige os problemas identificados.
             let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
             match action {
                 "file_write" | "file_edit" => {
-                    if let Ok(args) = self.parse_action_input_json(action_input) {
+                    if let Ok(args) = response_parser::ResponseParser::parse_action_input_json(action_input) {
                         if let Some(path_str) = args["path"].as_str() {
                             let path = Path::new(path_str);
                             let decision =
@@ -2856,7 +2759,7 @@ Por favor, forneça a RESPOSTA MELHORADA que corrige os problemas identificados.
             .get(action)
             .ok_or_else(|| anyhow::anyhow!("Ferramenta '{}' não encontrada", action))?;
 
-        let args = match self.parse_action_input_json(action_input) {
+        let args = match response_parser::ResponseParser::parse_action_input_json(action_input) {
             Ok(value) => value,
             Err(e) => {
                 let err_msg = format!("Erro: {}", e);
@@ -2909,7 +2812,7 @@ Por favor, forneça a RESPOSTA MELHORADA que corrige os problemas identificados.
         match action {
             "file_write" => {
                 // Verifica se arquivo foi criado (apenas verifica existência)
-                if let Ok(args) = self.parse_action_input_json(action_input) {
+                if let Ok(args) = response_parser::ResponseParser::parse_action_input_json(action_input) {
                     if let Some(path) = args["path"].as_str() {
                         if Path::new(path).exists() {
                             Ok(None) // Arquivo existe
@@ -3219,242 +3122,6 @@ Por favor, forneça a RESPOSTA MELHORADA que corrige os problemas identificados.
         self.skill_manager.force_skill(skill_name)
     }
 
-    fn sanitize_model_response(&self, response: &str) -> String {
-        let reminder_re = RE_SYSTEM_REMINDER
-            .get_or_init(|| Regex::new(r"(?is)<system-reminder>.*?</system-reminder>").unwrap());
-        reminder_re.replace_all(response, "").to_string()
-    }
-
-    fn parse_action_input_json(&self, action_input: &str) -> anyhow::Result<Value> {
-        let trimmed = action_input.trim();
-
-        if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
-            return Ok(value);
-        }
-
-        let reminder_re = RE_SYSTEM_REMINDER
-            .get_or_init(|| Regex::new(r"(?is)<system-reminder>.*?</system-reminder>").unwrap());
-        let cleaned = reminder_re.replace_all(trimmed, "").to_string();
-
-        let cleaned = cleaned
-            .lines()
-            .filter(|line| !line.trim_start().starts_with("<system-reminder>"))
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        let stripped = if cleaned.starts_with("```") {
-            let mut lines: Vec<&str> = cleaned.lines().collect();
-            if !lines.is_empty() {
-                lines.remove(0);
-            }
-            if let Some(last) = lines.last() {
-                if last.trim().starts_with("```") {
-                    lines.pop();
-                }
-            }
-            lines.join("\n")
-        } else {
-            trimmed.to_string()
-        };
-
-        if let Ok(value) = serde_json::from_str::<Value>(stripped.trim()) {
-            return Ok(value);
-        }
-
-        // Try to extract heredoc content for shell commands
-        if let Some(value) = Self::parse_heredoc_input(&stripped) {
-            return Ok(value);
-        }
-
-        if let Some(json_block) = Self::extract_json_block(&stripped) {
-            if let Ok(value) = serde_json::from_str::<Value>(&json_block) {
-                return Ok(value);
-            }
-        }
-
-        if let Some(value) = self.recover_action_input(&stripped) {
-            return Ok(value);
-        }
-
-        Err(anyhow::anyhow!("Action Input inválido: {}", action_input))
-    }
-
-    fn parse_heredoc_input(input: &str) -> Option<Value> {
-        // Check if this is a shell command trying to create a file
-        if input.contains("cat >") || input.contains("tee >") {
-            // Try to find heredoc pattern: cat > file << EOF ... EOF
-            let heredoc_re = RE_HEREDOC.get_or_init(|| {
-                Regex::new(r#""command"\s*:\s*"cat\s+>\s+([^"]+)\s+<<\s*'?\w+'?\s*\n(.*?)\n\w+""#)
-                    .unwrap()
-            });
-
-            if let Some(caps) = heredoc_re.captures(input) {
-                let file_path = caps.get(1)?.as_str();
-                let content = caps.get(2)?.as_str();
-
-                // Use file_write instead of shell for creating files
-                return Some(json!({
-                    "path": file_path,
-                    "content": content
-                }));
-            }
-
-            // Try alternative pattern without quotes around EOF
-            let alt_re = RE_HEREDOC_ALT.get_or_init(|| {
-                Regex::new(r#""command"\s*:\s*"([^"]*cat[^"]*\bEOF\b[^"]*)""#).unwrap()
-            });
-
-            if let Some(caps) = alt_re.captures(input) {
-                let command = caps.get(1)?.as_str();
-
-                // Check if it's trying to write a file
-                let file_re =
-                    RE_CAT_REDIRECT.get_or_init(|| Regex::new(r"cat\s+>\s+(\S+)").unwrap());
-                if let Some(file_caps) = file_re.captures(command) {
-                    let file_path = file_caps.get(1)?.as_str();
-
-                    // Try to extract content between EOF markers
-                    let eof_re = RE_EOF_MARKER
-                        .get_or_init(|| Regex::new(r"<<\s*'?(\w+)'?\s*\n(.*?)\n\1").unwrap());
-                    if let Some(eof_caps) = eof_re.captures(input) {
-                        let content = eof_caps.get(2)?.as_str();
-
-                        return Some(json!({
-                            "path": file_path,
-                            "content": content
-                        }));
-                    }
-                }
-            }
-        }
-
-        None
-    }
-
-    fn recover_action_input(&self, input: &str) -> Option<Value> {
-        let path_re =
-            RE_JSON_PATH.get_or_init(|| Regex::new(r#"(?s)"path"\s*:\s*"([^"]*)""#).unwrap());
-        let command_re =
-            RE_JSON_COMMAND.get_or_init(|| Regex::new(r#"(?s)"command"\s*:\s*"([^"]*)""#).unwrap());
-
-        if let Some(caps) = path_re.captures(input) {
-            let path = caps
-                .get(1)
-                .map(|m| m.as_str().to_string())
-                .unwrap_or_default();
-            if let Some(content) = Self::extract_json_string_field(input, "content") {
-                return Some(json!({
-                    "path": path,
-                    "content": content,
-                }));
-            }
-        }
-
-        if let Some(caps) = command_re.captures(input) {
-            let command = caps
-                .get(1)
-                .map(|m| m.as_str().to_string())
-                .unwrap_or_default();
-            if !command.is_empty() {
-                return Some(json!({
-                    "command": command,
-                }));
-            }
-        }
-
-        None
-    }
-
-    fn extract_json_string_field(input: &str, field: &str) -> Option<String> {
-        let key = format!("\"{}\"", field);
-        let idx = input.find(&key)?;
-        let after_key = &input[idx + key.len()..];
-        let colon_idx = after_key.find(':')?;
-        let mut rest = after_key[colon_idx + 1..].trim_start();
-
-        if !rest.starts_with('"') {
-            return None;
-        }
-
-        rest = &rest[1..];
-        let mut end = rest.len();
-        if let Some(pos) = rest.rfind("\"}") {
-            end = pos;
-        } else if let Some(pos) = rest.rfind("\"") {
-            end = pos;
-        }
-
-        let raw = rest[..end].to_string();
-        let unescaped = raw
-            .replace("\\n", "\n")
-            .replace("\\t", "\t")
-            .replace("\\r", "\r")
-            .replace("\\\"", "\"")
-            .replace("\\\\", "\\");
-
-        Some(unescaped)
-    }
-
-    fn extract_json_block(input: &str) -> Option<String> {
-        let mut start_idx = None;
-        let mut stack: Vec<char> = Vec::new();
-        let mut in_string = false;
-        let mut escape = false;
-
-        for (i, c) in input.char_indices() {
-            if start_idx.is_none() {
-                if c == '{' || c == '[' {
-                    start_idx = Some(i);
-                    stack.push(c);
-                }
-                continue;
-            }
-
-            if in_string {
-                if escape {
-                    escape = false;
-                    continue;
-                }
-                if c == '\\' {
-                    escape = true;
-                    continue;
-                }
-                if c == '"' {
-                    in_string = false;
-                }
-                continue;
-            }
-
-            match c {
-                '"' => in_string = true,
-                '{' | '[' => stack.push(c),
-                '}' => {
-                    if let Some(last) = stack.pop() {
-                        if last != '{' {
-                            return None;
-                        }
-                    }
-                }
-                ']' => {
-                    if let Some(last) = stack.pop() {
-                        if last != '[' {
-                            return None;
-                        }
-                    }
-                }
-                _ => {}
-            }
-
-            if stack.is_empty() {
-                if let Some(start) = start_idx {
-                    return Some(input[start..=i].to_string());
-                }
-            }
-        }
-
-        None
-    }
-
     pub fn model_name(&self) -> String {
         self.config.model.clone()
     }
@@ -3478,19 +3145,6 @@ Por favor, forneça a RESPOSTA MELHORADA que corrige os problemas identificados.
     {
         self.app_store.set_state(updater);
     }
-}
-
-enum ParsedResponse {
-    FinalAnswer(String),
-    Action {
-        thought: String,
-        retrieved_memory: Option<String>,
-        revise_memory: Option<String>,
-        reasoning: Option<String>,
-        verification: Option<String>,
-        action: String,
-        action_input: String,
-    },
 }
 
 pub fn init_tmux(skill_name: &str) {

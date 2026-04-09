@@ -262,16 +262,18 @@ Cobertura atual: **72 testes passando** (5 novos de segurança adicionados no CP
 
 ### CP-7 — Arquitetura — Decompor `agent.rs` (3.554 linhas)
 
-#### CP-7.1 — Criar estrutura de diretório e `mod.rs`
-- [ ] Criar diretório `src/agent/`
-- [ ] Criar `src/agent/mod.rs` com re-exports públicos
-- [ ] Mover `pub struct Agent` e `pub fn new()` para `mod.rs`
+#### CP-7.1 — Criar estrutura de diretório e `mod.rs` ✅ CONCLUÍDO
+- [x] Criar diretório `src/agent/`
+- [x] Mover `agent.rs` para `src/agent/mod.rs`
+- [x] Criar arquivos stub para submódulos
+- [x] Verificação: `cargo check` passa
+
+#### CP-7.2 — Extrair `response_parser.rs` (~400 linhas)
+- [ ] Mover `parse_response()`, `sanitize_model_response()`, `parse_action_input_json()`, `parse_heredoc_input()`, `recover_action_input()`, etc.
+- [ ] Mover `static RE_*: OnceLock<Regex>` para o arquivo
 - [ ] Verificação: `cargo check`
 
-#### CP-7.2 — Extrair `response_parser.rs` (~300 linhas)
-- [ ] Mover `parse_response()`, `sanitize_model_response()`, `parse_action_input_json()`, `parse_heredoc_input()`, `recover_action_input()`, `extract_json_string_field()`, `extract_json_block()`
-- [ ] Mover `static RE_*: OnceLock<Regex>` 
-- [ ] Verificação: `cargo check`
+**Nota:** Esta tarefa requer mover ~400 linhas de código. Pode ser feita em sessões futuras.
 
 #### CP-7.3 — Extrair `llm_client.rs` (~150 linhas)
 - [ ] Mover `create_http_client()`, `call_llm()`, `call_llm_with_config()`, `build_system_prompt()`, `build_messages()`
@@ -458,7 +460,7 @@ Cobertura atual: **72 testes passando** (5 novos de segurança adicionados no CP
 | **CP-4** | Dependências e Depreciações | ✅ Concluído | — |
 | **CP-5** | Performance — Regex e Cache | ✅ Concluído | — |
 | **CP-6** | Tratamento de Erros | ✅ Concluído | — |
-| **CP-7** | Decompor `agent.rs` | 7 sub-tarefas | 3-5 dias |
+| **CP-7** | Decompor `agent.rs` | 🔄 7.1✅ | 3-5 dias |
 | **CP-8** | Decompor `checkpoint.rs` | 5 sub-tarefas | 2-3 dias |
 | **CP-9** | Unificar Estado e Remover Morto | ✅ Concluído | — |
 | **CP-10** | Testes — Ferramentas e Memória | ✅ Concluído | — |
