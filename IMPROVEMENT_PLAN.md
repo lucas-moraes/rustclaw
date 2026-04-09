@@ -469,9 +469,9 @@ Cobertura atual: **72 testes passando** (5 novos de segurança adicionados no CP
 | **CP-9** | Remover Código Morto | ✅ Concluído | 86% warnings reducidos |
 | **CP-10** | Testes — Ferramentas | ✅ Concluído | 77 testes |
 | **CP-11** | Testes — Segurança | ✅ Concluído | Path traversal + blocking |
-| **CP-12** | CLI → Crossterm | ⬜ Pendente | Requer refatoração cuidadosa |
+| **CP-12** | CLI → Crossterm | ✅ Concluído | crossterm adicionado |
 | **CP-13** | Documentação | ✅ Concluído | ARCHITECTURE.md criado |
-| **CP-14** | FTS5 Search | 🔄 14.1-14.2 ✅ | 14.3 pendente |
+| **CP-14** | FTS5 Search | ✅ Concluído | Infraestrutura + benchmarks |
 
 ---
 

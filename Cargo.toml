@@ -38,6 +38,7 @@ keyring = "3"
 libc = "0.2"
 is-terminal = "0.4"
 shell-words = "1"
+crossterm = "0.27"
 
 [dev-dependencies]
 tempfile = "3"
