@@ -30,6 +30,8 @@ impl MemoryStore {
     }
 
     pub fn clear_all(&self) -> Result<()> {
+        let _ = self.rebuild_fts();
+
         let queries = [
             "DELETE FROM memories",
             "DELETE FROM scheduled_tasks",
@@ -45,8 +47,6 @@ impl MemoryStore {
                 tracing::warn!("clear_all: could not execute '{}': {}", query, e);
             }
         }
-
-        let _ = self.rebuild_fts();
 
         Ok(())
     }
