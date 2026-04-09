@@ -1,11 +1,22 @@
 use anyhow::Result;
+use serde::Serialize;
 use serde_json::json;
+use std::collections::HashMap;
+use std::sync::RwLock;
+
+#[derive(Debug, Clone)]
+struct CacheEntry {
+    embedding: Vec<f32>,
+    cached_at: std::time::Instant,
+}
 
 pub struct EmbeddingService {
     api_key: String,
     base_url: String,
     model: String,
     client: reqwest::Client,
+    cache: RwLock<HashMap<String, CacheEntry>>,
+    cache_ttl_secs: u64,
 }
 
 impl EmbeddingService {
@@ -23,14 +34,58 @@ impl EmbeddingService {
             base_url: "https://api.openai.com/v1".to_string(),
             model: "text-embedding-3-small".to_string(),
             client,
+            cache: RwLock::new(HashMap::new()),
+            cache_ttl_secs: 3600,
         })
     }
 
     pub async fn embed(&self, text: &str) -> Result<Vec<f32>> {
-        if self.api_key.is_empty() {
-            return Ok(self.fallback_embedding(text));
+        let cache_key = self.cache_key(text);
+        
+        if let Some(embedding) = self.get_cached(&cache_key) {
+            tracing::debug!("Embedding cache hit for: {}...", &text[..text.len().min(50)]);
+            return Ok(embedding);
         }
 
+        let embedding = if self.api_key.is_empty() {
+            self.fallback_embedding(text)
+        } else {
+            self.fetch_embedding(text).await?
+        };
+
+        self.put_cached(&cache_key, embedding.clone());
+        Ok(embedding)
+    }
+
+    fn cache_key(&self, text: &str) -> String {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        text.hash(&mut hasher);
+        format!("{:x}", hasher.finish())
+    }
+
+    fn get_cached(&self, key: &str) -> Option<Vec<f32>> {
+        let cache = self.cache.read().ok()?;
+        cache.get(key).and_then(|entry| {
+            if entry.cached_at.elapsed().as_secs() < self.cache_ttl_secs {
+                Some(entry.embedding.clone())
+            } else {
+                None
+            }
+        })
+    }
+
+    fn put_cached(&self, key: &str, embedding: Vec<f32>) {
+        if let Ok(mut cache) = self.cache.write() {
+            cache.insert(key.to_string(), CacheEntry {
+                embedding,
+                cached_at: std::time::Instant::now(),
+            });
+        }
+    }
+
+    async fn fetch_embedding(&self, text: &str) -> Result<Vec<f32>> {
         let url = format!("{}/embeddings", self.base_url);
 
         let body = json!({
@@ -121,6 +176,8 @@ impl Default for EmbeddingService {
                 base_url: String::new(),
                 model: String::new(),
                 client: reqwest::Client::new(),
+                cache: RwLock::new(HashMap::new()),
+                cache_ttl_secs: 3600,
             }
         })
     }

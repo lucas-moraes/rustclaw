@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::RwLock;
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
 pub enum TrustLevel {
@@ -109,6 +110,7 @@ impl WorkspaceRestrictions {
 pub struct WorkspaceTrustStore {
     workspaces: HashMap<PathBuf, WorkspaceTrustConfig>,
     global_default: TrustLevel,
+    canonical_cache: RwLock<HashMap<PathBuf, PathBuf>>,
 }
 
 impl WorkspaceTrustStore {
@@ -116,6 +118,7 @@ impl WorkspaceTrustStore {
         Self {
             workspaces: HashMap::new(),
             global_default: TrustLevel::Untrusted,
+            canonical_cache: RwLock::new(HashMap::new()),
         }
     }
 
@@ -123,8 +126,24 @@ impl WorkspaceTrustStore {
         self.global_default = level;
     }
 
-    pub fn get_trust(&self, path: &Path) -> TrustLevel {
+    fn canonicalize_cached(&self, path: &Path) -> PathBuf {
+        if let Ok(cache) = self.canonical_cache.read() {
+            if let Some(cached) = cache.get(path) {
+                return cached.clone();
+            }
+        }
+
         let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+
+        if let Ok(mut cache) = self.canonical_cache.write() {
+            cache.insert(path.to_path_buf(), canonical.clone());
+        }
+
+        canonical
+    }
+
+    pub fn get_trust(&self, path: &Path) -> TrustLevel {
+        let canonical = self.canonicalize_cached(path);
 
         for (ws_path, config) in &self.workspaces {
             if canonical.starts_with(ws_path) {
@@ -139,7 +158,7 @@ impl WorkspaceTrustStore {
         let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
 
         self.workspaces.insert(
-            canonical,
+            canonical.clone(),
             WorkspaceTrustConfig {
                 path: path.to_path_buf(),
                 trust_level: level,
@@ -148,6 +167,10 @@ impl WorkspaceTrustStore {
                 restrictions: WorkspaceRestrictions::default(),
             },
         );
+
+        if let Ok(mut cache) = self.canonical_cache.write() {
+            cache.insert(path.to_path_buf(), canonical);
+        }
     }
 
     pub fn add_restriction(&mut self, path: &Path, restriction: WorkspaceRestrictions) {
@@ -176,10 +199,8 @@ impl WorkspaceTrustStore {
             return false;
         }
 
-        if let Some(config) = self
-            .workspaces
-            .get(&path.canonicalize().unwrap_or_else(|_| path.to_path_buf()))
-        {
+        let canonical = self.canonicalize_cached(path);
+        if let Some(config) = self.workspaces.get(&canonical) {
             return config.restrictions.is_command_allowed(command);
         }
 
@@ -229,6 +250,12 @@ impl WorkspaceTrustStore {
             .map_err(|e| format!("Serialization error: {}", e))?;
 
         std::fs::write(path, json).map_err(|e| format!("IO error: {}", e))
+    }
+
+    pub fn clear_cache(&self) {
+        if let Ok(mut cache) = self.canonical_cache.write() {
+            cache.clear();
+        }
     }
 }
 

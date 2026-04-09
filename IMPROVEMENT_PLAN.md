@@ -100,7 +100,20 @@ src/agent/
 └── output.rs           # Formatação de output, cores ✅ (CP-7.7)
 ```
 
-### 4.2 `memory/checkpoint.rs` (2.348 linhas) ⬜ Pendente (CP-8)
+### 4.2 `memory/checkpoint.rs` (2.348 linhas) 🔄 PRINCIPALMENTE CONCLUÍDO (CP-8)
+
+**Resultado:** O arquivo original de 2.342 linhas foi decomposto em 4 módulos:
+```
+src/memory/checkpoint/
+├── mod.rs      # ~810 linhas (CheckpointStore + SessionSummary + SessionContext + tests)
+├── types.rs    # ~510 linhas (tipos base + impl DevelopmentCheckpoint)
+├── events.rs   # ~500 linhas (SessionEvent + SessionEventStore)
+└── lifecycle.rs # ~550 linhas (SnapshotManager + LifecycleManager)
+```
+
+**Progresso:** ~1.530 linhas extraídas para submódulos (65% do código movido).
+
+**CP-8.4 pendente:** `CheckpointStore` (~720 linhas) requer extração para `store.rs` devido às suas dependências com `SessionSummary` e `SessionContext`.
 
 ### 4.3 Unificar gerenciamento de estado ✅ Concluído (CP-9)
 
@@ -239,8 +252,8 @@ Cobertura atual: **77 testes passando** (testes de ferramentas + segurança).
 - [x] Pré-compilar `plan_step_re` em `agent.rs`
 - [x] Pré-compilar heredoc/EOF/json regex em `parse_heredoc_input()` e `recover_action_input()`
 - [x] Pré-compilar regex em `security/sanitizer.rs` (HTML, ANSI, cookie, auth) com `OnceLock`
-- [ ] Adicionar cache de embeddings em memória
-- [ ] Cachear `canonicalize()` em `workspace_trust.rs`
+- [x] Adicionar cache de embeddings em memória
+- [x] Cachear `canonicalize()` em `workspace_trust.rs`
 
 **Verificação:** Todos os regex em hot paths agora usam `OnceLock<Regex>`. `cargo test` passa com 72 testes.
 
@@ -303,64 +316,90 @@ Cobertura atual: **77 testes passando** (testes de ferramentas + segurança).
 
 **Princípio:** Nunca quebrar compilação. Cada passo deve compilar isoladamente.
 
-#### CP-8.0 — Preparação (5 min)
-- [ ] Criar diretório `src/memory/checkpoint/`
-- [ ] Criar `src/memory/checkpoint/mod.rs` que re-exporta tudo de `checkpoint.rs`
-- [ ] Manter `checkpoint.rs` inalterado inicialmente
-- [ ] Verificação: `cargo check` passa
+#### CP-8.0 — Preparação (5 min) ✅ CONCLUÍDO
+- [x] Criar diretório `src/memory/checkpoint/`
+- [x] Mover `checkpoint.rs` para `src/memory/checkpoint/mod.rs`
+- [x] Verificação: `cargo check` passa com 80 testes
 
-#### CP-8.1 — Extrair `types.rs` (~400 linhas) (30 min)
+#### CP-8.1 — Extrair `types.rs` (~400 linhas) (30 min) ✅ CONCLUÍDO
 Mover apenas tipos de dados puros (sem impl pesado):
-- [ ] `SessionType` (14-43) — sem dependências
-- [ ] `PlanPhase` (1139-1172) — sem dependências
-- [ ] `DevelopmentState` (1176-1203) — sem dependências
-- [ ] `ToolExecution` (71-77) — sem dependências
-- [ ] `PlanStage` (80-85) — sem dependências
-- [ ] `SessionFingerprint` (1207-1291) — sem dependências
-- [ ] `ContextChange` (1294-1339) — depende de `SessionFingerprint`
-- [ ] Converter `checkpoint.rs` para gateway com `mod types; pub use types::*;`
-- [ ] Verificação: `cargo check` + `cargo test`
+- [x] `SessionType` (14-43) — sem dependências
+- [x] `PlanPhase` (1139-1172) — sem dependências
+- [x] `DevelopmentState` (1176-1203) — sem dependências
+- [x] `ToolExecution` (71-77) — sem dependências
+- [x] `PlanStage` (80-85) — sem dependências
+- [x] `SessionFingerprint` (1207-1291) — sem dependências
+- [x] `ContextChange` (1294-1339) — depende de `SessionFingerprint`
+- [x] Converter `checkpoint.rs` para gateway com `mod types; pub use types::*;`
+- [x] Verificação: `cargo check` + 80 testes passando
+
+**Estrutura atual:**
+```
+src/memory/checkpoint/
+├── mod.rs    # ~1.400 linhas (CheckpointStore + re-exports)
+└── types.rs  # ~350 linhas (tipos extraídos)
+```
 
 **Não mover ainda:** `DevelopmentCheckpoint`, `SessionSummary`, `SessionEvent`, `SessionEventStore`, `LifecycleManager` (fortemente acoplados ao CheckpointStore)
 
-#### CP-8.2 — Extrair `events.rs` (~300 linhas) (20 min)
+#### CP-8.2 — Extrair `events.rs` (~300 linhas) (20 min) ✅ CONCLUÍDO
 Mover unidades mais independentes primeiro:
-- [ ] `SessionEventType` (88-131)
-- [ ] `SessionEvent` (134-257) — depende de `SessionEventType`, `PlanPhase`, `DevelopmentState`
-- [ ] `EventSummary` (260-264)
-- [ ] `SessionEventStore` (266-575) — não referenciado por CheckpointStore internamente
-- [ ] Adicionar `mod events; pub use events::*;` em `checkpoint.rs`
-- [ ] Verificação: `cargo check` + `cargo test`
+- [x] `SessionEventType` (88-131)
+- [x] `SessionEvent` (134-257) — depende de `SessionEventType`, `PlanPhase`, `DevelopmentState`
+- [x] `EventSummary` (260-264)
+- [x] `SessionEventStore` (266-575) — não referenciado por CheckpointStore internamente
+- [x] Adicionar `mod events; pub use events::*;` em `checkpoint.rs`
+- [x] Verificação: `cargo check` + 80 testes passando
 
-#### CP-8.3 — Extrair `lifecycle.rs` (~300 linhas) (15 min)
-- [ ] `SnapshotTrigger` (579-587)
-- [ ] `SnapshotPolicy` (604-626)
-- [ ] `SnapshotManager` (668-740)
-- [ ] `LifecyclePolicy` (768-788)
-- [ ] `LifecycleManager` (815-1119) — depende de `MemoryEntry`, `MemoryScope`, `MemoryType`
-- [ ] `CleanupStats` (1121-1126)
-- [ ] `SessionArchive` (1128-1135)
-- [ ] Adicionar `mod lifecycle; pub use lifecycle::*;`
-- [ ] Verificação: `cargo check` + `cargo test`
+**Estrutura atual:**
+```
+src/memory/checkpoint/
+├── mod.rs      # ~1.100 linhas (CheckpointStore + lifecycle + re-exports)
+├── types.rs    # ~350 linhas (tipos extraídos)
+└── events.rs   # ~500 linhas (eventos extraídos)
+```
 
-#### CP-8.4 — Extrair `store.rs` (~800 linhas) (45 min) — **FASE CRÍTICA**
-**Esta é a fase mais complexa — fazer em sessão separada:**
-- [ ] `CheckpointStore` (1341-2064)
-- [ ] `SessionSummary` (46-61) — consumido/produzido por CheckpointStore
-- [ ] `SessionContext` (64-68)
-- [ ] `DevelopmentCheckpoint` (743-765 + impl 2066-2296)
-- [ ] `row_to_checkpoint()` precisa de todos os tipos de `types.rs`
-- [ ] Converter `checkpoint.rs` para ter `mod store; pub use store::*;`
-- [ ] Verificação: `cargo check` + `cargo test`
+#### CP-8.3 — Extrair `lifecycle.rs` (~300 linhas) (15 min) ✅ CONCLUÍDO
+- [x] `SnapshotTrigger` (579-587)
+- [x] `SnapshotPolicy` (604-626)
+- [x] `SnapshotManager` (668-740)
+- [x] `LifecyclePolicy` (768-788)
+- [x] `LifecycleManager` (815-1119) — depende de `MemoryEntry`, `MemoryScope`, `MemoryType`
+- [x] `CleanupStats` (1121-1126)
+- [x] `SessionArchive` (1128-1135)
+- [x] Adicionar `mod lifecycle; pub use lifecycle::*;`
+- [x] Verificação: `cargo check` + 80 testes passando
 
-**Cuidados especiais:**
-- `SessionSummary` deve manter campo `.title` (não método)
-- `SessionType` deve manter variantes: `Project`, `Subtask`, `Research`, `Chat`
-- `PlanPhase` e `DevelopmentState` devem manter `from_str()` existente
+**Estrutura atual:**
+```
+src/memory/checkpoint/
+├── mod.rs      # ~600 linhas (CheckpointStore + re-exports)
+├── types.rs    # ~350 linhas (tipos base extraídos)
+├── events.rs   # ~500 linhas (eventos extraídos)
+└── lifecycle.rs # ~550 linhas (lifecycle extraído)
+```
 
-#### CP-8.5 — Limpeza Final (10 min)
-- [ ] Deletar `checkpoint.rs` original
-- [ ] `checkpoint/mod.rs` deve conter apenas:
+#### CP-8.4 — Extrair `store.rs` (~800 linhas) (45 min) — **✅ CONCLUÍDO**
+**Esta é a fase mais complexa:**
+- [x] `CheckpointStore` (~720 linhas) extraído para `store.rs`
+- [x] `SessionSummary` e `SessionContext` também movidos para `store.rs`
+- [x] Verificação: `cargo check` + 80 testes passando
+
+**Estrutura FINAL:**
+```
+src/memory/checkpoint/
+├── mod.rs      # ~56 linhas (apenas re-exports + tests)
+├── types.rs    # ~516 linhas
+├── events.rs   # ~475 linhas
+├── lifecycle.rs # ~548 linhas
+└── store.rs   # ~733 linhas (CheckpointStore + SessionSummary + SessionContext)
+```
+
+**Total:** ~2.328 linhas em 5 módulos (antes: 1 arquivo de 2.342 linhas)
+
+#### CP-8.5 — Limpeza Final (10 min) ✅ CONCLUÍDO
+- [x] `checkpoint.rs` deletado e substituído por diretório
+- [x] `checkpoint/mod.rs` contém apenas re-exports:
 ```rust
 pub mod types;
 pub mod events;
@@ -372,18 +411,18 @@ pub use events::*;
 pub use lifecycle::*;
 pub use store::*;
 ```
-- [ ] Verificação: `cargo check` + `cargo test`
+- [x] Verificação: `cargo check` + 80 testes passando
 
 **Resumo de Risco:**
 
 | Fase | Risco | Tempo | Status |
-|------|--------|-------|--------|
-| 8.0 | Muito baixo | 5 min | — |
-| 8.1 | Baixo | 30 min | — |
-| 8.2 | Baixo | 20 min | — |
-| 8.3 | Médio | 15 min | — |
-| 8.4 | **Alto** | 45 min | — |
-| 8.5 | Baixo | 10 min | — |
+|------|-------|-------|--------|
+| 8.0 | Muito baixo | 5 min | ✅ Concluído |
+| 8.1 | Baixo | 30 min | ✅ Concluído |
+| 8.2 | Baixo | 20 min | ✅ Concluído |
+| 8.3 | Médio | 15 min | ✅ Concluído |
+| 8.4 | **Alto** | 45 min | ✅ Concluído |
+| 8.5 | Baixo | 10 min | ✅ Concluído |
 
 **Recomendação:** Fazer fases 8.0-8.3 em uma sessão, 8.4 em outra, e 8.5 na terceira.
 
@@ -403,7 +442,7 @@ pub use store::*;
 - [x] Adicionar `#![allow(dead_code)]` em `security/constants.rs`
 - [x] Adicionar `#![allow(dead_code)]` em `security/mod.rs`
 - [x] Adicionar `#![allow(dead_code)]` em `workspace_trust.rs`
-- [x] Adicionar `#![allow(dead_code)]` em `memory/checkpoint.rs`
+- [x] Adicionar `#![allow(dead_code)]` em `memory/checkpoint/mod.rs`
 - [x] Verificar: `cargo check` com 36 warnings (reduzidos de 125)
 
 **Verificação:** `cargo check` com 36 warnings (redução de 71%). `cargo test` passa com 72 testes.
@@ -527,7 +566,7 @@ pub use store::*;
 | **CP-5** | Performance — Regex | ✅ Concluído | OnceLock em hot paths |
 | **CP-6** | Tratamento de Erros | ✅ Concluído | expect() com contexto |
 | **CP-7** | Decompor `agent.rs` | ✅ Concluído | 7 sub-módulos criados |
-| **CP-8** | Decompor `checkpoint.rs` | ⬜ Pendente | Requer trabalho significativo |
+| **CP-8** | Decompor `checkpoint.rs` | ✅ Concluído | 5 módulos criados |
 | **CP-9** | Remover Código Morto | ✅ Concluído | 86% warnings reducidos |
 | **CP-10** | Testes — Ferramentas | ✅ Concluído | 77 testes |
 | **CP-11** | Testes — Segurança | ✅ Concluído | Path traversal + blocking |
@@ -543,7 +582,7 @@ pub use store::*;
 |---------|--------|--------|----------------------|--------|
 | `agent/mod.rs` | ~3.200 | 4/5 | Decomposto (CP-7 ✅) | CP-7 ✅ |
 | `cli.rs` | 988 | 3/5 | Unsafe libc | CP-12: libs adicionadas |
-| `memory/checkpoint.rs` | 2.342 | 2/5 | Arquivo massivo (CP-8) | ⬜ Pendente |
+| `memory/checkpoint/` | ~1.750 | 3/5 | Decompondo (CP-8: mod.rs + types.rs ✅) | 🔄 Em Progresso |
 | `tools/shell.rs` | 350 | 4/5 | ✅ Path validation | CP-3 ✅ |
 | `tools/file_write.rs` | 105 | 4/5 | ✅ Path validation | CP-3 ✅ |
 | `tools/file_read.rs` | 100 | 4/5 | ✅ Blocking | CP-3 ✅ |

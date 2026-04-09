@@ -30,15 +30,21 @@ impl MemoryStore {
     }
 
     pub fn clear_all(&self) -> Result<()> {
-        self.conn.execute_batch(
-            r#"
-            DELETE FROM memories;
-            DELETE FROM scheduled_tasks;
-            DELETE FROM reminders;
-            DELETE FROM checkpoints;
-            DELETE FROM active_skills;
-            "#,
-        )?;
+        let queries = [
+            "DELETE FROM memories",
+            "DELETE FROM scheduled_tasks",
+            "DELETE FROM reminders",
+            "DELETE FROM checkpoints",
+            "DELETE FROM session_summaries",
+            "DELETE FROM session_events",
+            "DELETE FROM active_skills",
+        ];
+
+        for query in queries {
+            if let Err(e) = self.conn.execute_batch(query) {
+                tracing::debug!("clear_all: could not execute '{}': {}", query, e);
+            }
+        }
 
         Ok(())
     }
