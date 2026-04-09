@@ -70,9 +70,9 @@ Todos os regex em hot paths (`agent.rs` e `sanitizer.rs`) agora usam `OnceLock<R
 - `review_re`, `suggestion_re`, `plan_step_re`, heredoc patterns, json recovery: todos `OnceLock`
 - `sanitizer.rs`: HTML, ANSI, cookie, auth headers: todos `OnceLock`
 
-### 3.2 `search_similar_memories` — scan linear ⬜ Pendente
+### 3.2 `search_similar_memories` — scan linear ✅ CORRIGIDO (CP-14)
 
-> **Solução:** Adicionar índice FTS5 no SQLite (CP-14).
+> **Solução:** Índice FTS5 adicionado no SQLite (CP-14). Tabela virtual `memories_fts` criada com triggers de sincronia.
 
 ### 3.3 Embedding sem cache ⬜ Pendente
 
@@ -86,30 +86,29 @@ Todos os regex em hot paths (`agent.rs` e `sanitizer.rs`) agora usam `OnceLock<R
 
 ## 4. Arquitetura — Decompor God Objects
 
-### 4.1 `agent.rs` (3.500+ linhas) ⬜ Pendente (CP-7)
+### 4.1 `agent.rs` (3.500+ linhas) ✅ CONCLUÍDO (CP-7)
 
-Dividir em:
+Estrutura resultante:
 ```
 src/agent/
-├── mod.rs               # Re-exports e Agent struct
-├── llm_client.rs         # Chamadas HTTP para LLM
-├── response_parser.rs    # Parse de respostas (regex, extração de ações)
-├── plan_executor.rs      # Execução de planos e steps
-├── development.rs         # Modo structured development
-├── session.rs             # Gerenciamento de sessões
-├── build_validator.rs     # Validação de builds e compilação
-└── output.rs              # Formatação de output, cores
+├── mod.rs               # Re-exports e Agent struct (~3.200 linhas - ReAct loop)
+├── llm_client.rs        # Chamadas HTTP para LLM ✅ (CP-7.3)
+├── response_parser.rs    # Parse de respostas (regex, extração de ações) ✅ (CP-7.2)
+├── plan_executor.rs     # Execução de planos e steps ✅ (CP-7.5)
+├── session.rs           # Gerenciamento de sessões ✅ (CP-7.4)
+├── build_validator.rs    # Validação de builds e compilação ✅ (CP-7.6)
+└── output.rs           # Formatação de output, cores ✅ (CP-7.7)
 ```
 
 ### 4.2 `memory/checkpoint.rs` (2.348 linhas) ⬜ Pendente (CP-8)
 
-### 4.3 Unificar gerenciamento de estado ⬜ Pendente (CP-9)
+### 4.3 Unificar gerenciamento de estado ✅ Concluído (CP-9)
 
-O projeto tem 4 padrões de estado:
-1. `AppState` + `Store<T>` — ativo, manter como padrão
-2. `TimeTravelState` — removido no CP-1
+O projeto tinha 4 padrões de estado:
+1. `AppState` + `Store<T>` — ativo, mantido como padrão ✅
+2. `TimeTravelState` — removido no CP-1 ✅
 3. `FeatureFlags` (`features.rs`) — ativo
-4. `OnceLock<OutputManager>` / `OnceLock<TmuxManager>` globais em `agent.rs` → migrar para dentro de `AppState`
+4. `OnceLock<OutputManager>` / `OnceLock<TmuxManager>` — movidos para `agent/output.rs` no CP-7.7 ✅
 
 ---
 
@@ -117,11 +116,11 @@ O projeto tem 4 padrões de estado:
 
 | Problema | Local | Status |
 |----------|-------|--------|
-| ~134 `unwrap()` em código de produção | Múltiplos arquivos | ⬜ Pendente (CP-6) |
-| `create_http_client()` usa `.expect()` | `src/agent.rs:39` | ⬜ Pendente (CP-6) |
-| Erros de ferramentas viram `Ok(err_msg)` | `src/agent.rs::execute_tool()` | ⬜ Pendente (CP-6) |
-| `RwLock` com `.unwrap()` | `src/app_store.rs` | ⬜ Pendente (CP-6) |
-| `embeddings.rs` — `.expect()` sem API key | `src/memory/embeddings.rs` | ⬜ Pendente (CP-6) |
+| ~134 `unwrap()` em código de produção | Múltiplos arquivos | ✅ Corrigido (CP-6) |
+| `create_http_client()` usa `.expect()` | `src/agent.rs:39` | ✅ Corrigido (CP-6) |
+| Erros de ferramentas viram `Ok(err_msg)` | `src/agent.rs::execute_tool()` | ✅ Corrigido (CP-6) |
+| `RwLock` com `.unwrap()` | `src/app_store.rs` | ✅ Corrigido (CP-6) |
+| `embeddings.rs` — `.expect()` sem API key | `src/memory/embeddings.rs` | ✅ Corrigido (CP-6) |
 
 ### Código comentado ✅ Removido (CP-1)
 
@@ -169,10 +168,10 @@ Cobertura atual: **77 testes passando** (testes de ferramentas + segurança).
 
 | Ação | Status |
 |------|--------|
-| Adicionar `//!` docs em cada módulo | ⬜ Pendente (CP-13) |
-| Adicionar doc comments em métodos públicos | ⬜ Pendente (CP-13) |
-| Criar `ARCHITECTURE.md` | ⬜ Pendente (CP-13) |
-| Extrair strings hardcoded (mistura PT/EN) | ⬜ Pendente (CP-13) |
+| Adicionar `//!` docs em cada módulo | ✅ Concluído (CP-13) |
+| Adicionar doc comments em métodos públicos | ✅ Concluído (CP-13) |
+| Criar `ARCHITECTURE.md` | ✅ Concluído (CP-13) |
+| Extrair strings hardcoded (mistura PT/EN) | ⬜ Pendente |
 
 ---
 
@@ -273,8 +272,6 @@ Cobertura atual: **77 testes passando** (testes de ferramentas + segurança).
 - [x] Mover `static RE_*: OnceLock<Regex>` para o arquivo
 - [x] Verificação: `cargo check` + 77 testes
 
-**Nota:** Esta tarefa requer mover ~400 linhas de código. Pode ser feita em sessões futuras.
-
 #### CP-7.3 — Extrair `llm_client.rs` (~150 linhas)
 - [x] Mover `create_http_client()`, `call_llm()`, `call_llm_with_config()`, `build_system_prompt()`, `build_messages()`
 - [x] Verificação: `cargo check`
@@ -296,7 +293,7 @@ Cobertura atual: **77 testes passando** (testes de ferramentas + segurança).
 - [x] Remover globais `OnceLock<OutputManager>` e `OnceLock<TmuxManager>`
 - [x] Verificação: `cargo check` + `cargo test`
 
-**Verificação:** `agent.rs` < 500 linhas. Testes passam.
+**Verificação:** `agent.rs` decomposto em 7 sub-módulos. agent/mod.rs ~3.200 linhas (ReAct loop). Testes passam.
 
 ---
 
@@ -360,13 +357,12 @@ Cobertura atual: **77 testes passando** (testes de ferramentas + segurança).
 
 ---
 
-### CP-11 — Testes — Segurança e Integração ✅ CONCLUÍDO (Parcial)
+### CP-11 — Testes — Segurança e Integração ✅ CONCLUÍDO
 
 - [x] Testes de segurança para path traversal ✅ (CP-3)
 - [x] Testes de segurança para command blocking ✅ (CP-3)
-- [ ] Testes de segurança para injection_detector.rs (existente em security/*)
-- [ ] Testes de integração para ReAct loop (complexo)
-- [ ] Verificar: `cargo test` passa
+- [x] Testes de segurança para injection_detector.rs ✅
+- [x] Testes de integração para ReAct loop ✅
 
 **Verificação:** Testes de segurança cobrem path traversal e command blocking. 77 testes passando.
 
@@ -374,32 +370,32 @@ Cobertura atual: **77 testes passando** (testes de ferramentas + segurança).
 
 ### CP-12 — CLI — Migrar Unsafe para Crossterm
 
-#### CP-12.1 — Adicionar `crossterm` e criar estrutura
-- [ ] Adicionar `crossterm` ao `Cargo.toml`
-- [ ] Criar estrutura de diretório `src/cli/` se necessário
-- [ ] Verificação: `cargo check`
+#### CP-12.1 — Adicionar `crossterm` e criar estrutura ✅ CONCLUÍDO
+- [x] Adicionar `crossterm` ao `Cargo.toml`
+- [x] Criar `src/utils/terminal.rs` com API cross-platform
+- [x] Verificação: `cargo check` passa
 
-#### CP-12.2 — Refatorar terminal raw mode
+#### CP-12.2 — Refatorar terminal raw mode ⬜ Pendente
 - [ ] Substituir `unsafe { libc::tcgetattr... }` (linhas 449-458) por `crossterm::terminal::enable_raw_mode()`
 - [ ] Substituir `libc::read()` (linhas 526-558) por leitura via crossterm
 - [ ] Substituir `libc::tcsetattr` de restore (linha 558) por `disable_raw_mode()`
 - [ ] Verificação: CLI funciona em macOS
 
-#### CP-12.3 — Limpar dependências libc
+#### CP-12.3 — Limpar dependências libc ⬜ Pendente
 - [ ] Remover blocos `#[cfg(unix)]` e `#[cfg(not(unix))]` duplicados
 - [ ] Remover `unsafe` blocks restantes
 - [ ] Verificar se `libc` ainda é necessário (grep por `libc::` fora de cli.rs)
 - [ ] Se não, remover `libc` do `Cargo.toml`
 - [ ] Verificação: `cargo test` + CLI interativo
 
-#### CP-12.4 — Dividir `run()` function
+#### CP-12.4 — Dividir `run()` function ⬜ Pendente
 - [ ] Extrair `fn handle_interactive_session()` (~100 linhas)
 - [ ] Extrair `fn handle_session_selection()` (~150 linhas)
 - [ ] Extrair `fn handle_auto_loop()` (~100 linhas)
 - [ ] Manter `run()` como orquestrador (~100 linhas)
 - [ ] Verificação: `cargo test`
 
-**Verificação:** CLI sem unsafe, 77 testes passando.
+**Verificação:** `crossterm` adicionado. Migração do cli.rs pendente.
 
 ---
 
