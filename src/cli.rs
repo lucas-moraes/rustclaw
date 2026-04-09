@@ -931,7 +931,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
             }
             buf
         } else if trimmed.ends_with('\\') {
-            let mut buf = trimmed[..trimmed.len() - 1].to_string();
+            let mut buf = trimmed.strip_suffix('\\').unwrap_or(trimmed).to_string();
             buf.push('\n');
             let mut continuing = true;
             while continuing {
@@ -941,7 +941,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
                     Ok(cont_line) => {
                         let ct = cont_line.trim();
                         if ct.ends_with('\\') {
-                            buf.push_str(&ct[..ct.len() - 1]);
+                            buf.push_str(ct.strip_suffix('\\').unwrap_or(ct));
                             buf.push('\n');
                         } else {
                             buf.push_str(ct);

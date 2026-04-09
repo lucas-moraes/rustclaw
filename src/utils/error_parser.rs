@@ -110,8 +110,8 @@ impl ErrorParser {
                 let mut suggestion = None;
 
                 // Procura pela localização nas próximas linhas
-                for j in (i + 1)..std::cmp::min(i + 5, lines.len()) {
-                    if let Some(loc_cap) = location_re.captures(lines[j]) {
+                for line in lines.iter().skip(i + 1).take(5) {
+                    if let Some(loc_cap) = location_re.captures(line) {
                         file = loc_cap[1].to_string();
                         line_num = loc_cap[2].parse().ok();
                         col_num = loc_cap[3].parse().ok();
@@ -120,8 +120,8 @@ impl ErrorParser {
                 }
 
                 // Procura por sugestões
-                for j in (i + 1)..std::cmp::min(i + 10, lines.len()) {
-                    if let Some(help_cap) = help_re.captures(lines[j]) {
+                for line in lines.iter().skip(i + 1).take(10) {
+                    if let Some(help_cap) = help_re.captures(line) {
                         suggestion = Some(help_cap[1].trim().to_string());
                         break;
                     }
@@ -193,8 +193,8 @@ impl ErrorParser {
                 let line_num = cap[2].parse().ok();
 
                 // Procura pela exception nas próximas linhas
-                for j in (i + 1)..std::cmp::min(i + 5, lines.len()) {
-                    if let Some(exc_cap) = exception_re.captures(lines[j]) {
+                for line in lines.iter().skip(i + 1).take(5) {
+                    if let Some(exc_cap) = exception_re.captures(line) {
                         errors.push(ParsedError {
                             file: file.clone(),
                             line: line_num,

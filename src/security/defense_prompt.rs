@@ -1,5 +1,4 @@
 /// Generates defense prompt instructions to be appended to system prompt
-
 /// Get the defense prompt that should be added to the end of system prompt
 /// This ensures it cannot be overridden by user instructions
 pub fn get_defense_prompt() -> String {

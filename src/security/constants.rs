@@ -1,7 +1,6 @@
 #![allow(dead_code)]
 
 /// Security-related constants and patterns for prompt injection prevention
-
 /// Maximum allowed input length (10KB)
 pub const MAX_INPUT_LENGTH: usize = 10_240;
 

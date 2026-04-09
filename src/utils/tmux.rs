@@ -11,7 +11,10 @@ pub struct TmuxSink {
 
 impl TmuxSink {
     pub fn new(session_name: &str) -> Self {
-        let log_dir = PathBuf::from("/tmp/rustclaw").join(session_name.replace("rustclaw-", ""));
+        let temp_dir = std::env::temp_dir();
+        let log_dir = temp_dir
+            .join("rustclaw")
+            .join(session_name.replace("rustclaw-", ""));
         std::fs::create_dir_all(&log_dir).ok();
 
         let log_file = log_dir.join(format!(
@@ -138,7 +141,7 @@ impl TmuxManager {
                     "-s",
                     &session_name,
                     "-c",
-                    &format!("/tmp/{}", session_name),
+                    &std::env::temp_dir().join("rustclaw").to_string_lossy(),
                 ])
                 .output()
                 .map_err(|e| format!("Failed to create session: {}", e))?;
@@ -148,8 +151,9 @@ impl TmuxManager {
                     .insert(session_type.to_string(), session_name.clone());
 
                 // Create log directory
-                let log_dir =
-                    PathBuf::from("/tmp/rustclaw").join(session_name.replace("rustclaw-", ""));
+                let log_dir = std::env::temp_dir()
+                    .join("rustclaw")
+                    .join(session_name.replace("rustclaw-", ""));
                 std::fs::create_dir_all(&log_dir).ok();
 
                 // Add sink to output manager
@@ -168,7 +172,8 @@ impl TmuxManager {
 
         println!("✅ Sessões TMUX criadas com sucesso!");
         println!(
-            "📁 Logs em: /tmp/rustclaw-{}/",
+            "📁 Logs em: {}/rustclaw-{}/",
+            std::env::temp_dir().to_string_lossy(),
             self.base_name.replace("rustclaw-", "")
         );
         println!("🔗 Conectar: tmux attach -t {}-agent", self.base_name);
@@ -185,7 +190,9 @@ impl TmuxManager {
     }
 
     pub fn session_dir(&self) -> PathBuf {
-        PathBuf::from("/tmp/rustclaw").join(self.base_name.replace("rustclaw-", ""))
+        std::env::temp_dir()
+            .join("rustclaw")
+            .join(self.base_name.replace("rustclaw-", ""))
     }
 
     pub fn browser_dir(&self) -> PathBuf {

@@ -1,12 +1,14 @@
 use std::sync::Arc;
 use std::sync::RwLock;
 
+type StateChangeCallback<T> = Arc<dyn Fn(&T, &T) + Send + Sync>;
+
 pub struct Store<T>
 where
     T: Clone + PartialEq + Send + Sync + 'static,
 {
     state: RwLock<T>,
-    subscribers: Arc<RwLock<Vec<Arc<dyn Fn(&T, &T) + Send + Sync>>>>,
+    subscribers: Arc<RwLock<Vec<StateChangeCallback<T>>>>,
 }
 
 impl<T> Store<T>
@@ -42,7 +44,7 @@ where
         F: Fn(&T, &T) + Send + Sync + 'static,
     {
         let subs = self.subscribers.clone();
-        let wrapper: Arc<dyn Fn(&T, &T) + Send + Sync> = Arc::new(callback);
+        let wrapper: StateChangeCallback<T> = Arc::new(callback);
         let wrapper_for_closure = wrapper.clone();
         subs.write()
             .expect("subscribers lock poisoned")
