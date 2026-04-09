@@ -1,5 +1,4 @@
 use anyhow::Result;
-use serde::Serialize;
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::RwLock;

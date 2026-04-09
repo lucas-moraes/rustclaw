@@ -161,9 +161,7 @@ impl SessionFingerprint {
         } else if fp.has_go_mod {
             fp.language = Some("Go".to_string());
             fp.project_name = Self::extract_project_name(cwd, "go.mod");
-        } else if fp.has_pyproject_toml {
-            fp.language = Some("Python".to_string());
-        } else if fp.has_requirements_txt {
+        } else if fp.has_pyproject_toml || fp.has_requirements_txt {
             fp.language = Some("Python".to_string());
         }
 

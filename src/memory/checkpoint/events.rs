@@ -264,7 +264,7 @@ impl SessionEventStore {
                     session_id: row.get(1)?,
                     event_type: SessionEventType::from(event_type_str.as_str()),
                     event_data: serde_json::from_str(&event_data_str)
-                        .unwrap_or_else(|_| serde_json::Value::Null),
+                        .unwrap_or(serde_json::Value::Null),
                     created_at: DateTime::parse_from_rfc3339(&created_at_str)
                         .map(|dt| dt.with_timezone(&Utc))
                         .unwrap_or_else(|_| Utc::now()),
@@ -296,7 +296,7 @@ impl SessionEventStore {
                     session_id: row.get(1)?,
                     event_type: SessionEventType::from(event_type_str.as_str()),
                     event_data: serde_json::from_str(&event_data_str)
-                        .unwrap_or_else(|_| serde_json::Value::Null),
+                        .unwrap_or(serde_json::Value::Null),
                     created_at: DateTime::parse_from_rfc3339(&created_at_str)
                         .map(|dt| dt.with_timezone(&Utc))
                         .unwrap_or_else(|_| Utc::now()),
@@ -369,7 +369,7 @@ impl SessionEventStore {
                     session_id: row.get(1)?,
                     event_type: SessionEventType::from(event_type_str.as_str()),
                     event_data: serde_json::from_str(&event_data_str)
-                        .unwrap_or_else(|_| serde_json::Value::Null),
+                        .unwrap_or(serde_json::Value::Null),
                     created_at: DateTime::parse_from_rfc3339(&created_at_str)
                         .map(|dt| dt.with_timezone(&Utc))
                         .unwrap_or_else(|_| Utc::now()),

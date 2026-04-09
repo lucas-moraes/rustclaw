@@ -35,7 +35,7 @@ impl TrustLevel {
         matches!(self, Self::Trusted | Self::FullyTrusted)
     }
 
-    pub fn to_u8(&self) -> u8 {
+    pub fn to_u8(self) -> u8 {
         match self {
             Self::Untrusted => 0,
             Self::UntrustedReadOnly => 1,

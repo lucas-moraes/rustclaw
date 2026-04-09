@@ -23,9 +23,7 @@ pub fn read_key_event() -> io::Result<Option<crossterm::event::Event>> {
     use crossterm::event;
 
     if event::poll(std::time::Duration::from_millis(100))? {
-        event::read()
-            .map(Some)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+        event::read().map(Some).map_err(io::Error::other)
     } else {
         Ok(None)
     }

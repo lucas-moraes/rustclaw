@@ -189,14 +189,21 @@ impl ResponseParser {
                     let file_path = file_caps.get(1)?.as_str();
 
                     let eof_re = RE_EOF_MARKER
-                        .get_or_init(|| Regex::new(r"<<\s*'?(\w+)'?\s*\n(.*?)\n\1").unwrap());
+                        .get_or_init(|| Regex::new(r"<<\s*'?(\w+)'?\s*\n([\s\S]*?)\n\w+").unwrap());
                     if let Some(eof_caps) = eof_re.captures(input) {
+                        let marker = eof_caps.get(1)?.as_str();
                         let content = eof_caps.get(2)?.as_str();
-
-                        return Some(serde_json::json!({
-                            "path": file_path,
-                            "content": content
-                        }));
+                        if content
+                            .lines()
+                            .last()
+                            .map(|l| l.trim() == marker)
+                            .unwrap_or(false)
+                        {
+                            return Some(serde_json::json!({
+                                "path": file_path,
+                                "content": content.lines().take(content.lines().count() - 1).collect::<Vec<_>>().join("\n")
+                            }));
+                        }
                     }
                 }
             }

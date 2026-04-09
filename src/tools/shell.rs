@@ -112,7 +112,7 @@ impl ShellTool {
 
         let work_dir = match Path::new(working_dir).canonicalize() {
             Ok(p) => p,
-            Err(e) => {
+            Err(_e) => {
                 return true;
             }
         };

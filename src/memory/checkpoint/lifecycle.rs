@@ -6,7 +6,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::memory::checkpoint::events::SessionEventType;
 use crate::memory::checkpoint::types::{DevelopmentState, PlanPhase, SessionType};
 use crate::memory::checkpoint::DevelopmentCheckpoint;
 use crate::memory::checkpoint::SessionSummary;
