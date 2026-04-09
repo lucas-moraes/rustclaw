@@ -1,3 +1,24 @@
+//! RustClaw Agent Module
+//! 
+//! The Agent is the core component that orchestrates the ReAct loop, memory management,
+//! skill execution, and tool invocations.
+//!
+//! ## Submodules
+//! 
+//! - `llm_client` - LLM HTTP calls and client management
+//! - `response_parser` - Parse and sanitize LLM responses  
+//! - `session` - Session management and history
+//! - `plan_executor` - Execute development plans
+//! - `build_validator` - Validate builds
+//! - `output` - Output formatting
+
+pub mod llm_client;
+pub mod response_parser;
+pub mod session;
+pub mod plan_executor;
+pub mod build_validator;
+pub mod output;
+
 use crate::app_state::AppState;
 use crate::app_store::Store;
 use crate::config::Config;
