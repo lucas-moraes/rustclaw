@@ -1,6 +1,7 @@
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct RateLimiter {
     max_calls_per_minute: usize,
     max_tokens_per_minute: usize,
@@ -9,6 +10,7 @@ pub struct RateLimiter {
     token_count: usize,
 }
 
+#[allow(dead_code)]
 impl RateLimiter {
     pub fn new(max_calls_per_minute: usize, max_tokens_per_minute: usize) -> Self {
         Self {
@@ -104,6 +106,7 @@ impl RateLimiter {
 }
 
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
 pub enum WaitResult {
     Allowed,
     RateLimited {
@@ -113,6 +116,7 @@ pub enum WaitResult {
 }
 
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
 pub enum RateLimitReason {
     CallsLimit,
     TokensLimit,

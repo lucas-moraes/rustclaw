@@ -1158,7 +1158,7 @@ impl Agent {
                             ).await?;
                         }
                         
-                        let tool_execution = ToolExecution {
+                        let _tool_execution = ToolExecution {
                             tool_name: first_action.action.clone(),
                             input: first_action.action_input.clone(),
                             output: observation.clone(),
@@ -3068,6 +3068,7 @@ Por favor, forneça a RESPOSTA MELHORADA que corrige os problemas identificados.
         }
     }
 
+    #[allow(dead_code)]
     async fn verify_parallel_results(
         &mut self,
         results: Vec<parallel_executor::ToolResult>,

@@ -50,11 +50,13 @@ impl Locale {
     }
 }
 
+#[allow(dead_code)]
 pub trait I18n {
     fn t(&self, key: MessageKey) -> &'static str;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum MessageKey {
     Help,
     HelpDescription,

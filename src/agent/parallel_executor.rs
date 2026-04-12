@@ -2,16 +2,19 @@ use std::collections::HashMap;
 use serde_json::{json, Value};
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct ToolResult {
     pub tool_name: String,
     pub output: String,
     pub success: bool,
 }
 
+#[allow(dead_code)]
 pub struct ParallelExecutor {
     max_parallel: usize,
 }
 
+#[allow(dead_code)]
 impl ParallelExecutor {
     pub fn new(max_parallel: usize) -> Self {
         Self { max_parallel }
@@ -85,7 +88,7 @@ impl ParallelExecutor {
 
     pub fn analyze_dependencies(
         actions: &[(String, String)],
-        parsed_inputs: &[Value],
+        _parsed_inputs: &[Value],
     ) -> DependencyAnalysis {
         let mut file_writes: HashMap<String, usize> = HashMap::new();
         let mut file_reads: HashMap<String, Vec<usize>> = HashMap::new();
@@ -190,6 +193,7 @@ impl ParallelExecutor {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct DependencyAnalysis {
     pub safe_indices: Vec<usize>,
     pub unsafe_indices: Vec<usize>,

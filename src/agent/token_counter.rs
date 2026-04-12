@@ -1,13 +1,16 @@
 use serde_json::Value;
 
+#[allow(dead_code)]
 pub const DEFAULT_MAX_CONTEXT_TOKENS: usize = 128_000;
 pub const TOKENS_PER_CHAR_RATIO: f64 = 0.25;
 
 #[derive(Debug, Clone, Default)]
+#[allow(dead_code)]
 pub struct TokenCounter {
     pub max_context_tokens: usize,
 }
 
+#[allow(dead_code)]
 impl TokenCounter {
     pub fn new(max_context_tokens: usize) -> Self {
         Self { max_context_tokens }

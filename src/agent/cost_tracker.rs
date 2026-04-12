@@ -1,6 +1,7 @@
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct CostTracker {
     pub total_tokens_used: usize,
     pub prompt_tokens: usize,
@@ -13,6 +14,7 @@ pub struct CostTracker {
     pub session_start: Instant,
 }
 
+#[allow(dead_code)]
 impl CostTracker {
     pub fn new() -> Self {
         Self {
