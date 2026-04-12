@@ -6,6 +6,7 @@ mod browser;
 mod cli;
 mod config;
 mod features;
+mod i18n;
 mod memory;
 mod reminder_executor;
 mod security;
