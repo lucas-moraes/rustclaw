@@ -229,6 +229,7 @@ mod tests {
             base_url: "https://router.huggingface.co/v1".to_string(),
             model: "test".to_string(),
             max_tokens: 100,
+            max_context_tokens: 128_000,
             max_iterations: 2,
             plan_auto_threshold: 4,
             max_retries: 5,

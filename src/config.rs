@@ -6,6 +6,7 @@ pub struct Config {
     pub base_url: String,
     pub model: String,
     pub max_tokens: usize,
+    pub max_context_tokens: usize,
     pub max_iterations: usize,
     pub plan_auto_threshold: usize,
     pub max_retries: usize,
@@ -128,6 +129,11 @@ impl Config {
             .and_then(|value| value.parse::<usize>().ok())
             .unwrap_or(4000);
 
+        let max_context_tokens = std::env::var("MAX_CONTEXT_TOKENS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(128_000);
+
         let max_iterations = std::env::var("MAX_ITERATIONS")
             .ok()
             .and_then(|value| value.parse::<usize>().ok())
@@ -226,6 +232,7 @@ impl Config {
             base_url,
             model,
             max_tokens,
+            max_context_tokens,
             max_iterations,
             plan_auto_threshold,
             max_retries,

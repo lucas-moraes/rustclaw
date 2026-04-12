@@ -18,6 +18,8 @@ pub mod output;
 pub mod plan_executor;
 pub mod response_parser;
 pub mod session;
+pub mod token_counter;
+pub mod conversation_summarizer;
 
 pub use response_parser::{ParsedResponse, ResponseParser};
 
@@ -42,6 +44,7 @@ use crate::utils::error_parser::{BuildValidation, ErrorParser};
 use crate::utils::output::OutputManager;
 use crate::utils::tmux::TmuxManager;
 use crate::workspace_trust::{TrustEvaluator, WorkspaceTrustStore};
+use crate::agent::conversation_summarizer::ConversationSummarizer;
 use chrono::{DateTime, Utc};
 use regex::Regex;
 use reqwest::Client;
@@ -88,6 +91,8 @@ pub struct Agent {
     #[allow(dead_code)]
     app_store: Store<AppState>,
     workspace_trust: Option<TrustEvaluator>,
+    summarizer: ConversationSummarizer,
+    compression_count: usize,
 }
 
 /// Session details for display
@@ -153,6 +158,8 @@ impl Agent {
             Some(TrustEvaluator::new())
         };
 
+        let max_context_tokens = config.max_context_tokens;
+
         Ok(Self {
             client: create_http_client()?,
             config,
@@ -167,6 +174,8 @@ impl Agent {
             fallback_index: 0,
             app_store: Store::new(AppState::default()),
             workspace_trust,
+            summarizer: ConversationSummarizer::new(max_context_tokens, 10),
+            compression_count: 0,
         })
     }
 
@@ -1281,6 +1290,11 @@ impl Agent {
         for iteration in start_iteration..self.config.max_iterations {
             info!("ReAct iteration {}", iteration + 1);
             checkpoint.current_iteration = iteration;
+
+            if let Err(e) = self.maybe_summarize(&mut current_messages).await {
+                tracing::warn!("Summarization check failed: {}", e);
+            }
+
             self.save_checkpoint(&mut checkpoint, &current_messages, &[])?;
 
             let response = self.call_llm(&current_messages).await?;
@@ -2373,6 +2387,52 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
         messages
     }
 
+    const SUMMARIZE_THRESHOLD: f64 = 0.80;
+
+    async fn maybe_summarize(&mut self, messages: &mut Vec<Value>) -> anyhow::Result<()> {
+        let threshold = Self::SUMMARIZE_THRESHOLD;
+        if !self.summarizer.should_summarize(messages, threshold) {
+            return Ok(());
+        }
+
+        tracing::info!("Context usage exceeded {}%, triggering summarization", threshold * 100.0);
+
+        let result = self
+            .summarizer
+            .summarize_with_llm(
+                &self.client,
+                &self.config.api_key,
+                messages,
+                &self.config.model,
+                &self.config.base_url,
+                &self.config.provider,
+                500,
+            )
+            .await;
+
+        match result {
+            Ok(summarization) => {
+                tracing::info!(
+                    "Summarization complete: {} tokens -> {} tokens (removed {} messages)",
+                    summarization.original_token_count,
+                    summarization.summary_token_count,
+                    summarization.messages_removed
+                );
+
+                let compressed = self.summarizer.compress_messages(messages, &summarization.summary);
+                *messages = compressed;
+                self.compression_count += 1;
+
+                tracing::info!("Compression count: {}", self.compression_count);
+            }
+            Err(e) => {
+                tracing::warn!("Summarization failed: {}, continuing without compression", e);
+            }
+        }
+
+        Ok(())
+    }
+
     async fn call_llm(&mut self, messages: &[Value]) -> anyhow::Result<String> {
         // Try primary model first
         let result = self
@@ -3205,6 +3265,32 @@ Por favor, forneça a RESPOSTA MELHORADA que corrige os problemas identificados.
         F: FnOnce(&AppState) -> AppState,
     {
         self.app_store.set_state(updater);
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CompressionStats {
+    pub compression_count: usize,
+    pub current_tokens: usize,
+    pub max_context_tokens: usize,
+    pub usage_ratio: f64,
+}
+
+impl Agent {
+    pub fn get_compression_stats(&self) -> CompressionStats {
+        let current_tokens = self.summarizer.token_counter().count_messages_tokens(&self.conversation_history);
+        let usage_ratio = if self.config.max_context_tokens > 0 {
+            current_tokens as f64 / self.config.max_context_tokens as f64
+        } else {
+            0.0
+        };
+
+        CompressionStats {
+            compression_count: self.compression_count,
+            current_tokens,
+            max_context_tokens: self.config.max_context_tokens,
+            usage_ratio,
+        }
     }
 }
 

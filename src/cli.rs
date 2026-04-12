@@ -45,6 +45,8 @@ const COMMAND_COMMANDS: &[(&str, &str)] = &[
     ("/desenvolver", "Desenvolvimento estruturado"),
     ("/trust", "Mostrar/atualizar trust level"),
     ("/trust ", "Definir trust level (trusted/untrusted/fullytrusted)"),
+    ("/summarize", "Resumir contexto (compression)"),
+    ("/compress", "Alias para /summarize"),
 ];
 
 fn print_command_suggestions(prefix: &str) {
@@ -943,6 +945,27 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
                 println!();
                 println!("  {}Usar:{} /trust <nivel>", Colors::LIGHT_GRAY, Colors::RESET);
                 println!("  {}Níveis:{} untrusted, readonly, trusted, fullytrusted", Colors::LIGHT_GRAY, Colors::RESET);
+            }
+            println!();
+            continue;
+        }
+
+        // Summarize/Compress command
+        if trimmed.eq_ignore_ascii_case("/summarize") || trimmed.eq_ignore_ascii_case("/compress") {
+            println!();
+            let stats = agent.get_compression_stats();
+            println!("{}⬡{}  Context Compression", Colors::ORANGE, Colors::RESET);
+            println!();
+            println!("  {}Compressions applied:{} {}", Colors::LIGHT_GRAY, Colors::RESET, stats.compression_count);
+            println!("  {}Current context tokens:{} {}", Colors::LIGHT_GRAY, Colors::RESET, stats.current_tokens);
+            println!("  {}Max context tokens:{} {}", Colors::LIGHT_GRAY, Colors::RESET, stats.max_context_tokens);
+            println!("  {}Context usage:{} {:.1}%", Colors::LIGHT_GRAY, Colors::RESET, stats.usage_ratio * 100.0);
+            println!();
+
+            if stats.compression_count == 0 {
+                println!("  {}Contexto ainda não requer compressão.{}", Colors::AMBER, Colors::RESET);
+            } else {
+                println!("  {}Contexto foi comprimido {} vez(es).{}", Colors::AMBER, stats.compression_count, Colors::RESET);
             }
             println!();
             continue;
