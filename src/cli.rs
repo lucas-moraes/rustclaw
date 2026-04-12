@@ -1,6 +1,7 @@
 use crate::agent::init_tmux;
 use crate::agent::Agent;
 use crate::config::Config;
+use crate::i18n;
 use crate::tavily::tools::{TavilyQuickSearchTool, TavilySearchTool};
 use crate::tools::browser::BrowserTool;
 use crate::tools::{
@@ -316,7 +317,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
         if full_input.trim().eq_ignore_ascii_case("/exit")
             || full_input.trim().eq_ignore_ascii_case("sair")
         {
-            println!("{}Goodbye.{}", Colors::LIGHT_GRAY, Colors::RESET);
+            println!("{}{}{}", Colors::LIGHT_GRAY, i18n::t(i18n::MessageKey::GoodbyeMessage), Colors::RESET);
             break;
         }
 
@@ -366,7 +367,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
             );
             match agent.clear_all_memory().await {
                 Ok(msg) => println!("{}✓ {}{}", Colors::AMBER, msg, Colors::RESET),
-                Err(e) => println!("{}✗ Erro ao limpar: {}{}", Colors::RED, e, Colors::RESET),
+                Err(e) => println!("{}✗ {}: {}{}", Colors::RED, i18n::t(i18n::MessageKey::ErrorClearing), e, Colors::RESET),
             }
             continue;
         }
@@ -374,10 +375,10 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
         if trimmed.eq_ignore_ascii_case("/skills") || trimmed.eq_ignore_ascii_case("/skill") {
             let skills = agent.list_skills();
             println!();
-            println!("{}⬡{}  Available Skills", Colors::ORANGE, Colors::RESET);
+            println!("{}⬡{}  {}", Colors::ORANGE, Colors::RESET, i18n::t(i18n::MessageKey::AvailableSkills));
             println!();
             if skills.is_empty() {
-                println!("  {}No skills found{}", Colors::LIGHT_GRAY, Colors::RESET);
+                println!("  {}{}{}", Colors::LIGHT_GRAY, i18n::t(i18n::MessageKey::NoSkillsFound), Colors::RESET);
             } else {
                 for skill in skills {
                     println!(
@@ -955,18 +956,18 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
         if trimmed.eq_ignore_ascii_case("/summarize") || trimmed.eq_ignore_ascii_case("/compress") {
             println!();
             let stats = agent.get_compression_stats();
-            println!("{}⬡{}  Context Compression", Colors::ORANGE, Colors::RESET);
+            println!("{}⬡{}  {}", Colors::ORANGE, Colors::RESET, i18n::t(i18n::MessageKey::ContextCompression));
             println!();
-            println!("  {}Compressions applied:{} {}", Colors::LIGHT_GRAY, Colors::RESET, stats.compression_count);
-            println!("  {}Current context tokens:{} {}", Colors::LIGHT_GRAY, Colors::RESET, stats.current_tokens);
-            println!("  {}Max context tokens:{} {}", Colors::LIGHT_GRAY, Colors::RESET, stats.max_context_tokens);
-            println!("  {}Context usage:{} {:.1}%", Colors::LIGHT_GRAY, Colors::RESET, stats.usage_ratio * 100.0);
+            println!("  {}{}:{} {}", Colors::LIGHT_GRAY, i18n::t(i18n::MessageKey::CompressionsApplied), Colors::RESET, stats.compression_count);
+            println!("  {}{}:{} {}", Colors::LIGHT_GRAY, i18n::t(i18n::MessageKey::CurrentContextTokens), Colors::RESET, stats.current_tokens);
+            println!("  {}{}:{} {}", Colors::LIGHT_GRAY, i18n::t(i18n::MessageKey::MaxContextTokens), Colors::RESET, stats.max_context_tokens);
+            println!("  {}{}:{} {:.1}%", Colors::LIGHT_GRAY, i18n::t(i18n::MessageKey::ContextUsage), Colors::RESET, stats.usage_ratio * 100.0);
             println!();
 
             if stats.compression_count == 0 {
-                println!("  {}Contexto ainda não requer compressão.{}", Colors::AMBER, Colors::RESET);
+                println!("  {}{}", i18n::t(i18n::MessageKey::CompressionNotNeeded), Colors::RESET);
             } else {
-                println!("  {}Contexto foi comprimido {} vez(es).{}", Colors::AMBER, stats.compression_count, Colors::RESET);
+                println!("  {} {} {} {}", i18n::t(i18n::MessageKey::CompressionDone), stats.compression_count, i18n::t(i18n::MessageKey::CompressionTimes), Colors::RESET);
             }
             println!();
             continue;
@@ -976,12 +977,12 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
         if trimmed.eq_ignore_ascii_case("/stats") {
             println!();
             let stats = agent.get_stats();
-            println!("{}⬡{}  Usage Statistics", Colors::ORANGE, Colors::RESET);
+            println!("{}⬡{}  {}", Colors::ORANGE, Colors::RESET, i18n::t(i18n::MessageKey::UsageStatistics));
             println!();
-            println!("  {}API Calls:{} {}", Colors::LIGHT_GRAY, Colors::RESET, stats.cost_tracker.api_calls);
-            println!("  {}Iterations:{} {}", Colors::LIGHT_GRAY, Colors::RESET, stats.cost_tracker.iterations);
-            println!("  {}Total Tokens:{} {}", Colors::LIGHT_GRAY, Colors::RESET, stats.cost_tracker.total_tokens_used);
-            println!("  {}  - Prompt:{} {}", Colors::LIGHT_GRAY, Colors::RESET, stats.cost_tracker.prompt_tokens);
+            println!("  {}{}:{} {}", Colors::LIGHT_GRAY, i18n::t(i18n::MessageKey::ApiCalls), Colors::RESET, stats.cost_tracker.api_calls);
+            println!("  {}{}:{} {}", Colors::LIGHT_GRAY, i18n::t(i18n::MessageKey::Iterations), Colors::RESET, stats.cost_tracker.iterations);
+            println!("  {}{}:{} {}", Colors::LIGHT_GRAY, i18n::t(i18n::MessageKey::TotalTokens), Colors::RESET, stats.cost_tracker.total_tokens_used);
+            println!("  {}  - {}:{} {}", Colors::LIGHT_GRAY, i18n::t(i18n::MessageKey::PromptTokens), Colors::RESET, stats.cost_tracker.prompt_tokens);
             println!("  {}  - Completion:{} {}", Colors::LIGHT_GRAY, Colors::RESET, stats.cost_tracker.completion_tokens);
             println!("  {}Est. Cost:{} ${:.4}", Colors::LIGHT_GRAY, Colors::RESET, stats.cost_tracker.estimated_cost_usd);
             println!();

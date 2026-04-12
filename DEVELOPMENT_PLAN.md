@@ -280,7 +280,7 @@ Recommended order based on impact/difficulty ratio:
 | 3 | Context Compaction | High | Hard | ✅ Complete |
 | 4 | Cost Tracking | Medium | Medium | ✅ Complete |
 | 5 | Parallel Execution | Medium | Hard | ✅ Complete |
-| 6 | Internationalization | Low | Medium | 🔄 Infrastructure Complete |
+| 6 | Internationalization | Low | Medium | 🔄 Phase 3/5 Complete |
 
 ---
 
@@ -318,17 +318,15 @@ checkpoint_04_cost_tracking/
 checkpoint_05_parallel_execution/
 ├── phase_1_parallel_enum/
 ├── phase_2_executor/
-├── phase_3_dependency_analysis/
 ├── phase_4_verify_update/
 ├── phase_5_llm_prompt/
 └── phase_6_verification/
+Note: Dependency analysis integrated into phase_2
 
 checkpoint_06_i18n/
 ├── phase_1_module_structure/
-├── phase_2_translations/
 ├── phase_3_string_migration/
-├── phase_4_locale_switching/
-└── phase_5_verification/
+Note: Phases 2, 4-5 pending
 ```
 
 ---
