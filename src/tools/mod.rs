@@ -1,5 +1,7 @@
 use serde_json::Value;
 use std::collections::HashMap;
+#[allow(unused_imports)]
+use crate::config::EmbeddingModel;
 
 #[async_trait::async_trait]
 pub trait Tool: Send + Sync {
@@ -236,6 +238,7 @@ mod tests {
             fallback_models: vec![],
             agent_loop: AgentLoopConfig::default(),
             self_review: SelfReviewConfig::default(),
+            embedding_model: EmbeddingModel::default(),
         }
     }
 

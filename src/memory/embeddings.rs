@@ -2,6 +2,8 @@ use anyhow::Result;
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::RwLock;
+use crate::config::EmbeddingModel;
+use crate::memory::embeddings_tfidf::TfidfEmbedder;
 
 #[derive(Debug, Clone)]
 struct CacheEntry {
@@ -16,6 +18,8 @@ pub struct EmbeddingService {
     client: reqwest::Client,
     cache: RwLock<HashMap<String, CacheEntry>>,
     cache_ttl_secs: u64,
+    embedding_model: EmbeddingModel,
+    tfidf_embedder: TfidfEmbedder,
 }
 
 impl EmbeddingService {
@@ -35,6 +39,8 @@ impl EmbeddingService {
             client,
             cache: RwLock::new(HashMap::new()),
             cache_ttl_secs: 3600,
+            embedding_model: EmbeddingModel::from_env(),
+            tfidf_embedder: TfidfEmbedder::new(),
         })
     }
 
@@ -49,10 +55,19 @@ impl EmbeddingService {
             return Ok(embedding);
         }
 
-        let embedding = if self.api_key.is_empty() {
-            self.fallback_embedding(text)
-        } else {
-            self.fetch_embedding(text).await?
+        let embedding = match self.embedding_model {
+            EmbeddingModel::Local => self.tfidf_embedder.embed(text),
+            EmbeddingModel::Cohere if !self.api_key.is_empty() => {
+                self.fetch_cohere_embedding(text).await?
+            }
+            _ => {
+                if self.api_key.is_empty() {
+                    tracing::debug!("No API key found, using local TF-IDF embeddings");
+                    self.tfidf_embedder.embed(text)
+                } else {
+                    self.fetch_embedding(text).await?
+                }
+            }
         };
 
         self.put_cached(&cache_key, embedding.clone());
@@ -125,6 +140,41 @@ impl EmbeddingService {
         Ok(embedding)
     }
 
+    async fn fetch_cohere_embedding(&self, text: &str) -> Result<Vec<f32>> {
+        let url = "https://api.cohere.ai/v1/embed".to_string();
+
+        let body = json!({
+            "model": "embed-english-v3.0",
+            "texts": [text],
+            "input_type": "search_document"
+        });
+
+        let response = self
+            .client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let error_text = response.text().await?;
+            tracing::warn!("Cohere API error: {}. Using fallback.", error_text);
+            return Ok(self.fallback_embedding(text));
+        }
+
+        let json_response: serde_json::Value = response.json().await?;
+        let embedding = json_response["embeddings"][0]
+            .as_array()
+            .ok_or_else(|| anyhow::anyhow!("Invalid Cohere embedding response"))?
+            .iter()
+            .filter_map(|v| v.as_f64().map(|f| f as f32))
+            .collect();
+
+        Ok(embedding)
+    }
+
     #[allow(dead_code)]
     pub async fn embed_batch(&self, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
         let mut embeddings = Vec::new();
@@ -135,25 +185,7 @@ impl EmbeddingService {
     }
 
     fn fallback_embedding(&self, text: &str) -> Vec<f32> {
-        let mut embedding = vec![0.0f32; 384];
-        let words: Vec<&str> = text.split_whitespace().collect();
-
-        for word in words.iter() {
-            let hash = Self::simple_hash(word);
-            let idx = (hash % 384) as usize;
-            embedding[idx] += 1.0;
-        }
-
-        Self::normalize(&mut embedding);
-        embedding
-    }
-
-    fn simple_hash(s: &str) -> u64 {
-        let mut hash: u64 = 5381;
-        for c in s.chars() {
-            hash = ((hash << 5).wrapping_add(hash)).wrapping_add(c as u64);
-        }
-        hash
+        self.tfidf_embedder.embed(text)
     }
 
     #[allow(dead_code)]
@@ -170,6 +202,33 @@ impl EmbeddingService {
     pub fn dimensions(&self) -> usize {
         384
     }
+
+    #[allow(dead_code)]
+    pub fn embedding_quality(&self) -> EmbeddingQuality {
+        match self.embedding_model {
+            EmbeddingModel::Local => EmbeddingQuality::Low,
+            EmbeddingModel::Cohere | EmbeddingModel::OpenAI => {
+                if self.api_key.is_empty() {
+                    EmbeddingQuality::Low
+                } else {
+                    EmbeddingQuality::High
+                }
+            }
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn is_using_fallback(&self) -> bool {
+        self.api_key.is_empty() || self.embedding_model == EmbeddingModel::Local
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum EmbeddingQuality {
+    High,
+    Medium,
+    Low,
 }
 
 impl Default for EmbeddingService {
@@ -186,6 +245,8 @@ impl Default for EmbeddingService {
                 client: reqwest::Client::new(),
                 cache: RwLock::new(HashMap::new()),
                 cache_ttl_secs: 3600,
+                embedding_model: EmbeddingModel::Local,
+                tfidf_embedder: TfidfEmbedder::new(),
             }
         })
     }

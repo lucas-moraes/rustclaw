@@ -15,6 +15,7 @@ pub struct Config {
     pub fallback_models: Vec<FallbackModel>,
     pub agent_loop: AgentLoopConfig,
     pub self_review: SelfReviewConfig,
+    pub embedding_model: EmbeddingModel,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -86,6 +87,28 @@ impl From<&str> for ExitBehavior {
 pub struct FallbackModel {
     pub model: String,
     pub base_url: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq)]
+pub enum EmbeddingModel {
+    #[default]
+    OpenAI,
+    Cohere,
+    Local,
+}
+
+impl EmbeddingModel {
+    pub fn from_env() -> Self {
+        let model_str = std::env::var("EMBEDDING_MODEL")
+            .unwrap_or_else(|_| "openai".to_string())
+            .to_lowercase();
+
+        match model_str.as_str() {
+            "cohere" => EmbeddingModel::Cohere,
+            "local" => EmbeddingModel::Local,
+            _ => EmbeddingModel::OpenAI,
+        }
+    }
 }
 
 impl Config {
@@ -212,6 +235,7 @@ impl Config {
             fallback_models,
             agent_loop,
             self_review,
+            embedding_model: EmbeddingModel::from_env(),
         })
     }
 
