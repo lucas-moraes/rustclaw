@@ -1,5 +1,8 @@
 #![allow(dead_code)]
 
+use std::result::Result;
+
+use crate::error::{AgentError, SessionError};
 use crate::memory::checkpoint::{CheckpointStore, DevelopmentCheckpoint, SessionSummary};
 use crate::memory::embeddings::EmbeddingService;
 use crate::memory::store::MemoryStore;
@@ -24,23 +27,25 @@ impl<'a> SessionManager<'a> {
         }
     }
 
-    pub fn list_sessions(&self) -> anyhow::Result<Vec<DevelopmentCheckpoint>> {
-        self.checkpoint_store
-            .list_all(50)
-            .map_err(|e| anyhow::anyhow!("{}", e))
+    pub fn list_sessions(&self) -> Result<Vec<DevelopmentCheckpoint>, AgentError> {
+        match self.checkpoint_store.list_all(50) {
+            Ok(v) => Ok(v),
+            Err(e) => Err(SessionError::NotFound(e.to_string()).into()),
+        }
     }
 
-    pub fn list_session_summaries(&self) -> anyhow::Result<Vec<SessionSummary>> {
-        self.checkpoint_store
-            .list_session_summaries(50)
-            .map_err(|e| anyhow::anyhow!("{}", e))
+    pub fn list_session_summaries(&self) -> Result<Vec<SessionSummary>, AgentError> {
+        match self.checkpoint_store.list_session_summaries(50) {
+            Ok(v) => Ok(v),
+            Err(e) => Err(SessionError::NotFound(e.to_string()).into()),
+        }
     }
 
-    pub fn list_sessions_with_hierarchy(&self) -> anyhow::Result<Vec<(SessionSummary, usize)>> {
-        let sessions = self
-            .checkpoint_store
-            .list_session_summaries(100)
-            .map_err(|e| anyhow::anyhow!("{}", e))?;
+    pub fn list_sessions_with_hierarchy(&self) -> Result<Vec<(SessionSummary, usize)>, AgentError> {
+        let sessions = match self.checkpoint_store.list_session_summaries(100) {
+            Ok(v) => v,
+            Err(e) => return Err(SessionError::NotFound(e.to_string()).into()),
+        };
 
         let mut result = Vec::new();
         let mut session_map: std::collections::HashMap<String, &SessionSummary> =
@@ -87,7 +92,7 @@ impl<'a> SessionManager<'a> {
     pub fn get_session_details(
         &self,
         session_id: &str,
-    ) -> anyhow::Result<Option<crate::agent::SessionDetails>> {
+    ) -> Result<Option<crate::agent::SessionDetails>, AgentError> {
         if let Ok(Some(cp)) = self.checkpoint_store.get(session_id) {
             return Ok(Some(crate::agent::SessionDetails {
                 id: cp.id.clone(),
@@ -122,7 +127,7 @@ impl<'a> SessionManager<'a> {
         user_input: &str,
         assistant_response: &str,
         session_id: Option<&str>,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), AgentError> {
         if user_input.len() < 10 {
             return Ok(());
         }
@@ -153,7 +158,7 @@ impl<'a> SessionManager<'a> {
         input: &str,
         output: &str,
         session_id: Option<&str>,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), AgentError> {
         if output.starts_with("Erro:") || output.len() > 1000 {
             return Ok(());
         }
@@ -181,13 +186,13 @@ impl SessionCommands {
     pub async fn resume_session(
         checkpoint_store: &CheckpointStore,
         session_id: &str,
-    ) -> anyhow::Result<(DevelopmentCheckpoint, String)> {
+    ) -> Result<(DevelopmentCheckpoint, String), AgentError> {
         let checkpoint = if let Ok(Some(cp)) = checkpoint_store.get(session_id) {
             cp
         } else if let Ok(Some(cp)) = checkpoint_store.find_by_id_prefix(session_id) {
             cp
         } else {
-            return Err(anyhow::anyhow!("Session not found: {}", session_id));
+            return Err(SessionError::NotFound(session_id.to_string()).into());
         };
 
         let session_name = checkpoint

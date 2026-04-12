@@ -1,6 +1,9 @@
 pub mod tools;
 
+use std::result::Result;
 use std::time::Duration;
+
+use crate::error::{AgentError, ToolError};
 use tavily::{SearchRequest, Tavily};
 use tracing::info;
 
@@ -10,12 +13,12 @@ pub struct TavilyClient {
 }
 
 impl TavilyClient {
-    pub fn new(api_key: &str) -> anyhow::Result<Self> {
+    pub fn new(api_key: &str) -> Result<Self, AgentError> {
         let client = Tavily::builder(api_key)
             .timeout(Duration::from_secs(60))
             .max_retries(3)
             .build()
-            .map_err(|e| anyhow::anyhow!("Failed to build Tavily client: {}", e))?;
+            .map_err(|e| ToolError::ExecutionFailed(format!("Failed to build Tavily client: {}", e)))?;
 
         info!("Tavily client initialized successfully");
 
@@ -31,7 +34,7 @@ impl TavilyClient {
         max_results: i32,
         search_depth: &str,
         include_answer: bool,
-    ) -> anyhow::Result<SearchResponse> {
+    ) -> Result<SearchResponse, AgentError> {
         info!("Searching Tavily for: {}", query);
 
         let request = SearchRequest::new(&self.api_key, query)
@@ -44,7 +47,7 @@ impl TavilyClient {
             .client
             .call(&request)
             .await
-            .map_err(|e| anyhow::anyhow!("Tavily search failed: {}", e))?;
+            .map_err(|e| ToolError::ExecutionFailed(format!("Tavily search failed: {}", e)))?;
 
         let response = SearchResponse {
             query: results.query,
@@ -69,12 +72,12 @@ impl TavilyClient {
         Ok(response)
     }
 
-    pub async fn search_basic(&self, query: &str) -> anyhow::Result<SearchResponse> {
+    pub async fn search_basic(&self, query: &str) -> Result<SearchResponse, AgentError> {
         self.search(query, 5, "basic", true).await
     }
 
     #[allow(dead_code)]
-    pub async fn search_advanced(&self, query: &str) -> anyhow::Result<SearchResponse> {
+    pub async fn search_advanced(&self, query: &str) -> Result<SearchResponse, AgentError> {
         self.search(query, 10, "advanced", true).await
     }
 }

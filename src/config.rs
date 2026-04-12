@@ -1,4 +1,7 @@
 use serde::{Deserialize, Serialize};
+use std::result::Result;
+
+use crate::error::{AgentError, ConfigError};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Config {
@@ -113,13 +116,13 @@ impl EmbeddingModel {
 }
 
 impl Config {
-    pub fn from_env() -> anyhow::Result<Self> {
+    pub fn from_env() -> Result<Self, AgentError> {
         let api_key = std::env::var("TOKEN")
             .or_else(|_| std::env::var("OPENCODE_API_KEY"))
             .unwrap_or_default();
 
         if api_key.is_empty() {
-            return Err(anyhow::anyhow!("TOKEN environment variable not set"));
+            return Err(ConfigError::MissingToken.into());
         }
 
         let tavily_api_key = std::env::var("TAVILY_API_KEY").ok();

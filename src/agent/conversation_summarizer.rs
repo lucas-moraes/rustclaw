@@ -1,6 +1,8 @@
 use serde_json::{json, Value};
+use std::result::Result;
 
 use crate::agent::token_counter::TokenCounter;
+use crate::error::{AgentError, LLMError};
 
 #[derive(Debug, Clone)]
 pub struct SummarizationResult {
@@ -90,10 +92,10 @@ CONVERSAÇÃO A RESUMIR:"#.to_string();
         base_url: &str,
         provider: &str,
         max_tokens_response: usize,
-    ) -> anyhow::Result<SummarizationResult> {
+    ) -> Result<SummarizationResult, crate::error::AgentError> {
         let summary_messages = self.prepare_summary_messages(messages);
         if summary_messages.is_empty() {
-            return Err(anyhow::anyhow!("No messages to summarize"));
+            return Err(LLMError::NoChoices.into());
         }
 
         let original_token_count = self.token_counter.count_messages_tokens(messages);

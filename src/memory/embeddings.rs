@@ -1,8 +1,10 @@
-use anyhow::Result;
-use serde_json::json;
 use std::collections::HashMap;
+use std::result::Result;
 use std::sync::RwLock;
+
+use serde_json::json;
 use crate::config::EmbeddingModel;
+use crate::error::{AgentError, MemoryError};
 use crate::memory::embeddings_tfidf::TfidfEmbedder;
 
 #[derive(Debug, Clone)]
@@ -23,7 +25,7 @@ pub struct EmbeddingService {
 }
 
 impl EmbeddingService {
-    pub fn new() -> Result<Self> {
+    pub fn new() -> Result<Self, AgentError> {
         let api_key = std::env::var("OPENAI_API_KEY")
             .or_else(|_| std::env::var("COHERE_API_KEY"))
             .unwrap_or_default();
@@ -44,7 +46,7 @@ impl EmbeddingService {
         })
     }
 
-    pub async fn embed(&self, text: &str) -> Result<Vec<f32>> {
+    pub async fn embed(&self, text: &str) -> Result<Vec<f32>, AgentError> {
         let cache_key = self.cache_key(text);
 
         if let Some(embedding) = self.get_cached(&cache_key) {
@@ -105,7 +107,7 @@ impl EmbeddingService {
         }
     }
 
-    async fn fetch_embedding(&self, text: &str) -> Result<Vec<f32>> {
+    async fn fetch_embedding(&self, text: &str) -> Result<Vec<f32>, AgentError> {
         let url = format!("{}/embeddings", self.base_url);
 
         let body = json!({
@@ -132,7 +134,7 @@ impl EmbeddingService {
         let json_response: serde_json::Value = response.json().await?;
         let embedding = json_response["data"][0]["embedding"]
             .as_array()
-            .ok_or_else(|| anyhow::anyhow!("Invalid embedding response"))?
+            .ok_or_else(|| MemoryError::EmbeddingFailed("Invalid embedding response".to_string()))?
             .iter()
             .filter_map(|v| v.as_f64().map(|f| f as f32))
             .collect();
@@ -140,7 +142,7 @@ impl EmbeddingService {
         Ok(embedding)
     }
 
-    async fn fetch_cohere_embedding(&self, text: &str) -> Result<Vec<f32>> {
+    async fn fetch_cohere_embedding(&self, text: &str) -> Result<Vec<f32>, AgentError> {
         let url = "https://api.cohere.ai/v1/embed".to_string();
 
         let body = json!({
@@ -167,7 +169,7 @@ impl EmbeddingService {
         let json_response: serde_json::Value = response.json().await?;
         let embedding = json_response["embeddings"][0]
             .as_array()
-            .ok_or_else(|| anyhow::anyhow!("Invalid Cohere embedding response"))?
+            .ok_or_else(|| MemoryError::EmbeddingFailed("Invalid Cohere embedding response".to_string()))?
             .iter()
             .filter_map(|v| v.as_f64().map(|f| f as f32))
             .collect();
@@ -176,7 +178,7 @@ impl EmbeddingService {
     }
 
     #[allow(dead_code)]
-    pub async fn embed_batch(&self, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
+    pub async fn embed_batch(&self, texts: Vec<String>) -> Result<Vec<Vec<f32>>, AgentError> {
         let mut embeddings = Vec::new();
         for text in texts {
             embeddings.push(self.embed(&text).await?);

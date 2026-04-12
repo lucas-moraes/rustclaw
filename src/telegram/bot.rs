@@ -1,5 +1,6 @@
 use crate::agent::Agent;
 use crate::config::Config;
+use crate::error::{AgentError, ConfigError};
 use crate::reminder_executor::ReminderExecutor;
 use crate::tavily::tools::{TavilyQuickSearchTool, TavilySearchTool};
 use crate::tools::{
@@ -26,6 +27,7 @@ use crate::tools::{
 };
 use std::env;
 use std::path::PathBuf;
+use std::result::Result;
 use std::sync::Arc;
 use sysinfo::System;
 use teloxide::prelude::*;
@@ -103,9 +105,8 @@ pub struct BotState {
 }
 
 impl TelegramBot {
-    pub async fn run(config: Config) -> anyhow::Result<()> {
-        let token =
-            env::var("TELEGRAM_TOKEN").map_err(|_| anyhow::anyhow!("TELEGRAM_TOKEN not set"))?;
+    pub async fn run(config: Config) -> Result<(), AgentError> {
+        let token = env::var("TELEGRAM_TOKEN").map_err(|_| ConfigError::MissingToken)?;
 
         let authorized_chat_id = env::var("TELEGRAM_CHAT_ID")
             .ok()

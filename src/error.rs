@@ -250,6 +250,18 @@ impl From<reqwest::Error> for AgentError {
     }
 }
 
+impl From<rusqlite::Error> for AgentError {
+    fn from(e: rusqlite::Error) -> Self {
+        AgentError::Memory(MemoryError::StorageFailed(e.to_string())).into()
+    }
+}
+
+impl From<anyhow::Error> for AgentError {
+    fn from(e: anyhow::Error) -> Self {
+        AgentError::Internal(InternalError::Unexpected(e.to_string()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

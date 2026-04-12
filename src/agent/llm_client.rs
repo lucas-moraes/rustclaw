@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use crate::error::{AgentError, LLMError};
 use serde_json::{json, Value};
 
 pub struct LlmClient;
@@ -93,7 +94,7 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
         base_url: &str,
         provider: &str,
         max_tokens: usize,
-    ) -> anyhow::Result<String> {
+    ) -> Result<String, AgentError> {
         let endpoint = if provider == "opencode-go" || provider == "opencode" {
             if model.contains("minimax") {
                 "/messages"
@@ -119,7 +120,7 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
             .collect();
 
         if filtered_messages.is_empty() {
-            return Err(anyhow::anyhow!("No valid messages to send to API"));
+            return Err(LLMError::NoChoices.into());
         }
 
         let body = json!({
@@ -140,15 +141,15 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
             .json(&body)
             .send()
             .await
-            .map_err(|e| {
+            .map_err(|e| -> AgentError {
                 tracing::error!("HTTP request failed: {}", e);
-                anyhow::anyhow!("HTTP request to {} failed: {}", url, e)
+                LLMError::ApiCallFailed(format!("HTTP request to {} failed: {}", url, e)).into()
             })?;
 
         if !response.status().is_success() {
             let _status = response.status();
             let error_text = response.text().await?;
-            return Err(anyhow::anyhow!("API error: {}", error_text));
+            return Err(LLMError::ApiCallFailed(format!("API error: {}", error_text)).into());
         }
 
         let json_response: Value = response.json().await?;
@@ -189,16 +190,16 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
                     } else if let Some(c) = msg.get("reasoning_content").and_then(|v| v.as_str()) {
                         c.to_string()
                     } else {
-                        return Err(anyhow::anyhow!("No content in message"));
+                        return Err(LLMError::NoContent.into());
                     }
                 } else {
-                    return Err(anyhow::anyhow!("No message in choice"));
+                    return Err(LLMError::NoMessage.into());
                 }
             } else {
-                return Err(anyhow::anyhow!("No choices in response"));
+                return Err(LLMError::NoChoices.into());
             }
         } else {
-            return Err(anyhow::anyhow!("Invalid response format"));
+            return Err(LLMError::InvalidResponse("No content or choices in response".to_string()).into());
         };
 
         let cleaned =

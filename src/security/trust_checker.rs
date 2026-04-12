@@ -1,3 +1,4 @@
+use crate::error::TrustError;
 use crate::workspace_trust::{Operation, TrustDecision, TrustEvaluator, TrustLevel};
 use std::path::Path;
 
@@ -127,11 +128,10 @@ macro_rules! require_trust {
     ($checker:expr, $path:expr, $op:expr) => {{
         let decision = $checker.evaluate($path, $op.clone());
         if !decision.allowed {
-            return Err(anyhow::anyhow!(
-                "Trust error: operation '{}' not allowed (trust level: {:?})",
-                $op,
-                decision.trust_level
-            ));
+            return Err(TrustError::OperationBlocked(format!(
+                "operation '{}' not allowed (trust level: {:?})",
+                $op, decision.trust_level
+            )));
         }
         decision
     }};

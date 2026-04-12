@@ -1,5 +1,8 @@
 #![allow(dead_code)]
 
+use std::result::Result;
+
+use crate::error::{AgentError, ToolError};
 use crate::utils::build_detector::BuildDetector;
 use crate::utils::error_parser::{BuildValidation, ErrorParser};
 
@@ -9,7 +12,7 @@ impl BuildValidator {
     pub async fn validate_build(
         tools: &crate::tools::ToolRegistry,
         project_dir: &str,
-    ) -> anyhow::Result<BuildValidation> {
+    ) -> Result<BuildValidation, AgentError> {
         let build_info = BuildDetector::detect(project_dir);
 
         if build_info.build_command.is_empty() {
@@ -28,7 +31,7 @@ impl BuildValidator {
 
         let shell_tool = tools
             .get("shell")
-            .ok_or_else(|| anyhow::anyhow!("Shell tool not found"))?;
+            .ok_or_else(|| ToolError::NotFound("shell".to_string()))?;
 
         let args = serde_json::json!({
             "command": build_info.build_command
@@ -37,7 +40,7 @@ impl BuildValidator {
         let build_result = shell_tool
             .call(args)
             .await
-            .map_err(|e| anyhow::anyhow!("{}", e))?;
+            .map_err(|e| AgentError::Tool(ToolError::ExecutionFailed(e.to_string())))?;
 
         let success = !build_result.contains("❌ Erro");
 

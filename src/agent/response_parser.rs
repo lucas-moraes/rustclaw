@@ -1,12 +1,15 @@
+use std::result::Result;
 use std::sync::OnceLock;
 
 use regex::Regex;
 use serde_json::Value;
 
+use crate::error::{AgentError, ParseError};
+
 pub struct ResponseParser;
 
 impl ResponseParser {
-    pub fn parse_response(response: &str) -> anyhow::Result<ParsedResponse> {
+    pub fn parse_response(response: &str) -> Result<ParsedResponse, AgentError> {
         let sanitized = Self::sanitize_model_response(response);
 
         let final_answer_re =
@@ -139,7 +142,7 @@ impl ResponseParser {
         reminder_re.replace_all(response, "").to_string()
     }
 
-    pub fn parse_action_input_json(action_input: &str) -> anyhow::Result<Value> {
+    pub fn parse_action_input_json(action_input: &str) -> Result<Value, AgentError> {
         let trimmed = action_input.trim();
 
         if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
@@ -189,7 +192,7 @@ impl ResponseParser {
             return Ok(value);
         }
 
-        Err(anyhow::anyhow!("Action Input inválido: {}", action_input))
+        Err(ParseError::InvalidFormat(format!("Action Input inválido: {}", action_input)).into())
     }
 
     pub fn parse_heredoc_input(input: &str) -> Option<Value> {
