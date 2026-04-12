@@ -47,6 +47,7 @@ const COMMAND_COMMANDS: &[(&str, &str)] = &[
     ("/trust ", "Definir trust level (trusted/untrusted/fullytrusted)"),
     ("/summarize", "Resumir contexto (compression)"),
     ("/compress", "Alias para /summarize"),
+    ("/stats", "Mostrar estatísticas de uso e custos"),
 ];
 
 fn print_command_suggestions(prefix: &str) {
@@ -967,6 +968,36 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
             } else {
                 println!("  {}Contexto foi comprimido {} vez(es).{}", Colors::AMBER, stats.compression_count, Colors::RESET);
             }
+            println!();
+            continue;
+        }
+
+        // Stats command
+        if trimmed.eq_ignore_ascii_case("/stats") {
+            println!();
+            let stats = agent.get_stats();
+            println!("{}⬡{}  Usage Statistics", Colors::ORANGE, Colors::RESET);
+            println!();
+            println!("  {}API Calls:{} {}", Colors::LIGHT_GRAY, Colors::RESET, stats.cost_tracker.api_calls);
+            println!("  {}Iterations:{} {}", Colors::LIGHT_GRAY, Colors::RESET, stats.cost_tracker.iterations);
+            println!("  {}Total Tokens:{} {}", Colors::LIGHT_GRAY, Colors::RESET, stats.cost_tracker.total_tokens_used);
+            println!("  {}  - Prompt:{} {}", Colors::LIGHT_GRAY, Colors::RESET, stats.cost_tracker.prompt_tokens);
+            println!("  {}  - Completion:{} {}", Colors::LIGHT_GRAY, Colors::RESET, stats.cost_tracker.completion_tokens);
+            println!("  {}Est. Cost:{} ${:.4}", Colors::LIGHT_GRAY, Colors::RESET, stats.cost_tracker.estimated_cost_usd);
+            println!();
+            println!("  {}Rate Limiter:{} {}/{} calls remaining", 
+                Colors::LIGHT_GRAY, Colors::RESET, 
+                stats.rate_limiter.calls_remaining, 
+                stats.rate_limiter.max_calls_per_minute);
+            println!("  {}Tokens:{} {}/{} per min", 
+                Colors::LIGHT_GRAY, Colors::RESET, 
+                stats.rate_limiter.tokens_remaining, 
+                stats.rate_limiter.max_tokens_per_minute);
+            println!();
+            println!("  {}Context Compression:{} {} ({}%)", 
+                Colors::LIGHT_GRAY, Colors::RESET, 
+                stats.compression_stats.compression_count,
+                stats.compression_stats.usage_ratio * 100.0);
             println!();
             continue;
         }

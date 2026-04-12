@@ -13,13 +13,15 @@
 //! - `output` - Output formatting
 
 pub mod build_validator;
+pub mod conversation_summarizer;
+pub mod cost_tracker;
 pub mod llm_client;
 pub mod output;
 pub mod plan_executor;
+pub mod rate_limiter;
 pub mod response_parser;
 pub mod session;
 pub mod token_counter;
-pub mod conversation_summarizer;
 
 pub use response_parser::{ParsedResponse, ResponseParser};
 
@@ -45,6 +47,8 @@ use crate::utils::output::OutputManager;
 use crate::utils::tmux::TmuxManager;
 use crate::workspace_trust::{TrustEvaluator, WorkspaceTrustStore};
 use crate::agent::conversation_summarizer::ConversationSummarizer;
+use crate::agent::cost_tracker::CostTracker;
+use crate::agent::rate_limiter::RateLimiter;
 use chrono::{DateTime, Utc};
 use regex::Regex;
 use reqwest::Client;
@@ -93,6 +97,8 @@ pub struct Agent {
     workspace_trust: Option<TrustEvaluator>,
     summarizer: ConversationSummarizer,
     compression_count: usize,
+    cost_tracker: CostTracker,
+    rate_limiter: RateLimiter,
 }
 
 /// Session details for display
@@ -176,6 +182,8 @@ impl Agent {
             workspace_trust,
             summarizer: ConversationSummarizer::new(max_context_tokens, 10),
             compression_count: 0,
+            cost_tracker: CostTracker::new(),
+            rate_limiter: RateLimiter::from_env(),
         })
     }
 
@@ -2434,23 +2442,35 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
     }
 
     async fn call_llm(&mut self, messages: &[Value]) -> anyhow::Result<String> {
-        // Try primary model first
+        let prompt_tokens = self.summarizer.token_counter().count_messages_tokens(messages);
+        let model = &self.config.model;
+
         let result = self
             .call_llm_with_config(
                 messages,
-                &self.config.model,
+                model,
                 &self.config.base_url,
                 &self.config.provider,
             )
             .await;
 
-        // If primary fails, try fallback models
+        match &result {
+            Ok(response) => {
+                let completion_tokens = self.summarizer.token_counter().count_tokens(response);
+                self.cost_tracker.record_call(prompt_tokens, completion_tokens, model);
+                self.cost_tracker.record_iteration();
+            }
+            Err(_) => {
+                self.cost_tracker.record_iteration();
+            }
+        }
+
         if result.is_err() && !self.config.fallback_models.is_empty() {
             tracing::warn!("Primary model failed, trying fallbacks...");
 
             for fallback in &self.config.fallback_models {
                 tracing::info!("Trying fallback model: {}", fallback.model);
-                // Use "opencode-go" as provider to get /messages endpoint for MiniMax
+                let prompt_tokens = self.summarizer.token_counter().count_messages_tokens(messages);
                 match self
                     .call_llm_with_config(
                         messages,
@@ -2462,6 +2482,8 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
                 {
                     Ok(response) => {
                         tracing::info!("Fallback model {} succeeded", fallback.model);
+                        let completion_tokens = self.summarizer.token_counter().count_tokens(&response);
+                        self.cost_tracker.record_call(prompt_tokens, completion_tokens, &fallback.model);
                         return Ok(response);
                     }
                     Err(e) => {
@@ -3290,6 +3312,58 @@ impl Agent {
             current_tokens,
             max_context_tokens: self.config.max_context_tokens,
             usage_ratio,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AgentStats {
+    pub cost_tracker: CostTrackerStats,
+    pub rate_limiter: RateLimiterStats,
+    pub compression_stats: CompressionStats,
+}
+
+#[derive(Debug, Clone)]
+pub struct CostTrackerStats {
+    pub total_tokens_used: usize,
+    pub prompt_tokens: usize,
+    pub completion_tokens: usize,
+    pub api_calls: usize,
+    pub iterations: usize,
+    pub estimated_cost_usd: f64,
+    pub rate_limit_hits: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct RateLimiterStats {
+    pub calls_remaining: usize,
+    pub tokens_remaining: usize,
+    pub max_calls_per_minute: usize,
+    pub max_tokens_per_minute: usize,
+}
+
+impl Agent {
+    pub fn get_stats(&mut self) -> AgentStats {
+        let cost = &self.cost_tracker;
+        let rate = &mut self.rate_limiter;
+
+        AgentStats {
+            cost_tracker: CostTrackerStats {
+                total_tokens_used: cost.total_tokens_used,
+                prompt_tokens: cost.prompt_tokens,
+                completion_tokens: cost.completion_tokens,
+                api_calls: cost.api_calls,
+                iterations: cost.iterations,
+                estimated_cost_usd: cost.estimated_cost_usd,
+                rate_limit_hits: cost.rate_limit_hits,
+            },
+            rate_limiter: RateLimiterStats {
+                calls_remaining: rate.calls_remaining(),
+                tokens_remaining: rate.tokens_remaining(),
+                max_calls_per_minute: 60,
+                max_tokens_per_minute: 100_000,
+            },
+            compression_stats: self.get_compression_stats(),
         }
     }
 }
