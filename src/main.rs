@@ -5,6 +5,7 @@ mod auth;
 mod browser;
 mod cli;
 mod config;
+mod error;
 mod features;
 mod i18n;
 mod memory;
