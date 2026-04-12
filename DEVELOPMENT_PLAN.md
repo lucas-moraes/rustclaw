@@ -280,7 +280,7 @@ Recommended order based on impact/difficulty ratio:
 | 3 | Context Compaction | High | Hard | ✅ Complete |
 | 4 | Cost Tracking | Medium | Medium | ✅ Complete |
 | 5 | Parallel Execution | Medium | Hard | ✅ Complete |
-| 6 | Internationalization | Low | Medium | ✅ Phase 3/5 Complete |
+| 6 | Internationalization | Low | Medium | ✅ Phase 4/5 Complete |
 
 ---
 
@@ -326,7 +326,8 @@ Note: Dependency analysis integrated into phase_2
 checkpoint_06_i18n/
 ├── phase_1_module_structure/
 ├── phase_3_string_migration/
-Note: Phases 2, 4-5 pending
+├── phase_4_locale_switching/
+Note: Phase 5 verification pending
 ```
 
 ---

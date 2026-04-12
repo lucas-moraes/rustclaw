@@ -1,6 +1,10 @@
 pub mod en;
 pub mod pt_br;
 
+use std::sync::OnceLock;
+
+static RUNTIME_LOCALE: OnceLock<Locale> = OnceLock::new();
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Locale {
     En,
@@ -16,6 +20,32 @@ impl Locale {
         match locale_str.as_str() {
             "en" | "english" => Locale::En,
             "pt_br" | "pt" | "portuguese" | _ => Locale::PtBr,
+        }
+    }
+
+    pub fn current() -> Locale {
+        RUNTIME_LOCALE
+            .get()
+            .copied()
+            .unwrap_or_else(Locale::from_env)
+    }
+
+    pub fn set(locale: Locale) {
+        let _ = RUNTIME_LOCALE.set(locale);
+    }
+
+    pub fn from_string(s: &str) -> Option<Locale> {
+        match s.to_lowercase().as_str() {
+            "en" | "english" => Some(Locale::En),
+            "pt_br" | "pt" | "portuguese" | "br" => Some(Locale::PtBr),
+            _ => None,
+        }
+    }
+
+    pub fn name(&self) -> &'static str {
+        match self {
+            Locale::En => "en",
+            Locale::PtBr => "pt_br",
         }
     }
 }
@@ -191,7 +221,7 @@ impl Locale {
 }
 
 pub fn t(key: MessageKey) -> &'static str {
-    Locale::from_env().message(key)
+    Locale::current().message(key)
 }
 
 #[cfg(test)]

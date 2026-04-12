@@ -49,6 +49,8 @@ const COMMAND_COMMANDS: &[(&str, &str)] = &[
     ("/summarize", "Resumir contexto (compression)"),
     ("/compress", "Alias para /summarize"),
     ("/stats", "Mostrar estatísticas de uso e custos"),
+    ("/locale", "Mostrar locale atual"),
+    ("/locale ", "Definir locale (en, pt_br)"),
 ];
 
 fn print_command_suggestions(prefix: &str) {
@@ -949,6 +951,36 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
                 println!("  {}Níveis:{} untrusted, readonly, trusted, fullytrusted", Colors::LIGHT_GRAY, Colors::RESET);
             }
             println!();
+            continue;
+        }
+
+        // Locale command
+        if trimmed.eq_ignore_ascii_case("/locale") {
+            let current = crate::i18n::Locale::current();
+            println!();
+            println!("{}⬡{}  Locale", Colors::ORANGE, Colors::RESET);
+            println!();
+            println!("  {}Current locale:{} {}", Colors::LIGHT_GRAY, Colors::RESET, current.name());
+            println!("  {}Available:{} en, pt_br", Colors::LIGHT_GRAY, Colors::RESET);
+            println!();
+            println!("  {}Use:{} /locale <lang>", Colors::LIGHT_GRAY, Colors::RESET);
+            println!();
+            continue;
+        }
+
+        if trimmed.to_lowercase().starts_with("/locale ") {
+            let lang = trimmed.trim_start_matches("/locale ").trim();
+            if let Some(new_locale) = crate::i18n::Locale::from_string(lang) {
+                crate::i18n::Locale::set(new_locale);
+                println!();
+                println!("{}✓ Locale changed to: {}{}", Colors::AMBER, new_locale.name(), Colors::RESET);
+                println!();
+            } else {
+                println!();
+                println!("{}✗ Locale inválido: {}{}", Colors::RED, lang, Colors::RESET);
+                println!("  {}Available:{} en, pt_br", Colors::LIGHT_GRAY, Colors::RESET);
+                println!();
+            }
             continue;
         }
 
