@@ -86,6 +86,39 @@ impl ResponseParser {
         };
 
         if let Some(action) = action {
+            if action.contains(',') {
+                let action_names: Vec<&str> = action.split(',').map(|s| s.trim()).collect();
+
+                let json_inputs: Vec<Value> =
+                    if let Ok(inputs) = serde_json::from_str::<Value>(&action_input) {
+                        if let Some(arr) = inputs.as_array() {
+                            arr.clone()
+                        } else {
+                            vec![inputs]
+                        }
+                    } else {
+                        vec![]
+                    };
+
+                if action_names.len() > 1 && !json_inputs.is_empty() {
+                    let mut actions = Vec::new();
+                    for (i, action_name) in action_names.iter().enumerate() {
+                        let input_str = json_inputs
+                            .get(i)
+                            .map(|v| v.to_string())
+                            .unwrap_or_else(|| "{}".to_string());
+
+                        actions.push(ParallelAction {
+                            thought: thought.clone(),
+                            action: action_name.to_string(),
+                            action_input: input_str,
+                        });
+                    }
+
+                    return Ok(ParsedResponse::Parallel { actions });
+                }
+            }
+
             return Ok(ParsedResponse::Action {
                 thought,
                 retrieved_memory,
@@ -348,6 +381,16 @@ pub enum ParsedResponse {
         action: String,
         action_input: String,
     },
+    Parallel {
+        actions: Vec<ParallelAction>,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct ParallelAction {
+    pub thought: String,
+    pub action: String,
+    pub action_input: String,
 }
 
 static RE_SYSTEM_REMINDER: OnceLock<Regex> = OnceLock::new();

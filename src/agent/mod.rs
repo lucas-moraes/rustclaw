@@ -17,6 +17,7 @@ pub mod conversation_summarizer;
 pub mod cost_tracker;
 pub mod llm_client;
 pub mod output;
+pub mod parallel_executor;
 pub mod plan_executor;
 pub mod rate_limiter;
 pub mod response_parser;
@@ -1141,6 +1142,37 @@ impl Agent {
 
                     return Ok(final_answer);
                 }
+                ParsedResponse::Parallel { actions } => {
+                    info!("Parallel actions detected: {} actions", actions.len());
+                    if let Some(first_action) = actions.first() {
+                        info!("Executing first action sequentially until ParallelExecutor is implemented: {}", first_action.action);
+                        let raw_observation = self.execute_tool(&first_action.action, &first_action.action_input).await?;
+                        let observation = SecurityManager::clean_tool_output(&raw_observation, &first_action.action);
+                        
+                        if first_action.action != "echo" {
+                            self.save_tool_result_to_memory(
+                                &first_action.action,
+                                &first_action.action_input,
+                                &observation,
+                                Some(&checkpoint.id),
+                            ).await?;
+                        }
+                        
+                        let tool_execution = ToolExecution {
+                            tool_name: first_action.action.clone(),
+                            input: first_action.action_input.clone(),
+                            output: observation.clone(),
+                            iteration: iteration + 1,
+                            timestamp: chrono::Utc::now(),
+                        };
+                        
+                        current_messages.push(json!({
+                            "role": "assistant",
+                            "content": format!("Thought: {}\nAction: {}\nAction Input: {}\nObservation: {}", first_action.thought, first_action.action, first_action.action_input, observation)
+                        }));
+                    }
+                    continue;
+                }
                 ParsedResponse::Action {
                     thought,
                     retrieved_memory,
@@ -1368,6 +1400,29 @@ impl Agent {
                     )?;
 
                     return Ok(final_answer);
+                }
+                ParsedResponse::Parallel { actions } => {
+                    info!("Parallel actions detected: {} actions", actions.len());
+                    if let Some(first_action) = actions.first() {
+                        info!("Executing first action sequentially until ParallelExecutor is implemented: {}", first_action.action);
+                        let raw_observation = self.execute_tool(&first_action.action, &first_action.action_input).await?;
+                        let observation = SecurityManager::clean_tool_output(&raw_observation, &first_action.action);
+                        
+                        if first_action.action != "echo" {
+                            self.save_tool_result_to_memory(
+                                &first_action.action,
+                                &first_action.action_input,
+                                &observation,
+                                Some(&checkpoint.id),
+                            ).await?;
+                        }
+                        
+                        current_messages.push(json!({
+                            "role": "assistant",
+                            "content": format!("Thought: {}\nAction: {}\nAction Input: {}\nObservation: {}", first_action.thought, first_action.action, first_action.action_input, observation)
+                        }));
+                    }
+                    continue;
                 }
                 ParsedResponse::Action {
                     thought,
@@ -1655,6 +1710,18 @@ MODO DESENVOLVIMENTO ESTRUTURADO:
                             "content": "Por favor, finalize a etapa dizendo \"Etapa X Concluída\" quando terminar."
                         }));
                     }
+                    ParsedResponse::Parallel { actions } => {
+                        info!("Parallel actions detected: {} actions", actions.len());
+                        if let Some(first_action) = actions.first() {
+                            info!("Executing first action: {}", first_action.action);
+                            let raw_observation = self.execute_tool(&first_action.action, &first_action.action_input).await?;
+                            current_messages.push(json!({
+                                "role": "assistant",
+                                "content": format!("Action: {}\nAction Input: {}\nObservation: {}", first_action.action, first_action.action_input, raw_observation)
+                            }));
+                        }
+                        continue;
+                    }
                     ParsedResponse::Action {
                         action,
                         action_input,
@@ -1913,6 +1980,18 @@ MODO DESENVOLVIMENTO ESTRUTURADO:
                                 "content": "Use ferramentas para executar as ações necessárias. Quando terminar, responda: Step Complete: [resumo]"
                             }));
                         }
+                    }
+                    ParsedResponse::Parallel { actions } => {
+                        info!("Parallel actions detected: {} actions", actions.len());
+                        if let Some(first_action) = actions.first() {
+                            info!("Step {}/{} executing first action: {}", step_num, total, first_action.action);
+                            let raw_observation = self.execute_tool(&first_action.action, &first_action.action_input).await?;
+                            step_messages.push(json!({
+                                "role": "assistant",
+                                "content": format!("Action: {}\nAction Input: {}\nObservation: {}", first_action.action, first_action.action_input, raw_observation)
+                            }));
+                        }
+                        continue;
                     }
                     ParsedResponse::Action {
                         thought,
@@ -2986,6 +3065,29 @@ Por favor, forneça a RESPOSTA MELHORADA que corrige os problemas identificados.
                     Ok(None)
                 }
             }
+        }
+    }
+
+    async fn verify_parallel_results(
+        &mut self,
+        results: Vec<parallel_executor::ToolResult>,
+    ) -> anyhow::Result<Option<String>> {
+        let mut errors = Vec::new();
+
+        for result in results {
+            let verification = self
+                .verify_action_result(&result.tool_name, "{}", &result.output)
+                .await?;
+            
+            if let Some(error) = verification {
+                errors.push(format!("{}: {}", result.tool_name, error));
+            }
+        }
+
+        if errors.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(errors.join("; ")))
         }
     }
 
