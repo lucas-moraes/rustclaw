@@ -6,6 +6,10 @@ use serde_json::Value;
 
 use crate::error::{AgentError, ParseError};
 
+/// Parses LLM responses to extract structured data.
+///
+/// ResponseParser handles parsing of model outputs in the ReAct format,
+/// extracting thought, reasoning, action, and final answer components.
 pub struct ResponseParser;
 
 impl ResponseParser {
@@ -373,8 +377,11 @@ impl ResponseParser {
     }
 }
 
+/// Parsed response types from the LLM.
 pub enum ParsedResponse {
+    /// Direct answer without tool execution
     FinalAnswer(String),
+    /// Tool execution requested
     Action {
         thought: String,
         retrieved_memory: Option<String>,
@@ -384,11 +391,11 @@ pub enum ParsedResponse {
         action: String,
         action_input: String,
     },
-    Parallel {
-        actions: Vec<ParallelAction>,
-    },
+    /// Multiple parallel tool executions
+    Parallel { actions: Vec<ParallelAction> },
 }
 
+/// Individual action in a parallel execution request.
 #[derive(Debug, Clone)]
 pub struct ParallelAction {
     pub thought: String,

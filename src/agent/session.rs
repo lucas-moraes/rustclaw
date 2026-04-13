@@ -1,5 +1,12 @@
 #![allow(dead_code)]
 
+//! Session management for development checkpoints and memory.
+//!
+//! This module provides session management capabilities including:
+//! - Development checkpoint tracking and resuming
+//! - Session-based memory storage
+//! - Hierarchical session relationships
+
 use std::result::Result;
 
 use crate::error::{AgentError, SessionError};
