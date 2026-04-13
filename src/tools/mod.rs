@@ -179,7 +179,10 @@ impl Default for ToolRegistry {
 pub mod browser;
 pub mod capabilities;
 pub mod clear_memory;
+pub mod cloud_storage;
+pub mod database;
 pub mod datetime;
+pub mod docker;
 pub mod echo;
 pub mod file_edit;
 pub mod file_list;
