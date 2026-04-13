@@ -3027,6 +3027,30 @@ Por favor, forneça a RESPOSTA MELHORADA que corrige os problemas identificados.
                                 self.project_sandbox.allowed_dir()
                             ));
                         }
+
+                        // For file_edit, check filesystem permissions
+                        if action == "file_edit" {
+                            let file_path = Path::new(path_str);
+                            if file_path.exists() {
+                                // Check read permission
+                                if std::fs::read(file_path).is_err() {
+                                    return Ok(format!(
+                                        "🔐 Sem permissão de leitura: '{}'\nVerifique as permissões do arquivo.",
+                                        path_str
+                                    ));
+                                }
+                                // Check write permission by trying to open in append mode
+                                let test_write = std::fs::OpenOptions::new()
+                                    .append(true)
+                                    .open(file_path);
+                                if test_write.is_err() {
+                                    return Ok(format!(
+                                        "🔐 Sem permissão de escrita: '{}'\nVerifique as permissões do arquivo.",
+                                        path_str
+                                    ));
+                                }
+                            }
+                        }
                     }
                 }
                 "shell" => {
