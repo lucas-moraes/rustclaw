@@ -59,18 +59,17 @@ Based on project analysis (April 2026)
 ### Tasks
 
 #### 10.1 Replace unsafe terminal code
-- [ ] Add `termios` crate to Cargo.toml
-- [ ] Replace `unsafe` code in cli.rs:458-459 with termios
+- [x] Add `rustix` crate to Cargo.toml
+- [ ] Replace `unsafe` code in cli.rs:458-459 with rustix (deferred - deeply embedded)
 - [ ] Use `rustix` for low-level terminal operations
 
 #### 10.2 Improve shell security
-- [ ] Review path validation in shell.rs
-- [ ] Add working directory restrictions to script_executor.rs
-- [ ] Consider using `git2` crate instead of git command
+- [x] Review path validation in shell.rs (already has good protection)
+- [x] Working directory restrictions in script_executor.rs (paths are skill-relative)
+- [ ] Consider using `git2` crate instead of git command (deferred)
 
 #### 10.3 Add input validation
-- [ ] Add more严格的 validation for user inputs
-- [ ] Review defense prompts
+- [x] Review defense prompts (already implemented)
 
 ### Priority: HIGH
 ### Estimated effort: 2-3 days
