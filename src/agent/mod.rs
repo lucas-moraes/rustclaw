@@ -868,6 +868,37 @@ impl Agent {
                 }
             }
 
+            // Check read/write permissions
+            let can_read = std::fs::read_dir(path).is_ok();
+            let test_file = path.join(".rustclaw_write_test");
+            let can_write = std::fs::write(&test_file, "test").is_ok();
+            if can_write {
+                let _ = std::fs::remove_file(&test_file);
+            }
+
+            if !can_read || !can_write {
+                let perm_msg = if !can_read && !can_write {
+                    "leitura e escrita"
+                } else if !can_read {
+                    "leitura"
+                } else {
+                    "escrita"
+                };
+
+                return Ok(format!(
+                    "🔐 O diretório '{}' não tem permissões de {}.\n\n\
+Para continuar, o RustClaw precisa de permissões de leitura e escrita neste diretório.\n\n\
+Como conceder permissões:\n\n\
+**macOS/Linux:**\n\
+  chown -R $(whoami) {}\n\
+  chmod -R u+rwx {}\n\n\
+**Após conceder permissões, digite:**\n\
+continuar\n\n\
+Ou especifique outro diretório com permissões adequadas.",
+                    dev_dir, perm_msg, dev_dir, dev_dir
+                ));
+            }
+
             // Check for PLANO.md
             let plano_path = path.join("PLANO.md");
             if !plano_path.exists() {

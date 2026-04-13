@@ -150,3 +150,59 @@ Implement a sandbox system that restricts ALL file/shell operations to a specifi
 2. **Parent Directory Blocking**: Prevents escaping via `../other_file.txt`
 3. **Shell Command Validation**: Blocks `cd` commands outside sandbox
 4. **Resume Support**: Sandbox automatically reactivated from checkpoint
+
+---
+
+## Permission Check Feature
+
+When `/desenvolver <path>` is called, the system now:
+
+1. **Checks directory permissions** - verifies read and write access
+2. **Creates directory if needed** - attempts to create the directory
+3. **Asks for permission if denied** - shows instructions for granting permissions
+
+### Permission Check Flow
+
+```
+/desenvolver /path/to/project
+         │
+         ▼
+┌─────────────────────────────────┐
+│ Check read permissions (read_dir) │
+└─────────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────┐
+│ Check write permissions (test file) │
+└─────────────────────────────────┘
+         │
+         ▼
+    ┌────┴────┐
+    │ Perms OK? │
+    └────┬────┘
+   Yes  │  No
+    │   │
+    ▼   ▼
+Continue │ Return error with
+         │ instructions to grant
+         │ permissions
+```
+
+### Error Message When Permissions Missing
+
+```
+🔐 O diretório '/path/to/project' não tem permissões de leitura e escrita.
+
+Para continuar, o RustClaw precisa de permissões de leitura e escrita neste diretório.
+
+Como conceder permissões:
+
+macOS/Linux:
+  chown -R $(whoami) /path/to/project
+  chmod -R u+rwx /path/to/project
+
+Após conceder permissões, digite:
+continuar
+
+Ou especifique outro diretório com permissões adequadas.
+```
