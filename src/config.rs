@@ -125,6 +125,14 @@ impl Config {
             return Err(ConfigError::MissingToken.into());
         }
 
+        if api_key.len() < 10 {
+            return Err(ConfigError::InvalidModel(
+                "API key seems too short. Please check your TOKEN environment variable."
+                    .to_string(),
+            )
+            .into());
+        }
+
         let tavily_api_key = std::env::var("TAVILY_API_KEY").ok();
         let timezone = std::env::var("TZ").unwrap_or_else(|_| "America/Sao_Paulo".to_string());
         let max_tokens = std::env::var("MAX_TOKENS")
@@ -247,6 +255,48 @@ impl Config {
             self_review,
             embedding_model: EmbeddingModel::from_env(),
         })
+    }
+
+    pub fn validate(&self) -> Result<(), AgentError> {
+        let mut errors: Vec<String> = Vec::new();
+
+        if self.api_key.is_empty() {
+            errors.push("API key is empty. Set TOKEN environment variable.".to_string());
+        } else if self.api_key.len() < 10 {
+            errors.push("API key seems too short. Please check your TOKEN.".to_string());
+        }
+
+        if !self.base_url.starts_with("http://") && !self.base_url.starts_with("https://") {
+            errors.push(format!(
+                "Invalid BASE_URL: '{}'. Must start with http:// or https://",
+                self.base_url
+            ));
+        }
+
+        if self.max_tokens == 0 {
+            errors.push("MAX_TOKENS cannot be 0.".to_string());
+        } else if self.max_tokens > 100_000 {
+            errors.push("MAX_TOKENS seems too high (max 100000).".to_string());
+        }
+
+        if self.max_context_tokens == 0 {
+            errors.push("MAX_CONTEXT_TOKENS cannot be 0.".to_string());
+        }
+
+        if self.max_iterations == 0 {
+            errors.push("MAX_ITERATIONS cannot be 0.".to_string());
+        }
+
+        if self.timezone.is_empty() {
+            errors.push("TZ (timezone) cannot be empty.".to_string());
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            let msg = format!("Configuration errors:\n  - {}", errors.join("\n  - "));
+            Err(ConfigError::InvalidUrl(msg).into())
+        }
     }
 
     fn load_fallback_models() -> Vec<FallbackModel> {

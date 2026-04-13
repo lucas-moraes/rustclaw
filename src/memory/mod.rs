@@ -2,6 +2,7 @@ pub mod checkpoint;
 pub mod embeddings;
 pub mod embeddings_tfidf;
 pub mod bm25;
+pub mod export;
 pub mod reminder;
 pub mod search;
 pub mod skill_context;

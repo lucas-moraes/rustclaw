@@ -1,9 +1,14 @@
 #![allow(dead_code)]
 
 use crate::error::{AgentError, LLMError};
+use bytes::Bytes;
+use futures_util::{StreamExt, TryStreamExt};
 use serde_json::{json, Value};
+use std::pin::Pin;
 
 pub struct LlmClient;
+
+pub type TokenStream = Pin<Box<dyn tokio_stream::Stream<Item = Result<String, AgentError>> + Send>>;
 
 impl LlmClient {
     pub fn build_system_prompt(
@@ -209,4 +214,127 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
 
         Ok(cleaned)
     }
+
+    pub async fn call_llm_streaming(
+        client: &reqwest::Client,
+        api_key: &str,
+        messages: &[Value],
+        model: &str,
+        base_url: &str,
+        provider: &str,
+        max_tokens: usize,
+    ) -> Result<TokenStream, AgentError> {
+        let endpoint = if provider == "opencode-go" || provider == "opencode" {
+            if model.contains("minimax") {
+                "/messages"
+            } else {
+                "/chat/completions"
+            }
+        } else {
+            "/chat/completions"
+        };
+
+        let url = format!("{}{}", base_url, endpoint);
+
+        let filtered_messages: Vec<Value> = messages
+            .iter()
+            .filter(|m| {
+                if let Some(content) = m["content"].as_str() {
+                    !content.trim().is_empty()
+                } else {
+                    false
+                }
+            })
+            .cloned()
+            .collect();
+
+        if filtered_messages.is_empty() {
+            return Err(LLMError::NoChoices.into());
+        }
+
+        let body = json!({
+            "model": model,
+            "messages": filtered_messages,
+            "max_tokens": max_tokens,
+            "temperature": 0.7,
+            "stream": true
+        });
+
+        tracing::debug!("Sending streaming request to URL: {}", url);
+
+        let response = client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", api_key))
+            .header("X-API-Key", api_key)
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| {
+                tracing::error!("HTTP request failed: {}", e);
+                LLMError::ApiCallFailed(format!("HTTP request to {} failed: {}", url, e))
+            })?;
+
+        if !response.status().is_success() {
+            let error_text = response.text().await?;
+            return Err(LLMError::ApiCallFailed(format!("API error: {}", error_text)).into());
+        }
+
+        let stream = response.bytes_stream().map_err(|e| {
+            tracing::error!("Stream error: {}", e);
+            AgentError::LLM(LLMError::ApiCallFailed(format!("Stream error: {}", e)))
+        }).filter_map(|chunk| async move {
+            match chunk {
+                Ok(bytes) => {
+                    if let Ok(text) = String::from_utf8(bytes.to_vec()) {
+                        for line in text.lines() {
+                            if line.starts_with("data: ") {
+                                let data = &line[6..];
+                                if data == "[DONE]" {
+                                    continue;
+                                }
+                                if let Ok(json) = serde_json::from_str::<Value>(data) {
+                                    let content = extract_content_from_stream(&json);
+                                    if !content.is_empty() {
+                                        return Some(Ok(content));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    None
+                }
+                Err(e) => Some(Err(e)),
+            }
+        });
+
+        Ok(Box::pin(stream))
+    }
+}
+
+fn extract_content_from_stream(json: &Value) -> String {
+    if let Some(content_arr) = json["content"].as_array() {
+        for item in content_arr {
+            if item.get("type").and_then(|t| t.as_str()) == Some("text") {
+                if let Some(text) = item.get("text").and_then(|t| t.as_str()) {
+                    return text.to_string();
+                }
+            }
+        }
+    }
+    if let Some(c) = json["choices"].as_array() {
+        if let Some(choice) = c.first() {
+            if let Some(delta) = choice.get("delta") {
+                if let Some(content) = delta.get("content").and_then(|c| c.as_str()) {
+                    return content.to_string();
+                }
+            }
+            if let Some(msg) = choice.get("message") {
+                if let Some(content) = msg.get("content").and_then(|c| c.as_str()) {
+                    return content.to_string();
+                }
+            }
+        }
+    }
+    String::new()
 }
