@@ -2927,46 +2927,50 @@ Por favor, forneça a RESPOSTA MELHORADA que corrige os problemas identificados.
             ));
         }
 
-        if let Some(trust) = &self.workspace_trust {
-            let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-            match action {
-                "file_write" | "file_edit" => {
-                    if let Ok(args) =
-                        response_parser::ResponseParser::parse_action_input_json(action_input)
-                    {
-                        if let Some(path_str) = args["path"].as_str() {
-                            let path = Path::new(path_str);
-                            let decision =
-                                trust.evaluate(path, &crate::workspace_trust::Operation::WriteFile);
-                            if !decision.allowed {
-                                return Ok(format!(
-                                    "Acesso negado: operação '{}' não permitida em '{}' (trust: {:?}). {}",
-                                    action,
-                                    path_str,
-                                    decision.trust_level,
-                                    decision.reason.unwrap_or_default()
-                                ));
+        // Only check workspace_trust if sandbox is NOT active
+        // When sandbox is active, it handles all path restrictions
+        if !self.project_sandbox.is_active() {
+            if let Some(trust) = &self.workspace_trust {
+                let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+                match action {
+                    "file_write" | "file_edit" => {
+                        if let Ok(args) =
+                            response_parser::ResponseParser::parse_action_input_json(action_input)
+                        {
+                            if let Some(path_str) = args["path"].as_str() {
+                                let path = Path::new(path_str);
+                                let decision =
+                                    trust.evaluate(path, &crate::workspace_trust::Operation::WriteFile);
+                                if !decision.allowed {
+                                    return Ok(format!(
+                                        "Acesso negado: operação '{}' não permitida em '{}' (trust: {:?}). {}",
+                                        action,
+                                        path_str,
+                                        decision.trust_level,
+                                        decision.reason.unwrap_or_default()
+                                    ));
+                                }
                             }
                         }
                     }
-                }
-                "shell" => {
-                    if !trust.can_execute_shell(&current_dir) {
-                        return Ok(format!(
-                            "Acesso negado: execução de comandos shell não permitida neste diretório (trust: {:?})",
-                            trust.evaluate(&current_dir, &crate::workspace_trust::Operation::ExecuteShell).trust_level
-                        ));
+                    "shell" => {
+                        if !trust.can_execute_shell(&current_dir) {
+                            return Ok(format!(
+                                "Acesso negado: execução de comandos shell não permitida neste diretório (trust: {:?})",
+                                trust.evaluate(&current_dir, &crate::workspace_trust::Operation::ExecuteShell).trust_level
+                            ));
+                        }
                     }
-                }
-                "http_get" | "http_post" => {
-                    if !trust.can_access_network(&current_dir) {
-                        return Ok(format!(
-                            "Acesso negado: operações de rede não permitida neste diretório (trust: {:?})",
-                            trust.evaluate(&current_dir, &crate::workspace_trust::Operation::NetworkRequest).trust_level
-                        ));
+                    "http_get" | "http_post" => {
+                        if !trust.can_access_network(&current_dir) {
+                            return Ok(format!(
+                                "Acesso negado: operações de rede não permitida neste diretório (trust: {:?})",
+                                trust.evaluate(&current_dir, &crate::workspace_trust::Operation::NetworkRequest).trust_level
+                            ));
+                        }
                     }
+                    _ => {}
                 }
-                _ => {}
             }
         }
 
@@ -2982,10 +2986,13 @@ Por favor, forneça a RESPOSTA MELHORADA que corrige os problemas identificados.
             match action {
                 "file_read" | "file_write" | "file_edit" | "file_list" => {
                     if let Some(path_str) = args["path"].as_str() {
-                        if let Err(e) = self.project_sandbox.validate_path(Path::new(path_str)) {
+                        let path = Path::new(path_str);
+                        let validation_result = self.project_sandbox.validate_path(path);
+                        if let Err(e) = validation_result {
                             return Ok(format!(
-                                "🔒 Acesso negado: {}\nDiretório do projeto: {:?}",
+                                "🔒 Acesso negado: {}\nCaminho: '{}'\nDiretório do projeto: {:?}",
                                 e,
+                                path_str,
                                 self.project_sandbox.allowed_dir()
                             ));
                         }

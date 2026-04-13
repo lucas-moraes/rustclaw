@@ -70,13 +70,14 @@ impl ProjectSandbox {
             .as_ref()
             .ok_or_else(|| "Sandbox não está ativa".to_string())?;
 
-        let cwd = std::env::current_dir()
-            .map_err(|e| format!("Não foi possível obter diretório atual: {}", e))?;
+        // When sandbox is active, use allowed_dir as base for relative paths
+        // This ensures relative paths are resolved relative to the project directory
+        let base_dir = allowed;
 
         let resolved = if path.is_absolute() {
             path.to_path_buf()
         } else {
-            cwd.join(path)
+            base_dir.join(path)
         };
 
         // Canonicalize to resolve ".." and symlinks
@@ -115,7 +116,32 @@ impl ProjectSandbox {
             }
             normalize_path(&resolved)
         } else {
-            normalize_path(&resolved)
+            // For relative paths that don't exist, canonicalize parent and check
+            let normalized = normalize_path(&resolved);
+            if let Some(parent) = normalized.parent() {
+                if parent.exists() {
+                    let canonical_parent = parent.canonicalize().map_err(|e| {
+                        format!(
+                            "Não foi possível resolver caminho '{}': {}",
+                            parent.display(),
+                            e
+                        )
+                    })?;
+                    let filename = normalized
+                        .file_name()
+                        .map(|n| canonical_parent.join(n))
+                        .unwrap_or_else(|| canonical_parent);
+                    return if filename.starts_with(allowed) {
+                        Ok(filename)
+                    } else {
+                        Err(format!(
+                            "'{}' está fora do diretório do projeto",
+                            path.display()
+                        ))
+                    };
+                }
+            }
+            normalized
         };
 
         if canonical.starts_with(allowed) {
@@ -194,12 +220,13 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_path_relative() {
+    fn test_validate_path_relative_inside_project() {
         let mut sandbox = ProjectSandbox::new();
         let temp_dir = std::env::temp_dir();
         sandbox.set_project_dir(temp_dir.clone());
 
-        let result = sandbox.validate_path(&temp_dir.join("file.txt"));
+        // Relative path should now be resolved against allowed_dir, not cwd
+        let result = sandbox.validate_path(Path::new("file.txt"));
         assert!(result.is_ok());
     }
 
