@@ -16,6 +16,7 @@ pub mod build_validator;
 pub mod conversation_summarizer;
 pub mod cost_tracker;
 pub mod llm_client;
+pub mod multi_agent;
 pub mod output;
 pub mod parallel_executor;
 pub mod plan_executor;
