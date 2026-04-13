@@ -3,6 +3,8 @@ use std::result::Result;
 
 use crate::error::{AgentError, ConfigError};
 
+pub mod prompts;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Config {
     pub api_key: String,

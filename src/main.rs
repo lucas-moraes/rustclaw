@@ -1,4 +1,5 @@
 mod agent;
+mod api;
 mod app_state;
 mod app_store;
 mod auth;
@@ -9,6 +10,7 @@ mod error;
 mod features;
 mod i18n;
 mod memory;
+mod plugins;
 mod reminder_executor;
 mod security;
 mod skills;
