@@ -46,6 +46,20 @@ impl EmbeddingService {
         })
     }
 
+    #[cfg(test)]
+    pub fn new_mock() -> Self {
+        Self {
+            api_key: String::new(),
+            base_url: String::new(),
+            model: String::new(),
+            client: reqwest::Client::new(),
+            cache: RwLock::new(HashMap::new()),
+            cache_ttl_secs: 3600,
+            embedding_model: EmbeddingModel::OpenAI,
+            tfidf_embedder: TfidfEmbedder::new(),
+        }
+    }
+
     pub async fn embed(&self, text: &str) -> Result<Vec<f32>, AgentError> {
         let cache_key = self.cache_key(text);
 

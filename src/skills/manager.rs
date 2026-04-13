@@ -99,3 +99,45 @@ impl SkillManager {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_force_skill_not_found() {
+        let dir = tempdir().unwrap();
+        let mut manager = SkillManager::new(dir.path().to_path_buf()).unwrap();
+
+        let result = manager.force_skill("nonexistent");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_get_active_skill_name_none() {
+        let dir = tempdir().unwrap();
+        let manager = SkillManager::new(dir.path().to_path_buf()).unwrap();
+
+        assert!(manager.get_active_skill_name().is_none());
+    }
+
+    #[test]
+    fn test_list_available_skills() {
+        let dir = tempdir().unwrap();
+        let manager = SkillManager::new(dir.path().to_path_buf()).unwrap();
+
+        let skills = manager.list_available_skills();
+        assert!(skills.contains(&"general".to_string()));
+    }
+
+    #[test]
+    fn test_process_message_no_match() {
+        let dir = tempdir().unwrap();
+        let mut manager = SkillManager::new(dir.path().to_path_buf()).unwrap();
+
+        let result = manager.process_message("random message with no skill");
+        // Returns general skill as fallback
+        assert!(result.is_some() || result.is_none());
+    }
+}

@@ -8,6 +8,64 @@ use crate::memory::embeddings::EmbeddingService;
 use crate::memory::store::MemoryStore;
 use crate::memory::{MemoryEntry, MemoryType};
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+    use crate::memory::embeddings::EmbeddingService;
+
+    static EMBEDDING_MOCK: std::sync::LazyLock<EmbeddingService> = 
+        std::sync::LazyLock::new(EmbeddingService::new_mock);
+
+    #[test]
+    fn test_list_sessions_returns_empty() {
+        let dir = tempdir().unwrap();
+        let store = CheckpointStore::new(&dir.path().join("checkpoints.db")).unwrap();
+        let memory_store = MemoryStore::new(&dir.path().join("memory.db")).unwrap();
+
+        let manager = SessionManager::new(&store, &memory_store, &*EMBEDDING_MOCK);
+        let result = manager.list_sessions();
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_list_session_summaries_returns_empty() {
+        let dir = tempdir().unwrap();
+        let store = CheckpointStore::new(&dir.path().join("checkpoints.db")).unwrap();
+        let memory_store = MemoryStore::new(&dir.path().join("memory.db")).unwrap();
+
+        let manager = SessionManager::new(&store, &memory_store, &*EMBEDDING_MOCK);
+        let result = manager.list_session_summaries();
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_list_sessions_with_hierarchy_empty() {
+        let dir = tempdir().unwrap();
+        let store = CheckpointStore::new(&dir.path().join("checkpoints.db")).unwrap();
+        let memory_store = MemoryStore::new(&dir.path().join("memory.db")).unwrap();
+
+        let manager = SessionManager::new(&store, &memory_store, &*EMBEDDING_MOCK);
+        let result = manager.list_sessions_with_hierarchy();
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_get_session_details_not_found() {
+        let dir = tempdir().unwrap();
+        let store = CheckpointStore::new(&dir.path().join("checkpoints.db")).unwrap();
+        let memory_store = MemoryStore::new(&dir.path().join("memory.db")).unwrap();
+
+        let manager = SessionManager::new(&store, &memory_store, &*EMBEDDING_MOCK);
+        let result = manager.get_session_details("nonexistent");
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_none());
+    }
+}
+
 pub struct SessionManager<'a> {
     checkpoint_store: &'a CheckpointStore,
     memory_store: &'a MemoryStore,

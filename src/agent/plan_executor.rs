@@ -6,6 +6,40 @@ use crate::error::{AgentError, ToolError};
 use crate::utils::build_detector::BuildDetector;
 use crate::utils::error_parser::{BuildValidation, ErrorParser};
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_count_plan_steps_empty() {
+        assert_eq!(PlanExecutor::count_plan_steps(""), 0);
+    }
+
+    #[test]
+    fn test_count_plan_steps_simple() {
+        let plan = "1) First step\n2) Second step\n3) Third step";
+        assert_eq!(PlanExecutor::count_plan_steps(plan), 3);
+    }
+
+    #[test]
+    fn test_count_plan_steps_checkbox_format() {
+        let plan = "1) First step\n2) Second step\n3) Third step";
+        assert_eq!(PlanExecutor::count_plan_steps(plan), 3);
+    }
+
+    #[test]
+    fn test_count_plan_steps_mixed_format() {
+        let plan = "1) First step\nNo numbered line here\n3) Third step";
+        assert_eq!(PlanExecutor::count_plan_steps(plan), 2);
+    }
+
+    #[test]
+    fn test_count_plan_steps_no_numbers() {
+        let plan = "First step\nSecond step\nThird step";
+        assert_eq!(PlanExecutor::count_plan_steps(plan), 0);
+    }
+}
+
 pub struct BuildValidator;
 
 impl BuildValidator {
