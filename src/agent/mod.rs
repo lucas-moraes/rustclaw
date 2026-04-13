@@ -102,6 +102,7 @@ pub struct Agent {
     compression_count: usize,
     cost_tracker: CostTracker,
     rate_limiter: RateLimiter,
+    project_sandbox: crate::security::project_sandbox::ProjectSandbox,
 }
 
 /// Session details for display
@@ -188,6 +189,7 @@ impl Agent {
             cost_tracker: CostTracker::new(),
             rate_limiter: RateLimiter::from_env(),
             dry_run: false,
+            project_sandbox: crate::security::project_sandbox::ProjectSandbox::new(),
         })
     }
 
@@ -907,6 +909,9 @@ impl Agent {
                 checkpoint.set_plan_text(plano_content.clone());
                 checkpoint.set_phase(PlanPhase::Executing);
 
+                // Activate sandbox for this project directory
+                self.project_sandbox.set_project_dir(PathBuf::from(&dev_dir));
+
                 // Save checkpoint
                 self.checkpoint_store.save(&checkpoint)?;
 
@@ -945,6 +950,11 @@ impl Agent {
 
         let mut checkpoint = self.load_or_create_checkpoint(user_input).await?;
         let mut task_input = user_input.to_string();
+
+        // Reactivate sandbox from checkpoint if project_dir is set
+        if !checkpoint.project_dir.is_empty() {
+            self.project_sandbox.set_project_dir(PathBuf::from(&checkpoint.project_dir));
+        }
 
         // If checkpoint is Executing, use plan_text as the development task
         if checkpoint.phase == PlanPhase::Executing && !checkpoint.plan_text.is_empty() {
@@ -2954,6 +2964,67 @@ Por favor, forneça a RESPOSTA MELHORADA que corrige os problemas identificados.
                             "Acesso negado: operações de rede não permitida neste diretório (trust: {:?})",
                             trust.evaluate(&current_dir, &crate::workspace_trust::Operation::NetworkRequest).trust_level
                         ));
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // SANDBOX: Validate paths against project directory sandbox
+        if self.project_sandbox.is_active() {
+            let args = match response_parser::ResponseParser::parse_action_input_json(action_input) {
+                Ok(value) => value,
+                Err(_) => {
+                    return Ok("Erro: Action Input inválido.".to_string());
+                }
+            };
+
+            match action {
+                "file_read" | "file_write" | "file_edit" | "file_list" => {
+                    if let Some(path_str) = args["path"].as_str() {
+                        if let Err(e) = self.project_sandbox.validate_path(Path::new(path_str)) {
+                            return Ok(format!(
+                                "🔒 Acesso negado: {}\nDiretório do projeto: {:?}",
+                                e,
+                                self.project_sandbox.allowed_dir()
+                            ));
+                        }
+                    }
+                }
+                "shell" => {
+                    // Validate working_dir if present
+                    if let Some(working_dir) = args["working_dir"].as_str() {
+                        if let Err(e) = self.project_sandbox.validate_path(Path::new(working_dir)) {
+                            return Ok(format!(
+                                "🔒 Acesso negado: {}\nDiretório do projeto: {:?}",
+                                e,
+                                self.project_sandbox.allowed_dir()
+                            ));
+                        }
+                    }
+                    // Validate cd targets in command
+                    if let Some(command) = args["command"].as_str() {
+                        if command.contains("cd ") {
+                            for part in command.split("&&") {
+                                let part = part.trim();
+                                if part.starts_with("cd ") {
+                                    let cd_target = part[3..].trim();
+                                    // Skip cd without arguments (home) or cd -
+                                    if cd_target.is_empty() || cd_target == "-" {
+                                        continue;
+                                    }
+                                    // Remove quotes if present
+                                    let cd_target = cd_target.trim_matches('"').trim_matches('\'');
+                                    if let Err(e) = self.project_sandbox.validate_path(Path::new(cd_target)) {
+                                        return Ok(format!(
+                                            "🔒 Acesso negado: cd para '{}' não permitido\nDiretório do projeto: {:?}",
+                                            cd_target,
+                                            self.project_sandbox.allowed_dir()
+                                        ));
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
                 _ => {}
