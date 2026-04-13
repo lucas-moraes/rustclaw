@@ -1,0 +1,297 @@
+# New Features Plan - RustClaw
+
+Based on project analysis (April 2026)
+
+---
+
+## Phase 1: Quick Wins (1-2 weeks)
+
+### Feature F1: Streaming Responses
+- **Description**: Token-by-token display instead of waiting for full response
+- **Complexity**: MEDIUM
+- **Priority**: HIGH
+- **Location**: `src/agent/llm_client.rs`, `src/cli.rs`
+- **Tasks**:
+  - [ ] Implement SSE endpoint for LLM responses
+  - [ ] Add streaming mode to CLI display
+  - [ ] Handle backpressure gracefully
+- **Related**: Currently `call_llm_with_config()` returns full response
+
+### Feature F2: Git Integration Tool
+- **Description**: Native git tool for development workflows
+- **Complexity**: MEDIUM
+- **Priority**: HIGH
+- **Location**: New `src/tools/git.rs`
+- **Tasks**:
+  - [ ] Implement `git_status` tool
+  - [ ] Implement `git_diff` tool
+  - [ ] Implement `git_commit` tool
+  - [ ] Implement `git_log` tool
+  - [ ] Implement `git_branch` tool
+- **Related**: Currently relies on shell commands
+
+### Feature F3: Conversation Export/Import
+- **Description**: Export conversations to Markdown/JSON for sharing or backup
+- **Complexity**: LOW
+- **Priority**: HIGH
+- **Location**: New `src/memory/export.rs`
+- **Tasks**:
+  - [ ] Implement export to Markdown format
+  - [ ] Implement export to JSON format
+  - [ ] Implement import functionality
+  - [ ] Add CLI commands for export/import
+
+### Feature F4: Configuration Validation
+- **Description**: Validate config on startup with helpful error messages
+- **Complexity**: LOW
+- **Priority**: HIGH
+- **Location**: `src/config.rs`
+- **Tasks**:
+  - [ ] Add required field validation
+  - [ ] Add API key format validation
+  - [ ] Add helpful error messages with setup instructions
+  - [ ] Add config wizard
+
+### Feature F5: Structured Logging
+- **Description**: JSON logging with request/response IDs for debugging
+- **Complexity**: LOW
+- **Priority**: HIGH
+- **Location**: `src/main.rs`, logging config
+- **Tasks**:
+  - [ ] Enable JSON logging format
+  - [ ] Add request/response correlation IDs
+  - [ ] Add tool execution traces
+  - [ ] Configure log export (optional)
+
+---
+
+## Phase 2: Core Enhancements (2-4 weeks)
+
+### Feature F6: Dry Run Mode
+- **Description**: Preview agent actions without execution
+- **Complexity**: MEDIUM
+- **Priority**: HIGH
+- **Location**: `src/agent/mod.rs`, `src/cli.rs`
+- **Tasks**:
+  - [ ] Add `--dry-run` flag
+  - [ ] Implement action preview
+  - [ ] Show file modifications without applying
+  - [ ] Add confirmation prompts
+
+### Feature F7: Undo/Rollback System
+- **Description**: File operation journaling with undo capability
+- **Complexity**: MEDIUM
+- **Priority**: HIGH
+- **Location**: New `src/memory/journal.rs`
+- **Tasks**:
+  - [ ] Implement operation journal
+  - [ ] Track file changes with backups
+  - [ ] Implement `/undo` command
+  - [ ] Add N-operations rollback
+
+### Feature F8: Hierarchical Memory System
+- **Description**: Memory tiers with automatic promotion
+- **Complexity**: HIGH
+- **Priority**: HIGH
+- **Location**: New `src/memory/hierarchical.rs`
+- **Tasks**:
+  - [ ] Implement Working Memory (current session)
+  - [ ] Implement Short-term Memory (recent sessions)
+  - [ ] Implement Long-term Memory (important facts)
+  - [ ] Implement automatic promotion based on usage
+  - [ ] Add memory decay mechanism
+
+### Feature F9: Diff/Patch Viewer
+- **Description**: Unified diff generation and preview before applying
+- **Complexity**: LOW
+- **Priority**: HIGH
+- **Location**: `src/tools/file_edit.rs`, new `src/utils/diff.rs`
+- **Tasks**:
+  - [ ] Generate unified diff format
+  - [ ] Preview changes before applying
+  - [ ] Add multi-hunk patch support
+  - [ ] Show line numbers in diff
+
+### Feature F10: Keyboard Shortcuts
+- **Description**: Common keyboard shortcuts for CLI
+- **Complexity**: LOW
+- **Priority**: MEDIUM
+- **Location**: `src/cli.rs`
+- **Tasks**:
+  - [ ] Ctrl+R: Search history
+  - [ ] Ctrl+L: Clear screen
+  - [ ] Ctrl+C: Cancel current operation
+  - [ ] Ctrl+K: Clear line
+
+---
+
+## Phase 3: New Tools (2-4 weeks)
+
+### Feature T1: Database Query Tool
+- **Description**: Query user databases (SQLite, PostgreSQL, MySQL)
+- **Complexity**: MEDIUM
+- **Priority**: MEDIUM
+- **Location**: New `src/tools/database.rs`
+- **Tasks**:
+  - [ ] Implement database connection management
+  - [ ] Implement `db_query` tool
+  - [ ] Implement `db_execute` tool
+  - [ ] Add connection string validation
+
+### Feature T2: Docker Integration
+- **Description**: Docker-aware tools
+- **Complexity**: MEDIUM
+- **Priority**: MEDIUM
+- **Location**: New `src/tools/docker.rs`
+- **Tasks**:
+  - [ ] Implement `docker_build` tool
+  - [ ] Implement `docker_run` tool
+  - [ ] Implement `docker_compose` tool
+  - [ ] Add container status tool
+
+### Feature T3: Cloud Storage Tool
+- **Description**: S3, GCS, Azure Blob tools
+- **Complexity**: MEDIUM
+- **Priority**: LOW
+- **Location**: New `src/tools/cloud_storage.rs`
+- **Tasks**:
+  - [ ] Implement `s3_upload` tool
+  - [ ] Implement `s3_download` tool
+  - [ ] Add GCS support
+  - [ ] Add Azure Blob support
+
+---
+
+## Phase 4: Developer Experience (1-2 months)
+
+### Feature D1: Plugin System
+- **Description**: Dynamic plugin loading for extensibility
+- **Complexity**: HIGH
+- **Priority**: MEDIUM
+- **Location**: New `src/plugins/` module
+- **Tasks**:
+  - [ ] Define plugin trait/interface
+  - [ ] Implement WASM plugin loader
+  - [ ] Implement external process plugins
+  - [ ] Add plugin registry
+  - [ ] Create plugin API documentation
+
+### Feature D2: API Server Mode
+- **Description**: REST/gRPC API for programmatic access
+- **Complexity**: MEDIUM
+- **Priority**: MEDIUM
+- **Location**: New `src/api/` module
+- **Tasks**:
+  - [ ] Implement REST API endpoints
+  - [ ] Add authentication
+  - [ ] Implement streaming responses
+  - [ ] Add WebSocket support
+
+### Feature D3: Custom Prompt Templates
+- **Description**: User-defined prompt templates
+- **Complexity**: LOW
+- **Priority**: LOW
+- **Location**: New `src/config/prompts.rs`, `config/prompts/`
+- **Tasks**:
+  - [ ] Define template format
+  - [ ] Implement template loader
+  - [ ] Add built-in templates
+  - [ ] Add CLI command to list templates
+
+---
+
+## Phase 5: Advanced Features (1-2 months)
+
+### Feature A1: Multi-Agent Orchestration
+- **Description**: Spawn sub-agents for complex tasks
+- **Complexity**: HIGH
+- **Priority**: MEDIUM
+- **Location**: New `src/agent/multi_agent/` module
+- **Tasks**:
+  - [ ] Define SubAgent trait
+  - [ ] Implement agent delegation
+  - [ ] Add agent-to-agent communication
+  - [ ] Implement result aggregation
+  - [ ] Add agent pool management
+
+### Feature A2: Code Intelligence (tree-sitter)
+- **Description**: AST parsing for semantic code understanding
+- **Complexity**: HIGH
+- **Priority**: MEDIUM
+- **Location**: New `src/tools/code_intelligence.rs`
+- **Tasks**:
+  - [ ] Integrate tree-sitter
+  - [ ] Implement symbol extraction
+  - [ ] Add go-to-definition support
+  - [ ] Implement code search by AST
+
+### Feature A3: Knowledge Graph
+- **Description**: Entity relationships, not just vectors
+- **Complexity**: HIGH
+- **Priority**: MEDIUM
+- **Location**: New `src/memory/knowledge_graph.rs`
+- **Tasks**:
+  - [ ] Define entity schema
+  - [ ] Implement relationship extraction
+  - [ ] Add graph queries
+  - [ ] Integrate with memory system
+
+### Feature A4: Image/Vision Support
+- **Description**: Support vision models for image analysis
+- **Complexity**: MEDIUM
+- **Priority**: MEDIUM
+- **Location**: `src/agent/llm_client.rs`, new `src/tools/vision.rs`
+- **Tasks**:
+  - [ ] Add image upload handling
+  - [ ] Implement multi-modal messages
+  - [ ] Add screenshot capture tool
+  - [ ] Support GPT-4V/Claude Vision
+
+---
+
+## Progress Tracking
+
+| Feature | Status | Complexity | Priority |
+|---------|--------|-----------|----------|
+| F1: Streaming Responses | 🔲 Pending | MEDIUM | HIGH |
+| F2: Git Integration | 🔲 Pending | MEDIUM | HIGH |
+| F3: Conversation Export | 🔲 Pending | LOW | HIGH |
+| F4: Config Validation | 🔲 Pending | LOW | HIGH |
+| F5: Structured Logging | 🔲 Pending | LOW | HIGH |
+| F6: Dry Run Mode | 🔲 Pending | MEDIUM | HIGH |
+| F7: Undo/Rollback | 🔲 Pending | MEDIUM | HIGH |
+| F8: Hierarchical Memory | 🔲 Pending | HIGH | HIGH |
+| F9: Diff/Patch Viewer | 🔲 Pending | LOW | HIGH |
+| F10: Keyboard Shortcuts | 🔲 Pending | LOW | MEDIUM |
+| T1: Database Tool | 🔲 Pending | MEDIUM | MEDIUM |
+| T2: Docker Integration | 🔲 Pending | MEDIUM | MEDIUM |
+| T3: Cloud Storage | 🔲 Pending | MEDIUM | LOW |
+| D1: Plugin System | 🔲 Pending | HIGH | MEDIUM |
+| D2: API Server | 🔲 Pending | MEDIUM | MEDIUM |
+| D3: Prompt Templates | 🔲 Pending | LOW | LOW |
+| A1: Multi-Agent | 🔲 Pending | HIGH | MEDIUM |
+| A2: Code Intelligence | 🔲 Pending | HIGH | MEDIUM |
+| A3: Knowledge Graph | 🔲 Pending | HIGH | MEDIUM |
+| A4: Image/Vision | 🔲 Pending | MEDIUM | MEDIUM |
+
+---
+
+## Technical Debt to Address
+
+1. **ParallelExecutor** - Marked for implementation but not fully integrated
+2. **Dead code** - Multiple `#[allow(dead_code)]` annotations
+3. **MCP Client** - Basic implementation, needs full protocol support
+4. **Browser automation** - Needs better error handling
+
+---
+
+## Notes
+
+- This plan focuses on user-facing features first
+- Complexity estimates assume single developer
+- Priority based on user impact vs effort
+- Features can be implemented in parallel by different developers
+
+---
+
+Last updated: April 12, 2026
