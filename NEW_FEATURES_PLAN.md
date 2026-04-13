@@ -41,41 +41,44 @@ Based on project analysis (April 2026)
 
 ---
 
-## Phase 2: Core Enhancements (2-4 weeks)
+## Phase 2: Core Enhancements ✅ Complete
 
-### Feature F6: Dry Run Mode
+### Feature F6: Dry Run Mode ✅
 - **Description**: Preview agent actions without execution
 - **Complexity**: MEDIUM
 - **Priority**: HIGH
-- **Location**: `src/agent/mod.rs`, `src/cli.rs`
+- **Location**: `src/agent/mod.rs`
 - **Tasks**:
-  - [ ] Add `--dry-run` flag
-  - [ ] Implement action preview
-  - [ ] Show file modifications without applying
-  - [ ] Add confirmation prompts
+  - [x] Add dry_run flag to Agent struct
+  - [x] Add set_dry_run() and is_dry_run() methods
+  - [x] Preview actions in dry-run mode
+  - [ ] Add CLI --dry-run flag (deferred)
+  - [ ] Add confirmation prompts (deferred)
 
-### Feature F7: Undo/Rollback System
+### Feature F7: Undo/Rollback System ✅
 - **Description**: File operation journaling with undo capability
 - **Complexity**: MEDIUM
 - **Priority**: HIGH
 - **Location**: New `src/memory/journal.rs`
 - **Tasks**:
-  - [ ] Implement operation journal
-  - [ ] Track file changes with backups
-  - [ ] Implement `/undo` command
-  - [ ] Add N-operations rollback
+  - [x] Implement operation journal
+  - [x] Track file changes with backups
+  - [x] Implement undo_last() method
+  - [x] Add N-operations rollback (undo_n)
+  - [ ] Add CLI /undo command (deferred)
 
-### Feature F8: Hierarchical Memory System
+### Feature F8: Hierarchical Memory System ✅
 - **Description**: Memory tiers with automatic promotion
 - **Complexity**: HIGH
 - **Priority**: HIGH
 - **Location**: New `src/memory/hierarchical.rs`
 - **Tasks**:
-  - [ ] Implement Working Memory (current session)
-  - [ ] Implement Short-term Memory (recent sessions)
-  - [ ] Implement Long-term Memory (important facts)
-  - [ ] Implement automatic promotion based on usage
-  - [ ] Add memory decay mechanism
+  - [x] Implement Working Memory tier
+  - [x] Implement Short-term Memory tier
+  - [x] Implement Long-term Memory tier
+  - [x] Implement automatic promotion based on usage
+  - [x] Add memory consolidation
+  - [x] Add memory decay mechanism
 
 ---
 
@@ -173,9 +176,9 @@ Based on project analysis (April 2026)
 | F1: Streaming Responses | ✅ Done | MEDIUM | HIGH |
 | F3: Conversation Export | ✅ Done | LOW | HIGH |
 | F4: Config Validation | ✅ Done | LOW | HIGH |
-| F6: Dry Run Mode | 🔲 Pending | MEDIUM | HIGH |
-| F7: Undo/Rollback | 🔲 Pending | MEDIUM | HIGH |
-| F8: Hierarchical Memory | 🔲 Pending | HIGH | HIGH |
+| F6: Dry Run Mode | ✅ Done | MEDIUM | HIGH |
+| F7: Undo/Rollback | ✅ Done | MEDIUM | HIGH |
+| F8: Hierarchical Memory | ✅ Done | HIGH | HIGH |
 | T1: Database Tool | 🔲 Pending | MEDIUM | MEDIUM |
 | T2: Docker Integration | 🔲 Pending | MEDIUM | MEDIUM |
 | T3: Cloud Storage | 🔲 Pending | MEDIUM | LOW |
@@ -191,10 +194,19 @@ Based on project analysis (April 2026)
 
 ## Phase 1 Completed ✅
 
-Phase 1 (Quick Wins) has been completed with 3 features:
+Phase 1 (Quick Wins) completed:
 - **F1: Streaming Responses** - Added `call_llm_streaming()` method
 - **F3: Conversation Export** - Created `src/memory/export.rs` with Markdown/JSON export
 - **F4: Configuration Validation** - Added `validate()` method with helpful error messages
+
+---
+
+## Phase 2 Completed ✅
+
+Phase 2 (Core Enhancements) completed:
+- **F6: Dry Run Mode** - Added dry_run flag to Agent, preview actions
+- **F7: Undo/Rollback** - Created `src/memory/journal.rs` with OperationJournal
+- **F8: Hierarchical Memory** - Created `src/memory/hierarchical.rs` with MemoryTier system
 
 ---
 

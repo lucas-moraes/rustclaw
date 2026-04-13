@@ -91,6 +91,7 @@ pub struct Agent {
     skill_manager: SkillManager,
     skill_context_store: SkillContextStore,
     chat_id: Option<i64>,
+    dry_run: bool,
     #[allow(dead_code)]
     fallback_index: usize,
     #[allow(dead_code)]
@@ -185,7 +186,19 @@ impl Agent {
             compression_count: 0,
             cost_tracker: CostTracker::new(),
             rate_limiter: RateLimiter::from_env(),
+            dry_run: false,
         })
+    }
+
+    pub fn set_dry_run(&mut self, dry_run: bool) {
+        self.dry_run = dry_run;
+        if dry_run {
+            println!("{}[DRY RUN MODE]{} - Actions will be previewed but not executed", Colors::AMBER, Colors::RESET);
+        }
+    }
+
+    pub fn is_dry_run(&self) -> bool {
+        self.dry_run
     }
 
     pub async fn prompt(&mut self, user_input: &str) -> anyhow::Result<String> {
@@ -2895,6 +2908,14 @@ Por favor, forneça a RESPOSTA MELHORADA que corrige os problemas identificados.
     }
 
     async fn execute_tool(&mut self, action: &str, action_input: &str) -> anyhow::Result<String> {
+        if self.dry_run {
+            return Ok(format!(
+                "[DRY RUN] Would execute tool: {} with input: {}",
+                action,
+                action_input
+            ));
+        }
+
         if let Some(trust) = &self.workspace_trust {
             let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
             match action {
