@@ -290,6 +290,22 @@ impl MemoryStore {
         entries.collect::<Result<Vec<_>, _>>().map_err(|e| e.into())
     }
 
+    pub fn get_all_limited(&self, limit: usize) -> Result<Vec<MemoryEntry>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, session_id, content, embedding, timestamp, importance, memory_type, metadata, search_count, scope, access_count, last_accessed
+             FROM memories ORDER BY timestamp DESC LIMIT ?1"
+        )?;
+
+        let entries = stmt.query_map([limit], Self::row_to_entry)?;
+
+        entries.collect::<Result<Vec<_>, _>>().map_err(|e| e.into())
+    }
+
+    pub fn get_count(&self) -> Result<i64> {
+        let mut stmt = self.conn.prepare("SELECT COUNT(*) FROM memories")?;
+        stmt.query_row([], |row| row.get(0)).map_err(|e| e.into())
+    }
+
     #[allow(dead_code)]
     pub fn get_by_id(&self, id: &str) -> Result<Option<MemoryEntry>> {
         let mut stmt = self.conn.prepare(

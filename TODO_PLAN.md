@@ -86,19 +86,19 @@ Based on project analysis (April 2026)
 ### Tasks
 
 #### 11.1 Optimize regex patterns
-- [ ] Review all static regex patterns
-- [ ] Move remaining runtime regex to OnceLock
+- [x] Review all static regex patterns (already uses OnceLock)
+- [ ] Move remaining runtime regex to OnceLock (low priority)
 - [ ] Add benchmarks for critical paths
 
 #### 11.2 Add pagination to memory operations
-- [ ] Implement cursor-based pagination in memory/store.rs
-- [ ] Add limit/offset to get_all operations
-- [ ] Optimize retrieve_relevant_memories
+- [x] Implement cursor-based pagination in memory/store.rs
+- [x] Add limit/offset to get_all operations
+- [ ] Optimize retrieve_relevant_memories (deferred)
 
 #### 11.3 Improve async parallelism
-- [ ] Add tokio::spawn for I/O-bound operations
-- [ ] Parallel tool execution for independent tools
-- [ ] Concurrent memory embeddings
+- [ ] Add tokio::spawn for I/O-bound operations (deferred)
+- [ ] Parallel tool execution for independent tools (deferred)
+- [ ] Concurrent memory embeddings (deferred)
 
 ### Priority: MEDIUM
 ### Estimated effort: 3-4 days
