@@ -942,6 +942,7 @@ Ou especifique outro diretório com permissões adequadas.",
 
                 // Activate sandbox for this project directory
                 self.project_sandbox.set_project_dir(PathBuf::from(&dev_dir));
+                tracing::info!("Sandbox activated for project directory: {}", dev_dir);
 
                 // Save checkpoint
                 self.checkpoint_store.save(&checkpoint)?;
@@ -985,6 +986,7 @@ Ou especifique outro diretório com permissões adequadas.",
         // Reactivate sandbox from checkpoint if project_dir is set
         if !checkpoint.project_dir.is_empty() {
             self.project_sandbox.set_project_dir(PathBuf::from(&checkpoint.project_dir));
+            tracing::info!("Sandbox reactivated from checkpoint for: {}", checkpoint.project_dir);
         }
 
         // If checkpoint is Executing, use plan_text as the development task
@@ -3007,6 +3009,7 @@ Por favor, forneça a RESPOSTA MELHORADA que corrige os problemas identificados.
 
         // SANDBOX: Validate paths against project directory sandbox
         if self.project_sandbox.is_active() {
+            tracing::debug!("Sandbox is ACTIVE for tool: {} with input: {}", action, action_input);
             let args = match response_parser::ResponseParser::parse_action_input_json(action_input) {
                 Ok(value) => value,
                 Err(_) => {
@@ -3019,6 +3022,7 @@ Por favor, forneça a RESPOSTA MELHORADA que corrige os problemas identificados.
                     if let Some(path_str) = args["path"].as_str() {
                         let path = Path::new(path_str);
                         let validation_result = self.project_sandbox.validate_path(path);
+                        tracing::debug!("Sandbox validation for '{}': {:?}", path_str, validation_result);
                         if let Err(e) = validation_result {
                             return Ok(format!(
                                 "🔒 Acesso negado: {}\nCaminho: '{}'\nDiretório do projeto: {:?}",

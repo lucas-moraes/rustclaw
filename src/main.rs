@@ -39,12 +39,32 @@ struct Args {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Load environment variables FIRST, before any env::var calls
-    let config_env = Path::new("config/.env");
-    if config_env.exists() {
-        dotenv::from_path(config_env).ok();
-    } else {
-        dotenv().ok();
+    // Try to find config/.env by traversing up from executable or current directory
+    fn find_and_load_env() {
+        // First, try to find config/.env starting from executable location
+        if let Ok(exe_path) = std::env::current_exe() {
+            let mut dir = exe_path.parent().map(|p| p.to_path_buf());
+            while let Some(d) = dir {
+                let config_env = d.join("config/.env");
+                if config_env.exists() {
+                    dotenv::from_path(&config_env).ok();
+                    return;
+                }
+                // Go up one directory
+                dir = d.parent().map(|p| p.to_path_buf());
+            }
+        }
+        
+        // Fallback: try current directory
+        let config_env = Path::new("config/.env");
+        if config_env.exists() {
+            dotenv::from_path(config_env).ok();
+        } else {
+            dotenv().ok();
+        }
     }
+    
+    find_and_load_env();
 
     let args = Args::parse();
 
