@@ -4,7 +4,7 @@ fn normalize_path(path: &Path) -> PathBuf {
     let mut components = path.components().peekable();
     let mut result = PathBuf::new();
 
-    while let Some(component) = components.next() {
+    for component in components {
         match component {
             std::path::Component::ParentDir => {
                 result.pop();

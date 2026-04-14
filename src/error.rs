@@ -240,19 +240,19 @@ impl From<InternalError> for AgentError {
 
 impl From<std::io::Error> for AgentError {
     fn from(e: std::io::Error) -> Self {
-        AgentError::Config(ConfigError::IoError(e.to_string())).into()
+        AgentError::Config(ConfigError::IoError(e.to_string()))
     }
 }
 
 impl From<reqwest::Error> for AgentError {
     fn from(e: reqwest::Error) -> Self {
-        AgentError::LLM(LLMError::ApiCallFailed(e.to_string())).into()
+        AgentError::LLM(LLMError::ApiCallFailed(e.to_string()))
     }
 }
 
 impl From<rusqlite::Error> for AgentError {
     fn from(e: rusqlite::Error) -> Self {
-        AgentError::Memory(MemoryError::StorageFailed(e.to_string())).into()
+        AgentError::Memory(MemoryError::StorageFailed(e.to_string()))
     }
 }
 

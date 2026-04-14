@@ -1,7 +1,6 @@
 #![allow(dead_code)]
 
 use crate::error::{AgentError, LLMError};
-use bytes::Bytes;
 use futures_util::{StreamExt, TryStreamExt};
 use serde_json::{json, Value};
 use std::pin::Pin;
@@ -288,8 +287,7 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
                 Ok(bytes) => {
                     if let Ok(text) = String::from_utf8(bytes.to_vec()) {
                         for line in text.lines() {
-                            if line.starts_with("data: ") {
-                                let data = &line[6..];
+                            if let Some(data) = line.strip_prefix("data: ") {
                                 if data == "[DONE]" {
                                     continue;
                                 }

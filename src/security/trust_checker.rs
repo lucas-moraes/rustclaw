@@ -1,4 +1,3 @@
-use crate::error::TrustError;
 use crate::workspace_trust::{Operation, TrustDecision, TrustEvaluator, TrustLevel};
 use std::path::Path;
 

@@ -1,9 +1,7 @@
 use crate::agent::init_tmux;
 use crate::agent::Agent;
 use crate::config::Config;
-use crate::error::InternalError;
 use crate::i18n;
-use crate::error::AgentError;
 use crate::tavily::tools::{TavilyQuickSearchTool, TavilySearchTool};
 use crate::tools::browser::BrowserTool;
 use crate::tools::{

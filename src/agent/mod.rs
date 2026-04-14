@@ -16,7 +16,6 @@ pub mod build_validator;
 pub mod conversation_summarizer;
 pub mod cost_tracker;
 pub mod llm_client;
-pub mod multi_agent;
 pub mod output;
 pub mod parallel_executor;
 pub mod plan_executor;
@@ -3134,7 +3133,7 @@ Por favor, forneça a RESPOSTA MELHORADA que corrige os problemas identificados.
                                     }
                                     // Remove quotes if present
                                     let cd_target = cd_target.trim_matches('"').trim_matches('\'');
-                                    if let Err(e) = self.project_sandbox.validate_path(Path::new(cd_target)) {
+                                    if let Err(_e) = self.project_sandbox.validate_path(Path::new(cd_target)) {
                                         return Ok(format!(
                                             "🔒 Acesso negado: cd para '{}' não permitido\nDiretório do projeto: {:?}",
                                             cd_target,

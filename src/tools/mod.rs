@@ -179,11 +179,7 @@ impl Default for ToolRegistry {
 pub mod browser;
 pub mod capabilities;
 pub mod clear_memory;
-pub mod cloud_storage;
-pub mod code_intelligence;
-pub mod database;
 pub mod datetime;
-pub mod docker;
 pub mod echo;
 pub mod file_edit;
 pub mod file_list;
@@ -199,7 +195,6 @@ pub mod skill_import;
 pub mod skill_manager;
 pub mod skill_script;
 pub mod system;
-pub mod vision;
 
 #[cfg(test)]
 mod tests {

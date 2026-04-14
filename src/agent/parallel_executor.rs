@@ -184,7 +184,7 @@ impl ParallelExecutor {
         
         let dependent: Vec<_> = analysis.unsafe_indices
             .into_iter()
-            .chain(analysis.shell_commands.into_iter())
+            .chain(analysis.shell_commands)
             .map(|i| actions[i].clone())
             .collect();
 

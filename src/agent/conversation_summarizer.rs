@@ -2,7 +2,7 @@ use serde_json::{json, Value};
 use std::result::Result;
 
 use crate::agent::token_counter::TokenCounter;
-use crate::error::{AgentError, LLMError};
+use crate::error::LLMError;
 
 #[derive(Debug, Clone)]
 pub struct SummarizationResult {
