@@ -188,7 +188,14 @@ impl Agent {
             cost_tracker: CostTracker::new(),
             rate_limiter: RateLimiter::from_env(),
             dry_run: false,
-            project_sandbox: crate::security::project_sandbox::ProjectSandbox::new(),
+            project_sandbox: {
+                let mut sandbox = crate::security::project_sandbox::ProjectSandbox::new();
+                if let Ok(cwd) = std::env::current_dir() {
+                    sandbox.set_project_dir(cwd);
+                    tracing::info!("Sandbox set to CWD: {:?}", sandbox.allowed_dir());
+                }
+                sandbox
+            },
         })
     }
 
@@ -892,15 +899,8 @@ impl Agent {
         let mut checkpoint = self.load_or_create_checkpoint(user_input).await?;
         let mut task_input = user_input.to_string();
 
-        // Reactivate sandbox from checkpoint ONLY if actively executing a plan
-        // Only activate sandbox if checkpoint is in Executing phase with a valid project_dir
-        if checkpoint.phase == PlanPhase::Executing && !checkpoint.project_dir.is_empty() {
-            self.project_sandbox.set_project_dir(PathBuf::from(&checkpoint.project_dir));
-            tracing::info!("Sandbox reactivated from checkpoint for: {}", checkpoint.project_dir);
-        } else if checkpoint.project_dir.is_empty() {
-            // No active development session - keep sandbox inactive
-            self.project_sandbox.clear();
-        }
+        // Sandbox is already set to CWD in agent initialization
+        // Always work in the directory where the system was started
 
         // If checkpoint is Executing, use plan_text as the development task
         if checkpoint.phase == PlanPhase::Executing && !checkpoint.plan_text.is_empty() {
