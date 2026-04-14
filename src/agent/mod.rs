@@ -848,8 +848,12 @@ impl Agent {
                 }
             }
 
+            // Use current working directory if no path specified
             if dev_dir.is_empty() {
-                return Ok("📂 Por favor, especifique o diretório do projeto:\n\nEx: /desenvolver /Users/macbook/projects/meu-projeto\n   ou\n   desenvolva o projeto no /Users/macbook/projects/meu-projeto".to_string());
+                dev_dir = std::env::current_dir()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|_| ".".to_string());
+                info!("Using current working directory as project dir: {}", dev_dir);
             }
 
             // Clean up directory
@@ -902,29 +906,12 @@ Ou especifique outro diretório com permissões adequadas.",
             // Check for PLANO.md
             let plano_path = path.join("PLANO.md");
             if !plano_path.exists() {
-                // Create default PLANO.md
-                let default_plano = r#"# Plano de Desenvolvimento
-
-## Etapa 1: Setup
-- [ ] Configurar ambiente
-- [ ] Instalar dependências
-
-## Etapa 2: Desenvolvimento
-- [ ] Implementar funcionalidades
-
-## Etapa 3: Testes e Validação
-- [ ] Criar testes
-- [ ] Validar build
-
----
-*Este plano foi criado automaticamente. Edite conforme necessário.*
-"#;
-                if let Err(e) = std::fs::write(&plano_path, default_plano) {
-                    return Ok(format!("❌ Erro ao criar PLANO.md: {}", e));
-                }
-
+                // Ask user if they want to create PLANO.md
                 return Ok(format!(
-                    "✅ Diretório configurado: {}\n\n📄 Criei um PLANO.md básico no diretório.\n\nPor favor, edite o arquivo com as etapas do seu projeto e depois digite:\n\ncontinuar\n\npara iniciar o desenvolvimento estruturado.",
+                    "📄 O diretório '{}' não tem um PLANO.md.\n\n\
+Você quer que eu crie um plano básico de desenvolvimento?\n\n\
+Digite 'sim' ou 'criar' para criar o PLANO.md automaticamente.\n\
+Ou especifique outro diretório com um PLANO.md existente.",
                     dev_dir
                 ));
             }
