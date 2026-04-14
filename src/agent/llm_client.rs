@@ -137,18 +137,29 @@ Sempre pense passo a passo. Se houver memórias relevantes abaixo, use-as para c
         tracing::debug!("Sending request to URL: {}", url);
         tracing::debug!("Request body: {:?}", body);
 
-        let response = client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", api_key))
-            .header("X-API-Key", api_key)
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| -> AgentError {
-                tracing::error!("HTTP request failed: {}", e);
-                LLMError::ApiCallFailed(format!("HTTP request to {} failed: {}", url, e)).into()
-            })?;
+        let request_builder = client.post(&url);
+
+        // opencode-go provider uses X-API-Key header, not Bearer token
+        let response = if provider == "opencode-go" || provider == "opencode" {
+            request_builder
+                .header("X-API-Key", api_key)
+                .header("Content-Type", "application/json")
+                .json(&body)
+                .send()
+                .await
+        } else {
+            request_builder
+                .header("Authorization", format!("Bearer {}", api_key))
+                .header("Content-Type", "application/json")
+                .json(&body)
+                .send()
+                .await
+        };
+
+        let response = response.map_err(|e| -> AgentError {
+            tracing::error!("HTTP request failed: {}", e);
+            LLMError::ApiCallFailed(format!("HTTP request to {} failed: {}", url, e)).into()
+        })?;
 
         if !response.status().is_success() {
             let _status = response.status();
