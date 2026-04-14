@@ -65,6 +65,7 @@ pub enum PlanPhase {
     AwaitingIdea,
     AwaitingPlanEdit,
     AwaitingApproval,
+    AwaitingPlanoCreation,
     Executing,
     Completed,
 }
@@ -76,6 +77,7 @@ impl std::fmt::Display for PlanPhase {
             PlanPhase::AwaitingIdea => write!(f, "awaiting_idea"),
             PlanPhase::AwaitingPlanEdit => write!(f, "awaiting_plan_edit"),
             PlanPhase::AwaitingApproval => write!(f, "awaiting_approval"),
+            PlanPhase::AwaitingPlanoCreation => write!(f, "awaiting_plano_creation"),
             PlanPhase::Executing => write!(f, "executing"),
             PlanPhase::Completed => write!(f, "completed"),
         }
@@ -89,6 +91,7 @@ impl From<&str> for PlanPhase {
             "awaiting_idea" => PlanPhase::AwaitingIdea,
             "awaiting_plan_edit" => PlanPhase::AwaitingPlanEdit,
             "awaiting_approval" => PlanPhase::AwaitingApproval,
+            "awaiting_plano_creation" => PlanPhase::AwaitingPlanoCreation,
             "completed" => PlanPhase::Completed,
             _ => PlanPhase::AwaitingDir,
         }

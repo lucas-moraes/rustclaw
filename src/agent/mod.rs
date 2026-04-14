@@ -518,6 +518,66 @@ impl Agent {
                     // Not a plan command — let it pass through to normal chat
                 }
 
+                PlanPhase::AwaitingPlanoCreation => {
+                    let lower = user_input.to_lowercase();
+                    if lower.contains("sim") || lower.contains("criar") {
+                        // Create default PLANO.md
+                        let default_plano = r#"# Plano de Desenvolvimento
+
+## Etapa 1: Setup
+- [ ] Configurar ambiente
+- [ ] Instalar dependências
+
+## Etapa 2: desenvolvimento
+- [ ] Implementar funcionalidades
+
+## Etapa 3: Testes e Validação
+- [ ] Criar testes
+- [ ] Validar build
+
+---
+*Este plano foi criado automaticamente. Edite conforme necessário.*
+"#;
+                        let plano_path = std::path::Path::new(&checkpoint.project_dir).join("PLANO.md");
+                        if let Err(e) = std::fs::write(&plano_path, default_plano) {
+                            return Ok(format!("❌ Erro ao criar PLANO.md: {}", e));
+                        }
+
+                        // Read the created PLANO.md
+                        if let Ok(plano_content) = std::fs::read_to_string(&plano_path) {
+                            info!("Starting structured development in {}", checkpoint.project_dir);
+
+                            // Update checkpoint to Executing phase
+                            checkpoint.set_plan_text(plano_content.clone());
+                            checkpoint.set_phase(PlanPhase::Executing);
+
+                            // Activate sandbox for this project directory
+                            self.project_sandbox.set_project_dir(PathBuf::from(&checkpoint.project_dir));
+                            tracing::info!("Sandbox activated for project directory: {}", checkpoint.project_dir);
+
+                            // Save checkpoint
+                            self.checkpoint_store.save(&checkpoint)?;
+
+                            // Start structured development
+                            let task_input = format!(
+                                "Desenvolva o projeto no diretório {} seguindo o PLANO.md:\n\n{}",
+                                checkpoint.project_dir, plano_content
+                            );
+
+                            return self
+                                .run_structured_development(task_input, checkpoint)
+                                .await;
+                        } else {
+                            return Ok(format!("❌ Erro ao ler PLANO.md criado em {}", checkpoint.project_dir));
+                        }
+                    } else {
+                        // User said no or something else - cancel
+                        let id = checkpoint.id.clone();
+                        self.checkpoint_store.delete(&id)?;
+                        return Ok("Operação cancelada. Retornando ao modo normal.".to_string());
+                    }
+                }
+
                 PlanPhase::Completed => {
                     // Clean up old completed checkpoint
                     self.checkpoint_store.delete(&checkpoint.id)?;
@@ -906,7 +966,13 @@ Ou especifique outro diretório com permissões adequadas.",
             // Check for PLANO.md
             let plano_path = path.join("PLANO.md");
             if !plano_path.exists() {
-                // Ask user if they want to create PLANO.md
+                // Create checkpoint waiting for PLANO.md creation confirmation
+                let mut checkpoint =
+                    DevelopmentCheckpoint::new("desenvolvimento estruturado".to_string());
+                checkpoint.set_project_dir(dev_dir.clone());
+                checkpoint.set_phase(PlanPhase::AwaitingPlanoCreation);
+                self.checkpoint_store.save(&checkpoint)?;
+
                 return Ok(format!(
                     "📄 O diretório '{}' não tem um PLANO.md.\n\n\
 Você quer que eu crie um plano básico de desenvolvimento?\n\n\
