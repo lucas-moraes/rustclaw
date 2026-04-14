@@ -131,6 +131,30 @@ fn print_splash(model: &str, memory_count: usize) {
     print!("{}v{}", Colors::LIGHT_GRAY, Colors::RESET);
     println!("{}{}{}", Colors::RESET, VERSION, Colors::RESET);
     println!();
+
+    // Show working directory
+    if let Ok(cwd) = std::env::current_dir() {
+        println!(
+            "{}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{}",
+            Colors::DIM, Colors::RESET
+        );
+        println!(
+            "{}📁{} Projeto:{} {}",
+            Colors::AMBER,
+            Colors::RESET,
+            Colors::AMBER,
+            cwd.display()
+        );
+        println!(
+            "{}   ↑ Todo desenvolvimento aqui{}",
+            Colors::DIM, Colors::RESET
+        );
+        println!(
+            "{}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{}",
+            Colors::DIM, Colors::RESET
+        );
+        println!();
+    }
 }
 
 fn print_help() {
