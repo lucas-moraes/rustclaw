@@ -1,0 +1,66 @@
+# Build artifacts
+/target
+
+# Environment variables (sensitive!)
+config/.env
+config/.env.local
+
+# SSH Keys (highly sensitive!)
+config/github/keys/
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+
+# SQLite database with memories
+config/
+*.db
+*.db-journal
+*.db-wal
+
+# Keep example files
+!config/.env.example
+
+# Cargo.lock for libraries (keep for binaries)
+# Uncomment if this is a library:
+# Cargo.lock
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+
+# FastEmbed model cache (if downloaded locally)
+.fastembed_cache/
+models/
+.onnx
+*.onnx
+
+# Build artifacts
+*.o
+*.so
+*.dylib
+*.dll
+
+# Test outputs
+test_output/
+tmp/
+
+# opencode state
+src/.opencode/
+
+TODO.md
