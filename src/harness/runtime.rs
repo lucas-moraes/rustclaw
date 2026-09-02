@@ -28,7 +28,6 @@ pub struct HarnessConfig {
     pub api_key: String,
     pub max_iterations: usize,
     pub max_context_tokens: usize,
-    pub temperature: f32,
     pub default_agent: String,
 }
 
@@ -41,23 +40,27 @@ impl Default for HarnessConfig {
             api_key: String::new(),
             max_iterations: 50,
             max_context_tokens: 100_000,
-            temperature: 0.7,
             default_agent: "build".to_string(),
         }
     }
 }
 
 impl HarnessConfig {
-    /// Builds from the legacy config (provider/model/tokens already loaded from env).
+    /// True when the harness has a usable provider token.
+    pub fn is_configured(&self) -> bool {
+        self.api_key.trim().len() >= 10
+    }
+
+    /// Builds from the legacy config (provider/model/tokens already resolved by
+    /// `config::Config::load`).
     pub fn from_legacy(cfg: &crate::config::Config) -> Self {
         Self {
             model: cfg.model.clone(),
             provider: cfg.provider.clone(),
             base_url: cfg.base_url.clone(),
-            api_key: cfg.api_key.clone(),
+            api_key: cfg.api_key.clone().unwrap_or_default(),
             max_iterations: cfg.max_iterations,
             max_context_tokens: cfg.max_context_tokens,
-            temperature: cfg.temperature,
             default_agent: "build".to_string(),
         }
     }
@@ -128,39 +131,18 @@ impl SessionRuntime {
         asker: Arc<dyn PermissionAsker>,
         user_asker: Arc<dyn UserAsker>,
     ) -> Result<Self> {
-        // Resolution order: env/.env defaults -> project `rustclaw.json` ->
-        // auth store token (global, per provider) -> env TOKEN.
-        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        let mut cfg = cfg.clone();
-        let proj = crate::harness::project::config_file::ProjectConfig::load(&cwd);
-        if !proj.is_empty() {
-            if !proj.provider.is_empty() {
-                cfg.provider = proj.provider;
-            }
-            if !proj.model.is_empty() {
-                cfg.model = proj.model;
-            }
-            if !proj.base_url.is_empty() {
-                cfg.base_url = proj.base_url;
-            }
-        }
-        let auth = crate::harness::auth::AuthStore::load();
-        if let Some(key) = auth.get_key(&cfg.provider) {
-            if !key.trim().is_empty() {
-                cfg.api_key = key;
-            }
-        }
-
+        // `Config::load` already resolved provider/model/base_url and picked
+        // the token from the auth store; `from_legacy` just adapts it.
         let http = HttpConfig {
             client: reqwest::Client::new(),
             base_url: cfg.base_url.clone(),
-            api_key: cfg.api_key.clone(),
+            api_key: cfg.api_key.clone().unwrap_or_default(),
         };
         let provider = build_provider_from(&cfg.provider, http)?;
         Self::new(
             provider,
             registry,
-            HarnessConfig::from_legacy(&cfg),
+            HarnessConfig::from_legacy(cfg),
             db_path,
             asker,
             user_asker,
@@ -196,8 +178,11 @@ impl SessionRuntime {
         let http = HttpConfig {
             client: reqwest::Client::new(),
             base_url: base_url.clone(),
-            api_key,
+            api_key: api_key.clone(),
         };
+        if !api_key.is_empty() {
+            self.config.api_key = api_key.clone();
+        }
         self.provider = build_provider_from(provider, http)?;
         self.config.provider = provider.to_string();
         self.config.model = model.to_string();
@@ -219,6 +204,36 @@ impl SessionRuntime {
         }
         crate::harness::agent::find_builtin(name)
             .unwrap_or_else(crate::harness::agent::builtin::build)
+    }
+
+    /// Effective sampling temperature for an agent (spec override wins,
+    /// else the calibrated default for the mode).
+    pub fn turn_temperature(&self, agent_name: &str) -> f32 {
+        self.resolve_agent(agent_name).turn_temperature()
+    }
+
+    /// Updates global runtime limits (persisted in `config.json`) and
+    /// applies them to the live config. `None` = leave unchanged.
+    pub fn update_settings(
+        &mut self,
+        max_iterations: Option<usize>,
+        max_context_tokens: Option<usize>,
+    ) -> Result<()> {
+        if let Some(n) = max_iterations {
+            anyhow::ensure!(n > 0, "max_iterations must be > 0");
+            self.config.max_iterations = n;
+        }
+        if let Some(n) = max_context_tokens {
+            anyhow::ensure!(n >= 1000, "max_context_tokens must be at least 1000");
+            self.config.max_context_tokens = n;
+        }
+        let mut s = crate::config::GlobalSettings::load();
+        s.max_iterations = self.config.max_iterations;
+        s.max_context_tokens = self.config.max_context_tokens;
+        s.provider = self.config.provider.clone();
+        s.model = self.config.model.clone();
+        s.save().context("failed to persist config.json")?;
+        Ok(())
     }
 
     pub async fn create_session(&self, agent_name: &str) -> Result<Session> {
@@ -308,7 +323,6 @@ impl SessionRuntime {
                     .unwrap_or_else(|| self.config.model.clone()),
                 max_iterations: self.config.max_iterations,
                 max_context_tokens: self.config.max_context_tokens,
-                temperature: agent.temperature.unwrap_or(self.config.temperature),
             },
         };
 
@@ -463,28 +477,14 @@ mod smoke_tests {
     use super::*;
     use std::io::Write;
 
-    fn ensure_env() {
-        let dotenv_path = std::path::Path::new("config/.env");
-        if dotenv_path.exists() {
-            for line in std::fs::read_to_string(dotenv_path).unwrap().lines() {
-                let line = line.trim();
-                if line.is_empty() || line.starts_with('#') {
-                    continue;
-                }
-                if let Some((k, v)) = line.split_once('=') {
-                    if std::env::var_os(k).is_none() {
-                        std::env::set_var(k, v);
-                    }
-                }
-            }
-        }
-    }
-
     #[tokio::test]
-    #[ignore = "requires live API key"]
+    #[ignore = "requires a live token in the auth store (~/.local/share/rustclaw/auth.json)"]
     async fn smoke_native_tool_calling() {
-        ensure_env();
-        let config = crate::config::Config::from_env().expect("config");
+        let config = crate::config::Config::load();
+        assert!(
+            config.is_configured(),
+            "run the TUI once with /models + /auth to store a token before this smoke test"
+        );
         let registry = crate::harness::runtime::build_default_registry();
         let db = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/smoke.db");
         let _ = std::fs::remove_file(&db);

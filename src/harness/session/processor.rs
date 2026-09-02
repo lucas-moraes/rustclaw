@@ -19,7 +19,7 @@ pub struct ProcessorConfig {
     pub model: String,
     pub max_iterations: usize,
     pub max_context_tokens: usize,
-    pub temperature: f32,
+    // Temperature is agent-calibrated: see AgentSpec::turn_temperature.
 }
 
 impl Default for ProcessorConfig {
@@ -28,7 +28,6 @@ impl Default for ProcessorConfig {
             model: String::new(),
             max_iterations: 50,
             max_context_tokens: 100_000,
-            temperature: 0.7,
         }
     }
 }
@@ -99,7 +98,7 @@ impl SessionProcessor {
                 messages: session.messages.clone(),
                 tools: tool_specs.clone(),
                 max_tokens: None,
-                temperature: agent.temperature.unwrap_or(self.config.temperature),
+                temperature: agent.turn_temperature(),
             };
 
             let mut stream = self.provider.stream(&req).await?;

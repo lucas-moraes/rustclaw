@@ -42,7 +42,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
     ));
     lines.push(kv(
         "temperature",
-        format!("{:.1}", app.runtime.config.temperature),
+        format!("{:.1}", app.runtime.turn_temperature(&app.session.agent)),
         t,
     ));
     lines.push(Line::from(""));

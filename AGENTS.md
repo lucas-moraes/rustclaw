@@ -12,7 +12,7 @@ cargo build
 # Run (CLI harness)
 cargo run
 
-# Run a live smoke test (uses config/.env API key)
+# Run a live smoke test (uses the token in ~/.local/share/rustclaw/auth.json)
 cargo test --bin rustclaw smoke_native_tool_calling -- --ignored --nocapture
 ```
 
@@ -123,12 +123,16 @@ src/
             └── askers.rs# TuiAsker/TuiUserAsker (channels oneshot)
 ```
 
-## Configuration (`config/.env`)
+## Configuration (file-based, no `.env`)
 
-- Copy from `.env.example`
-- Required: `TOKEN` (API key)
-- Optional: `PROVIDER`, `MODEL`, `BASE_URL`, `MAX_TOKENS`, `MAX_ITERATIONS`,
-  `MAX_CONTEXT_TOKENS`, `TZ`
+- `~/.local/share/rustclaw/auth.json` — API token per provider (0600, via `/auth`)
+- `~/.local/share/rustclaw/config.json` — provider/model, `max_iterations`,
+  `max_context_tokens`, theme (via `/settings`, `/models`)
+- `rustclaw.json` in the project root — per-project provider/model override
+- Precedence: catalog → config.json → rustclaw.json → auth token
+- UX env vars still honored: `RUSTCLAWUI`/`RUSTCLAW_UI`, `RUSTCLAW_THEME`,
+  `RUSTCLAW_SKILLS_DIR`, `NO_COLOR`
+- Install: `scripts/install.sh` (curl releases) / `scripts/link-local.sh` (dev)
 
 ## Key Patterns
 

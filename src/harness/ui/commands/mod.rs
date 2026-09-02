@@ -36,10 +36,44 @@ pub async fn handle(
             out.push(
                 "commands: /help /new /sessions /resume <id> /agent <name> \
                   /compact /theme [name] /usage /memory /models /model <name> \
-                  /provider <name> /auth <provider> /exit"
+                  /provider <name> /auth <provider> /settings /exit"
                     .to_string(),
             );
             out.push("keys: Ctrl+P palette · Ctrl+T theme · ? help · Ctrl+L clear".to_string());
+        }
+        "/settings" => {
+            let c = &runtime.config;
+            if arg.is_empty() {
+                out.push(format!(
+                    "settings · iterations {} · context {} · provider {} · model {}",
+                    c.max_iterations, c.max_context_tokens, c.provider, c.model
+                ));
+                out.push("usage: /settings iterations <n> · context <n>".to_string());
+            } else {
+                let mut parts = arg.split_whitespace();
+                match parts.next() {
+                    Some("iterations") => {
+                        match parts.next().and_then(|v| v.parse::<usize>().ok()) {
+                            Some(n) => match runtime.update_settings(Some(n), None) {
+                                Ok(()) => out.push(format!("settings · max_iterations = {}", n)),
+                                Err(e) => out.push(format!("[error] {}", e)),
+                            },
+                            None => out.push("usage: /settings iterations <n>".to_string()),
+                        }
+                    }
+                    Some("context") => match parts.next().and_then(|v| v.parse::<usize>().ok()) {
+                        Some(n) => match runtime.update_settings(None, Some(n)) {
+                            Ok(()) => out.push(format!("settings · max_context_tokens = {}", n)),
+                            Err(e) => out.push(format!("[error] {}", e)),
+                        },
+                        None => out.push("usage: /settings context <tokens>".to_string()),
+                    },
+                    Some(other) => {
+                        out.push(format!("unknown setting: {} (iterations · context)", other))
+                    }
+                    None => {}
+                }
+            }
         }
         "/theme" => {
             out.push(

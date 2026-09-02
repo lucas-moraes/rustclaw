@@ -204,6 +204,14 @@ pub fn initial_theme() -> (Theme, usize) {
             return (t, idx);
         }
     }
+    // Theme persisted in the global config.json (set via Ctrl+T).
+    if let Ok(s) = crate::config::GlobalSettings::load_from(&crate::config::GlobalSettings::path())
+    {
+        if let Some(t) = Theme::by_name(&s.theme) {
+            let idx = Theme::index_of(t.name);
+            return (t, idx);
+        }
+    }
     (Theme::cyberclaw(), 0)
 }
 

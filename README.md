@@ -30,45 +30,56 @@ Qualquer provider OpenAI-compatível funciona via `BASE_URL` + `Authorization: B
 
 ## 🚀 Instalação
 
-```bash
-git clone <repo> rustclaw
-cd rustclaw
-cp .env.example config/.env
-# edite config/.env (TOKEN, PROVIDER, MODEL, BASE_URL)
-```
-
-## ⚙️ Configuração (`config/.env`)
+macOS (Apple Silicon) e Linux x64, via release pré-compilada:
 
 ```bash
-TOKEN=your_api_key_here
-PROVIDER=deepinfra          # opencode-go | deepinfra | openrouter | moonshot | ...
-MODEL=deepseek-ai/DeepSeek-V4-Flash-0731
-BASE_URL=https://api.deepinfra.com/v1/openai
-
-MAX_TOKENS=16000
-MAX_ITERATIONS=50
-MAX_CONTEXT_TOKENS=100000
+curl -fsSL https://raw.githubusercontent.com/lucas-moraes/rustclaw/main/scripts/install.sh | bash
 ```
 
-| Var | Default | Descrição |
-|-----|---------|-----------|
-| `TOKEN` | — (obrigatório) | API key do provider |
-| `PROVIDER` | `opencode-go` | Provider usado |
-| `MODEL` | por provider | Modelo |
-| `BASE_URL` | por provider | Endpoint OpenAI/Anthropic-compatível |
-| `MAX_TOKENS` | 16000 | Tokens máximos por resposta |
-| `MAX_ITERATIONS` | 50 | Iterações máximas por turno |
-| `MAX_CONTEXT_TOKENS` | 100000 | Limite de contexto antes de compactar |
-| `RUSTCLAW_THEME` | `cyberclaw` | Tema da TUI: `cyberclaw`·`aurora`·`ember`·`mono` |
-| `RUSTCLAW_SKILLS` | — | Skills da session via CLI (`id1,id2`) |
-| `RUSTCLAW_SKILLS_DIR` | — | Diretório extra de `SKILL.md` |
-| `RUSTCLAW_UI` | `auto` | Forçar `tui` ou `cli` |
+O instalador baixa a última release, valida o SHA-256, copia para `~/.local/bin/rustclaw`
+e ajusta o PATH se necessário. Versão específica:
+
+```bash
+RUSTCLAW_VERSION=v0.2.0 curl -fsSL .../install.sh | bash
+```
+
+Instalação a partir do código-fonte (desenvolvimento):
+
+```bash
+git clone git@github.com:lucas-moraes/rustclaw.git && cd rustclaw
+./scripts/link-local.sh   # cargo build --release + copia para ~/.local/bin
+# ou: cargo install --path .
+```
+
+## ⚙️ Configuração (sem `.env`)
+
+Toda a configuração vive em arquivos — nenhuma variável de ambiente obrigatória:
+
+| Arquivo | Escopo | Conteúdo |
+|---------|--------|----------|
+| `~/.local/share/rustclaw/auth.json` | global | API key por provider (chmod 600) |
+| `~/.local/share/rustclaw/config.json` | global | provider/model, `max_iterations`, `max_context_tokens`, tema |
+| `rustclaw.json` (raiz do projeto) | por projeto | provider/model/base_url (grava pelo `/models`) |
+
+Na **primeira execução**, a TUI abre um wizard: escolha **provider → modelo** (`/models`)
+e cole o **token** (`/auth <provider>`) — nada é editado manualmente. Comandos de config:
+
+| Comando | O que faz |
+|---------|-----------|
+| `/models` | picker de provider/modelo (grava `rustclaw.json` do projeto) |
+| `/auth <provider>` | salva o token no `auth.json` (input mascarado) |
+| `/settings` | ver/editar `max_iterations`, `max_context_tokens`, tema |
+| `/provider <nome>` | troca de provider (default model do catálogo) |
+| `/model <nome>` | troca de modelo |
+
+Precedência: **catálogo builtin → `config.json` → `rustclaw.json` → token do `auth.json`**.
 
 ## 🤖 Uso
 
 ```bash
-cargo run                # TUI Cyberclaw (requer terminal); fallback para CLI streaming
-```
+rustclaw                 # TUI (qualquer diretório); CLI se não for TTY
+RUSTCLAW_UI=cli rustclaw # força CLI streaming
+cargo run                # no diretório do projeto (dev)
 
 ### Skills: memória da sessão
 
@@ -130,7 +141,7 @@ Tools destrutivas (`bash`, `write`, `edit`, `task`) pedem confirmação:
 ```
 src/
 ├── main.rs          # Entry point
-├── config.rs        # Configuração por env
+├── config.rs        # GlobalSettings (config.json) + resolução
 ├── error.rs         # Tipos de erro
 └── harness/         # O harness em si
     ├── event.rs     # Event bus
@@ -158,7 +169,7 @@ cargo clippy          # lint
 cargo fmt --check     # formatação
 ```
 
-Um smoke test ao vivo (`--ignored`) valida native tool calling contra um provider real usando a key de `config/.env`:
+Um smoke test ao vivo (`--ignored`) valida native tool calling contra um provider real usando o token do auth store (`~/.local/share/rustclaw/auth.json`):
 
 ```bash
 cargo test --bin rustclaw smoke_native_tool_calling -- --ignored --nocapture

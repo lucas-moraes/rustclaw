@@ -223,6 +223,13 @@ pub fn all_items() -> Vec<PaletteItem> {
             "/auth ",
         ),
         item(
+            "settings",
+            "/settings",
+            "View / edit global limits and theme (config.json)",
+            PaletteKind::Command,
+            "/settings",
+        ),
+        item(
             "skills-picker",
             "skills · picker",
             "Reopen the skill selection overlay",

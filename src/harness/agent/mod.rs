@@ -24,6 +24,28 @@ impl AgentSpec {
     pub fn allows_tool(&self, name: &str) -> bool {
         self.tools.is_empty() || self.tools.iter().any(|t| t == name)
     }
+
+    /// Calibrated sampling temperature per operating mode.
+    /// `build` = 0.0 (deterministic for code/tool JSON), `plan` = 0.2
+    /// (analytic/structured), `explore` = 0.5 (investigative), `general`
+    /// = 0.3. Custom/unknown agents fall back to 0.0 unless the spec
+    /// sets an explicit `temperature` override.
+    pub fn default_temperature(&self) -> f32 {
+        match self.name.as_str() {
+            "build" => 0.0,
+            "plan" => 0.2,
+            "explore" => 0.5,
+            "general" => 0.3,
+            _ => 0.0,
+        }
+    }
+
+    /// Effective turn temperature: an explicit spec override wins;
+    /// otherwise the calibrated default for the mode applies.
+    pub fn turn_temperature(&self) -> f32 {
+        self.temperature
+            .unwrap_or_else(|| self.default_temperature())
+    }
 }
 
 /// Builds the final system prompt for a turn: identity + project context +
@@ -207,6 +229,47 @@ mod tests {
         let manual_pos = prompt.find("Project instructions").unwrap();
         let auto_pos = prompt.find("Project context").unwrap();
         assert!(manual_pos < auto_pos);
+    }
+
+    #[test]
+    fn test_default_temperature_per_mode() {
+        let cases = [
+            ("build", 0.0),
+            ("plan", 0.2),
+            ("explore", 0.5),
+            ("general", 0.3),
+        ];
+        for (name, expected) in cases {
+            let spec = find_builtin(name).unwrap();
+            assert!(
+                (spec.default_temperature() - expected).abs() < 1e-6,
+                "mode: {}",
+                name
+            );
+            // Builtins carry no explicit override → same effective value.
+            assert!((spec.turn_temperature() - expected).abs() < 1e-6);
+        }
+        // Custom/unknown agent falls back to 0.0.
+        let custom = AgentSpec {
+            name: "my-custom".into(),
+            description: String::new(),
+            tools: vec![],
+            system_prompt: String::new(),
+            model: None,
+            temperature: None,
+            permission_overrides: Default::default(),
+        };
+        assert_eq!(custom.default_temperature(), 0.0);
+        assert_eq!(custom.turn_temperature(), 0.0);
+    }
+
+    #[test]
+    fn test_turn_temperature_override_wins() {
+        let mut custom = find_builtin("explore").unwrap();
+        custom.temperature = Some(1.0);
+        assert!((custom.turn_temperature() - 1.0).abs() < 1e-6);
+        // override wins even over the calibrated default
+        assert!((custom.default_temperature() - 0.5).abs() < 1e-6);
     }
 
     #[test]

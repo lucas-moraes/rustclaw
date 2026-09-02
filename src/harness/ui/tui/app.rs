@@ -360,6 +360,12 @@ impl App {
             }
             Err(e) => self.add_system(&format!("[error] model switch failed: {}", e)),
         }
+        // Onboarding wizard continuation: no token for this provider yet →
+        // open the (masked) auth prompt right away.
+        if !self.runtime.config.is_configured() && self.auth_prompt.is_none() {
+            self.add_system("token required for this provider — paste it via /auth");
+            self.auth_prompt = Some(AuthPromptState::new(provider));
+        }
         Ok(())
     }
 
@@ -367,6 +373,16 @@ impl App {
         self.theme_id = (self.theme_id + 1) % Theme::all().len();
         self.theme = Theme::from_index(self.theme_id);
         self.add_system(&format!("theme → {}", self.theme.name));
+        self.persist_theme();
+    }
+
+    /// Saves the current theme into the global config.json (best effort).
+    pub fn persist_theme(&self) {
+        let mut s = crate::config::GlobalSettings::load();
+        s.theme = self.theme.name.to_string();
+        if let Err(e) = s.save() {
+            tracing::warn!("failed to persist theme: {}", e);
+        }
     }
 
     /// Cycles the active agent mode (build → plan → explore → general → build),
@@ -388,6 +404,7 @@ impl App {
         if let Some(t) = Theme::by_name(name) {
             self.theme_id = Theme::index_of(t.name);
             self.theme = t;
+            self.persist_theme();
             true
         } else {
             false
@@ -873,6 +890,13 @@ pub async fn run_tui(
     let _guard = TerminalGuard;
 
     let mut app = App::new(runtime, session, cwd, permission_rx, question_rx);
+    // Unconfigured boot → onboarding wizard: /models picker first; the auth
+    // prompt follows automatically after the model choice (see
+    // apply_model_choice).
+    if !app.runtime.config.is_configured() {
+        app.open_models_picker();
+        app.add_system("RustClaw needs a provider/model and an API token — configure now");
+    }
 
     let mut prompt_task: Option<tokio::task::JoinHandle<Result<(PromptResult, Session)>>> = None;
 
@@ -1300,6 +1324,59 @@ fn handle_skill_picker_key(app: &mut App, key: KeyEvent) -> Result<bool> {
     Ok(false)
 }
 
+/// `/settings` — show/update global limits (config.json), no modal needed.
+fn handle_settings_command(app: &mut App, text: &str) {
+    let rest = text.strip_prefix("/settings").unwrap_or("").trim();
+    let mut parts = rest.split_whitespace();
+    match parts.next() {
+        None => {
+            let c = &app.runtime.config;
+            app.add_system(&format!(
+                "settings · iterations {} · context {} · theme {} · provider {} · model {}",
+                c.max_iterations, c.max_context_tokens, app.theme.name, c.provider, c.model
+            ));
+            app.add_system("usage: /settings iterations <n> · context <n> · theme <name>");
+        }
+        Some("iterations") => {
+            let Some(n) = parts.next().and_then(|v| v.parse::<usize>().ok()) else {
+                app.add_system("usage: /settings iterations <n> (e.g. 50)");
+                return;
+            };
+            match app.runtime.update_settings(Some(n), None) {
+                Ok(()) => app.add_system(&format!("settings · max_iterations = {}", n)),
+                Err(e) => app.add_system(&format!("[error] {}", e)),
+            }
+        }
+        Some("context") => {
+            let Some(n) = parts.next().and_then(|v| v.parse::<usize>().ok()) else {
+                app.add_system("usage: /settings context <tokens> (e.g. 100000)");
+                return;
+            };
+            match app.runtime.update_settings(None, Some(n)) {
+                Ok(()) => app.add_system(&format!("settings · max_context_tokens = {}", n)),
+                Err(e) => app.add_system(&format!("[error] {}", e)),
+            }
+        }
+        Some("theme") => match parts.next() {
+            Some(name) if app.set_theme(name) => {
+                app.add_system(&format!(
+                    "theme → {} (saved to config.json)",
+                    app.theme.name
+                ));
+            }
+            Some(_) => app.add_system(&format!(
+                "unknown theme (options: {})",
+                Theme::names().join(", ")
+            )),
+            None => app.add_system(&format!("current theme: {}", app.theme.name)),
+        },
+        Some(other) => app.add_system(&format!(
+            "unknown setting: {} (iterations · context · theme)",
+            other
+        )),
+    }
+}
+
 /// Handles a key while the `/models` picker is open.
 fn handle_model_picker_key(app: &mut App, key: KeyEvent) -> Result<bool> {
     use crossterm::event::{KeyCode, KeyModifiers};
@@ -1384,12 +1461,23 @@ fn handle_auth_prompt_key(app: &mut App, key: KeyEvent) -> Result<bool> {
                 app.add_system("[error] empty token — auth cancelled");
             } else {
                 let mut store = crate::harness::auth::AuthStore::load();
-                store.set_key(&provider, token);
+                store.set_key(&provider, token.clone());
                 match store.save() {
-                    Ok(()) => app.add_system(&format!(
-                        "token saved for provider `{}` (stored in auth.json, 0600)",
-                        provider
-                    )),
+                    Ok(()) => {
+                        // Token becomes active immediately for the current provider.
+                        if provider == app.runtime.config.provider {
+                            app.runtime.config.api_key = token.clone();
+                        }
+                        app.add_system(&format!(
+                            "token saved for provider `{}` (auth.json, 0600){}",
+                            provider,
+                            if app.runtime.config.is_configured() {
+                                " — ready to go"
+                            } else {
+                                ""
+                            }
+                        ));
+                    }
                     Err(e) => app.add_system(&format!("[error] failed to save token: {}", e)),
                 }
             }
@@ -1502,6 +1590,11 @@ async fn submit_input(
         }
 
         // /models picker, /model and /provider direct switch, /auth token input.
+        // /settings: show or update global limits/theme (persisted in config.json).
+        if text == "/settings" || text.starts_with("/settings ") {
+            handle_settings_command(app, &text);
+            return Ok(false);
+        }
         if text == "/models" || text.starts_with("/models ") {
             let arg = text.strip_prefix("/models").unwrap_or("").trim();
             if arg.is_empty() {
