@@ -200,29 +200,25 @@ fn bubble(
     }
 
     let title_owned = title.to_string();
+    // Rules extend to the right edge of the transcript area.
+    let rule_w = width.saturating_sub(title.chars().count() + 4).max(1);
     let top = Line::from(vec![
-        Span::styled("╭─ ".to_string(), Style::default().fg(border)),
+        Span::styled("── ".to_string(), Style::default().fg(border)),
         Span::styled(
             title_owned,
             Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            format!(
-                " {}",
-                "─".repeat(inner_w.saturating_sub(title.len() + 2).min(80))
-            ),
+            format!(" {}", "─".repeat(rule_w)),
             Style::default().fg(border),
         ),
-        Span::styled("╮".to_string(), Style::default().fg(border)),
     ]);
     let mut out = vec![top];
     for bl in body_lines {
-        let mut spans = vec![Span::styled("│ ".to_string(), Style::default().fg(border))];
-        spans.extend(bl.spans);
-        out.push(Line::from(spans));
+        out.push(bl);
     }
     out.push(Line::from(Span::styled(
-        format!("╰{}╯", "─".repeat(inner_w.min(100) + 1)),
+        "─".repeat(width),
         Style::default().fg(border),
     )));
     out

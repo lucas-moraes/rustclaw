@@ -96,12 +96,12 @@ impl PermissionEngine {
     }
 
     /// Resolves the decision for `tool` with optional `path` (absolute).
-    /// Escalates Allow => Ask when the path escapes the session cwd.
+    /// Paths escaping the session cwd always escalate to Ask — even with an
+    /// "always allow" cached for the tool — so "a" (always) only grants
+    /// blanket permission for files inside the project.
     pub fn check(&self, tool: &str, path: Option<&str>, cwd: &Path) -> PermissionDecision {
-        // Explicit "always allow" wins for this run.
-        if self.always_allow.lock().unwrap().contains(tool) {
-            return PermissionDecision::Allow;
-        }
+        // Explicit "always allow" wins for this run, but only inside the cwd.
+        let always = self.always_allow.lock().unwrap().contains(tool);
 
         let rule = self
             .rules
@@ -110,7 +110,7 @@ impl PermissionEngine {
             .copied()
             .unwrap_or(Rule::Ask);
 
-        // Paths outside the workspace always escalate to Ask.
+        // Paths outside the workspace always escalate to Ask (unless denied).
         if let Some(p) = path {
             if !Path::new(p).starts_with(cwd) {
                 if rule == Rule::Deny {
@@ -118,6 +118,10 @@ impl PermissionEngine {
                 }
                 return PermissionDecision::Ask;
             }
+        }
+
+        if always {
+            return PermissionDecision::Allow;
         }
 
         match rule {
@@ -179,6 +183,38 @@ mod tests {
         let cwd = Path::new("/proj");
         engine.set_always_allow("bash");
         assert_eq!(engine.check("bash", None, cwd), PermissionDecision::Allow);
+    }
+
+    #[test]
+    fn test_always_allow_grants_all_project_files() {
+        let engine = PermissionEngine::default();
+        let cwd = Path::new("/proj");
+        engine.set_always_allow("edit");
+        assert_eq!(
+            engine.check("edit", Some("/proj/src/main.rs"), cwd),
+            PermissionDecision::Allow
+        );
+        assert_eq!(
+            engine.check("edit", Some("/proj/README.md"), cwd),
+            PermissionDecision::Allow
+        );
+        // Other mutating tools still ask.
+        assert_eq!(engine.check("write", None, cwd), PermissionDecision::Ask);
+    }
+
+    #[test]
+    fn test_always_allow_keeps_asking_outside_cwd() {
+        let engine = PermissionEngine::default();
+        let cwd = Path::new("/proj");
+        engine.set_always_allow("write");
+        assert_eq!(
+            engine.check("write", Some("/etc/passwd"), cwd),
+            PermissionDecision::Ask
+        );
+        assert_eq!(
+            engine.check("write", Some("/proj/src/main.rs"), cwd),
+            PermissionDecision::Allow
+        );
     }
 
     #[test]

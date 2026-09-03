@@ -133,6 +133,7 @@ mod tests {
         ToolContext {
             session_id: "s".into(),
             agent: "build".into(),
+            agent_tools: vec![],
             cwd: crate::harness::tool::context::PathBufGuard(std::path::PathBuf::from("/tmp")),
             abort: crate::harness::tool::context::AbortSignal::new(),
             permission: Arc::new(PermissionEngine::default()),
@@ -142,6 +143,38 @@ mod tests {
             task_runner: None,
             project_memory: None,
         }
+    }
+
+    /// Only the build agent may run mutating tools — a hallucinated tool call
+    /// is refused at execution time even if the LLM advertises it.
+    #[tokio::test]
+    async fn test_agent_allowlist_blocks_mutating_tools() {
+        let mut ctx = test_context();
+        ctx.agent = "general".into();
+        ctx.agent_tools = vec!["read".to_string(), "glob".to_string(), "grep".to_string()];
+        let err = ctx
+            .check_permission("edit", &json!({"path": "/tmp/x"}))
+            .await;
+        assert!(err.is_err());
+        assert!(err
+            .unwrap_err()
+            .contains("not available to the `general` agent"));
+
+        // Allowed tools pass the gate (permission engine allows reads).
+        let ok = ctx
+            .check_permission("read", &serde_json::json!({"path": "/tmp/x"}))
+            .await;
+        assert!(ok.is_ok());
+
+        // Build (empty allowlist) keeps full access.
+        let ctx_build = test_context();
+        assert!(
+            ctx_build
+                .check_permission("edit", &serde_json::json!({"path": "/tmp/x"}))
+                .await
+                .is_err()
+                == false
+        );
     }
 
     mod tests_helper {

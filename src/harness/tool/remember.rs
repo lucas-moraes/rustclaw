@@ -76,6 +76,7 @@ mod tests {
         ToolContext {
             session_id: "s".into(),
             agent: "build".into(),
+            agent_tools: vec![],
             cwd: PathBufGuard(cwd.to_path_buf()),
             abort: AbortSignal::new(),
             permission: Arc::new(PermissionEngine::default()),

@@ -268,6 +268,12 @@ impl SessionRuntime {
         self.store.delete_session(id, &cwd)
     }
 
+    /// Sets a user-defined title for a session.
+    pub fn set_session_title(&self, id: &str, title: &str) -> Result<()> {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        self.store.set_session_title(id, &cwd, title)
+    }
+
     /// Runs one user turn against `session`. `abort` lets the caller cancel the
     /// run (e.g. Ctrl+C in the TUI); the processor checks it between iterations.
     ///
@@ -310,6 +316,7 @@ impl SessionRuntime {
         let ctx = ToolContext {
             session_id: session.id.clone(),
             agent: session.agent.clone(),
+            agent_tools: agent.tools.clone(),
             cwd: PathBufGuard(session.cwd.clone()),
             abort,
             permission: self.permission.clone(),

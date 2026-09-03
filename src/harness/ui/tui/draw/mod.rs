@@ -49,7 +49,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let footer_h: u16 = 1;
     let status_h: u16 = 1;
     let chips_h: u16 = if has_chips { 1 } else { 0 };
-    let input_h: u16 = 3;
+    // Multi-line prompts (Shift+Enter) grow the input box up to 8 text rows.
+    let input_h: u16 = 3 + app.input.matches('\n').count() as u16;
 
     let rows = Layout::vertical([
         Constraint::Min(3),

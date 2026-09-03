@@ -141,6 +141,7 @@ mod tests {
         let ctx = ToolContext {
             session_id: "s".into(),
             agent: "build".into(),
+            agent_tools: vec![],
             cwd: PathBufGuard(dir.path().to_path_buf()),
             abort: AbortSignal::new(),
             permission: Arc::new(PermissionEngine::default()),

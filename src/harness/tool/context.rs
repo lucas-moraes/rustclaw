@@ -58,6 +58,10 @@ pub trait SubagentRunner: Send + Sync {
 pub struct ToolContext {
     pub session_id: String,
     pub agent: String,
+    /// Tools the current agent may use (empty = all). Mirrors the AgentSpec
+    /// allowlist and is enforced defensively at execution time, so a
+    /// hallucinated tool name can never be executed.
+    pub agent_tools: Vec<String>,
     pub cwd: PathBufGuard,
     pub abort: AbortSignal,
     pub permission: Arc<PermissionEngine>,
@@ -94,6 +98,14 @@ impl ToolContext {
     /// Checks permission for a tool call. Escalates to the asker when the
     /// engine says `Ask`. Returns an Err with a friendly model-facing message on deny.
     pub async fn check_permission(&self, tool: &str, args: &Value) -> Result<(), String> {
+        // Agent allowlist (defense-in-depth; the LLM only sees allowed specs).
+        if !self.agent_tools.is_empty() && !self.agent_tools.iter().any(|t| t == tool) {
+            return Err(format!(
+                "Tool `{}` is not available to the `{}` agent (file changes are only \
+                 allowed in build mode).",
+                tool, self.agent
+            ));
+        }
         let path = extract_path(args).map(|p| self.cwd.resolve(&p).to_string_lossy().to_string());
         let decision = self
             .permission

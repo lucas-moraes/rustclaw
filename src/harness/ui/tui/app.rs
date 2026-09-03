@@ -325,10 +325,14 @@ impl AuthPromptState {
 }
 
 /// `/resume` session picker: lets the user choose a past session by title
-/// (first user message preview) without exposing the raw session id.
+/// (first user message preview) without exposing the raw session id. Also
+/// supports `d` (delete session) and `r` (rename session).
 pub struct ResumePickerState {
     pub sessions: Vec<crate::harness::session::store::SessionSummary>,
     pub selected: usize,
+    /// When `Some`, an inline rename input is being edited for the selected
+    /// session (pre-filled with the current title).
+    pub rename_input: Option<String>,
 }
 
 impl ResumePickerState {
@@ -337,6 +341,7 @@ impl ResumePickerState {
         Ok(Self {
             sessions,
             selected: 0,
+            rename_input: None,
         })
     }
 
@@ -349,14 +354,23 @@ impl ResumePickerState {
     }
 
     /// Human title for a session (no id).
-    fn title(&self, i: usize) -> String {
-        let s = &self.sessions[i];
-        let t = if s.preview.trim().is_empty() {
-            "untitled session".to_string()
-        } else {
-            s.preview.clone()
-        };
-        t
+    pub fn title(&self, i: usize) -> String {
+        if let Some(s) = self.sessions.get(i) {
+            if let Some(t) = &s.title {
+                if !t.trim().is_empty() {
+                    return t.clone();
+                }
+            }
+            if !s.preview.trim().is_empty() {
+                return s.preview.clone();
+            }
+        }
+        "untitled session".to_string()
+    }
+
+    /// The displayed title for the selected row (used to prefill rename).
+    pub fn selected_title(&self) -> String {
+        self.title(self.selected)
     }
 }
 
@@ -1287,6 +1301,10 @@ async fn handle_key(
     }
 
     match key.code {
+        // Shift+Enter inserts a newline (multi-line prompt / list building).
+        KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
+            app.insert_char_fixed('\n');
+        }
         KeyCode::Enter => {
             if submit_input(app, prompt_task).await? {
                 return Ok(true);
@@ -1558,7 +1576,7 @@ fn handle_model_picker_key(app: &mut App, key: KeyEvent) -> Result<bool> {
 
 /// Handles a key while the `/resume` session picker is open.
 fn handle_resume_picker_key(app: &mut App, key: KeyEvent) -> Result<bool> {
-    use crossterm::event::KeyCode;
+    use crossterm::event::{KeyCode, KeyModifiers};
     let Some(picker) = app.resume_picker.as_mut() else {
         return Ok(false);
     };
@@ -1566,6 +1584,39 @@ fn handle_resume_picker_key(app: &mut App, key: KeyEvent) -> Result<bool> {
         app.resume_picker = None;
         return Ok(false);
     }
+
+    // Inline rename editing.
+    if let Some(text) = picker.rename_input.as_mut() {
+        match key.code {
+            KeyCode::Esc => {
+                picker.rename_input = None;
+            }
+            KeyCode::Enter => {
+                let new_title = text.trim().to_string();
+                picker.rename_input = None;
+                if !new_title.is_empty() {
+                    let id = picker.sessions[picker.selected].id.clone();
+                    app.runtime.set_session_title(&id, &new_title)?;
+                    app.resume_picker = Some(ResumePickerState::new(app)?);
+                    app.add_system("session renamed");
+                }
+            }
+            KeyCode::Backspace => {
+                text.pop();
+            }
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                text.push(c);
+            }
+            KeyCode::Char('v') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(pasted) = paste_clipboard() {
+                    text.push_str(&pasted);
+                }
+            }
+            _ => {}
+        }
+        return Ok(false);
+    }
+
     match key.code {
         KeyCode::Up | KeyCode::Char('k') => picker.move_sel(-1),
         KeyCode::Down | KeyCode::Char('j') => picker.move_sel(1),
@@ -1585,6 +1636,26 @@ fn handle_resume_picker_key(app: &mut App, key: KeyEvent) -> Result<bool> {
             } else {
                 app.add_system("session not found");
             }
+        }
+        // Delete the selected session.
+        KeyCode::Char('d') | KeyCode::Delete => {
+            let id = picker.sessions[picker.selected].id.clone();
+            let keep = picker.selected;
+            app.resume_picker = None;
+            app.runtime.delete_session(&id)?;
+            app.add_system("session deleted");
+            match ResumePickerState::new(app) {
+                Ok(mut next) if !next.sessions.is_empty() => {
+                    next.selected = keep.min(next.sessions.len() - 1);
+                    app.resume_picker = Some(next);
+                }
+                Ok(_) => {}
+                Err(e) => app.add_system(&format!("[error] failed to refresh sessions: {e}")),
+            }
+        }
+        // Rename the selected session.
+        KeyCode::Char('r') => {
+            picker.rename_input = Some(picker.selected_title());
         }
         _ => {}
     }

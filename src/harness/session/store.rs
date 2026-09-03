@@ -24,6 +24,8 @@ pub struct SessionSummary {
     pub updated_at: String,
     pub message_count: usize,
     pub preview: String,
+    /// Optional user-defined title (falls back to `preview`).
+    pub title: Option<String>,
 }
 
 impl SessionStore {
@@ -73,6 +75,18 @@ impl SessionStore {
         );
         conn.execute_batch(&sql)
             .with_context(|| format!("failed to ensure project tables for {}", cwd.display()))?;
+        // Add the optional user-defined title column to existing installs.
+        let has_title: i64 = conn
+            .query_row(
+                &format!("SELECT COUNT(*) FROM pragma_table_info('{sessions}') WHERE name='title'"),
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(1);
+        if has_title == 0 {
+            conn.execute(&format!("ALTER TABLE {sessions} ADD COLUMN title TEXT"), [])
+                .context("failed to add title column")?;
+        }
         Ok(())
     }
 
@@ -398,7 +412,7 @@ impl SessionStore {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
             .prepare(&format!(
-                "SELECT s.id, s.agent, s.cwd, s.created_at, s.updated_at,
+                "SELECT s.id, s.agent, s.cwd, s.created_at, s.updated_at, s.title,
                         (SELECT COUNT(*) FROM {messages_t} m WHERE m.session_id = s.id) AS msg_count,
                         (SELECT m2.parts_json FROM {messages_t} m2
                           WHERE m2.session_id = s.id AND m2.role = 'user'
@@ -414,14 +428,15 @@ impl SessionStore {
                     r.get::<_, String>(2)?,
                     r.get::<_, String>(3)?,
                     r.get::<_, String>(4)?,
-                    r.get::<_, i64>(5)?,
-                    r.get::<_, Option<String>>(6)?,
+                    r.get::<_, Option<String>>(5)?,
+                    r.get::<_, i64>(6)?,
+                    r.get::<_, Option<String>>(7)?,
                 ))
             })
             .context("failed to query sessions")?;
         let mut out = Vec::new();
         for row in rows {
-            let (id, agent, cwd, created_at, updated_at, msg_count, first_user) =
+            let (id, agent, cwd, created_at, updated_at, title, msg_count, first_user) =
                 row.context("failed to read session row")?;
             let preview = first_user
                 .and_then(|pj| serde_json::from_str::<Vec<Part>>(&pj).ok())
@@ -439,9 +454,23 @@ impl SessionStore {
                 updated_at,
                 message_count: msg_count as usize,
                 preview: crate::harness::session::preview(&preview, 80),
+                title,
             });
         }
         Ok(out)
+    }
+
+    /// Sets a user-defined title for a session (mirrors opencode titles).
+    pub fn set_session_title(&self, id: &str, cwd: &Path, title: &str) -> Result<()> {
+        self.ensure_project(cwd)?;
+        let sessions_t = table_name(cwd, "sessions");
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            &format!("UPDATE {sessions_t} SET title = ?2 WHERE id = ?1"),
+            params![id, title],
+        )
+        .context("failed to set session title")?;
+        Ok(())
     }
 
     pub fn delete_session(&self, id: &str, cwd: &Path) -> Result<()> {
@@ -667,6 +696,35 @@ mod tests {
             .load_session(&s1.id, Path::new("/a"))
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn test_set_session_title() {
+        let (_dir, store) = temp_store();
+        let s1 = store.create_session("build", Path::new("/a")).unwrap();
+        store
+            .save_message(&s1.id, Path::new("/a"), &Message::user("primeiro prompt"))
+            .unwrap();
+
+        // Without a title, the list exposes only the preview.
+        let list = store.list_sessions(Path::new("/a")).unwrap();
+        assert_eq!(list[0].title, None);
+        assert_eq!(list[0].preview, "primeiro prompt");
+
+        // Renaming sets the user-defined title.
+        store
+            .set_session_title(&s1.id, Path::new("/a"), "Meu título")
+            .unwrap();
+        let list = store.list_sessions(Path::new("/a")).unwrap();
+        assert_eq!(list[0].title.as_deref(), Some("Meu título"));
+        // The preview stays intact.
+        assert_eq!(list[0].preview, "primeiro prompt");
+
+        // Reopening the store keeps the title (schema migration is idempotent).
+        drop(store);
+        let store = SessionStore::open(&_dir.path().join("test.db")).unwrap();
+        let list = store.list_sessions(Path::new("/a")).unwrap();
+        assert_eq!(list[0].title.as_deref(), Some("Meu título"));
     }
 
     #[test]

@@ -28,14 +28,14 @@ impl AgentSpec {
     /// Calibrated sampling temperature per operating mode.
     /// `build` = 0.0 (deterministic for code/tool JSON), `plan` = 0.2
     /// (analytic/structured), `explore` = 0.5 (investigative), `general`
-    /// = 0.3. Custom/unknown agents fall back to 0.0 unless the spec
+    /// = 0.7. Custom/unknown agents fall back to 0.0 unless the spec
     /// sets an explicit `temperature` override.
     pub fn default_temperature(&self) -> f32 {
         match self.name.as_str() {
             "build" => 0.0,
             "plan" => 0.2,
             "explore" => 0.5,
-            "general" => 0.3,
+            "general" => 0.7,
             _ => 0.0,
         }
     }
@@ -180,6 +180,23 @@ mod tests {
         assert!(!explore.allows_tool("bash"));
     }
 
+    /// Only build may change project files.
+    #[test]
+    fn test_only_build_can_mutate_files() {
+        let mutating = ["write", "edit", "bash", "remember"];
+        for name in ["plan", "explore", "general"] {
+            let spec = crate::harness::agent::find_builtin(name).unwrap();
+            for m in mutating {
+                assert!(!spec.allows_tool(m), "{name} must not allow {m}");
+            }
+            assert!(spec.allows_tool("read"), "{name} must allow read");
+        }
+        let build = crate::harness::agent::find_builtin("build").unwrap();
+        for m in mutating {
+            assert!(build.allows_tool(m));
+        }
+    }
+
     #[test]
     fn test_build_has_all_tools() {
         let build = builtin::build();
@@ -237,7 +254,7 @@ mod tests {
             ("build", 0.0),
             ("plan", 0.2),
             ("explore", 0.5),
-            ("general", 0.3),
+            ("general", 0.7),
         ];
         for (name, expected) in cases {
             let spec = find_builtin(name).unwrap();
