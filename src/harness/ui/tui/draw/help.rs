@@ -89,8 +89,8 @@ fn commands(t: &crate::harness::ui::tui::theme::Theme) -> Vec<Line<'static>> {
     vec![
         kv("/help", "list commands", t),
         kv("/new", "fresh session", t),
-        kv("/sessions", "list sessions", t),
-        kv("/resume", "resume a past session (picker)", t),
+        kv("/sessions", "manage sessions (picker)", t),
+        kv("/sessions select <id>", "load a session by id", t),
         kv("/agent name", "switch agent", t),
         kv("/compact", "summarize old messages", t),
         kv("/theme name", "cyberclaw · aurora · ember · mono", t),

@@ -34,7 +34,7 @@ pub async fn handle(
     match cmd {
         "/help" => {
             out.push(
-                "commands: /help /new /sessions /resume <id> /agent <name> \
+                "commands: /help /new /sessions /agent <name> \
                   /compact /theme [name] /usage /memory /models /model <name> \
                   /provider <name> /auth <provider> /settings /exit"
                     .to_string(),
@@ -98,24 +98,55 @@ pub async fn handle(
             ));
         }
         "/sessions" => {
-            for s in runtime.list_sessions()? {
-                out.push(format!(
-                    "{}  [{}]  {} msgs — {}",
-                    s.id, s.agent, s.message_count, s.preview
-                ));
-            }
-            if out.is_empty() {
-                out.push("no sessions yet".to_string());
-            }
-        }
-        "/resume" => {
-            if arg.is_empty() {
-                out.push("usage: /resume <session-id>".to_string());
-            } else if let Some(loaded) = runtime.load_session(arg)? {
-                *session = loaded;
-                out.push(format!("resumed session {}", session.id));
+            let sub = arg.split_whitespace().next().unwrap_or("");
+            if sub.is_empty() {
+                for s in runtime.list_sessions()? {
+                    let label = s.title.clone().unwrap_or_else(|| s.preview.clone());
+                    out.push(format!(
+                        "{}  [{}]  {} msgs — {}",
+                        s.id, s.agent, s.message_count, label
+                    ));
+                }
+                if out.is_empty() {
+                    out.push("no sessions yet".to_string());
+                }
+                out.push(
+                    "usage: /sessions delete <id> · rename <id> <title> · select <id>".to_string(),
+                );
             } else {
-                out.push(format!("session not found: {}", arg));
+                let rest = arg.split_whitespace().collect::<Vec<_>>();
+                match (sub, rest.get(1).copied()) {
+                    ("delete", Some(id)) => match runtime.delete_session(id) {
+                        Ok(()) => out.push(format!("deleted session {}", id)),
+                        Err(e) => out.push(format!("[error] {}", e)),
+                    },
+                    ("rename", Some(id)) => {
+                        let title = arg.split_whitespace().skip(2).collect::<Vec<_>>().join(" ");
+                        if title.is_empty() {
+                            out.push("usage: /sessions rename <id> <title>".to_string());
+                        } else if let Err(e) = runtime.set_session_title(id, &title) {
+                            out.push(format!("[error] {}", e));
+                        } else {
+                            out.push(format!("renamed session {} → {}", id, title));
+                        }
+                    }
+                    ("select", Some(id)) => match runtime.load_session(id)? {
+                        Some(loaded) => {
+                            *session = loaded;
+                            out.push(format!(
+                                "selected session {} ({})",
+                                session.id, session.agent
+                            ));
+                        }
+                        None => out.push(format!("session not found: {}", id)),
+                    },
+                    _ => {
+                        out.push(
+                            "usage: /sessions [delete <id>|rename <id> <title>|select <id>]"
+                                .to_string(),
+                        );
+                    }
+                }
             }
         }
         "/agent" => {

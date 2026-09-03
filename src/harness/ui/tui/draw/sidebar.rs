@@ -69,7 +69,15 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
     // Session data.
     lines.push(section("Session", t.accent));
     lines.push(kv("id", truncate(&app.session.id, inner_w), t));
-    lines.push(kv("agent", app.session.agent.clone(), t));
+    // Session title: the first user message, like /sessions.
+    let title = app
+        .session
+        .messages
+        .iter()
+        .find(|m| m.role.as_str() == "user")
+        .and_then(|m| m.parts.iter().find_map(|p| p.as_text().map(str::to_string)))
+        .unwrap_or_else(|| "untitled session".to_string());
+    lines.push(kv("title", truncate(&title, inner_w), t));
     let proj_name = app
         .cwd
         .file_name()
@@ -88,13 +96,6 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
     lines.push(kv(
         "session tok",
         format_tokens(app.session_usage.total()),
-        t,
-    ));
-    lines.push(kv("last turn", format_tokens(app.last_usage.total()), t));
-    lines.push(kv("iterations", app.last_iterations.to_string(), t));
-    lines.push(kv(
-        "created",
-        app.session.created_at.format("%H:%M").to_string(),
         t,
     ));
 

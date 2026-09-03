@@ -118,8 +118,8 @@ Prompt simples:
 | Comando | Descrição |
 |---------|-----------|
 | `/new` | Nova sessão (abre o picker de skills) |
-| `/sessions` | Listar sessões |
-| `/resume <id>` | Resumir sessão |
+| `/sessions` | Gerenciar sessões (picker: listar/selecionar/excluir/renomear) |
+| `/sessions select <id>` | Selecionar sessão por id |
 | `/agent <name>` | Trocar agent (build/plan/explore/general) |
 | `/compact` | Compactar contexto manualmente |
 | `/skills` | Gerir skills (`list`·`add <id>`·`rm <id>`·`default <id> on\|off`·`picker`) |

@@ -137,7 +137,7 @@ pub struct App {
     pub model_picker: Option<ModelPickerState>,
     /// Open `/auth` token prompt (masked input).
     pub auth_prompt: Option<AuthPromptState>,
-    /// Open `/resume` session picker.
+    /// Open the session manager picker (/sessions).
     pub resume_picker: Option<ResumePickerState>,
     /// Per-turn skill checkboxes; `None` = not yet initialized (use session defaults).
     pub prompt_toggles: Option<Vec<PromptSkillToggle>>,
@@ -324,7 +324,7 @@ impl AuthPromptState {
     }
 }
 
-/// `/resume` session picker: lets the user choose a past session by title
+/// `/sessions` manager picker: lets the user choose a saved session by title
 /// (first user message preview) without exposing the raw session id. Also
 /// supports `d` (delete session) and `r` (rename session).
 pub struct ResumePickerState {
@@ -1574,7 +1574,7 @@ fn handle_model_picker_key(app: &mut App, key: KeyEvent) -> Result<bool> {
     Ok(false)
 }
 
-/// Handles a key while the `/resume` session picker is open.
+/// Handles a key while the session manager picker (/sessions) is open.
 fn handle_resume_picker_key(app: &mut App, key: KeyEvent) -> Result<bool> {
     use crossterm::event::{KeyCode, KeyModifiers};
     let Some(picker) = app.resume_picker.as_mut() else {
@@ -1632,7 +1632,7 @@ fn handle_resume_picker_key(app: &mut App, key: KeyEvent) -> Result<bool> {
                 app.session = loaded;
                 app.reset_usage();
                 app.sync_prompt_toggles();
-                app.add_system("resumed session");
+                app.add_system("session selected");
             } else {
                 app.add_system("session not found");
             }
@@ -1918,13 +1918,13 @@ async fn submit_input(
             }
             return Ok(false);
         }
-        if text == "/resume" || text == "/resume " {
+        if text == "/sessions" {
             if app.running {
-                app.add_system("[busy] cannot resume while a turn is running");
+                app.add_system("[busy] cannot switch session while a turn is running");
             } else {
                 let picker = ResumePickerState::new(app)?;
                 if picker.sessions.is_empty() {
-                    app.add_system("no sessions to resume");
+                    app.add_system("no sessions to manage");
                 } else {
                     app.resume_picker = Some(picker);
                 }
@@ -1946,7 +1946,7 @@ async fn submit_input(
         if text == "/new" {
             app.reset_usage();
             app.open_skill_picker();
-        } else if text.starts_with("/resume") {
+        } else if text == "/sessions" || text.starts_with("/sessions select ") {
             app.reset_usage();
             app.sync_prompt_toggles();
         }

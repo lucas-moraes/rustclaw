@@ -155,16 +155,9 @@ pub fn all_items() -> Vec<PaletteItem> {
         item(
             "sessions",
             "/sessions",
-            "List saved sessions",
+            "Manage sessions (list · select · delete · rename)",
             PaletteKind::Command,
             "/sessions",
-        ),
-        item(
-            "resume",
-            "/resume",
-            "Resume session by id",
-            PaletteKind::Command,
-            "/resume ",
         ),
         item(
             "agent",

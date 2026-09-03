@@ -1,4 +1,4 @@
-//! `/resume` session picker overlay: resume, delete or rename a past session
+//! `/sessions` manager overlay: select, delete or rename a saved session.
 //! by title (no id).
 
 use crate::harness::ui::tui::app::{App, ResumePickerState};
@@ -20,7 +20,7 @@ pub fn draw(frame: &mut Frame, app: &App, picker: &ResumePickerState, area: Rect
         .borders(Borders::ALL)
         .border_style(Style::default().fg(t.accent2))
         .title(Span::styled(
-            " resume session ",
+            " sessions manager ",
             Style::default().fg(t.accent2).add_modifier(Modifier::BOLD),
         ))
         .style(Style::default().bg(t.surface));
@@ -28,7 +28,7 @@ pub fn draw(frame: &mut Frame, app: &App, picker: &ResumePickerState, area: Rect
     frame.render_widget(block, parea);
 
     let mut lines: Vec<Line> = vec![Line::from(Span::styled(
-        "  Enter resume · d delete · r rename · Esc cancel · ↑↓ navigate",
+        "  Enter select · d delete · r rename · Esc cancel · ↑↓ navigate",
         Style::default().fg(t.text_dim),
     ))];
 
