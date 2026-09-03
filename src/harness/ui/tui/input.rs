@@ -3,9 +3,9 @@
 /// Key binding help text (also mirrored in draw/help.rs).
 #[allow(dead_code)]
 pub const HELP: &str = "\
-  Ctrl+C     cancel run / quit when idle
+  Ctrl+C     quit (exit the project)
   Enter      send prompt
-  Esc        clear input / close overlay
+  Esc        cancel prompt / clear input / close overlay
   Up/Down    history (or autocomplete)
   PgUp/PgDn  scroll transcript
   Ctrl+P     command palette

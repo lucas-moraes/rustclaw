@@ -32,6 +32,15 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
         };
         rows.extend(render_line(&stream_line, &theme, width, tick, true));
     }
+    if let Some(b) = &app.tool_status {
+        if b.pending > 0 {
+            let live = TranscriptLine {
+                kind: LineKind::ToolStart,
+                text: b.live_label(),
+            };
+            rows.extend(render_line(&live, &theme, width, tick, false));
+        }
+    }
 
     let total = rows.len();
     let view_h = area.height as usize;

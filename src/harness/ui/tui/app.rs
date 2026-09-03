@@ -48,6 +48,55 @@ pub struct ActiveTool {
     pub name: String,
 }
 
+/// Transient state of the current parallel tool batch. Instead of pushing one
+/// line per tool call, a single status line is overwritten while the batch is
+/// running and a unique summary line is emitted when the batch completes.
+#[derive(Clone, Debug, Default)]
+pub struct ToolBatch {
+    /// Per-tool completion counts, e.g. [("read", 3), ("bash", 1)].
+    pub counts: Vec<(String, usize)>,
+    /// Path/args preview of the most recently started tool.
+    pub last_path: String,
+    /// Last started tool name (used for the transient "running" line).
+    pub last_name: String,
+    pub done: usize,
+    pub failed: usize,
+    pub pending: usize,
+}
+
+impl ToolBatch {
+    pub fn start(&mut self, name: &str, path: String) {
+        self.last_name = name.to_string();
+        self.last_path = path;
+        self.pending += 1;
+        if let Some(e) = self.counts.iter_mut().find(|(n, _)| n == name) {
+            e.1 += 1;
+        } else {
+            self.counts.push((name.to_string(), 1));
+        }
+    }
+
+    /// Summary like `read ×3 · bash ×1`.
+    pub fn summary(&self) -> String {
+        self.counts
+            .iter()
+            .map(|(n, c)| format!("{} ×{}", n, c))
+            .collect::<Vec<_>>()
+            .join(" · ")
+    }
+
+    /// Transient label while running: `read src/x (2/4)`.
+    pub fn live_label(&self) -> String {
+        format!(
+            "{} {} ({}/{})",
+            self.last_name,
+            self.last_path,
+            self.done + self.failed,
+            self.pending + self.done + self.failed
+        )
+    }
+}
+
 /// App UI state.
 pub struct App {
     pub runtime: SessionRuntime,
@@ -79,6 +128,8 @@ pub struct App {
     pub palette: Option<PaletteState>,
     pub autocomplete: Option<AutoComplete>,
     pub active_tools: Vec<ActiveTool>,
+    /// Transient state of the current tool batch (see [`ToolBatch`]).
+    pub tool_status: Option<ToolBatch>,
     pub particles: Vec<Particle>,
     /// Open skill picker (shown on new session).
     pub skill_picker: Option<SkillPickerState>,
@@ -86,6 +137,8 @@ pub struct App {
     pub model_picker: Option<ModelPickerState>,
     /// Open `/auth` token prompt (masked input).
     pub auth_prompt: Option<AuthPromptState>,
+    /// Open `/resume` session picker.
+    pub resume_picker: Option<ResumePickerState>,
     /// Per-turn skill checkboxes; `None` = not yet initialized (use session defaults).
     pub prompt_toggles: Option<Vec<PromptSkillToggle>>,
     /// Whether the skill chips (not the text input) currently hold focus.
@@ -271,6 +324,42 @@ impl AuthPromptState {
     }
 }
 
+/// `/resume` session picker: lets the user choose a past session by title
+/// (first user message preview) without exposing the raw session id.
+pub struct ResumePickerState {
+    pub sessions: Vec<crate::harness::session::store::SessionSummary>,
+    pub selected: usize,
+}
+
+impl ResumePickerState {
+    pub fn new(app: &App) -> anyhow::Result<Self> {
+        let sessions = app.runtime.list_sessions().unwrap_or_default();
+        Ok(Self {
+            sessions,
+            selected: 0,
+        })
+    }
+
+    pub fn move_sel(&mut self, delta: i32) {
+        if self.sessions.is_empty() {
+            return;
+        }
+        let len = self.sessions.len() as i32;
+        self.selected = ((self.selected as i32 + delta).rem_euclid(len)) as usize;
+    }
+
+    /// Human title for a session (no id).
+    fn title(&self, i: usize) -> String {
+        let s = &self.sessions[i];
+        let t = if s.preview.trim().is_empty() {
+            "untitled session".to_string()
+        } else {
+            s.preview.clone()
+        };
+        t
+    }
+}
+
 impl App {
     pub fn new(
         runtime: SessionRuntime,
@@ -309,10 +398,12 @@ impl App {
             palette: None,
             autocomplete: None,
             active_tools: Vec::new(),
+            tool_status: None,
             particles: Vec::new(),
             skill_picker: None,
             model_picker: None,
             auth_prompt: None,
+            resume_picker: None,
             prompt_toggles: None,
             skills_focused: false,
             skills_idx: 0,
@@ -331,11 +422,17 @@ impl App {
             || self.modal.is_some()
             || self.input.is_empty()
             || self.streaming.is_some()
+            || self
+                .tool_status
+                .as_ref()
+                .map(|b| b.pending > 0)
+                .unwrap_or(false)
             || !self.particles.is_empty()
             || self.autocomplete.is_some()
             || self.skill_picker.is_some()
             || self.model_picker.is_some()
             || self.auth_prompt.is_some()
+            || self.resume_picker.is_some()
     }
 
     /// Opens the `/models` picker (only while idle).
@@ -422,6 +519,21 @@ impl App {
         });
     }
 
+    /// Emits the single summary line for a completed tool batch and clears the
+    /// transient state (unless errors remain, in which case they are listed).
+    fn finish_tool_batch(&mut self) {
+        if let Some(batch) = self.tool_status.take() {
+            let (kind, mark) = if batch.failed == 0 {
+                (LineKind::ToolOk, "✓")
+            } else if batch.done == 0 {
+                (LineKind::ToolError, "✗")
+            } else {
+                (LineKind::ToolError, "✓/✗")
+            };
+            self.push(kind, format!("  {} {}", mark, batch.summary()));
+        }
+    }
+
     pub fn apply_event(&mut self, ev: HarnessEvent) {
         match ev {
             HarnessEvent::TextDelta { delta, .. } => {
@@ -440,32 +552,27 @@ impl App {
             }
             HarnessEvent::ToolStart { name, input, .. } => {
                 self.flush_streaming();
-                self.push(
-                    LineKind::ToolStart,
-                    format!("{} {}", name, preview(&input.to_string(), 120)),
-                );
                 self.status_msg = Some(format!("running: {}", name));
-                self.active_tools.push(ActiveTool { name });
+                self.active_tools.push(ActiveTool { name: name.clone() });
+                let batch = self.tool_status.get_or_insert_with(ToolBatch::default);
+                batch.start(&name, preview(&input.to_string(), 60));
             }
             HarnessEvent::ToolEnd {
-                name,
-                status,
-                title,
-                diff,
-                ..
+                name, status, diff, ..
             } => {
                 self.active_tools.retain(|t| t.name != name);
-                let (kind, mark) = match status {
-                    ToolStatus::Completed => (LineKind::ToolOk, "✓"),
-                    ToolStatus::Error => (LineKind::ToolError, "✗"),
-                    _ => (LineKind::ToolStart, "·"),
-                };
-                let label = if title.is_empty() {
-                    name.clone()
-                } else {
-                    title
-                };
-                self.push(kind, format!("  {} {}", mark, label));
+                if let Some(batch) = self.tool_status.as_mut() {
+                    match status {
+                        ToolStatus::Completed => batch.done += 1,
+                        ToolStatus::Error => batch.failed += 1,
+                        _ => {}
+                    }
+                    batch.pending = batch.pending.saturating_sub(1);
+                    // Batch complete → emit a single summary line.
+                    if batch.pending == 0 {
+                        self.finish_tool_batch();
+                    }
+                }
                 if let Some(d) = diff {
                     if !d.trim().is_empty() {
                         self.push(LineKind::Diff, d);
@@ -609,6 +716,7 @@ impl App {
     pub fn clear_transcript(&mut self) {
         self.lines.clear();
         self.streaming = None;
+        self.tool_status = None;
         self.scroll = 0;
         self.stick_bottom = true;
         self.add_system("transcript cleared");
@@ -696,25 +804,7 @@ impl App {
                         "no skills discovered (look for .agents/skills/SKILL.md or RUSTCLAW_SKILLS_DIR)",
                     );
                 } else {
-                    let current: Vec<String> = self
-                        .session
-                        .skills
-                        .iter()
-                        .map(|s| s.skill_id.clone())
-                        .collect();
-                    self.add_system(&format!(
-                        "session memory ({}): {}",
-                        current.len(),
-                        if current.is_empty() {
-                            "none".to_string()
-                        } else {
-                            current.join(", ")
-                        }
-                    ));
-                    self.add_system(&format!(
-                        "available: {}",
-                        self.runtime.skills.names().join(", ")
-                    ));
+                    self.open_skill_picker();
                 }
             }
             "list" => {
@@ -890,12 +980,23 @@ pub async fn run_tui(
     let _guard = TerminalGuard;
 
     let mut app = App::new(runtime, session, cwd, permission_rx, question_rx);
-    // Unconfigured boot → onboarding wizard: /models picker first; the auth
-    // prompt follows automatically after the model choice (see
-    // apply_model_choice).
+    // Unconfigured boot → onboarding wizard: with no model selected yet, open
+    // the /models picker first (the auth prompt follows automatically after
+    // the model choice, see apply_model_choice). When a model is already
+    // selected in the settings, skip setup and go straight to the token
+    // prompt for the resolved provider.
     if !app.runtime.config.is_configured() {
-        app.open_models_picker();
-        app.add_system("RustClaw needs a provider/model and an API token — configure now");
+        let settings = crate::config::GlobalSettings::load();
+        if settings.provider.is_empty() && settings.model.is_empty() {
+            app.open_models_picker();
+            app.add_system("RustClaw needs a provider/model and an API token — configure now");
+        } else {
+            let provider = app.runtime.config.provider.clone();
+            app.add_system(
+                "model already selected — RustClaw just needs an API token for this provider",
+            );
+            app.auth_prompt = Some(AuthPromptState::new(&provider));
+        }
     }
 
     let mut prompt_task: Option<tokio::task::JoinHandle<Result<(PromptResult, Session)>>> = None;
@@ -1067,6 +1168,10 @@ async fn handle_key(
         return handle_auth_prompt_key(app, key);
     }
 
+    if app.resume_picker.is_some() {
+        return handle_resume_picker_key(app, key);
+    }
+
     if app.modal.is_some() {
         return handle_modal_key(app, key);
     }
@@ -1098,12 +1203,8 @@ async fn handle_key(
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             if app.running {
                 app.abort.abort();
-                app.status_msg = Some("cancelling…".to_string());
-                app.push(LineKind::System, "[run aborted by user]".to_string());
-            } else {
-                return Ok(true);
             }
-            return Ok(false);
+            return Ok(true);
         }
         KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.palette = Some(PaletteState::open(""));
@@ -1229,8 +1330,6 @@ async fn handle_key(
                 app.input.clear();
                 app.input_cursor = 0;
                 app.autocomplete = None;
-            } else {
-                return Ok(true);
             }
         }
         _ => {}
@@ -1298,6 +1397,13 @@ async fn handle_palette_key(
         }
     }
     Ok(false)
+}
+
+/// Reads the system clipboard (best effort). Used for Ctrl+V in masked inputs.
+fn paste_clipboard() -> Option<String> {
+    arboard::Clipboard::new()
+        .ok()
+        .and_then(|mut cb| cb.get_text().ok())
 }
 
 /// Handles a key while the session-memory skill picker is open.
@@ -1409,6 +1515,14 @@ fn handle_model_picker_key(app: &mut App, key: KeyEvent) -> Result<bool> {
                     inp.push(c);
                 }
             }
+            // Ctrl+V pastes from the system clipboard.
+            KeyCode::Char('v') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(pasted) = paste_clipboard() {
+                    if let Some(inp) = picker.custom_input.as_mut() {
+                        inp.push_str(&pasted);
+                    }
+                }
+            }
             _ => {}
         }
         return Ok(false);
@@ -1442,6 +1556,41 @@ fn handle_model_picker_key(app: &mut App, key: KeyEvent) -> Result<bool> {
     Ok(false)
 }
 
+/// Handles a key while the `/resume` session picker is open.
+fn handle_resume_picker_key(app: &mut App, key: KeyEvent) -> Result<bool> {
+    use crossterm::event::KeyCode;
+    let Some(picker) = app.resume_picker.as_mut() else {
+        return Ok(false);
+    };
+    if picker.sessions.is_empty() {
+        app.resume_picker = None;
+        return Ok(false);
+    }
+    match key.code {
+        KeyCode::Up | KeyCode::Char('k') => picker.move_sel(-1),
+        KeyCode::Down | KeyCode::Char('j') => picker.move_sel(1),
+        KeyCode::PageUp => picker.move_sel(-10),
+        KeyCode::PageDown => picker.move_sel(10),
+        KeyCode::Esc => {
+            app.resume_picker = None;
+        }
+        KeyCode::Enter => {
+            let id = picker.sessions[picker.selected].id.clone();
+            app.resume_picker = None;
+            if let Some(loaded) = app.runtime.load_session(&id)? {
+                app.session = loaded;
+                app.reset_usage();
+                app.sync_prompt_toggles();
+                app.add_system("resumed session");
+            } else {
+                app.add_system("session not found");
+            }
+        }
+        _ => {}
+    }
+    Ok(false)
+}
+
 /// Handles a key while the `/auth` token prompt is open.
 fn handle_auth_prompt_key(app: &mut App, key: KeyEvent) -> Result<bool> {
     use crossterm::event::{KeyCode, KeyModifiers};
@@ -1464,10 +1613,20 @@ fn handle_auth_prompt_key(app: &mut App, key: KeyEvent) -> Result<bool> {
                 store.set_key(&provider, token.clone());
                 match store.save() {
                     Ok(()) => {
-                        // Token becomes active immediately for the current provider.
-                        if provider == app.runtime.config.provider {
-                            app.runtime.config.api_key = token.clone();
+                        // Point the runtime at this provider and rebuild the
+                        // provider so the freshly saved token is live. This
+                        // also force-enables the prompt (`is_configured`).
+                        let model = if app.runtime.config.provider == provider {
+                            app.runtime.config.model.clone()
+                        } else {
+                            crate::harness::provider::catalog::default_model(&provider)
+                                .map(str::to_string)
+                                .unwrap_or_default()
+                        };
+                        if let Err(e) = app.runtime.switch_model(&provider, &model) {
+                            app.add_system(&format!("[error] applying provider: {}", e));
                         }
+                        app.runtime.config.api_key = token.clone();
                         app.add_system(&format!(
                             "token saved for provider `{}` (auth.json, 0600){}",
                             provider,
@@ -1484,6 +1643,12 @@ fn handle_auth_prompt_key(app: &mut App, key: KeyEvent) -> Result<bool> {
         }
         KeyCode::Backspace => prompt.backspace(),
         KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => prompt.push_char(c),
+        // Ctrl+V pastes from the system clipboard.
+        KeyCode::Char('v') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            if let Some(pasted) = paste_clipboard() {
+                prompt.input.push_str(&pasted);
+            }
+        }
         _ => {}
     }
     Ok(false)
@@ -1682,6 +1847,19 @@ async fn submit_input(
             }
             return Ok(false);
         }
+        if text == "/resume" || text == "/resume " {
+            if app.running {
+                app.add_system("[busy] cannot resume while a turn is running");
+            } else {
+                let picker = ResumePickerState::new(app)?;
+                if picker.sessions.is_empty() {
+                    app.add_system("no sessions to resume");
+                } else {
+                    app.resume_picker = Some(picker);
+                }
+            }
+            return Ok(false);
+        }
 
         match crate::harness::ui::commands::handle(&mut app.runtime, &mut app.session, &text)
             .await?
@@ -1701,6 +1879,12 @@ async fn submit_input(
             app.reset_usage();
             app.sync_prompt_toggles();
         }
+        return Ok(false);
+    }
+
+    // Prompt input is hidden until a provider/model/token is configured.
+    if !app.runtime.config.is_configured() {
+        app.add_system("configure provider/model + token first — use /models and /auth");
         return Ok(false);
     }
 

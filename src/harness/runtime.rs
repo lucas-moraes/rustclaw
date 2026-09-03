@@ -156,7 +156,8 @@ impl SessionRuntime {
     /// `rustclaw.json`. Applies from the next turn on.
     pub fn switch_model(&mut self, provider: &str, model: &str) -> Result<()> {
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        self.switch_model_at(&cwd, provider, model)
+        let auth = crate::harness::auth::AuthStore::load();
+        self.switch_model_with_auth(&cwd, &auth, provider, model)
     }
 
     /// Like [`switch_model`] but persists to an explicit project root (testable).
@@ -166,10 +167,21 @@ impl SessionRuntime {
         provider: &str,
         model: &str,
     ) -> Result<()> {
+        let auth = crate::harness::auth::AuthStore::load();
+        self.switch_model_with_auth(project_root, &auth, provider, model)
+    }
+
+    /// Model switch with an explicit auth store (hermetic tests).
+    pub fn switch_model_with_auth(
+        &mut self,
+        project_root: &std::path::Path,
+        auth: &crate::harness::auth::AuthStore,
+        provider: &str,
+        model: &str,
+    ) -> Result<()> {
         let base_url = crate::harness::provider::catalog::default_base_url(provider)
             .map(str::to_string)
             .unwrap_or_else(|| self.config.base_url.clone());
-        let auth = crate::harness::auth::AuthStore::load();
         let api_key = auth
             .get_key(provider)
             .filter(|k| !k.trim().is_empty())
@@ -635,5 +647,52 @@ mod model_switch_tests {
         assert_eq!(rt.config.provider, "my-custom-relay");
         // Unknown provider keeps the previous base_url.
         assert_eq!(rt.config.base_url, "https://api.deepinfra.com/v1/openai");
+    }
+
+    #[tokio::test]
+    async fn test_onboarding_becomes_configured_after_token() {
+        // Simulate a fresh unconfigured runtime (no token).
+        let dir = tempfile::tempdir().unwrap();
+        let http = HttpConfig {
+            client: reqwest::Client::new(),
+            base_url: "https://api.deepinfra.com/v1/openai".to_string(),
+            api_key: String::new(),
+        };
+        let provider = build_provider_from("deepinfra", http).unwrap();
+        let db = dir.path().join("test.db");
+        let mut rt = SessionRuntime::new(
+            provider,
+            ToolRegistry::builder().build(),
+            HarnessConfig {
+                model: String::new(),
+                provider: String::new(),
+                base_url: "https://api.deepinfra.com/v1/openai".to_string(),
+                api_key: String::new(),
+                ..Default::default()
+            },
+            &db,
+            Arc::new(AllowAsker),
+            Arc::new(NoUserAsker),
+        )
+        .unwrap();
+        assert!(!rt.config.is_configured());
+
+        // /models: pick provider+model — no token yet → stays unconfigured.
+        rt.switch_model_with_auth(
+            dir.path(),
+            &crate::harness::auth::AuthStore::default(),
+            "deepinfra",
+            "deepseek-ai/DeepSeek-V4-Flash-0731",
+        )
+        .unwrap();
+        assert_eq!(rt.config.provider, "deepinfra");
+        assert!(!rt.config.is_configured());
+
+        // /auth: token saved (mirrors handle_auth_prompt_key on config).
+        rt.config.api_key = "sk-live-token-1234567890".to_string();
+        assert!(
+            rt.config.is_configured(),
+            "prompt must enable after token save"
+        );
     }
 }

@@ -5,6 +5,7 @@ mod input;
 mod modal;
 mod model_picker;
 mod palette_view;
+mod resume_picker;
 mod sidebar;
 mod skill_picker;
 mod splash;
@@ -64,11 +65,20 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     if has_chips {
         skill_picker::draw_chips(frame, app, rows[2]);
     }
-    input::draw(frame, app, rows[3]);
+    // The prompt input stays hidden until provider/model/token are configured.
+    if app.runtime.config.is_configured() {
+        input::draw(frame, app, rows[3]);
+    } else {
+        draw_unconfigured_hint(frame, app, rows[3]);
+    }
     draw_footer(frame, app, rows[4]);
 
     // Autocomplete dropdown above input.
-    if app.palette.is_none() && app.modal.is_none() && !app.show_help {
+    if app.runtime.config.is_configured()
+        && app.palette.is_none()
+        && app.modal.is_none()
+        && !app.show_help
+    {
         if let Some(ac) = &app.autocomplete {
             palette_view::draw_autocomplete(frame, ac, &app.theme, rows[3], area);
         }
@@ -84,6 +94,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         model_picker::draw_picker(frame, app, picker, area);
     } else if let Some(auth) = &app.auth_prompt {
         model_picker::draw_auth(frame, app, auth, area);
+    } else if let Some(picker) = &app.resume_picker {
+        resume_picker::draw(frame, app, picker, area);
     } else if app.skill_picker.is_some() {
         skill_picker::draw(frame, app, area);
     }
@@ -108,6 +120,39 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
         Span::styled("back", Style::default().fg(t.text_dim)),
     ]);
     frame.render_widget(Paragraph::new(line).style(Style::default().bg(t.bg)), area);
+}
+
+/// Replaces the prompt input while no provider/model/token is configured.
+fn draw_unconfigured_hint(frame: &mut Frame, app: &App, area: Rect) {
+    use ratatui::style::Style;
+    use ratatui::text::{Line, Span};
+    use ratatui::widgets::{Block, Borders, Paragraph};
+
+    let t = &app.theme;
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(t.warn))
+        .title(Span::styled(
+            " setup required ",
+            Style::default()
+                .fg(t.warn)
+                .add_modifier(ratatui::style::Modifier::BOLD),
+        ))
+        .style(Style::default().bg(t.surface));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let lines = vec![
+        Line::from(Span::styled(
+            "  Prompt disabled — RustClaw is not configured yet.",
+            Style::default().fg(t.text_bright),
+        )),
+        Line::from(Span::styled(
+            "  /models  pick provider + model     /auth <provider>  add token",
+            Style::default().fg(t.text_dim),
+        )),
+    ];
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 /// Centered rect helper shared by overlays.

@@ -70,11 +70,12 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
     lines.push(section("Session", t.accent));
     lines.push(kv("id", truncate(&app.session.id, inner_w), t));
     lines.push(kv("agent", app.session.agent.clone(), t));
-    lines.push(kv(
-        "cwd",
-        truncate(&app.cwd.display().to_string(), inner_w),
-        t,
-    ));
+    let proj_name = app
+        .cwd
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| app.cwd.display().to_string());
+    lines.push(kv("cwd", truncate(&proj_name, inner_w), t));
     lines.push(kv("messages", app.session.messages.len().to_string(), t));
     let ctx = app.context_tokens() as u64;
     let max = app.max_context_tokens() as u64;
