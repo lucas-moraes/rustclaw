@@ -1,11 +1,13 @@
-# RustClaw — Resolver streaming que não retorna durante implementação de features
+# RustClaw — Gerenciamento de memória persistente do sistema
 
-> **Problema:** durante a implementação de uma lista de features, o sistema fica preso em
-> streaming e não retorna. A causa raiz é a **falta de timeout no client HTTP do provider**
-> (`reqwest::Client::new()` sem timeout), que faz o `bytes.next().await` ficar pendurado
-> indefinidamente quando o servidor mantém a conexão aberta sem enviar dados nem `[DONE]`.
+> **Problema:** a memória persistente hoje é **append-only e sem curadoria**. A tool `remember`
+> só acumula linhas no `summary` do projeto (`ProjectMemoryStore`), que cresce sem limite e
+> degrada a qualidade do contexto injetado no system prompt. Não há metadados por fato, ranking
+> por relevância, deduplicação, retenção nem promoção de fatos importantes para memória
+> permanente (skills).
 >
-> **Escopo:** 4 fases independentes que eliminam os 3 caminhos de hang identificados.
+> **Escopo:** 3 fases que evoluem o sistema existente (`ProjectMemoryStore` + `skill/`) em vez de
+> criar um paralelo: metadados → ranking/injeção seletiva → GC/compactação.
 
 ---
 
@@ -13,157 +15,199 @@
 
 | ID | Feature | Fase | Status |
 |----|---------|------|--------|
-| S0 | Timeout no client HTTP do provider (causa raiz) | 1 | ✅ |
-| S1 | Timeout na compactação (`provider.complete`) | 2 | ✅ |
-| S2 | `SseParser` robusto para `\r\n\r\n` | 3 | ✅ |
-| S3 | Timeout de segurança no processor (stream) | 4 | ✅ |
-| S4 | Verificação final + commit | 5 | ✅ |
+| M0 | Metadados por fato (schema + tool `remember`) | 1 | ✅ |
+| M1 | Ranking por uso + injeção seletiva com orçamento | 2 | ✅ |
+| M2 | Promoção de fato → SKILL.md permanente | 2 | ✅ |
+| M3 | GC: dedup + arquivamento de itens não usados | 3 | ✅ |
+| M4 | Compactação do `summary` acima do limite | 3 | ✅ |
+| M5 | Verificação final + commit | 4 | ✅ |
 
 **Legenda:** ⬜ pendente · 🟡 em progresso · ✅ feito · ❌ cancelado
 
 ---
 
-## S0 — Timeout no client HTTP do provider (causa raiz)
+## M0 — Metadados por fato (schema + tool `remember`)
 
-**Objetivo:** impedir que o `bytes.next().await` fique pendurado indefinidamente quando o
-servidor mantém a conexão aberta sem enviar dados. Resolve diretamente o sintoma relatado.
+**Objetivo:** dar a cada fato de memória metadados estruturados (`kind`, `confidence`,
+`hit_count`, `last_used`, `archived`) para habilitar ranking, curadoria e retenção nas fases
+seguintes. É a base de tudo.
 
-### Feature: Helper `build_http_client()`
+### Feature: Migração do schema da tabela `memory`
 
-- [x] Adicionar `use std::time::Duration;` em `src/harness/provider/mod.rs`
-- [x] Criar função `pub fn build_http_client() -> reqwest::Client`:
-  ```rust
-  pub fn build_http_client() -> reqwest::Client {
-      reqwest::Client::builder()
-          .connect_timeout(Duration::from_secs(30))
-          .read_timeout(Duration::from_secs(120)) // tempo entre chunks
-          .build()
-          .expect("failed to build http client")
-  }
-  ```
-- [x] Usar **`read_timeout`** (tempo entre chunks) em vez de `timeout` (tempo total) —
-      streaming de raciocínio pode durar minutos e um timeout total mataria respostas legítimas
-- [x] `connect_timeout` de 30s para falhar rápido em conexões mortas
+- [x] Em `src/harness/project/memory.rs`, adicionar colunas à tabela `memory` (via migração
+      idempotente, estilo `migrate_legacy`):
+  - [x] `kind TEXT NOT NULL DEFAULT 'fact'` — convenção / comando / padrão / decisão / armadilha
+  - [x] `confidence TEXT NOT NULL DEFAULT 'inferred'` — `inferred` | `confirmed`
+  - [x] `hit_count INTEGER NOT NULL DEFAULT 0`
+  - [x] `last_used TEXT` (timestamp ISO, nullable)
+  - [x] `archived INTEGER NOT NULL DEFAULT 0` (0 = ativo, 1 = arquivado)
+- [x] Manter compatibilidade com linhas existentes (defaults preenchem os novos campos)
+- [x] Atualizar `ProjectMemoryRow` para expor os novos campos
+- [x] Adicionar teste de migração: tabela antiga sem colunas novas → migra com defaults
 
-### Feature: Aplicar nos pontos de produção
+### Feature: Tool `remember` com metadados
 
-- [x] `src/harness/runtime.rs:137` (`from_legacy`): substituir `reqwest::Client::new()` por
-      `crate::harness::provider::build_http_client()`
-- [x] `src/harness/runtime.rs:194` (`switch_model_with_auth`): idem
+- [x] Em `src/harness/tool/remember.rs`, adicionar parâmetros opcionais ao schema JSON:
+  - [x] `kind` (string, default `"fact"`)
+  - [x] `confidence` (string, default `"inferred"`)
+- [x] Validar valores: `kind` em conjunto conhecido, `confidence` em `inferred|confirmed`
+- [x] Persistir os metadados na linha (não só no texto do `summary`)
+- [x] Manter o comportamento append-only do texto (não quebrar testes existentes)
+- [x] Adicionar teste: `remember` com `kind`/`confidence` persiste os metadados
 
-### Feature: Consistência nos testes (opcional)
+### Feature: `/memory list` com metadados
 
-- [x] Atualizar `reqwest::Client::new()` em testes para `build_http_client()`:
-  - [x] `runtime.rs:629` (test_runtime)
-  - [x] `runtime.rs:750` (test_onboarding)
-  - [x] `app.rs:560` (test TUI)
-  - [x] `memory.rs:74` (test memory)
-  - [x] `opencode_go.rs:92` (test_build_provider_routing)
+- [x] Em `src/harness/ui/commands/memory.rs`, exibir `kind`, `confidence`, `hit_count` e
+      `last_used` na listagem
+- [x] Manter a numeração 1-indexada atual (usada por `rm`)
+- [x] Adicionar teste: listagem formata os metadados
 
-### Definition of done S0
+### Definition of done M0
 
+- [x] `cargo test` verde (incl. novos testes de migração, remember e list)
 - [x] `cargo check` verde
-- [x] `cargo test` verde (sem regressão)
-- [x] Nenhum `reqwest::Client::new()` sem timeout em código de produção
 - [x] `cargo clippy --bin rustclaw` sem novos warnings
+- [x] Tabela `memory` com colunas novas; linhas antigas migradas com defaults
 
 ---
 
-## S1 — Timeout na compactação
+## M1 — Ranking por uso + injeção seletiva com orçamento
 
-**Objetivo:** impedir que a compactação (frequente durante implementação de features, quando o
-contexto estoura) fique presa numa chamada `provider.complete()` sem timeout.
+**Objetivo:** em vez de despejar toda a memória no system prompt, selecionar os top-N fatos por
+relevância (recência + `hit_count` + match lexical com a pergunta atual), respeitando um
+orçamento de bytes. Fatos usados sobem; nunca usados caem.
 
-### Feature: Timeout no `summarize()`
+### Feature: Registro de uso (`hit_count` / `last_used`)
 
-- [x] Em `src/harness/session/compaction.rs`, adicionar `use std::time::Duration;`
-- [x] Envolver `provider.complete(&summary_req).await` (linha 90) em
-      `tokio::time::timeout(Duration::from_secs(120), ...)`
-- [x] Tratar o resultado:
-  - [x] `Ok(Ok(resp))` → fluxo normal (extrair texto)
-  - [x] `Ok(Err(e))` → fallback `"(summary unavailable)"` (caminho já existe)
-  - [x] `Err(_)` (timeout) → `tracing::warn!` + fallback `"(summary unavailable)"`
-- [x] Garantir que o fallback de timeout não propaga erro para o processor (compactação nunca
-      deve travar o turno)
+- [x] Em `ProjectMemoryStore`, adicionar método `bump_usage(cwd, id)` que incrementa
+      `hit_count` e atualiza `last_used`
+- [x] Chamar `bump_usage` quando um fato é injetado no system prompt
+- [x] Adicionar teste: `bump_usage` incrementa e atualiza timestamp
 
-### Feature: Teste de timeout
+### Feature: Score de relevância
 
-- [x] Adicionar teste em `compaction.rs` com um `MockProvider` que **nunca responde** (ex:
-      `tokio::time::sleep(Duration::from_secs(3600))` no `complete`)
-- [x] Verificar que `should_compact_and_execute` retorna `Some(...)` com
-      `"(summary unavailable)"` após o timeout (não trava)
+- [x] Criar função de score por fato: `score = w1*recency + w2*hit_count + w3*lexical_match`
+- [x] `recency` decai com o tempo desde `last_used` (fatos recentes pesam mais)
+- [x] `lexical_match` = sobreposição de tokens entre o fato e a pergunta/turno atual
+- [x] Adicionar teste unitário do score (ordenação esperada)
 
-### Definition of done S1
+### Feature: Injeção seletiva com orçamento
 
-- [x] `cargo test` verde (incl. novo teste de timeout)
-- [x] Compactação nunca trava o turno, mesmo com provedor lento
+- [x] Em `src/harness/agent/mod.rs` (ou onde o `project_context` é montado), substituir o
+      despejo total por seleção:
+  - [x] Ordenar fatos ativos por score (desc)
+  - [x] Consumir fatos até atingir o orçamento de bytes (ex. `MAX_MEMORY_CHARS = 2048`)
+  - [x] Ficar com o texto truncado por UTF-8 (reusar padrão de `truncate_utf8` de `inject.rs`)
+- [x] Garantir que fatos arquivados (`archived=1`) nunca entram na injeção
+- [x] Adicionar teste: com orçamento pequeno, só os top-N entram
+
+### Definition of done M1
+
+- [x] `cargo test` verde (incl. testes de score, bump e injeção seletiva)
+- [x] `cargo check` verde
 - [x] `cargo clippy --bin rustclaw` sem novos warnings
+- [x] System prompt recebe no máximo `MAX_MEMORY_CHARS` de memória, ordenada por relevância
 
 ---
 
-## S2 — `SseParser` robusto para `\r\n\r\n`
+## M2 — Promoção de fato → SKILL.md permanente
 
-**Objetivo:** evitar que um provedor que use o padrão SSE `\r\n\r\n` (em vez de `\n\n`) faça o
-parser nunca produzir eventos e o stream ficar preso esperando um delimitador que nunca chega.
+**Objetivo:** permitir que um fato importante (confidence alto + confirmado pelo usuário) saia
+do lixo da sessão e vire um `SKILL.md` permanente no `.agents/skills/`, entrando no catálogo de
+skills reutilizáveis.
 
-### Feature: Normalizar `\r\n` → `\n` no buffer
+### Feature: Comando `/memory promote <id>`
 
-- [x] Em `src/harness/provider/mod.rs`, no `SseParser::push`, normalizar o buffer antes de
-      procurar o delimitador:
-  - [x] Substituir `\r\n` por `\n` no chunk recebido antes de `extend_from_slice`
-  - [x] **Seguro** porque os dados JSON escapam `\r\n` como `\\r\\n` literal — não há colisão
-- [x] Alternativa (se preferir não mutar o chunk): procurar por `\n\n` **ou** `\r\n\r\n` no
-      `find_subslice` — avaliar qual é mais simples/robusto
+- [x] Em `src/harness/ui/commands/memory.rs`, adicionar subcomando `promote <id>`:
+  - [x] Ler o fato pelo índice (mesma numeração do `list`)
+  - [x] Gerar um `SKILL.md` em `<cwd>/.agents/skills/<slug>/SKILL.md` com frontmatter
+        (`name`, `description`) + corpo = texto do fato
+  - [x] `slug` derivado do texto (reusar `sanitize_id` de `loader.rs`)
+  - [x] Marcar o fato como `archived=1` após a promoção (não duplicar no contexto)
+- [x] Adicionar teste: `promote` cria o SKILL.md e arquiva o fato
 
-### Feature: Testes para `\r\n\r\n`
+### Feature: Validação e feedback
 
-- [x] Adicionar teste: `parser.push(b"data: {\"a\":1}\r\n\r\n")` → `["{\"a\":1}"]`
-- [x] Adicionar teste: `parser.push(b"data: [DONE]\r\n\r\n")` → `["[DONE]"]`
-- [x] Adicionar teste: chunk dividido com `\r\n\r\n` (ex: `data: {\"a\":` + `1}\r\n\r\n`)
-- [x] Garantir que os testes existentes de `\n\n` continuam passando
+- [x] Erro claro se o índice for inválido ou o fato já estiver arquivado
+- [x] Mensagem de sucesso apontando o caminho do SKILL.md criado
+- [x] Adicionar teste: `promote` com índice inválido retorna erro
 
-### Definition of done S2
+### Definition of done M2
 
-- [x] `cargo test` verde (incl. novos testes `\r\n\r\n`)
-- [x] `SseParser` produz eventos corretamente com `\n\n` e `\r\n\r\n`
+- [x] `cargo test` verde (incl. testes de promote)
+- [x] `cargo check` verde
 - [x] `cargo clippy --bin rustclaw` sem novos warnings
+- [x] Fato promovido vira skill no catálogo e sai da memória ativa
 
 ---
 
-## S3 — Timeout de segurança no processor (stream)
+## M3 — GC: dedup + arquivamento de itens não usados
 
-**Objetivo:** camada extra de segurança caso o `read_timeout` do client não cubra algum caso
-(provedor custom, proxy, etc.). Garante que o `while let Some(ev) = stream.next().await` nunca
-fique preso para sempre.
+**Objetivo:** limpar a memória automaticamente: fundir fatos duplicados/semelhantes e arquivar
+fatos nunca usados há muito tempo, mantendo o contexto enxuto.
 
-### Feature: Timeout no `stream.next().await`
+### Feature: Deduplicação
 
-- [x] Em `src/harness/session/processor.rs`, adicionar `use std::time::Duration;`
-- [x] Envolver o `stream.next().await` (linha 111) em
-      `tokio::time::timeout(Duration::from_secs(300), stream.next())`
-- [x] Tratar o resultado:
-  - [x] `Ok(Some(ev))` → processar evento normalmente (fluxo atual)
-  - [x] `Ok(None)` → stream terminou, sair do `while`
-  - [x] `Err(_)` (timeout) → emitir `HarnessEvent::Error` com mensagem clara e **quebrar o loop**
-- [x] Usar **timeout generoso (300s)** para não interromper streaming de raciocínio longo
-- [x] Ao quebrar por timeout, garantir que `final_text` receba mensagem de erro (não vazio)
+- [x] Em `ProjectMemoryStore`, adicionar método `dedup(cwd)`:
+  - [x] Agrupar fatos por similaridade (normalização de texto: lowercase, trim, remover
+        timestamp)
+  - [x] Fundir duplicados: manter o mais recente, somar `hit_count`, arquivar os demais
+  - [x] Adicionar teste: dois fatos iguais → um ativo com `hit_count` somado
 
-### Feature: Teste (opcional, se viável)
+### Feature: Arquivamento por inatividade
 
-- [ ] Se houver infraestrutura de mock de stream, adicionar teste com stream que nunca emite
-      `End` nem `None` e verificar que o timeout dispara
-- [x] Se não for viável com a infra atual, documentar o comportamento no código (comentário)
+- [x] Adicionar método `archive_stale(cwd, max_age_days)`:
+  - [x] Arquivar fatos com `last_used` mais antigo que `max_age_days` (default 60) e
+        `hit_count == 0`
+  - [x] Nunca arquivar fatos com `confidence == "confirmed"`
+  - [x] Adicionar teste: fato antigo sem uso é arquivado; confirmado não é
 
-### Definition of done S3
+### Feature: Comando `/memory gc`
 
-- [x] `cargo test` verde
-- [x] `stream.next().await` nunca fica preso para sempre (timeout de 300s)
-- [x] Timeout emite erro visível ao usuário e libera a UI
+- [x] Em `src/harness/ui/commands/memory.rs`, adicionar subcomando `gc`:
+  - [x] Executar `dedup` + `archive_stale` e reportar quantos itens foram fundidos/arquivados
+  - [x] Adicionar teste: `gc` reporta contagens
+
+### Definition of done M3
+
+- [x] `cargo test` verde (incl. testes de dedup, archive_stale e gc)
+- [x] `cargo check` verde
 - [x] `cargo clippy --bin rustclaw` sem novos warnings
+- [x] `/memory gc` funde duplicados e arquiva itens não usados, preservando confirmados
 
 ---
 
-## S4 — Verificação final + commit
+## M4 — Compactação do `summary` acima do limite
+
+**Objetivo:** quando o `summary` do projeto passar de um limite, rolar os fatos antigos/baixa
+prioridade para um blob comprimido, mantendo só o essencial no contexto.
+
+### Feature: Limite e rolagem
+
+- [x] Definir `MAX_SUMMARY_CHARS` (ex. 4096) para o `summary` ativo
+- [x] Adicionar método `compact(cwd)`:
+  - [x] Se `summary` ≤ limite, não faz nada
+  - [x] Senão, mover os fatos de menor score (mais antigos / menos usados) para uma coluna
+        `archive` (texto comprimido ou JSON), mantendo os top-N no `summary`
+  - [x] Fatos `confirmed` nunca são rolados para o archive
+- [x] Adicionar coluna `archive TEXT` na tabela `memory` (migração idempotente)
+- [x] Adicionar teste: summary acima do limite → top-N mantidos, resto no archive
+
+### Feature: Integração com GC
+
+- [x] `/memory gc` também chama `compact(cwd)` ao final
+- [x] Adicionar teste: `gc` compacta quando necessário
+
+### Definition of done M4
+
+- [x] `cargo test` verde (incl. testes de compact)
+- [x] `cargo check` verde
+- [x] `cargo clippy --bin rustclaw` sem novos warnings
+- [x] `summary` nunca excede `MAX_SUMMARY_CHARS`; confirmados preservados
+
+---
+
+## M5 — Verificação final + commit
 
 **Objetivo:** garantir que tudo compila, testa e está documentado antes do commit.
 
@@ -176,19 +220,20 @@ fique preso para sempre.
 
 ### Feature: Smoke test manual (se possível)
 
-- [ ] Rodar `cargo run` e iniciar uma implementação de features
-- [ ] Verificar que o streaming retorna normalmente (sem hang)
-- [ ] Verificar que a compactação não trava
-- [ ] Verificar que Ctrl+C ainda cancela o run
+- [ ] Rodar `cargo run` e usar `/memory list` para ver metadados
+- [ ] Usar a tool `remember` com `kind`/`confidence` e confirmar persistência
+- [ ] Rodar `/memory promote <id>` e ver o SKILL.md criado
+- [ ] Rodar `/memory gc` e ver dedup/arquivamento/compactação
+- [ ] Verificar que o system prompt não estoura o orçamento de memória
 
 ### Feature: Commit
 
 - [x] `git add -A`
 - [x] Commit com mensagem descritiva, ex:
-      `fix(provider): add timeouts to prevent streaming hangs during feature implementation`
-- [x] Corpo do commit listando as 4 fases (S0–S3)
+      `feat(memory): metadata, ranking, promotion and GC for persistent project memory`
+- [x] Corpo do commit listando as fases (M0–M4)
 
-### Definition of done S4
+### Definition of done M5
 
 - [x] Todos os testes verdes
 - [x] Clippy sem novos warnings
@@ -199,11 +244,12 @@ fique preso para sempre.
 ## Ordem de execução
 
 ```text
-S0 timeout client HTTP (causa raiz)
- → S1 timeout compactação
- → S2 SseParser \r\n\r\n
- → S3 timeout processor (segurança)
- → S4 verificação + commit
+M0 metadados (schema + remember + list)
+ → M1 ranking + injeção seletiva
+ → M2 promoção → SKILL.md
+ → M3 GC (dedup + arquivamento)
+ → M4 compactação do summary
+ → M5 verificação + commit
 ```
 
 Cada fase: `cargo test` + `cargo check` (+ `cargo clippy` no final).
@@ -214,11 +260,12 @@ Cada fase: `cargo test` + `cargo check` (+ `cargo clippy` no final).
 
 | Risco | Mitigação | Status |
 |-------|-----------|--------|
-| `read_timeout` de 120s mata streaming de raciocínio longo | Usar `read_timeout` (entre chunks), não `timeout` total; 120s é generoso | ⬜ |
-| Timeout de 300s no processor interrompe resposta legítima | Generoso; só dispara se o client `read_timeout` falhar | ⬜ |
-| Normalizar `\r\n`→`\n` corrompe JSON com `\r\n` literal | JSON escapa como `\\r\\n`; sem colisão real | ⬜ |
-| Compactação com timeout retorna summary ruim | Fallback `"(summary unavailable)"` já existe; melhor que travar | ⬜ |
-| Teste de timeout de compactação demora 120s | Usar timeout curto no teste (ex: 1s) via config ou mock | ⬜ |
+| Migração do schema quebra linhas existentes | Defaults preenchem novos campos; migração idempotente estilo `migrate_legacy` | ⬜ |
+| Injeção seletiva omite fato importante | Score inclui `confidence`/`confirmed` que nunca são arquivados/rolados | ⬜ |
+| Dedup funde fatos distintos por engano | Normalização conservadora + manter o mais recente; revisão manual via `/memory list` | ⬜ |
+| Compactação perde contexto útil | Fatos `confirmed` nunca vão para o archive; archive é recuperável | ⬜ |
+| Orçamento de memória muito pequeno | `MAX_MEMORY_CHARS` configurável; default 2048 | ⬜ |
+| Promoção gera SKILL.md duplicado | `sanitize_id` + arquivar o fato original após promover | ⬜ |
 
 ---
 
@@ -226,11 +273,11 @@ Cada fase: `cargo test` + `cargo check` (+ `cargo clippy` no final).
 
 | Path | Mudança |
 |------|---------|
-| `src/harness/provider/mod.rs` | `build_http_client()` + `SseParser` `\r\n\r\n` |
-| `src/harness/runtime.rs` | usar `build_http_client()` (linhas 137, 194) |
-| `src/harness/session/compaction.rs` | timeout no `summarize()` + teste |
-| `src/harness/session/processor.rs` | timeout no `stream.next().await` |
-| `src/harness/provider/mod.rs` (tests) | testes `\r\n\r\n` |
+| `src/harness/project/memory.rs` | migração schema (kind/confidence/hit_count/last_used/archived/archive) + dedup/archive_stale/compact/bump_usage |
+| `src/harness/tool/remember.rs` | parâmetros `kind`/`confidence` + persistência de metadados |
+| `src/harness/ui/commands/memory.rs` | `/memory list` com metadados + `promote` + `gc` |
+| `src/harness/agent/mod.rs` | injeção seletiva com orçamento + score de relevância |
+| `src/harness/skill/loader.rs` | reuso de `sanitize_id` para slug de promoção |
 
 ---
 
@@ -238,5 +285,5 @@ Cada fase: `cargo test` + `cargo check` (+ `cargo clippy` no final).
 
 | Data | Nota |
 |------|------|
-| 2026-09-04 | TODO.md recriado: plano de resolução do hang de streaming convertido em features S0–S4 com checklists detalhados. Conteúdo anterior (TUI T0–T7, já concluído) substituído. |
-| 2026-09-04 | S0–S4 implementados: build_http_client() com timeouts (S0), timeout na compactação com fallback (S1), SseParser CRLF (S2), timeout de segurança no stream do processor (S3), verificação+commit (S4). 167 testes verdes; clippy no baseline (37 warnings pré-existentes). Commit `359bfed`. |
+| 2026-09-04 | TODO.md recriado: plano de gerenciamento de memória persistente convertido em features M0–M5 com checklists detalhados. Conteúdo anterior (S0–S4, já concluído) substituído. |
+| 2026-09-04 | M0–M5 implementados: tabela de fatos com metadados (M0), score de relevância + injeção seletiva com orçamento (M1), `/memory promote` → SKILL.md (M2), `/memory gc` com dedup + archive_stale (M3), `compact()` de fatos ativos (M4), verificação+commit (M5). 187 testes verdes; clippy sem novos warnings. Commit `572ec0d`. |

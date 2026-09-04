@@ -340,7 +340,7 @@ impl SessionRuntime {
             None => inject::enabled_for_turn(&session.skills, None),
         };
         let skills_block = inject::render_enabled(&self.skills, &session.skills, &enabled);
-        let project_context = self.project_context_for(&session.cwd)?;
+        let project_context = self.project_context_for(&session.cwd, user_text)?;
         let system_prompt =
             build_system_prompt(&agent, &session.cwd, &skills_block, None, &project_context);
 
@@ -420,8 +420,9 @@ impl SessionRuntime {
     }
 
     /// Builds the `# Project context` block for a session's working directory,
-    /// recomputing (and persisting) the structural summary when stale.
-    fn project_context_for(&self, cwd: &std::path::Path) -> Result<String> {
+    /// recomputing (and persisting) the structural summary when stale, and
+    /// appending the top curated memory facts (ranked by relevance to `query`).
+    fn project_context_for(&self, cwd: &std::path::Path, query: &str) -> Result<String> {
         let profiler = ProjectProfiler {
             inner: ProjectProfiler::analyze(cwd),
         };
@@ -448,7 +449,29 @@ impl SessionRuntime {
         if let Ok(mut p) = self.project.lock() {
             p.inner = profiler.inner;
         }
-        Ok(summary)
+
+        // Append curated memory facts, ranked by relevance to the current turn.
+        let facts = self.project_memory.active_facts(cwd)?;
+        let memory_block = crate::harness::project::memory::render_memory(
+            &facts,
+            query,
+            crate::harness::project::memory::MAX_MEMORY_CHARS,
+        );
+        // Bump usage for the facts that were actually injected.
+        if !memory_block.is_empty() {
+            for fact in &facts {
+                if memory_block.contains(&fact.text) {
+                    let _ = self.project_memory.bump_usage(cwd, fact.id);
+                }
+            }
+        }
+
+        let mut out = summary;
+        if !memory_block.trim().is_empty() {
+            out.push_str("\n\n# Project memory\n");
+            out.push_str(&memory_block);
+        }
+        Ok(out)
     }
 }
 

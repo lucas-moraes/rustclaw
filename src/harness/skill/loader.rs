@@ -113,7 +113,7 @@ fn default_id(path: &Path, _root: &Path) -> String {
         .unwrap_or_else(|| "skill".to_string())
 }
 
-fn sanitize_id(name: &str) -> String {
+pub fn sanitize_id(name: &str) -> String {
     name.to_lowercase()
         .chars()
         .map(|c| {
