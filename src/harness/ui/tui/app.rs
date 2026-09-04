@@ -2359,7 +2359,13 @@ async fn submit_input(
         }
         if text == "/auth" || text.starts_with("/auth ") {
             let arg = text.strip_prefix("/auth").unwrap_or("").trim();
-            if arg.is_empty() {
+            // No argument → update the token for the current provider/model.
+            let provider = if arg.is_empty() {
+                app.runtime.config.provider.clone()
+            } else {
+                arg.to_string()
+            };
+            if provider.is_empty() {
                 let store = crate::harness::auth::AuthStore::load();
                 app.add_system("usage: /auth <provider> — stored providers:");
                 let names: Vec<&str> = store.entries.keys().map(|s| s.as_str()).collect();
@@ -2371,7 +2377,7 @@ async fn submit_input(
             } else if app.running {
                 app.add_system("[busy] cannot run /auth while a turn is running");
             } else {
-                app.auth_prompt = Some(AuthPromptState::new(arg));
+                app.auth_prompt = Some(AuthPromptState::new(provider));
             }
             return Ok(false);
         }

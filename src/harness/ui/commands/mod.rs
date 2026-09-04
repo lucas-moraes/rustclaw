@@ -275,7 +275,13 @@ pub async fn handle(
         }
         "/auth" => {
             use crate::harness::auth::AuthStore;
-            if arg.is_empty() {
+            // No argument → update the token for the current provider/model.
+            let provider = if arg.is_empty() {
+                runtime.config.provider.clone()
+            } else {
+                arg.to_string()
+            };
+            if provider.is_empty() {
                 let store = AuthStore::load();
                 let names = store.entries.keys().cloned().collect::<Vec<_>>();
                 out.push("usage: /auth <provider> — stored providers:".to_string());
@@ -285,7 +291,6 @@ pub async fn handle(
                     out.push(format!("  {}", names.join(", ")));
                 }
             } else {
-                let provider = arg.to_string();
                 // Prompt goes straight to stdout so it shows before blocking on input.
                 println!("paste the API key for `{}`: ", provider);
                 let key = tokio::task::spawn_blocking(|| -> String {
