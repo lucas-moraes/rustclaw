@@ -47,20 +47,32 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
 
     let mut lines: Vec<Line<'static>> = Vec::new();
 
-    // ── Status ──────────────────────────────────────────────────────────
-    lines.extend(status_block(app, t, w));
-    lines.push(blank());
-
-    // ── Model ───────────────────────────────────────────────────────────
+    // ── Model (always first & prioritized so it's never clipped) ────────
     lines.push(section("Model", t.accent));
-    lines.extend(kv_block("model", &app.runtime.config.model, t, w));
-    lines.extend(kv_block("provider", &app.runtime.config.provider, t, w));
+    // In very short panels, keep model/provider on a single line each so they
+    // always fit; otherwise allow stacked (wrapped) values.
+    if h < 12 {
+        lines.push(kv_inline("model", app.runtime.config.model.clone(), t, w));
+        lines.push(kv_inline(
+            "provider",
+            app.runtime.config.provider.clone(),
+            t,
+            w,
+        ));
+    } else {
+        lines.extend(kv_block("model", &app.runtime.config.model, t, w));
+        lines.extend(kv_block("provider", &app.runtime.config.provider, t, w));
+    }
     if !app.runtime.config.is_configured() {
         lines.push(Line::from(Span::styled(
             "  ⚠ token missing".to_string(),
             Style::default().fg(t.warn).add_modifier(Modifier::BOLD),
         )));
     }
+    lines.push(blank());
+
+    // ── Status ──────────────────────────────────────────────────────────
+    lines.extend(status_block(app, t, w));
     lines.push(blank());
 
     // ── Mode ────────────────────────────────────────────────────────────
@@ -156,6 +168,24 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
         }
     }
 
+    // Absolute guarantee: model + provider are always visible. If the panel
+    // is too short for the full header, render a minimal model/provider-only
+    // view so the active model is never hidden.
+    if h < 5 {
+        let mut minimal: Vec<Line<'static>> = Vec::new();
+        minimal.push(section("Model", t.accent));
+        minimal.push(kv_inline("model", app.runtime.config.model.clone(), t, w));
+        if h >= 4 {
+            minimal.push(kv_inline(
+                "provider",
+                app.runtime.config.provider.clone(),
+                t,
+                w,
+            ));
+        }
+        lines = minimal;
+    }
+
     frame.render_widget(
         Paragraph::new(lines)
             .style(Style::default().bg(t.surface))
@@ -194,7 +224,7 @@ fn status_block(app: &App, t: &Theme, w: usize) -> Vec<Line<'static>> {
 fn mode_rows(active: &str, t: &Theme, w: usize) -> Vec<Line<'static>> {
     let mut out = Vec::with_capacity(MODES.len());
     // If the active agent is outside the cycle (custom), show it first.
-    let known = MODES.iter().any(|m| *m == active);
+    let known = MODES.contains(&active);
     if !known && !active.is_empty() {
         out.push(mode_row(active, true, t, w));
     }
