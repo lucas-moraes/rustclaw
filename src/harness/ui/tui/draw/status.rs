@@ -110,8 +110,11 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
         ));
     }
 
+    // Thin top rule so the status bar reads as a separator under the transcript.
+    let mut line_spans = vec![Span::styled("─ ", Style::default().fg(t.border))];
+    line_spans.extend(spans);
     frame.render_widget(
-        Paragraph::new(Line::from(spans)).style(Style::default().bg(t.status_bg).fg(t.text)),
+        Paragraph::new(Line::from(line_spans)).style(Style::default().bg(t.status_bg).fg(t.text)),
         area,
     );
 }

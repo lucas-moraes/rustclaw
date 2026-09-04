@@ -127,16 +127,21 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
 
     let t = &app.theme;
     let line = Line::from(vec![
-        Span::styled(" ? ", Style::default().fg(t.accent)),
-        Span::styled("help  ", Style::default().fg(t.text_dim)),
-        Span::styled("Ctrl+P ", Style::default().fg(t.accent)),
-        Span::styled("palette  ", Style::default().fg(t.text_dim)),
-        Span::styled("Ctrl+T ", Style::default().fg(t.accent)),
-        Span::styled("theme  ", Style::default().fg(t.text_dim)),
-        Span::styled("/ ", Style::default().fg(t.accent2)),
-        Span::styled("commands  ", Style::default().fg(t.text_dim)),
-        Span::styled("Esc ", Style::default().fg(t.accent3)),
-        Span::styled("back", Style::default().fg(t.text_dim)),
+        Span::styled(" ", Style::default()),
+        Span::styled("?", Style::default().fg(t.accent)),
+        Span::styled(" help", Style::default().fg(t.text_dim)),
+        Span::styled("  ·  ", Style::default().fg(t.border)),
+        Span::styled("⌃P", Style::default().fg(t.accent)),
+        Span::styled(" palette", Style::default().fg(t.text_dim)),
+        Span::styled("  ·  ", Style::default().fg(t.border)),
+        Span::styled("⌃T", Style::default().fg(t.accent)),
+        Span::styled(" theme", Style::default().fg(t.text_dim)),
+        Span::styled("  ·  ", Style::default().fg(t.border)),
+        Span::styled("/", Style::default().fg(t.accent2)),
+        Span::styled(" commands", Style::default().fg(t.text_dim)),
+        Span::styled("  ·  ", Style::default().fg(t.border)),
+        Span::styled("Esc", Style::default().fg(t.accent3)),
+        Span::styled(" back", Style::default().fg(t.text_dim)),
     ]);
     frame.render_widget(Paragraph::new(line).style(Style::default().bg(t.bg)), area);
 }
