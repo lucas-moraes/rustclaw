@@ -49,8 +49,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let footer_h: u16 = 1;
     let status_h: u16 = 1;
     let chips_h: u16 = if has_chips { 1 } else { 0 };
-    // Multi-line prompts (Shift+Enter) grow the input box up to 8 text rows.
-    let input_h: u16 = 3 + app.input.matches('\n').count() as u16;
+    // The input box grows with soft-wrapped visual rows (border + 1 text row
+    // + up to 9 extra wrapped/newline rows), cap at 12 total.
+    let est_inner = content.width.saturating_sub(2) as usize;
+    let vis_rows = crate::harness::ui::tui::app::wrap_input_rows(&app.input, est_inner).len();
+    let input_h: u16 = 3 + (vis_rows_extra(vis_rows)).min(9);
 
     let rows = Layout::vertical([
         Constraint::Min(3),
@@ -121,6 +124,12 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
         Span::styled("back", Style::default().fg(t.text_dim)),
     ]);
     frame.render_widget(Paragraph::new(line).style(Style::default().bg(t.bg)), area);
+}
+
+/// Extra text rows needed beyond the first for `n` wrapped visual rows
+/// (min 1: an empty/short input still uses a single row).
+fn vis_rows_extra(n: usize) -> u16 {
+    n.saturating_sub(1) as u16
 }
 
 /// Replaces the prompt input while no provider/model/token is configured.

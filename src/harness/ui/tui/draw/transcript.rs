@@ -21,16 +21,25 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_widget(inner, area);
 
     let mut rows: Vec<Line<'static>> = Vec::new();
-    for line in &app.lines {
+    let mut row_map: Vec<usize> = Vec::new();
+    for (li, line) in app.lines.iter().enumerate() {
+        let base = rows.len();
         rows.extend(render_line(line, &theme, width, tick, false));
         rows.push(Line::from(""));
+        for k in base..rows.len() {
+            row_map.push(li);
+        }
     }
     if let Some(s) = &app.streaming {
         let stream_line = TranscriptLine {
             kind: LineKind::Assistant,
             text: s.clone(),
         };
+        let base = rows.len();
         rows.extend(render_line(&stream_line, &theme, width, tick, true));
+        for k in base..rows.len() {
+            row_map.push(app.lines.len());
+        }
     }
     if let Some(b) = &app.tool_status {
         if b.pending > 0 {
@@ -38,13 +47,20 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
                 kind: LineKind::ToolStart,
                 text: b.live_label(),
             };
+            let base = rows.len();
             rows.extend(render_line(&live, &theme, width, tick, false));
+            for k in base..rows.len() {
+                row_map.push(app.lines.len());
+            }
         }
     }
+    app.transcript_row_map = row_map;
 
     let total = rows.len();
     let view_h = area.height as usize;
     app.clamp_scroll(total, view_h);
+    app.transcript_scroll = app.scroll;
+    app.transcript_area = area;
 
     let start = app.scroll.min(total);
     let end = (start + view_h).min(total);

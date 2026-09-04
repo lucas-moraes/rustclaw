@@ -16,7 +16,56 @@ pub fn draw(frame: &mut Frame, modal: &Modal, theme: &Theme, tick: u64, area: Re
     match modal {
         Modal::Permission(req) => draw_permission(frame, req, theme, tick, modal_area),
         Modal::Question(req) => draw_question(frame, req, theme, tick, modal_area),
+        Modal::UserPrompt { .. } => {
+            let fixed = centered_rect_fixed(48, 11, area);
+            frame.render_widget(Clear, fixed);
+            draw_user_prompt(frame, theme, fixed)
+        }
     }
+}
+
+fn draw_user_prompt(frame: &mut Frame, t: &Theme, area: Rect) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(t.accent3))
+        .title(Span::styled(
+            " ❯ prompt ",
+            Style::default().fg(t.accent3).add_modifier(Modifier::BOLD),
+        ))
+        .style(Style::default().bg(t.surface).fg(t.text));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let lines = vec![
+        Line::from(Span::styled(
+            "  action for the clicked prompt:",
+            Style::default().fg(t.text_dim),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  ", Style::default()),
+            key_btn("R", "revert", t.error, t),
+            Span::styled(
+                "  undo this prompt + replies",
+                Style::default().fg(t.text_dim),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  ", Style::default()),
+            key_btn("C", "copy", t.success, t),
+            Span::styled(
+                "  copy prompt to clipboard",
+                Style::default().fg(t.text_dim),
+            ),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled("Esc", Style::default().fg(t.accent2)),
+            Span::styled(" dismiss", Style::default().fg(t.text_dim)),
+        ]),
+    ];
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 fn draw_permission(

@@ -5,8 +5,12 @@
 pub const HELP: &str = "\
   Ctrl+C     quit (exit the project)
   Enter      send prompt
-  Esc        cancel prompt / clear input / close overlay
-  Up/Down    history (or autocomplete)
+  Shift/Alt+Enter  line break
+  Ctrl+J     line break (macOS fallback)  Esc        cancel prompt / clear input / close overlay
+  Up/Down    history (single-line) / move between lines
+  Ctrl+A/E   line start / line end
+  Ctrl+U/W   kill to line start / kill word
+  Del        delete char at cursor
   PgUp/PgDn  scroll transcript
   Ctrl+P     command palette
   Ctrl+T     cycle theme

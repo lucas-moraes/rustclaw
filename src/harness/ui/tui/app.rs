@@ -19,6 +19,123 @@ fn preview(s: &str, max: usize) -> String {
     crate::harness::session::preview(s, max)
 }
 
+/// One soft-wrapped visual row: the logical char indices it displays plus the
+/// smallest char index whose cursor position falls on this row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VisualRow {
+    pub idxs: Vec<usize>,
+    pub start: usize,
+}
+
+/// Word-wrapped visual rows of the prompt input (indices only).
+pub fn wrap_input_rows(input: &str, width: usize) -> Vec<Vec<usize>> {
+    wrap_visual(input, width)
+        .into_iter()
+        .map(|r| r.idxs)
+        .collect()
+}
+
+/// Word-wrapped visual rows with logical start positions.
+pub fn wrap_visual(input: &str, width: usize) -> Vec<VisualRow> {
+    let width = width.max(4);
+    let mut rows: Vec<VisualRow> = vec![VisualRow {
+        idxs: Vec::new(),
+        start: 0,
+    }];
+    let mut row_len = 0usize;
+    // Index into the current row where the last word break (space) sits.
+    let mut break_at: Option<usize> = None;
+
+    for (i, c) in input.chars().enumerate() {
+        if c == '\n' {
+            rows.push(VisualRow {
+                idxs: Vec::new(),
+                start: i + 1,
+            });
+            row_len = 0;
+            break_at = None;
+            continue;
+        }
+        if row_len + 1 > width {
+            if let Some(b) = break_at.filter(|b| *b + 1 < rows.last().unwrap().idxs.len()) {
+                // Move the trailing word (after the break space) to a new row.
+                let cut: Vec<usize> = rows.last_mut().unwrap().idxs.drain(b + 1..).collect();
+                rows.push(VisualRow {
+                    start: cut[0],
+                    idxs: cut,
+                });
+            } else {
+                rows.push(VisualRow {
+                    idxs: Vec::new(),
+                    start: i,
+                });
+            }
+            row_len = rows.last().unwrap().idxs.len();
+            break_at = None;
+        }
+        rows.last_mut().unwrap().idxs.push(i);
+        row_len += 1;
+        if c == ' ' {
+            break_at = Some(rows.last().unwrap().idxs.len() - 1);
+        }
+    }
+    rows
+}
+
+/// Maps a logical cursor (char index) to its visual (row, col) in `rows`.
+pub fn visual_row_col(rows: &[VisualRow], cursor: usize) -> (usize, usize) {
+    if rows.is_empty() {
+        return (0, 0);
+    }
+    // The cursor belongs to the last row whose start <= cursor.
+    let mut r = 0;
+    for (i, row) in rows.iter().enumerate() {
+        if row.start <= cursor {
+            r = i;
+        } else {
+            break;
+        }
+    }
+    let col = rows[r].idxs.iter().filter(|i| **i < cursor).count();
+    (r, col)
+}
+
+/// Compacts the wrapped visual rows into a display window (opencode-style):
+/// keeps the first 2 rows from the top, collapses the middle into a hidden
+/// marker (rendered dim by the caller) and keeps the cursor row plus whatever
+/// fits below it visible at the bottom. `Some((head, from, to))` describes the
+/// visible ranges: rows `0..head` at the top, marker between, rows
+/// `from..to` at the bottom (cursor row always inside `from..to`). `None`
+/// when everything fits (no compaction).
+pub fn compact_window(total: usize, crow: usize, max: usize) -> Option<(usize, usize, usize)> {
+    if total <= max || max < 4 {
+        return None;
+    }
+    let upper = 2usize.min(max.saturating_sub(2));
+    if crow < upper {
+        // Cursor in the top region: the head window already shows it.
+        return None;
+    }
+    let bottom_keep = max.saturating_sub(upper + 1).max(1);
+    let to = (crow + bottom_keep).min(total);
+    let from = to.saturating_sub(bottom_keep).max(upper);
+    Some((upper, from, to))
+}
+
+/// Char index for a (row, col) target, clamped; col == row length puts the
+/// cursor just after the row's last char (before a `\n` or at end of input).
+fn row_char_idx(row: &VisualRow, col: usize, input: &str) -> usize {
+    let total = input.chars().count();
+    if row.idxs.is_empty() {
+        return row.start.min(total);
+    }
+    if col >= row.idxs.len() {
+        (row.idxs[row.idxs.len() - 1] + 1).min(total)
+    } else {
+        row.idxs[col]
+    }
+}
+
 /// Modes cycled by the prompt mode selector (like opencode's primary agents).
 /// `general` stays available via `/agent general` and the palette.
 pub const MODES: &[&str] = &["build", "plan", "explore", "general"];
@@ -106,6 +223,9 @@ pub struct App {
     pub streaming: Option<String>,
     pub input: String,
     pub input_cursor: usize,
+    /// Inner width of the prompt box (refreshed by the draw pass); used for
+    /// soft-wrap aware cursor movement between frames.
+    pub input_inner_width: u16,
     pub history: Vec<String>,
     pub history_pos: Option<usize>,
     pub scroll: usize,
@@ -137,8 +257,15 @@ pub struct App {
     pub model_picker: Option<ModelPickerState>,
     /// Open `/auth` token prompt (masked input).
     pub auth_prompt: Option<AuthPromptState>,
-    /// Open the session manager picker (/sessions).
+    /// Open `/resume` session picker.
     pub resume_picker: Option<ResumePickerState>,
+    /// Per-row mapping of rendered transcript rows → `lines` index (rebuilt
+    /// each draw; used for mouse click hit-testing).
+    pub transcript_row_map: Vec<usize>,
+    /// Last committed transcript scroll offset (used by click mapping).
+    pub transcript_scroll: usize,
+    /// Bounds of the transcript viewport (set during draw).
+    pub transcript_area: ratatui::layout::Rect,
     /// Per-turn skill checkboxes; `None` = not yet initialized (use session defaults).
     pub prompt_toggles: Option<Vec<PromptSkillToggle>>,
     /// Whether the skill chips (not the text input) currently hold focus.
@@ -155,6 +282,10 @@ pub struct App {
 pub enum Modal {
     Permission(PermissionRequest),
     Question(QuestionRequest),
+    /// Pop-up for a clicked user prompt: revert or copy it.
+    UserPrompt {
+        line_idx: usize,
+    },
 }
 
 /// State of the session-memory skill picker overlay.
@@ -375,6 +506,55 @@ impl ResumePickerState {
 }
 
 impl App {
+    /// Test-only lightweight App editor instance.
+    #[cfg(test)]
+    pub fn inline_for_tests(input: &str) -> Self {
+        use crate::harness::runtime::SessionRuntime;
+        use crate::harness::tool::context::{PermissionAskInput, PermissionAsker, UserAsker};
+        use std::sync::Arc;
+
+        struct AllowAsker;
+        #[async_trait::async_trait]
+        impl PermissionAsker for AllowAsker {
+            async fn ask(&self, _req: PermissionAskInput) -> bool {
+                true
+            }
+        }
+        struct NoUserAsker;
+        #[async_trait::async_trait]
+        impl UserAsker for NoUserAsker {
+            async fn ask(&self, _q: String, _o: Vec<String>) -> Option<String> {
+                None
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let _keep_dir = Box::leak(Box::new(dir)); // db file stays alive for the test
+        let http = crate::harness::provider::HttpConfig {
+            client: reqwest::Client::new(),
+            base_url: "https://api.example.com/v1".to_string(),
+            api_key: String::new(),
+        };
+        let provider =
+            crate::harness::provider::opencode_go::build_provider("deepinfra", http).unwrap();
+        let runtime = SessionRuntime::new(
+            provider,
+            crate::harness::tool::registry::ToolRegistry::builder().build(),
+            crate::harness::runtime::HarnessConfig::default(),
+            &_keep_dir.path().join("test.db"),
+            Arc::new(AllowAsker),
+            Arc::new(NoUserAsker),
+        )
+        .unwrap();
+        let session = crate::harness::session::Session::new("build", "/tmp/proj".into());
+        let (perm_tx, perm_rx) = mpsc::unbounded_channel::<PermissionRequest>();
+        let (quest_tx, quest_rx) = mpsc::unbounded_channel::<QuestionRequest>();
+        let mut app = Self::new(runtime, session, "/tmp/proj".into(), perm_rx, quest_rx);
+        app.input = input.to_string();
+        app.input_cursor = input.chars().count();
+        app
+    }
+
     pub fn new(
         runtime: SessionRuntime,
         session: Session,
@@ -392,6 +572,7 @@ impl App {
             streaming: None,
             input: String::new(),
             input_cursor: 0,
+            input_inner_width: 80,
             history: Vec::new(),
             history_pos: None,
             scroll: 0,
@@ -418,6 +599,9 @@ impl App {
             model_picker: None,
             auth_prompt: None,
             resume_picker: None,
+            transcript_row_map: Vec::new(),
+            transcript_scroll: 0,
+            transcript_area: ratatui::layout::Rect::default(),
             prompt_toggles: None,
             skills_focused: false,
             skills_idx: 0,
@@ -652,6 +836,118 @@ impl App {
         self.input = chars.into_iter().collect();
         self.input_cursor += 1;
         self.refresh_autocomplete();
+    }
+
+    /// Removes the char at the cursor (Delete key).
+    pub fn delete_forward(&mut self) {
+        if self.input_cursor < self.input.chars().count() {
+            let mut chars: Vec<char> = self.input.chars().collect();
+            chars.remove(self.input_cursor.min(chars.len() - 1));
+            self.input = chars.into_iter().collect();
+            self.refresh_autocomplete();
+        }
+    }
+
+    /// Char bounds of the logical line containing `self.input_cursor`.
+    fn current_line_bounds(&self) -> (usize, usize) {
+        let total = self.input.chars().count();
+        let mut line_start = 0usize;
+        for (i, c) in self.input.chars().enumerate() {
+            if i >= self.input_cursor {
+                break;
+            }
+            if c == '\n' {
+                line_start = i + 1;
+            }
+        }
+        let line_end = self
+            .input
+            .chars()
+            .enumerate()
+            .find(|(i, c)| c == &'\n' && *i >= self.input_cursor)
+            .map(|(i, _)| i)
+            .unwrap_or(total);
+        (line_start, line_end)
+    }
+
+    /// Moves the cursor to the start of the current logical line (Home/Ctrl+A).
+    pub fn cursor_line_start(&mut self) {
+        self.input_cursor = self.current_line_bounds().0;
+    }
+
+    /// Moves the cursor to the end of the current logical line (End/Ctrl+E).
+    pub fn cursor_line_end(&mut self) {
+        let (_, end) = self.current_line_bounds();
+        self.input_cursor = end;
+    }
+
+    /// Ctrl+U: delete from the current line start up to the cursor.
+    pub fn kill_to_line_start(&mut self) {
+        let (start, _) = self.current_line_bounds();
+        if start < self.input_cursor {
+            let mut chars: Vec<char> = self.input.chars().collect();
+            chars.drain(start..self.input_cursor);
+            self.input = chars.into_iter().collect();
+            self.input_cursor = start;
+            self.refresh_autocomplete();
+        }
+    }
+
+    /// Ctrl+W: delete the word before the cursor (doesn't cross lines).
+    pub fn kill_word_back(&mut self) {
+        let mut chars: Vec<char> = self.input.chars().collect();
+        let mut i = self.input_cursor.min(chars.len());
+        // Skip spaces right before the cursor.
+        while i > 0 && chars.get(i - 1) == Some(&' ') {
+            i -= 1;
+        }
+        // Then skip the word chars.
+        while i > 0 && chars.get(i - 1) != Some(&' ') && chars.get(i - 1) != Some(&'\n') {
+            i -= 1;
+        }
+        chars.drain(i..self.input_cursor);
+        self.input = chars.into_iter().collect();
+        self.input_cursor = i;
+        self.refresh_autocomplete();
+    }
+
+    /// Visual cursor position after soft-wrapping: (row, col).
+    pub fn visual_cursor(&self, width: usize) -> (usize, usize) {
+        let width = if width == 0 {
+            self.input_inner_width.max(20) as usize
+        } else {
+            width
+        };
+        let rows = wrap_visual(&self.input, width);
+        visual_row_col(&rows, self.input_cursor)
+    }
+
+    /// Up: move to the previous visual row (opencode-style multi-line editor).
+    pub fn cursor_visual_up(&mut self) {
+        let width = self.input_inner_width.max(20) as usize;
+        let rows = wrap_visual(&self.input, width);
+        if rows.len() < 2 {
+            return;
+        }
+        let (r, col) = visual_row_col(&rows, self.input_cursor);
+        if r == 0 {
+            return;
+        }
+        self.input_cursor = row_char_idx(&rows[r - 1], col, &self.input);
+    }
+
+    /// Down: move to the next visual row.
+    pub fn cursor_visual_down(&mut self) {
+        let width = self.input_inner_width.max(20) as usize;
+        let rows = wrap_visual(&self.input, width);
+        if rows.len() < 2 {
+            return;
+        }
+        let (r, col) = visual_row_col(&rows, self.input_cursor);
+        if r + 1 >= rows.len() {
+            return;
+        }
+        self.input_cursor = row_char_idx(&rows[r + 1], col, &self.input);
     }
 
     pub fn backspace(&mut self) {
@@ -989,6 +1285,17 @@ pub async fn run_tui(
     execute!(stdout, EnterAlternateScreen)?;
     crossterm::execute!(stdout, crossterm::event::EnableMouseCapture)?;
     let _ = crossterm::execute!(stdout, crossterm::event::EnableBracketedPaste);
+    // Kitty keyboard protocol: lets Shift+Enter reach the app as a distinct
+    // key so multi-line prompts work (terminals without support just stay
+    // on plain Enter). DISAMBIGUATE is what disambiguates Shift+Enter;
+    // REPORT_EVENT_TYPES is intentionally omitted — we only handle presses.
+    let _ = crossterm::execute!(
+        stdout,
+        crossterm::event::PushKeyboardEnhancementFlags(
+            crossterm::event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                | crossterm::event::KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
+        )
+    );
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
     let _guard = TerminalGuard;
@@ -1099,6 +1406,11 @@ pub async fn run_tui(
         if event::poll(std::time::Duration::from_millis(poll_ms))? {
             match event::read()? {
                 Event::Key(key) => {
+                    // Kitty protocol reports releases/repeats as well; only
+                    // handle press events (otherwise Shift+Enter fires twice).
+                    if key.kind != crossterm::event::KeyEventKind::Press {
+                        continue;
+                    }
                     // Skip splash on any key.
                     if app.splash.is_some() {
                         app.splash = None;
@@ -1123,6 +1435,25 @@ pub async fn run_tui(
                     match m.kind {
                         MouseEventKind::ScrollUp => app.scroll_by(-3),
                         MouseEventKind::ScrollDown => app.scroll_by(3),
+                        MouseEventKind::Down(button)
+                            if button == crossterm::event::MouseButton::Left =>
+                        {
+                            let area = app.transcript_area;
+                            // Only clicks inside the transcript viewport hit a bubble.
+                            if area.width > 0 && m.row >= area.y && m.row < area.y + area.height {
+                                let row = app.transcript_scroll
+                                    + (m.row - area.y).saturating_sub(0) as usize;
+                                if let Some(&li) = app.transcript_row_map.get(row) {
+                                    if let Some(line) = app.lines.get(li) {
+                                        if line.kind == LineKind::User && app.modal.is_none() {
+                                            // One prompt popup at a time.
+                                            app.autocomplete = None;
+                                            app.modal = Some(Modal::UserPrompt { line_idx: li });
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -1148,6 +1479,7 @@ pub async fn run_tui(
     let mut stdout = std::io::stdout();
     execute!(stdout, crossterm::event::DisableMouseCapture)?;
     execute!(stdout, LeaveAlternateScreen)?;
+    let _ = crossterm::execute!(stdout, crossterm::event::PopKeyboardEnhancementFlags);
     Ok(())
 }
 
@@ -1160,6 +1492,10 @@ impl Drop for TerminalGuard {
         let _ = disable_raw_mode();
         let _ = execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
         let _ = execute!(std::io::stdout(), LeaveAlternateScreen);
+        let _ = crossterm::execute!(
+            std::io::stdout(),
+            crossterm::event::PopKeyboardEnhancementFlags
+        );
     }
 }
 
@@ -1233,6 +1569,19 @@ async fn handle_key(
             app.clear_transcript();
             return Ok(false);
         }
+        // Opencode-style line editing (prompt editor).
+        KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.cursor_line_start();
+        }
+        KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.cursor_line_end();
+        }
+        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.kill_to_line_start();
+        }
+        KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.kill_word_back();
+        }
         KeyCode::F(1) => {
             app.show_help = true;
             return Ok(false);
@@ -1301,8 +1650,14 @@ async fn handle_key(
     }
 
     match key.code {
-        // Shift+Enter inserts a newline (multi-line prompt / list building).
-        KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
+        // Enter + any modifier inserts a newline (multi-line prompt / list
+        // building): Shift+Enter, Shift+Return, Alt+Enter and Ctrl+Enter all
+        // work here. On macOS terminals without the kitty keyboard protocol
+        // (default Terminal.app), Ctrl+J is the reliable fallback.
+        KeyCode::Enter if !key.modifiers.is_empty() => {
+            app.insert_char_fixed('\n');
+        }
+        KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.insert_char_fixed('\n');
         }
         KeyCode::Enter => {
@@ -1318,10 +1673,12 @@ async fn handle_key(
             }
         }
         KeyCode::Backspace => app.backspace(),
+        KeyCode::Delete => app.delete_forward(),
         KeyCode::Left => app.cursor_left(),
         KeyCode::Right => app.cursor_right(),
-        KeyCode::Home => app.cursor_home(),
-        KeyCode::End => app.cursor_end(),
+        // Home/End (and Ctrl+A/E) act inside the current logical line.
+        KeyCode::Home => app.cursor_line_start(),
+        KeyCode::End => app.cursor_line_end(),
         KeyCode::Tab => {
             // Tab cycles the active mode when not navigating `/` autocomplete
             // (which is handled above when autocomplete is Some).
@@ -1330,13 +1687,23 @@ async fn handle_key(
             }
         }
         KeyCode::Up => {
-            if app.autocomplete.is_none() && !app.running {
-                app.history_up();
+            if app.autocomplete.is_none() {
+                // Multi-line input → move inside the editor; single-line falls
+                // back to prompt history (opencode behavior).
+                if app.input.contains('\n') {
+                    app.cursor_visual_up();
+                } else if !app.running {
+                    app.history_up();
+                }
             }
         }
         KeyCode::Down => {
-            if app.autocomplete.is_none() && !app.running {
-                app.history_down();
+            if app.autocomplete.is_none() {
+                if app.input.contains('\n') {
+                    app.cursor_visual_down();
+                } else if !app.running {
+                    app.history_down();
+                }
             }
         }
         KeyCode::PageUp => app.scroll_by(-8),
@@ -1344,6 +1711,11 @@ async fn handle_key(
         KeyCode::Esc => {
             if app.autocomplete.is_some() {
                 app.autocomplete = None;
+            } else if app.running {
+                // Cancel the running turn (opencode-style Esc cancel).
+                app.abort.abort();
+                app.status_msg = Some("cancelling…".to_string());
+                app.push(LineKind::System, "[run cancelled by user]".to_string());
             } else if !app.input.is_empty() {
                 app.input.clear();
                 app.input_cursor = 0;
@@ -1771,9 +2143,91 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) -> Result<bool> {
                 None => app.push(LineKind::System, "[question] no answer".to_string()),
             }
         }
+        Some(Modal::UserPrompt { line_idx }) => {
+            let mut continue_modal = true;
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    app.add_system("prompt action dismissed");
+                }
+                KeyCode::Char('c') => {
+                    let text = user_prompt_text(app, line_idx);
+                    if copy_to_clipboard(&text) {
+                        app.push(LineKind::System, "prompt copied to clipboard".to_string());
+                    } else {
+                        app.push(LineKind::Error, "[error] clipboard unavailable".to_string());
+                    }
+                    // One-shot action: the popup closes after executing.
+                    continue_modal = false;
+                }
+                KeyCode::Char('r') => {
+                    match revert_to_prompt(app, line_idx) {
+                        Ok(()) => app.add_system("session reverted to before this prompt"),
+                        Err(e) => app.add_system(&format!("[error] revert failed: {}", e)),
+                    }
+                    continue_modal = false;
+                }
+                _ => {
+                    app.modal = Some(Modal::UserPrompt { line_idx });
+                }
+            }
+            if !continue_modal {
+                app.modal = None;
+            }
+        }
         None => {}
     }
     Ok(false)
+}
+
+/// Text of the user prompt visually rendered at `line_idx` (clamped).
+fn user_prompt_text(app: &App, line_idx: usize) -> String {
+    app.lines
+        .get(line_idx)
+        .map(|l| l.text.clone())
+        .unwrap_or_default()
+}
+
+fn copy_to_clipboard(text: &str) -> bool {
+    match arboard::Clipboard::new() {
+        Ok(mut cb) => cb.set_text(text.to_string()).is_ok(),
+        Err(_) => false,
+    }
+}
+
+/// Removes the clicked user prompt and everything after it (memory + SQLite).
+fn revert_to_prompt(app: &mut App, line_idx: usize) -> Result<()> {
+    // The clicked User bubble is the nth user prompt in the transcript.
+    let nth = app
+        .lines
+        .iter()
+        .take(line_idx + 1)
+        .filter(|l| l.kind == LineKind::User)
+        .count()
+        .saturating_sub(1);
+    let mut user_seen = 0usize;
+    let mut cut_msg_index = None;
+    for (i, m) in app.session.messages.iter().enumerate() {
+        if m.role.as_str() == "user" {
+            if user_seen == nth {
+                cut_msg_index = Some(i);
+                break;
+            }
+            user_seen += 1;
+        }
+    }
+    let Some(msg_index) = cut_msg_index else {
+        anyhow::bail!("user prompt not found");
+    };
+    let msg_id = app.session.messages[msg_index].id.clone();
+    // DB: drop rows with ordinal >= this message.
+    app.runtime
+        .store
+        .delete_messages_from(&app.session.id, &app.session.cwd, &msg_id)?;
+    // Memory: drop messages from this prompt on.
+    app.session.messages.truncate(msg_index);
+    app.runtime.store.save_session(&app.session)?;
+    app.tool_status = None;
+    Ok(())
 }
 
 /// Returns Ok(true) when the app should quit.
@@ -1984,4 +2438,176 @@ async fn submit_input(
     });
     *prompt_task = Some(handle);
     Ok(false)
+}
+
+#[cfg(test)]
+mod input_tests {
+    use super::*;
+
+    fn row_text(input: &str, r: &VisualRow) -> String {
+        let chars: Vec<char> = input.chars().collect();
+        r.idxs.iter().map(|i| chars[*i]).collect()
+    }
+
+    #[test]
+    fn test_soft_wrap_row_counts() {
+        let long = "aaaa ".repeat(10);
+        let w = 10usize;
+        let rows = wrap_input_rows(&long, w);
+        assert!(rows.iter().all(|r| r.len() <= w));
+        assert!(rows.len() > 1);
+        let flat: Vec<usize> = rows.iter().flatten().copied().collect();
+        assert_eq!(flat, (0..50).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn test_word_wrap_moves_whole_words() {
+        let input = "ola mundo ola";
+        let rows = wrap_visual(input, 6);
+        let texts: Vec<String> = rows.iter().map(|r| row_text(input, r)).collect();
+        assert!(texts.iter().all(|t| !t.ends_with("mun")));
+        assert!(texts.iter().any(|t| t.contains("mundo")));
+    }
+
+    #[test]
+    fn test_cursor_mapping_round_trip() {
+        let inputs = ["abc def", "top\n\nbottom", "one two three\nfour five"];
+        for input in inputs {
+            for w in [4usize, 6, 20] {
+                let rows = wrap_visual(input, w);
+                let last = input.chars().count();
+                for cursor in 0..=last {
+                    let (r, c) = visual_row_col(&rows, cursor);
+                    assert!(r < rows.len(), "row out of bounds");
+                    let idx = row_char_idx(&rows[r], c, input);
+                    let (r2, c2) = visual_row_col(&rows, idx);
+                    assert_eq!(
+                        (r, c),
+                        (r2, c2),
+                        "cursor {} -> ({},{}); idx {} -> ({},{})",
+                        cursor,
+                        r,
+                        c,
+                        idx,
+                        r2,
+                        c2
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_newlines_create_empty_rows() {
+        let input = "top\n\nbottom";
+        let rows = wrap_visual(input, 20);
+        assert_eq!(rows.len(), 3);
+        assert!(rows[1].idxs.is_empty());
+        assert_eq!(visual_row_col(&rows, 4), (1, 0));
+        assert_eq!(visual_row_col(&rows, 5), (2, 0));
+    }
+
+    #[test]
+    fn test_visual_up_down_move_between_rows() {
+        let mut app = App::inline_for_tests("one two three\nfour five");
+        app.input_inner_width = 5;
+        let rows = wrap_visual(&app.input, 5);
+        assert!(rows.len() > 2);
+        let last_row = rows.len() - 1;
+        app.input_cursor = app.input.chars().count();
+        app.cursor_visual_up();
+        let (r, _) = visual_row_col(&rows, app.input_cursor);
+        assert!(r < last_row, "expected to move up, row={}", r);
+        app.cursor_visual_down();
+        let (r2, _) = visual_row_col(&rows, app.input_cursor);
+        assert_eq!(r2, last_row);
+    }
+
+    #[test]
+    fn test_line_boundaries_editing_keys() {
+        let mut app = App::inline_for_tests("first line\nsecond line");
+        app.input_cursor = 14;
+        app.cursor_line_start();
+        assert_eq!(app.input_cursor, 11);
+
+        app.cursor_line_end();
+        assert_eq!(app.input_cursor, 22);
+
+        app.kill_to_line_start();
+        assert_eq!(app.input, "first line\n");
+
+        app.input_cursor = 10;
+        app.kill_word_back();
+        assert_eq!(app.input, "first \n");
+        assert_eq!(app.input_cursor, 6);
+    }
+
+    #[test]
+    fn test_delete_forward() {
+        let mut app = App::inline_for_tests("abc");
+        app.input_cursor = 1;
+        app.delete_forward();
+        assert_eq!(app.input, "ac");
+        app.input_cursor = 2;
+        app.delete_forward();
+        assert_eq!(app.input, "ac");
+    }
+
+    #[test]
+    fn test_history_only_when_single_line() {
+        let mut app = App::inline_for_tests("");
+        app.history = vec!["old prompt".to_string()];
+        assert!(!app.input.contains('\n'));
+        app.history_up();
+        assert_eq!(app.input, "old prompt");
+
+        let mut app = App::inline_for_tests("linha1\nlinha2");
+        app.history = vec!["old prompt".to_string()];
+        let before = app.input.clone();
+        app.cursor_visual_up();
+        assert_eq!(app.history_pos, None);
+        assert_eq!(app.input, before);
+    }
+
+    #[test]
+    fn test_compact_window_small_no_hidden() {
+        assert_eq!(compact_window(3, 1, 6), None);
+        assert_eq!(compact_window(6, 5, 6), None);
+    }
+
+    #[test]
+    fn test_compact_window_cursor_middle() {
+        // 20 rows, cursor in the middle, window of 4.
+        let (head, from, to) = compact_window(20, 10, 4).unwrap();
+        assert_eq!(head, 2);
+        // Cursor row (10) is inside the visible bottom region.
+        assert!(from <= 10 && 10 < to);
+        // Window math: head (2) + marker (1) + bottom rows ≤ max.
+        assert_eq!(head + 1 + (to - from), 4);
+    }
+
+    #[test]
+    fn test_compact_window_cursor_at_end() {
+        let (head, from, to) = compact_window(20, 19, 6).unwrap();
+        assert_eq!(head, 2);
+        assert!(from <= 19 && 19 < to);
+        assert_eq!(to, 20);
+    }
+
+    #[test]
+    fn test_compact_window_cursor_always_visible_property() {
+        for total in [4usize, 8, 15, 50] {
+            for crow in 0..total {
+                for max in [4usize, 6, 10] {
+                    match compact_window(total, crow, max) {
+                        None => assert!(crow < max, "cursor would be cut off"),
+                        Some((_head, from, to)) => {
+                            assert!(from <= crow && crow < to);
+                            assert!(from >= 2, "marker must hide the middle, not the head");
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

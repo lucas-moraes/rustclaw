@@ -71,8 +71,11 @@ fn kv(key: &str, desc: &str, t: &crate::harness::ui::tui::theme::Theme) -> Line<
 fn keys(t: &crate::harness::ui::tui::theme::Theme) -> Vec<Line<'static>> {
     vec![
         kv("Ctrl+C", "quit (exit the project)", t),
-        kv("Enter", "send prompt or slash command", t),
-        kv("Esc", "cancel prompt / clear input / close overlay", t),
+        kv("Enter", "send prompt (Shift/Alt+Enter new line)", t),
+        kv("Ctrl+J", "insert line break (macOS fallback)", t),
+        kv("Ctrl+A / E", "line start / end", t),
+        kv("Ctrl+U / W", "kill to line start / kill word", t),
+        kv("Esc", "cancel run · clear prompt · close overlay", t),
         kv("Up/Down", "prompt history", t),
         kv("PgUp/PgDn", "scroll transcript", t),
         kv("Ctrl+P", "command palette", t),

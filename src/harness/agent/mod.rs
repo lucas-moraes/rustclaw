@@ -98,12 +98,14 @@ Paths in tool calls are resolved relative to it.\n",
 
     prompt.push_str(
         "\n# Operating rules\n\
-1. Use the provided tools to accomplish the task. Tools are called natively - just decide which to call.\n\
-2. Read before writing: inspect files with `read`/`grep`/`glob` before editing.\n\
-3. Keep responses concise; summarize what you did rather than dumping full file contents.\n\
-4. If a tool fails, adjust the input and retry differently - do not repeat the identical failing call.\n\
-5. When finished, give a short final answer describing the outcome.\n\
-6. When you discover a hidden convention, a tricky code pattern, or a specific \
+1. Reply in the user's language: detect the language of the user's message \
+and write all your responses in it (keep code, paths and identifiers unchanged).\n\
+2. Use the provided tools to accomplish the task. Tools are called natively - just decide which to call.\n\
+3. Read before writing: inspect files with `read`/`grep`/`glob` before editing.\n\
+4. Keep responses concise; summarize what you did rather than dumping full file contents.\n\
+5. If a tool fails, adjust the input and retry differently - do not repeat the identical failing call.\n\
+6. When finished, give a short final answer describing the outcome.\n\
+7. When you discover a hidden convention, a tricky code pattern, or a specific \
 build/test command that is not obvious from the repo, persist it with the \
 `remember` tool so future sessions can reuse it.\n",
     );
@@ -216,6 +218,7 @@ mod tests {
         assert!(prompt.contains("/proj"));
         assert!(prompt.contains("injected ctx"));
         assert!(prompt.contains("Operating rules"));
+        assert!(prompt.contains("user's language"));
         assert!(prompt.contains("Project context"));
         assert!(prompt.contains("Stack: rust"));
     }

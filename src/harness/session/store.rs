@@ -473,6 +473,24 @@ impl SessionStore {
         Ok(())
     }
 
+    /// Deletes the message `msg_id` and every later message of the session
+    /// (ords are monotonic per session). Used by the "revert prompt" action.
+    pub fn delete_messages_from(&self, id: &str, cwd: &Path, msg_id: &str) -> Result<()> {
+        self.ensure_project(cwd)?;
+        let messages_t = table_name(cwd, "messages");
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            &format!(
+                "DELETE FROM {messages_t}
+                 WHERE session_id = ?1
+                   AND ord >= (SELECT ord FROM {messages_t} WHERE id = ?2)"
+            ),
+            params![id, msg_id],
+        )
+        .context("failed to truncate messages")?;
+        Ok(())
+    }
+
     pub fn delete_session(&self, id: &str, cwd: &Path) -> Result<()> {
         self.ensure_project(cwd)?;
         let sessions_t = table_name(cwd, "sessions");
@@ -696,6 +714,29 @@ mod tests {
             .load_session(&s1.id, Path::new("/a"))
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn test_delete_messages_from_reverts() {
+        let (_dir, store) = temp_store();
+        let s1 = store.create_session("build", Path::new("/a")).unwrap();
+        let m1 = Message::user("first");
+        store.save_message(&s1.id, Path::new("/a"), &m1).unwrap();
+        let m2 = Message::user("second");
+        store.save_message(&s1.id, Path::new("/a"), &m2).unwrap();
+        let a1 = Message::new(Role::Assistant, vec![Part::text("reply")]);
+        store.save_message(&s1.id, Path::new("/a"), &a1).unwrap();
+
+        // Revert to the second user prompt: itself + assistant disappear.
+        store
+            .delete_messages_from(&s1.id, Path::new("/a"), &m2.id)
+            .unwrap();
+        let loaded = store
+            .load_session(&s1.id, Path::new("/a"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.messages.len(), 1);
+        assert_eq!(loaded.messages[0].parts[0].as_text(), Some("first"));
     }
 
     #[test]
