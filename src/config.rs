@@ -115,17 +115,16 @@ impl Config {
     /// project `rustclaw.json` → auth store token. Never reads env vars.
     pub fn load() -> Self {
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-        let proj_path = crate::harness::project::config_file::ProjectConfig::path(&cwd);
         let settings = GlobalSettings::load();
         let auth = AuthStore::load();
-        Self::resolve(&proj_path, &settings, &auth)
+        Self::resolve(&cwd, &settings, &auth)
     }
 
     /// Testable resolution given explicit inputs.
     pub fn resolve(project_root: &Path, settings: &GlobalSettings, auth: &AuthStore) -> Self {
         let fallback = crate::harness::provider::catalog::find_provider("opencode-go")
             .expect("opencode-go must exist in the catalog");
-        let mut cfg = Self::defaults();
+        let mut cfg = Config::defaults();
 
         // 1. Provider/model: catalog <- global settings <- project config.
         if !settings.provider.is_empty() {

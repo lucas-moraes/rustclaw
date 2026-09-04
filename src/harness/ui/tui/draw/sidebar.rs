@@ -1,12 +1,26 @@
-//! Left-side info panel: rustclaw header, LLM data, mode selector, session.
+//! Left-side info panel: status, model, mode, session, skills, todos.
+//!
+//! Designed for a fixed-ish narrow column (~28–36 cols). Values wrap under
+//! labels when the panel is tight, and low-priority sections drop out when
+//! the terminal is short.
 
 use crate::harness::provider::format_tokens;
+use crate::harness::session::TodoStatus;
+use crate::harness::ui::tui::anim;
 use crate::harness::ui::tui::app::{App, MODES};
+use crate::harness::ui::tui::theme::Theme;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
+
+/// Preferred sidebar width in columns (borders included).
+pub const PREFERRED_WIDTH: u16 = 32;
+/// Hide the sidebar entirely below this terminal width.
+pub const MIN_TERMINAL_WIDTH: u16 = 72;
+/// Absolute minimum sidebar width when shown.
+pub const MIN_WIDTH: u16 = 22;
 
 pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
     let t = &app.theme;
@@ -23,81 +37,124 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let inner_w = inner.width.saturating_sub(2) as usize;
-
-    let mut lines: Vec<Line> = Vec::new();
-
-    // LLM data.
-    lines.push(section("LLM", t.accent));
-    lines.push(kv("model", truncate(&app.runtime.config.model, inner_w), t));
-    lines.push(kv(
-        "provider",
-        truncate(&app.runtime.config.provider, inner_w),
-        t,
-    ));
-    lines.push(kv(
-        "context",
-        format_tokens(app.max_context_tokens() as u64),
-        t,
-    ));
-    lines.push(kv(
-        "temperature",
-        format!("{:.1}", app.runtime.turn_temperature(&app.session.agent)),
-        t,
-    ));
-    lines.push(Line::from(""));
-
-    // Modes (build / plan / explore), active highlighted.
-    lines.push(section("Mode", t.accent));
-    for mode in MODES {
-        let is_active = *mode == active;
-        let label = format!("  {} {}", if is_active { "▶" } else { " " }, mode);
-        lines.push(Line::from(vec![Span::styled(
-            label,
-            if is_active {
-                Style::default()
-                    .fg(t.bg)
-                    .bg(t.accent)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(t.text_dim)
-            },
-        )]));
+    if inner.width < 8 || inner.height < 3 {
+        return;
     }
-    lines.push(Line::from(""));
 
-    // Session data.
+    // Usable text width inside the block (leave a small left gutter).
+    let w = inner.width.saturating_sub(1) as usize;
+    let h = inner.height as usize;
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+
+    // ── Status ──────────────────────────────────────────────────────────
+    lines.extend(status_block(app, t, w));
+    lines.push(blank());
+
+    // ── Model ───────────────────────────────────────────────────────────
+    lines.push(section("Model", t.accent));
+    lines.extend(kv_block("model", &app.runtime.config.model, t, w));
+    lines.extend(kv_block("provider", &app.runtime.config.provider, t, w));
+    if !app.runtime.config.is_configured() {
+        lines.push(Line::from(Span::styled(
+            "  ⚠ token missing".to_string(),
+            Style::default().fg(t.warn).add_modifier(Modifier::BOLD),
+        )));
+    }
+    lines.push(blank());
+
+    // ── Mode ────────────────────────────────────────────────────────────
+    lines.push(section("Mode", t.accent));
+    lines.extend(mode_rows(active, t, w));
+    lines.push(blank());
+
+    // ── Session ─────────────────────────────────────────────────────────
     lines.push(section("Session", t.accent));
-    lines.push(kv("id", truncate(&app.session.id, inner_w), t));
-    // Session title: the first user message, like /sessions.
-    let title = app
-        .session
-        .messages
-        .iter()
-        .find(|m| m.role.as_str() == "user")
-        .and_then(|m| m.parts.iter().find_map(|p| p.as_text().map(str::to_string)))
-        .unwrap_or_else(|| "untitled session".to_string());
-    lines.push(kv("title", truncate(&title, inner_w), t));
-    let proj_name = app
-        .cwd
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| app.cwd.display().to_string());
-    lines.push(kv("cwd", truncate(&proj_name, inner_w), t));
-    lines.push(kv("messages", app.session.messages.len().to_string(), t));
-    let ctx = app.context_tokens() as u64;
-    let max = app.max_context_tokens() as u64;
-    let pct = if max == 0 { 0 } else { (ctx * 100) / max };
-    lines.push(kv(
-        "context",
-        format!("{}% ({} / {})", pct, format_tokens(ctx), format_tokens(max)),
+    let title = session_title(app);
+    lines.extend(kv_block("title", &title, t, w));
+    let proj = project_name(app);
+    lines.extend(kv_block("project", &proj, t, w));
+    lines.push(kv_inline(
+        "msgs",
+        app.session.messages.len().to_string(),
         t,
+        w,
     ));
-    lines.push(kv(
-        "session tok",
-        format_tokens(app.session_usage.total()),
-        t,
-    ));
+    lines.push(blank());
+
+    // ── Context bar ─────────────────────────────────────────────────────
+    lines.push(section("Context", t.accent));
+    lines.extend(context_block(app, t, w));
+    lines.push(blank());
+
+    // ── Skills (if any) ─────────────────────────────────────────────────
+    if !app.session.skills.is_empty() {
+        lines.push(section("Skills", t.accent));
+        lines.extend(skills_block(app, t, w));
+        lines.push(blank());
+    }
+
+    // ── Todos (if any) ──────────────────────────────────────────────────
+    if !app.session.todos.is_empty() {
+        lines.push(section("Todos", t.accent));
+        lines.extend(todos_block(app, t, w));
+        lines.push(blank());
+    }
+
+    // ── Active tools (while running) ────────────────────────────────────
+    if !app.active_tools.is_empty() {
+        lines.push(section("Tools", t.accent));
+        for tool in app.active_tools.iter().take(4) {
+            lines.push(Line::from(vec![
+                Span::styled("  ▸ ".to_string(), Style::default().fg(t.warn)),
+                Span::styled(
+                    truncate(&tool.name, w.saturating_sub(4)),
+                    Style::default().fg(t.text_bright),
+                ),
+            ]));
+        }
+        if app.active_tools.len() > 4 {
+            lines.push(Line::from(Span::styled(
+                format!("  +{} more", app.active_tools.len() - 4),
+                Style::default().fg(t.text_dim),
+            )));
+        }
+        lines.push(blank());
+    }
+
+    // ── Footer hints (only when there is spare vertical room) ───────────
+    let spare = h.saturating_sub(lines.len());
+    if spare >= 3 {
+        while lines.len() + 3 < h {
+            lines.push(blank());
+        }
+        lines.push(Line::from(Span::styled(
+            "  Tab cycle mode".to_string(),
+            Style::default().fg(t.text_dim),
+        )));
+        lines.push(Line::from(Span::styled(
+            "  /models · /skills".to_string(),
+            Style::default().fg(t.text_dim),
+        )));
+    }
+
+    // Clip to available height (drop trailing blanks first, then tail).
+    if lines.len() > h {
+        while lines.len() > h {
+            if lines
+                .last()
+                .map(|l| l.spans.iter().all(|s| s.content.trim().is_empty()))
+                .unwrap_or(false)
+            {
+                lines.pop();
+            } else {
+                break;
+            }
+        }
+        if lines.len() > h {
+            lines.truncate(h);
+        }
+    }
 
     frame.render_widget(
         Paragraph::new(lines)
@@ -107,18 +164,274 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
     );
 }
 
+// ─── blocks ────────────────────────────────────────────────────────────────
+
+fn status_block(app: &App, t: &Theme, w: usize) -> Vec<Line<'static>> {
+    let (icon, label, fg) = if app.modal.is_some() {
+        ("?", "waiting", t.warn)
+    } else if app.running {
+        (
+            anim::spinner_frame(app.tick),
+            app.status_msg.as_deref().unwrap_or("streaming"),
+            t.accent2,
+        )
+    } else if !app.runtime.config.is_configured() {
+        ("○", "setup needed", t.warn)
+    } else {
+        ("●", "idle", t.success)
+    };
+
+    let label = truncate(label, w.saturating_sub(4));
+    vec![Line::from(vec![
+        Span::styled(
+            format!(" {icon} "),
+            Style::default().fg(fg).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(label, Style::default().fg(fg).add_modifier(Modifier::BOLD)),
+    ])]
+}
+
+fn mode_rows(active: &str, t: &Theme, w: usize) -> Vec<Line<'static>> {
+    let mut out = Vec::with_capacity(MODES.len());
+    // If the active agent is outside the cycle (custom), show it first.
+    let known = MODES.iter().any(|m| *m == active);
+    if !known && !active.is_empty() {
+        out.push(mode_row(active, true, t, w));
+    }
+    for mode in MODES {
+        out.push(mode_row(mode, *mode == active, t, w));
+    }
+    out
+}
+
+fn mode_row(mode: &str, is_active: bool, t: &Theme, w: usize) -> Line<'static> {
+    let marker = if is_active { "▶" } else { " " };
+    let label = truncate(&format!(" {marker} {mode}"), w.saturating_sub(1));
+    if is_active {
+        Line::from(Span::styled(
+            label,
+            Style::default()
+                .fg(t.bg)
+                .bg(t.accent)
+                .add_modifier(Modifier::BOLD),
+        ))
+    } else {
+        Line::from(Span::styled(label, Style::default().fg(t.text_dim)))
+    }
+}
+
+fn context_block(app: &App, t: &Theme, w: usize) -> Vec<Line<'static>> {
+    let ctx = app.context_tokens() as u64;
+    let max = app.max_context_tokens() as u64;
+    let pct = if max == 0 {
+        0
+    } else {
+        ((ctx * 100) / max) as u16
+    };
+    let bar_w = w.saturating_sub(2).clamp(6, 24);
+    let filled = ((pct as usize) * bar_w) / 100;
+    let empty = bar_w.saturating_sub(filled);
+    let bar_fg = if pct >= 90 {
+        t.error
+    } else if pct >= 70 {
+        t.warn
+    } else {
+        t.info
+    };
+
+    let mut lines = Vec::new();
+    lines.push(Line::from(vec![
+        Span::styled("  [".to_string(), Style::default().fg(t.border)),
+        Span::styled("█".repeat(filled), Style::default().fg(bar_fg)),
+        Span::styled("░".repeat(empty), Style::default().fg(t.border)),
+        Span::styled("]".to_string(), Style::default().fg(t.border)),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("  {pct}%  "),
+            Style::default().fg(bar_fg).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("{} / {}", format_tokens(ctx), format_tokens(max)),
+            Style::default().fg(t.text_bright),
+        ),
+    ]));
+    lines.push(kv_inline(
+        "session",
+        format_tokens(app.session_usage.total()),
+        t,
+        w,
+    ));
+    if app.last_iterations > 0 {
+        lines.push(kv_inline(
+            "last",
+            format!(
+                "{} · {}it",
+                format_tokens(app.last_usage.total()),
+                app.last_iterations
+            ),
+            t,
+            w,
+        ));
+    }
+    lines
+}
+
+fn skills_block(app: &App, t: &Theme, w: usize) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    // Prefer the live prompt toggles (per-turn) when present.
+    if let Some(toggles) = &app.prompt_toggles {
+        for sk in toggles.iter().take(6) {
+            let mark = if sk.include { "✓" } else { "·" };
+            let fg = if sk.include { t.success } else { t.text_dim };
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {mark} "), Style::default().fg(fg)),
+                Span::styled(
+                    truncate(&sk.skill_id, w.saturating_sub(4)),
+                    Style::default().fg(if sk.include {
+                        t.text_bright
+                    } else {
+                        t.text_dim
+                    }),
+                ),
+            ]));
+        }
+        if toggles.len() > 6 {
+            lines.push(Line::from(Span::styled(
+                format!("  +{} more", toggles.len() - 6),
+                Style::default().fg(t.text_dim),
+            )));
+        }
+    } else {
+        for sk in app.session.skills.iter().take(6) {
+            lines.push(Line::from(vec![
+                Span::styled("  · ".to_string(), Style::default().fg(t.accent3)),
+                Span::styled(
+                    truncate(&sk.skill_id, w.saturating_sub(4)),
+                    Style::default().fg(t.text_bright),
+                ),
+            ]));
+        }
+    }
+    lines
+}
+
+fn todos_block(app: &App, t: &Theme, w: usize) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    // Show in-progress first, then pending, then a short completed count.
+    let mut items = app.session.todos.clone();
+    items.sort_by_key(|td| match td.status {
+        TodoStatus::InProgress => 0,
+        TodoStatus::Pending => 1,
+        TodoStatus::Completed => 2,
+        TodoStatus::Cancelled => 3,
+    });
+    let mut shown = 0usize;
+    let mut hidden_done = 0usize;
+    for td in &items {
+        if shown >= 5 {
+            if matches!(td.status, TodoStatus::Completed | TodoStatus::Cancelled) {
+                hidden_done += 1;
+            }
+            continue;
+        }
+        let (mark, fg) = match td.status {
+            TodoStatus::InProgress => ("▸", t.warn),
+            TodoStatus::Pending => ("○", t.text_dim),
+            TodoStatus::Completed => ("✓", t.success),
+            TodoStatus::Cancelled => ("✗", t.error),
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {mark} "), Style::default().fg(fg)),
+            Span::styled(
+                truncate(&td.content, w.saturating_sub(4)),
+                Style::default().fg(t.text_bright),
+            ),
+        ]));
+        shown += 1;
+    }
+    let remaining = items.len().saturating_sub(shown);
+    if remaining > 0 {
+        lines.push(Line::from(Span::styled(
+            format!(
+                "  +{} more{}",
+                remaining,
+                if hidden_done > 0 {
+                    format!(" ({hidden_done} done)")
+                } else {
+                    String::new()
+                }
+            ),
+            Style::default().fg(t.text_dim),
+        )));
+    }
+    lines
+}
+
+// ─── helpers ───────────────────────────────────────────────────────────────
+
 fn section(label: &str, fg: ratatui::style::Color) -> Line<'static> {
     Line::from(Span::styled(
-        format!(" {} ", label.to_uppercase()),
+        format!(" {}", label.to_uppercase()),
         Style::default().fg(fg).add_modifier(Modifier::BOLD),
     ))
 }
 
-fn kv(key: &str, value: String, t: &crate::harness::ui::tui::theme::Theme) -> Line<'static> {
+fn blank() -> Line<'static> {
+    Line::from("")
+}
+
+/// Key + value on one line when it fits; otherwise value on the next line.
+fn kv_block(key: &str, value: &str, t: &Theme, w: usize) -> Vec<Line<'static>> {
+    let key_col = 10usize.min(w.saturating_sub(2));
+    let key_s = format!("  {key:<key_col$}");
+    let avail = w.saturating_sub(key_s.chars().count());
+    if avail >= 4 && value.chars().count() <= avail {
+        vec![Line::from(vec![
+            Span::styled(key_s, Style::default().fg(t.text_dim)),
+            Span::styled(value.to_string(), Style::default().fg(t.text_bright)),
+        ])]
+    } else {
+        // Stacked: label, then indented value (may still truncate).
+        vec![
+            Line::from(Span::styled(
+                format!("  {key}"),
+                Style::default().fg(t.text_dim),
+            )),
+            Line::from(Span::styled(
+                format!("    {}", truncate(value, w.saturating_sub(4))),
+                Style::default().fg(t.text_bright),
+            )),
+        ]
+    }
+}
+
+fn kv_inline(key: &str, value: String, t: &Theme, w: usize) -> Line<'static> {
+    let key_col = 10usize.min(w.saturating_sub(2));
+    let key_s = format!("  {key:<key_col$}");
+    let avail = w.saturating_sub(key_s.chars().count());
     Line::from(vec![
-        Span::styled(format!("  {:<12}", key), Style::default().fg(t.text_dim)),
-        Span::styled(value, Style::default().fg(t.text_bright)),
+        Span::styled(key_s, Style::default().fg(t.text_dim)),
+        Span::styled(truncate(&value, avail), Style::default().fg(t.text_bright)),
     ])
+}
+
+fn session_title(app: &App) -> String {
+    app.session
+        .messages
+        .iter()
+        .find(|m| m.role.as_str() == "user")
+        .and_then(|m| m.parts.iter().find_map(|p| p.as_text().map(str::to_string)))
+        .map(|s| s.replace('\n', " ").trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "untitled".to_string())
+}
+
+fn project_name(app: &App) -> String {
+    app.cwd
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| app.cwd.display().to_string())
 }
 
 fn truncate(s: &str, max: usize) -> String {
@@ -136,4 +449,23 @@ fn truncate(s: &str, max: usize) -> String {
     let mut out: String = s.chars().take(take).collect();
     out.push('…');
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_truncate_ascii() {
+        assert_eq!(truncate("hello", 10), "hello");
+        assert_eq!(truncate("hello world", 8), "hello w…");
+        assert_eq!(truncate("x", 0), "");
+        assert_eq!(truncate("xy", 1), "…");
+    }
+
+    #[test]
+    fn test_truncate_unicode() {
+        assert_eq!(truncate("ação", 10), "ação");
+        assert_eq!(truncate("ação longa", 5), "ação…");
+    }
 }

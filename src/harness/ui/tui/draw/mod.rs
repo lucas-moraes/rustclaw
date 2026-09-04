@@ -41,10 +41,25 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .unwrap_or(false);
 
     // Left info panel + main content column.
-    let cols =
-        Layout::horizontal([Constraint::Percentage(30), Constraint::Percentage(70)]).split(area);
-    let content = cols[1];
-    sidebar::draw(frame, app, cols[0]);
+    // Fixed-ish sidebar (~32 cols) so model names / modes stay readable;
+    // hide entirely on very narrow terminals.
+    let side_w = if area.width < sidebar::MIN_TERMINAL_WIDTH {
+        0
+    } else {
+        sidebar::PREFERRED_WIDTH
+            .min(area.width.saturating_sub(40))
+            .max(sidebar::MIN_WIDTH)
+            .min(area.width / 3)
+    };
+    let cols = if side_w == 0 {
+        Layout::horizontal([Constraint::Percentage(100)]).split(area)
+    } else {
+        Layout::horizontal([Constraint::Length(side_w), Constraint::Min(40)]).split(area)
+    };
+    let content = if side_w == 0 { cols[0] } else { cols[1] };
+    if side_w > 0 {
+        sidebar::draw(frame, app, cols[0]);
+    }
 
     let footer_h: u16 = 1;
     let status_h: u16 = 1;
