@@ -17,7 +17,7 @@
 | S1 | Timeout na compactação (`provider.complete`) | 2 | ✅ |
 | S2 | `SseParser` robusto para `\r\n\r\n` | 3 | ✅ |
 | S3 | Timeout de segurança no processor (stream) | 4 | ✅ |
-| S4 | Verificação final + commit | 5 | ⬜ |
+| S4 | Verificação final + commit | 5 | ✅ |
 
 **Legenda:** ⬜ pendente · 🟡 em progresso · ✅ feito · ❌ cancelado
 
@@ -169,10 +169,10 @@ fique preso para sempre.
 
 ### Feature: Build e lint
 
-- [ ] `cargo fmt`
-- [ ] `cargo check`
-- [ ] `cargo test` (todos os testes)
-- [ ] `cargo clippy --bin rustclaw` (sem novos warnings)
+- [x] `cargo fmt`
+- [x] `cargo check`
+- [x] `cargo test` (todos os testes)
+- [x] `cargo clippy --bin rustclaw` (sem novos warnings)
 
 ### Feature: Smoke test manual (se possível)
 
@@ -183,16 +183,16 @@ fique preso para sempre.
 
 ### Feature: Commit
 
-- [ ] `git add -A`
-- [ ] Commit com mensagem descritiva, ex:
+- [x] `git add -A`
+- [x] Commit com mensagem descritiva, ex:
       `fix(provider): add timeouts to prevent streaming hangs during feature implementation`
-- [ ] Corpo do commit listando as 4 fases (S0–S3)
+- [x] Corpo do commit listando as 4 fases (S0–S3)
 
 ### Definition of done S4
 
-- [ ] Todos os testes verdes
-- [ ] Clippy sem novos warnings
-- [ ] Commit criado
+- [x] Todos os testes verdes
+- [x] Clippy sem novos warnings
+- [x] Commit criado
 
 ---
 
@@ -239,3 +239,4 @@ Cada fase: `cargo test` + `cargo check` (+ `cargo clippy` no final).
 | Data | Nota |
 |------|------|
 | 2026-09-04 | TODO.md recriado: plano de resolução do hang de streaming convertido em features S0–S4 com checklists detalhados. Conteúdo anterior (TUI T0–T7, já concluído) substituído. |
+| 2026-09-04 | S0–S4 implementados: build_http_client() com timeouts (S0), timeout na compactação com fallback (S1), SseParser CRLF (S2), timeout de segurança no stream do processor (S3), verificação+commit (S4). 167 testes verdes; clippy no baseline (37 warnings pré-existentes). Commit `359bfed`. |
