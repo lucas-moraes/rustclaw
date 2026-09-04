@@ -18,6 +18,6 @@ pub const HELP: &str = "\
   ? / F1     help overlay
   Tab        autocomplete (in /) / cycle mode
   y/n/a      permission modal
-  1..n       question modal
+  1..n / type  question modal (pick option or free-text + Enter)
   /help      slash commands
 ";

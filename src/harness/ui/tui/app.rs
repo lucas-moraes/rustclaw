@@ -281,7 +281,15 @@ pub struct App {
 /// A modal dialog waiting for user input.
 pub enum Modal {
     Permission(PermissionRequest),
-    Question(QuestionRequest),
+    /// Question from the agent. Free-text answer is always allowed; when
+    /// `options` is non-empty the user can also pick with `1..n`.
+    Question {
+        req: QuestionRequest,
+        /// Draft free-text answer being typed in the modal.
+        draft: String,
+        /// Cursor position (char index) inside `draft`.
+        cursor: usize,
+    },
     /// Pop-up for a clicked user prompt: revert or copy it.
     UserPrompt {
         line_idx: usize,
@@ -1360,7 +1368,11 @@ pub async fn run_tui(
         while let Ok(req) = app.question_rx.try_recv() {
             app.flush_streaming();
             app.push(LineKind::System, format!("[question] {}", req.question));
-            app.modal = Some(Modal::Question(req));
+            app.modal = Some(Modal::Question {
+                req,
+                draft: String::new(),
+                cursor: 0,
+            });
         }
 
         if let Some(handle) = prompt_task.take() {
@@ -2122,28 +2134,135 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) -> Result<bool> {
                 format!("[permission] {}", if reply { "allowed" } else { "denied" }),
             );
         }
-        Some(Modal::Question(req)) => {
-            let answer = match key.code {
-                KeyCode::Char(c) if c.is_ascii_digit() => c.to_digit(10).and_then(|d| {
-                    if d >= 1 {
-                        req.options.get(d as usize - 1).cloned()
-                    } else {
-                        None
-                    }
-                }),
-                KeyCode::Esc => None,
-                _ => {
-                    app.modal = Some(Modal::Question(req));
-                    return Ok(false);
+        Some(Modal::Question {
+            req,
+            mut draft,
+            mut cursor,
+        }) => {
+            use crossterm::event::KeyModifiers;
+            let finish = |app: &mut App, req: QuestionRequest, answer: Option<String>| {
+                let _ = req.reply.send(answer.clone());
+                match answer {
+                    Some(a) => app.push(
+                        LineKind::System,
+                        format!("[question] answered: {}", preview(&a, 80)),
+                    ),
+                    None => app.push(LineKind::System, "[question] no answer".to_string()),
                 }
             };
-            let _ = req.reply.send(answer.clone());
-            match answer {
-                Some(a) => app.push(
-                    LineKind::System,
-                    format!("[question] answered: {}", preview(&a, 80)),
-                ),
-                None => app.push(LineKind::System, "[question] no answer".to_string()),
+
+            match key.code {
+                KeyCode::Esc => {
+                    finish(app, req, None);
+                }
+                KeyCode::Enter => {
+                    let trimmed = draft.trim();
+                    let answer = if trimmed.is_empty() {
+                        None
+                    } else if let Ok(num) = trimmed.parse::<usize>() {
+                        // Bare number still selects a predefined option when present.
+                        if num >= 1 && num <= req.options.len() {
+                            Some(req.options[num - 1].clone())
+                        } else {
+                            Some(trimmed.to_string())
+                        }
+                    } else {
+                        Some(trimmed.to_string())
+                    };
+                    finish(app, req, answer);
+                }
+                // Digits with empty draft + options: instant pick (OpenCode-style shortcuts).
+                KeyCode::Char(c)
+                    if c.is_ascii_digit()
+                        && draft.is_empty()
+                        && !req.options.is_empty()
+                        && !key.modifiers.contains(KeyModifiers::CONTROL)
+                        && !key.modifiers.contains(KeyModifiers::ALT) =>
+                {
+                    if let Some(d) = c.to_digit(10) {
+                        if d >= 1 {
+                            if let Some(opt) = req.options.get(d as usize - 1).cloned() {
+                                finish(app, req, Some(opt));
+                                return Ok(false);
+                            }
+                        }
+                    }
+                    // Digit out of range → treat as free text.
+                    draft.push(c);
+                    cursor = draft.chars().count();
+                    app.modal = Some(Modal::Question { req, draft, cursor });
+                }
+                KeyCode::Char(c)
+                    if !key.modifiers.contains(KeyModifiers::CONTROL)
+                        && !key.modifiers.contains(KeyModifiers::ALT) =>
+                {
+                    let mut chars: Vec<char> = draft.chars().collect();
+                    let at = cursor.min(chars.len());
+                    chars.insert(at, c);
+                    draft = chars.into_iter().collect();
+                    cursor = at + 1;
+                    app.modal = Some(Modal::Question { req, draft, cursor });
+                }
+                KeyCode::Backspace => {
+                    if cursor > 0 {
+                        let mut chars: Vec<char> = draft.chars().collect();
+                        chars.remove(cursor - 1);
+                        draft = chars.into_iter().collect();
+                        cursor -= 1;
+                    }
+                    app.modal = Some(Modal::Question { req, draft, cursor });
+                }
+                KeyCode::Delete => {
+                    let mut chars: Vec<char> = draft.chars().collect();
+                    if cursor < chars.len() {
+                        chars.remove(cursor);
+                        draft = chars.into_iter().collect();
+                    }
+                    app.modal = Some(Modal::Question { req, draft, cursor });
+                }
+                KeyCode::Left => {
+                    cursor = cursor.saturating_sub(1);
+                    app.modal = Some(Modal::Question { req, draft, cursor });
+                }
+                KeyCode::Right => {
+                    let len = draft.chars().count();
+                    if cursor < len {
+                        cursor += 1;
+                    }
+                    app.modal = Some(Modal::Question { req, draft, cursor });
+                }
+                KeyCode::Home => {
+                    cursor = 0;
+                    app.modal = Some(Modal::Question { req, draft, cursor });
+                }
+                KeyCode::End => {
+                    cursor = draft.chars().count();
+                    app.modal = Some(Modal::Question { req, draft, cursor });
+                }
+                KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    draft.clear();
+                    cursor = 0;
+                    app.modal = Some(Modal::Question { req, draft, cursor });
+                }
+                KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    // Kill previous word.
+                    let chars: Vec<char> = draft.chars().collect();
+                    let mut i = cursor.min(chars.len());
+                    while i > 0 && chars[i - 1].is_whitespace() {
+                        i -= 1;
+                    }
+                    while i > 0 && !chars[i - 1].is_whitespace() {
+                        i -= 1;
+                    }
+                    let mut kept = chars;
+                    kept.drain(i..cursor.min(kept.len()));
+                    draft = kept.into_iter().collect();
+                    cursor = i;
+                    app.modal = Some(Modal::Question { req, draft, cursor });
+                }
+                _ => {
+                    app.modal = Some(Modal::Question { req, draft, cursor });
+                }
             }
         }
         Some(Modal::UserPrompt { line_idx }) => {

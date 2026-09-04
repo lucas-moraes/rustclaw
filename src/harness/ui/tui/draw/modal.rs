@@ -15,7 +15,9 @@ pub fn draw(frame: &mut Frame, modal: &Modal, theme: &Theme, tick: u64, area: Re
 
     match modal {
         Modal::Permission(req) => draw_permission(frame, req, theme, tick, modal_area),
-        Modal::Question(req) => draw_question(frame, req, theme, tick, modal_area),
+        Modal::Question { req, draft, cursor } => {
+            draw_question(frame, req, draft, *cursor, theme, tick, modal_area)
+        }
         Modal::UserPrompt { .. } => {
             let fixed = centered_rect_fixed(48, 11, area);
             frame.render_widget(Clear, fixed);
@@ -123,12 +125,17 @@ fn draw_permission(
 fn draw_question(
     frame: &mut Frame,
     req: &crate::harness::ui::tui::askers::QuestionRequest,
+    draft: &str,
+    cursor: usize,
     t: &Theme,
-    _tick: u64,
+    tick: u64,
     area: Rect,
 ) {
-    let h = (8 + req.options.len() as u16).min(area.height);
-    let area = centered_rect_fixed(area.width, h, area);
+    // Question + options + answer field + hints.
+    let opt_rows = req.options.len() as u16;
+    let h = (11 + opt_rows).min(area.height).max(9);
+    let w = area.width.min(72).max(40);
+    let area = centered_rect_fixed(w, h, area);
     frame.render_widget(Clear, area);
 
     let block = Block::default()
@@ -156,18 +163,66 @@ fn draw_question(
             Span::styled(o.clone(), Style::default().fg(t.text)),
         ]));
     }
+    if !req.options.is_empty() {
+        lines.push(Line::from(""));
+    }
+
+    // Answer input row with blinking cursor glyph.
+    let cursor_glyph = if (tick / 5) % 2 == 0 { "▌" } else { " " };
+    let chars: Vec<char> = draft.chars().collect();
+    let at = cursor.min(chars.len());
+    let before: String = chars[..at].iter().collect();
+    let after: String = chars[at..].iter().collect();
+
+    if draft.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled("  › ", Style::default().fg(t.accent2)),
+            Span::styled(cursor_glyph.to_string(), Style::default().fg(t.accent)),
+            Span::styled(
+                "type your answer…".to_string(),
+                Style::default().fg(t.text_dim),
+            ),
+        ]));
+    } else {
+        lines.push(Line::from(vec![
+            Span::styled("  › ", Style::default().fg(t.accent2)),
+            Span::styled(before, Style::default().fg(t.text_bright)),
+            Span::styled(cursor_glyph.to_string(), Style::default().fg(t.accent)),
+            Span::styled(after, Style::default().fg(t.text)),
+        ]));
+    }
+
     lines.push(Line::from(""));
-    lines.push(Line::from(vec![
+    let mut hint = vec![
         Span::styled("  ", Style::default()),
-        Span::styled("1..n", Style::default().fg(t.accent)),
-        Span::styled(" choose   ", Style::default().fg(t.text_dim)),
+        Span::styled("Enter", Style::default().fg(t.success)),
+        Span::styled(" submit   ", Style::default().fg(t.text_dim)),
         Span::styled("Esc", Style::default().fg(t.accent2)),
         Span::styled(" cancel", Style::default().fg(t.text_dim)),
-    ]));
+    ];
+    if !req.options.is_empty() {
+        hint.extend([
+            Span::styled("   ", Style::default()),
+            Span::styled("1..n", Style::default().fg(t.accent)),
+            Span::styled(" pick option", Style::default().fg(t.text_dim)),
+        ]);
+    }
+    lines.push(Line::from(hint));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    frame.render_widget(Paragraph::new(lines), inner);
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+
+    // Place the real terminal cursor on the answer field.
+    // Row layout: blank, question, blank, [options…], [blank if options], answer.
+    let answer_row = 3u16 + opt_rows + if req.options.is_empty() { 0 } else { 1 };
+    let col = 4u16 + at as u16; // "  › " = 4 cols
+    if answer_row < inner.height && col < inner.width {
+        frame.set_cursor_position((
+            inner.x + col.min(inner.width.saturating_sub(1)),
+            inner.y + answer_row.min(inner.height.saturating_sub(1)),
+        ));
+    }
 }
 
 fn key_btn(key: &str, label: &str, color: ratatui::style::Color, t: &Theme) -> Span<'static> {

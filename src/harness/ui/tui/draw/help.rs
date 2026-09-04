@@ -84,7 +84,7 @@ fn keys(t: &crate::harness::ui::tui::theme::Theme) -> Vec<Line<'static>> {
         kv("? / F1", "this help", t),
         kv("Tab", "autocomplete (in /) · cycle mode", t),
         kv("y / n / a", "permission allow · deny · always", t),
-        kv("1..n", "answer question modal", t),
+        kv("1..n / type", "answer question (option or free text)", t),
     ]
 }
 
