@@ -71,7 +71,7 @@ mod tests {
             crate::harness::provider::opencode_go::build_provider(
                 "opencode-go",
                 crate::harness::provider::HttpConfig {
-                    client: reqwest::Client::new(),
+                    client: crate::harness::provider::build_http_client(),
                     base_url: "http://localhost:9".to_string(),
                     api_key: "x".to_string(),
                 },

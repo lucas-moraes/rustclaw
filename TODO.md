@@ -1,8 +1,11 @@
-# RustClaw TUI — ratatui + crossterm
+# RustClaw — Resolver streaming que não retorna durante implementação de features
 
-> Entregar a **TUI completa** sobre o harness existente (SessionRuntime / processor / tools).
-> Stack: **ratatui + crossterm**. CLI print-only vira fallback opcional.
-> Branch: `feat/opencode` / `feat/tui`
+> **Problema:** durante a implementação de uma lista de features, o sistema fica preso em
+> streaming e não retorna. A causa raiz é a **falta de timeout no client HTTP do provider**
+> (`reqwest::Client::new()` sem timeout), que faz o `bytes.next().await` ficar pendurado
+> indefinidamente quando o servidor mantém a conexão aberta sem enviar dados nem `[DONE]`.
+>
+> **Escopo:** 4 fases independentes que eliminam os 3 caminhos de hang identificados.
 
 ---
 
@@ -10,414 +13,200 @@
 
 | ID | Feature | Fase | Status |
 |----|---------|------|--------|
-| T0 | Deps + scaffold `ui/tui/` + entry main | 0 | ✅ |
-| T1 | Abort handle + Ctrl+C cancela run | 1 | ✅ |
-| T2 | Transcript event-driven + scroll + cores + status | 2 | ✅ |
-| T3 | Input buffer + histórico + slash commands | 3 | ✅ |
-| T4 | Permission / question modals (async oneshot) | 4 | ✅ |
-| T5 | Diff view (edit/write metadata + painel) | 5 | ✅ |
-| T6 | Polish terminal lifecycle + help + mouse scroll | 6 | ✅ |
-| T7 | Testes + docs + TODO/README/ARCHITECTURE | 7 | ✅ |
+| S0 | Timeout no client HTTP do provider (causa raiz) | 1 | ✅ |
+| S1 | Timeout na compactação (`provider.complete`) | 2 | ✅ |
+| S2 | `SseParser` robusto para `\r\n\r\n` | 3 | ✅ |
+| S3 | Timeout de segurança no processor (stream) | 4 | ✅ |
+| S4 | Verificação final + commit | 5 | ⬜ |
 
 **Legenda:** ⬜ pendente · 🟡 em progresso · ✅ feito · ❌ cancelado
 
 ---
 
-## Objetivo do produto
+## S0 — Timeout no client HTTP do provider (causa raiz)
 
-Substituir o streaming CLI (`print!` + rustyline) por TUI com:
+**Objetivo:** impedir que o `bytes.next().await` fique pendurado indefinidamente quando o
+servidor mantém a conexão aberta sem enviar dados. Resolve diretamente o sintoma relatado.
 
-- layout em painéis (header / transcript / status / input)
-- transcript scrollável + cores
-- input (multiline)
-- permission modal + question modal
-- Ctrl+C cancela o run ativo
-- status bar rica
-- diff view para `edit` / `write`
+### Feature: Helper `build_http_client()`
 
-**Non-negotiable:** mesmo `SessionRuntime` / processor / tools — só a surface UI muda.
-
-### Layout alvo
-
-```text
-┌─ header: agent · model · cwd · session id ─────────────────────┐
-│ transcript (scroll)                                             │
-│  user / assistant / tool cards / diffs / errors                 │
-├─ status: running? · iterations · tools · mem · agent ───────────┤
-│ › input (multiline via Alt+Enter or trailing \)                 │
-└─ help: Ctrl+C cancel · Esc close modal · /help ─────────────────┘
-```
-
-Modal overlay (permission/question): centro da tela.
-
----
-
-## T0 — Deps + scaffold + entry
-
-**Objetivo:** TUI compila e sobe alternate screen (mesmo que vazia).
-
-### Feature: Dependências
-
-- [x] Adicionar `ratatui` no `Cargo.toml`
-- [x] Adicionar `crossterm` no `Cargo.toml`
-- [x] (Opcional) `unicode-width` se necessário para cursor/input
-- [x] `cargo check` verde com deps novas
-
-### Feature: Scaffold de módulos
-
-- [x] Criar `src/harness/ui/tui/mod.rs` com `pub async fn run(...)`
-- [x] Criar `src/harness/ui/tui/app.rs` — `App` state + `apply_event`
-- [x] Criar `src/harness/ui/tui/draw.rs` — `draw(frame, &app)`
-- [x] Criar `src/harness/ui/tui/input.rs` — key handling
-- [x] Criar `src/harness/ui/tui/askers.rs` — askers TUI (stub ok)
-- [x] Atualizar `src/harness/ui/mod.rs` → `pub mod tui;` (+ `cli` mantido)
-
-### Feature: Entry point
-
-- [x] `main.rs` chama TUI por default (`harness::ui::tui::run`)
-- [x] Fallback CLI: `RUSTCLAW_UI=cli` **ou** flag `--ui cli`
-- [x] Auto-fallback: se `!stdout.is_terminal()` → CLI (piped/CI)
-- [x] Smoke: `cargo run` entra em alternate screen e sai com `q` / Ctrl+C idle
-
-### Definition of done T0
-
-- [x] `cargo check` / `cargo test` passam
-- [x] TUI sobe e restaura terminal ao sair (mesmo layout mínimo)
-- [x] CLI ainda acessível via env/flag
-
----
-
-## T1 — Abort handle + Ctrl+C
-
-**Objetivo:** cancelar run ativo sem matar o processo.
-
-### Feature: Abort exposto no runtime
-
-- [x] `SessionRuntime::prompt` aceita `abort: AbortSignal` (caller owns)
+- [x] Adicionar `use std::time::Duration;` em `src/harness/provider/mod.rs`
+- [x] Criar função `pub fn build_http_client() -> reqwest::Client`:
   ```rust
-  pub async fn prompt(
-      &self,
-      session: &mut Session,
-      events: &EventSender,
-      user_text: &str,
-      abort: AbortSignal,
-  ) -> Result<PromptResult>
+  pub fn build_http_client() -> reqwest::Client {
+      reqwest::Client::builder()
+          .connect_timeout(Duration::from_secs(30))
+          .read_timeout(Duration::from_secs(120)) // tempo entre chunks
+          .build()
+          .expect("failed to build http client")
+  }
   ```
-- [x] Remover criação “escondida” de `AbortSignal` só dentro de `prompt` (ou manter default + overload)
-- [x] Smoke test / callers atualizados para passar `AbortSignal::new()`
-- [x] Processor continua checando `ctx.abort.is_aborted()` entre iterações
+- [x] Usar **`read_timeout`** (tempo entre chunks) em vez de `timeout` (tempo total) —
+      streaming de raciocínio pode durar minutos e um timeout total mataria respostas legítimas
+- [x] `connect_timeout` de 30s para falhar rápido em conexões mortas
 
-### Feature: Cancel mais responsivo (opcional mas recomendado)
+### Feature: Aplicar nos pontos de produção
 
-- [x] Checar abort no loop de stream LLM (entre `ProviderEvent`s)
-- [x] Checar abort entre spawns de tools / no `JoinSet` wait
-- [x] bash/write/edit já checam no início — manter
+- [x] `src/harness/runtime.rs:137` (`from_legacy`): substituir `reqwest::Client::new()` por
+      `crate::harness::provider::build_http_client()`
+- [x] `src/harness/runtime.rs:194` (`switch_model_with_auth`): idem
 
-### Feature: Ctrl+C na TUI
+### Feature: Consistência nos testes (opcional)
 
-- [x] Durante `Running`: Ctrl+C → `abort.abort()` + status “cancelling…”
-- [x] Mensagem no transcript: run aborted by user
-- [x] Idle: Ctrl+C → quit (ou double-Ctrl+C / confirm) — definir UX:
-  - [x] **Recomendado:** 1º Ctrl+C idle = quit limpo; durante run = só cancel
-- [x] Não deixar terminal raw se panic no meio do cancel (ver T6)
+- [x] Atualizar `reqwest::Client::new()` em testes para `build_http_client()`:
+  - [x] `runtime.rs:629` (test_runtime)
+  - [x] `runtime.rs:750` (test_onboarding)
+  - [x] `app.rs:560` (test TUI)
+  - [x] `memory.rs:74` (test memory)
+  - [x] `opencode_go.rs:92` (test_build_provider_routing)
 
-### Definition of done T1
+### Definition of done S0
 
-- [x] Ctrl+C mid-turn para o processor e libera a UI
-- [x] Turno seguinte funciona após cancel
-- [x] Teste unitário ou smoke documentado do abort path
-
----
-
-## T2 — Transcript + scroll + cores + status
-
-**Objetivo:** eventos do harness viram UI tipada e legível.
-
-### Feature: Modelo de transcript
-
-- [x] `enum LineKind { User, Assistant, Reasoning, Tool, System, Error, Diff }`
-- [x] `struct TranscriptLine { kind, text, meta? }`
-- [x] Buffer streaming do assistant (TextDelta concatena na última linha Assistant)
-- [x] `App::apply_event(HarnessEvent)` puro (testável sem terminal)
-
-### Feature: Consumo de eventos no loop TUI
-
-- [x] **Não** usar task `print_events` + stdout na TUI
-- [x] Drain `EventReceiver` a cada tick do loop (non-blocking / try_recv)
-- [x] Mapear:
-  - [x] `UserMessage` / prompt local → linha User
-  - [x] `TextDelta` → Assistant streaming
-  - [x] `ReasoningDelta` → Reasoning (dim/italic se suportado)
-  - [x] `ToolStart` → card “● name args…”
-  - [x] `ToolEnd` → “✓/✗ title” (+ preview)
-  - [x] `Error` → vermelho
-  - [x] `CompactionStarted/Finished` → system/dim
-  - [x] `RunStarted/Finished` → status
-
-### Feature: Scroll
-
-- [x] `scroll_offset` no App
-- [x] PgUp / PgDn (e opcional ↑/↓ com modifier)
-- [x] Auto-scroll só se usuário já está no fundo (“stick to bottom”)
-- [x] Ao novo conteúdo no fundo, manter stick; se scrollou pra cima, não pular
-
-### Feature: Cores / estilo
-
-- [x] User: cyan/blue
-- [x] Assistant: default/white
-- [x] Tool running: yellow
-- [x] Tool ok: green · error: red
-- [x] System/compaction: dark gray
-- [x] Error: red bold
-- [x] Header/status: inverted ou borda ratatui
-
-### Feature: Status bar
-
-- [x] agent · model
-- [x] estado: `Idle` | `Running` | `Waiting permission` | `Waiting question` | `Cancelling`
-- [x] última tool (nome)
-- [x] iterations do último turn (após `PromptResult`)
-- [x] memory count (se memory enabled)
-- [x] cwd truncado
-- [x] Atualizar a cada evento + fim do turn
-
-### Feature: Header
-
-- [x] agent · model · cwd · session id (curto)
-- [x] Título “RustClaw”
-
-### Definition of done T2
-
-- [x] Prompt simples mostra stream de texto + tool cards coloridos
-- [x] Scroll PgUp/PgDn funciona; stick-to-bottom correto
-- [x] Status reflete Idle/Running
-- [x] Testes unitários de `apply_event` (crescimento transcript + stickiness)
+- [x] `cargo check` verde
+- [x] `cargo test` verde (sem regressão)
+- [x] Nenhum `reqwest::Client::new()` sem timeout em código de produção
+- [x] `cargo clippy --bin rustclaw` sem novos warnings
 
 ---
 
-## T3 — Input + histórico + slash commands
+## S1 — Timeout na compactação
 
-**Objetivo:** substituir rustyline na TUI por input controlado pelo App.
+**Objetivo:** impedir que a compactação (frequente durante implementação de features, quando o
+contexto estoura) fique presa numa chamada `provider.complete()` sem timeout.
 
-### Feature: Input buffer
+### Feature: Timeout no `summarize()`
 
-- [x] Buffer local + posição de cursor
-- [x] Render na área inferior (`› …`)
-- [x] Enter envia (se não multiline pendente)
-- [x] Multiline: linha terminando em `\` **ou** Alt+Enter
-- [x] Backspace / Left / Right / Home / End
-- [x] Paste básico (se crossterm BracketedPaste disponível — stretch)
+- [x] Em `src/harness/session/compaction.rs`, adicionar `use std::time::Duration;`
+- [x] Envolver `provider.complete(&summary_req).await` (linha 90) em
+      `tokio::time::timeout(Duration::from_secs(120), ...)`
+- [x] Tratar o resultado:
+  - [x] `Ok(Ok(resp))` → fluxo normal (extrair texto)
+  - [x] `Ok(Err(e))` → fallback `"(summary unavailable)"` (caminho já existe)
+  - [x] `Err(_)` (timeout) → `tracing::warn!` + fallback `"(summary unavailable)"`
+- [x] Garantir que o fallback de timeout não propaga erro para o processor (compactação nunca
+      deve travar o turno)
 
-### Feature: Histórico
+### Feature: Teste de timeout
 
-- [x] Histórico em memória (Vec) por sessão de processo
-- [x] ↑ / ↓ navega histórico
-- [x] Não persistir em disco na v1 TUI (ok documentar)
+- [x] Adicionar teste em `compaction.rs` com um `MockProvider` que **nunca responde** (ex:
+      `tokio::time::sleep(Duration::from_secs(3600))` no `complete`)
+- [x] Verificar que `should_compact_and_execute` retorna `Some(...)` com
+      `"(summary unavailable)"` após o timeout (não trava)
 
-### Feature: Slash commands compartilhados
+### Definition of done S1
 
-- [x] Extrair lógica de `handle_slash` para `ui/commands.rs` (CLI + TUI)
-- [x] Comandos: `/help` `/new` `/sessions` `/resume` `/agent` `/compact` `/memory` `/exit` `/quit`
-- [x] Feedback no transcript (system lines), não `println!`
-- [x] `/exit` restaura terminal e encerra
-
-### Feature: Dispatch de prompt
-
-- [x] Enter com texto não-vazio + Idle → inicia turn
-- [x] Spawn `JoinHandle` do `runtime.prompt(...)` para **não** bloquear draw loop
-- [x] App guarda `running: Option<JoinHandle<…>>` + `AbortSignal` do turn
-- [x] Ao completar: iterations na status, clear running, stick scroll
-
-### Definition of done T3
-
-- [x] Digitar prompt + Enter roda o agent na TUI
-- [x] Multiline e histórico básicos funcionam
-- [x] Slash commands equivalentes ao CLI
-- [x] UI continua responsiva durante o run (draw loop vivo)
+- [x] `cargo test` verde (incl. novo teste de timeout)
+- [x] Compactação nunca trava o turno, mesmo com provedor lento
+- [x] `cargo clippy --bin rustclaw` sem novos warnings
 
 ---
 
-## T4 — Permission / question modals (async)
+## S2 — `SseParser` robusto para `\r\n\r\n`
 
-**Objetivo:** HITL sem bloquear stdin nem o event loop.
+**Objetivo:** evitar que um provedor que use o padrão SSE `\r\n\r\n` (em vez de `\n\n`) faça o
+parser nunca produzir eventos e o stream ficar preso esperando um delimitador que nunca chega.
 
-### Feature: Canais oneshot
+### Feature: Normalizar `\r\n` → `\n` no buffer
 
-- [x] Tipo `PendingPermission { request, reply: oneshot::Sender<PermissionReply> }`
-- [x] `PermissionReply`: Allow | Deny | Always
-- [x] Tipo `PendingQuestion { question, options, reply: oneshot::Sender<Option<String>> }`
-- [x] App: `pending_permission: Option<…>`, `pending_question: Option<…>`
+- [x] Em `src/harness/provider/mod.rs`, no `SseParser::push`, normalizar o buffer antes de
+      procurar o delimitador:
+  - [x] Substituir `\r\n` por `\n` no chunk recebido antes de `extend_from_slice`
+  - [x] **Seguro** porque os dados JSON escapam `\r\n` como `\\r\\n` literal — não há colisão
+- [x] Alternativa (se preferir não mutar o chunk): procurar por `\n\n` **ou** `\r\n\r\n` no
+      `find_subslice` — avaliar qual é mais simples/robusto
 
-### Feature: TuiPermissionAsker
+### Feature: Testes para `\r\n\r\n`
 
-- [x] `ask()` envia pedido para a App (mpsc) e **await** oneshot
-- [x] **Nunca** chamar `stdin.lines()` na TUI
-- [x] Emitir `HarnessEvent::PermissionAsk` (transcript/status)
-- [x] Ao resolver: emitir `PermissionResolved` + set_always_allow se Always
+- [x] Adicionar teste: `parser.push(b"data: {\"a\":1}\r\n\r\n")` → `["{\"a\":1}"]`
+- [x] Adicionar teste: `parser.push(b"data: [DONE]\r\n\r\n")` → `["[DONE]"]`
+- [x] Adicionar teste: chunk dividido com `\r\n\r\n` (ex: `data: {\"a\":` + `1}\r\n\r\n`)
+- [x] Garantir que os testes existentes de `\n\n` continuam passando
 
-### Feature: TuiUserAsker
+### Definition of done S2
 
-- [x] Modal com pergunta + options numeradas
-- [x] Free text: focar input do modal ou reutilizar input bar
-- [x] Esc / empty → `None` (user did not answer)
-
-### Feature: Modal UI + teclas
-
-- [x] Overlay central (Clear + Block bordered)
-- [x] Permission: mostrar tool, path, args summary
-- [x] Teclas: `y` / Enter = Allow · `n` / Esc = Deny · `a` = Always
-- [x] Question: `1..n` escolhe option · digitar + Enter = free text
-- [x] Enquanto modal aberto: não enviar prompt global; status = Waiting permission/question
-- [x] Esc fecha modal com Deny / None
-
-### Feature: Integração processor
-
-- [x] `check_permission` continua chamando `asker.ask` (sem mudança de contrato além do asker)
-- [x] Garantir que eventos Permission* chegam ao bus (asker ou runtime)
-
-### Definition of done T4
-
-- [x] `write`/`bash` abrem modal; `y` executa, `n` devolve erro ao model, `a` libera session
-- [x] `question` tool abre modal e devolve resposta
-- [x] Draw loop não trava durante wait do asker
-- [x] CLI fallback mantém CliAsker antigo (sem regressão)
+- [x] `cargo test` verde (incl. novos testes `\r\n\r\n`)
+- [x] `SseParser` produz eventos corretamente com `\n\n` e `\r\n\r\n`
+- [x] `cargo clippy --bin rustclaw` sem novos warnings
 
 ---
 
-## T5 — Diff view (edit / write)
+## S3 — Timeout de segurança no processor (stream)
 
-**Objetivo:** mutações de arquivo visíveis como diff no transcript/painel.
+**Objetivo:** camada extra de segurança caso o `read_timeout` do client não cubra algum caso
+(provedor custom, proxy, etc.). Garante que o `while let Some(ev) = stream.next().await` nunca
+fique preso para sempre.
 
-### Feature: Metadata nas tools
+### Feature: Timeout no `stream.next().await`
 
-- [x] `edit`:
-  - [x] Ler conteúdo before
-  - [x] Aplicar replace
-  - [x] Gerar snippet/unified diff (contexto ~3 linhas)
-  - [x] `ToolResult.metadata`: `{ path, unified_diff?, before_snippet?, after_snippet?, truncated? }`
-- [x] `write`:
-  - [x] Se arquivo existia: before = conteúdo antigo
-  - [x] after = content escrito
-  - [x] diff ou preview (created N lines / first lines)
-  - [x] metadata análoga
-- [x] Truncar diffs grandes (ex. max 200 linhas) + flag `truncated: true`
+- [x] Em `src/harness/session/processor.rs`, adicionar `use std::time::Duration;`
+- [x] Envolver o `stream.next().await` (linha 111) em
+      `tokio::time::timeout(Duration::from_secs(300), stream.next())`
+- [x] Tratar o resultado:
+  - [x] `Ok(Some(ev))` → processar evento normalmente (fluxo atual)
+  - [x] `Ok(None)` → stream terminou, sair do `while`
+  - [x] `Err(_)` (timeout) → emitir `HarnessEvent::Error` com mensagem clara e **quebrar o loop**
+- [x] Usar **timeout generoso (300s)** para não interromper streaming de raciocínio longo
+- [x] Ao quebrar por timeout, garantir que `final_text` receba mensagem de erro (não vazio)
 
-### Feature: Diff helper
+### Feature: Teste (opcional, se viável)
 
-- [x] Função pura `unified_diff(before, after, path, context_lines) -> String` (sem crate extra na v1)
-- [x] Testes unitários: single hunk edit, arquivo novo, truncate
+- [ ] Se houver infraestrutura de mock de stream, adicionar teste com stream que nunca emite
+      `End` nem `None` e verificar que o timeout dispara
+- [x] Se não for viável com a infra atual, documentar o comportamento no código (comentário)
 
-### Feature: UI do diff
+### Definition of done S3
 
-- [x] `ToolEnd` com metadata de diff → `LineKind::Diff` no transcript **ou** painel lateral
-- [x] Cores: linhas `-` vermelho · `+` verde · hunk header dim
-- [x] Tecla `d`: expand/collapse último diff mutável (se collapsado por default)
-- [x] Não explodir layout: max height / scroll interno do bloco diff
-
-### Definition of done T5
-
-- [x] Após `edit` bem-sucedido, usuário vê diff colorido na TUI
-- [x] `write` de arquivo novo mostra preview/criação clara
-- [x] Diffs enormes truncam com aviso
-- [x] Testes do helper de diff passam
+- [x] `cargo test` verde
+- [x] `stream.next().await` nunca fica preso para sempre (timeout de 300s)
+- [x] Timeout emite erro visível ao usuário e libera a UI
+- [x] `cargo clippy --bin rustclaw` sem novos warnings
 
 ---
 
-## T6 — Polish: lifecycle, help, mouse
+## S4 — Verificação final + commit
 
-**Objetivo:** TUI “produto” — não deixa terminal quebrado; UX de teclas clara.
+**Objetivo:** garantir que tudo compila, testa e está documentado antes do commit.
 
-### Feature: Terminal lifecycle
+### Feature: Build e lint
 
-- [x] `enable_raw_mode` + `EnterAlternateScreen` + mouse capture (se scroll mouse)
-- [x] Restore no exit path normal
-- [x] Restore em panic (Drop guard / `std::panic::set_hook` ou scopeguard)
-- [x] `LeaveAlternateScreen` + `disable_raw_mode` + show cursor
+- [ ] `cargo fmt`
+- [ ] `cargo check`
+- [ ] `cargo test` (todos os testes)
+- [ ] `cargo clippy --bin rustclaw` (sem novos warnings)
 
-### Feature: Help overlay
+### Feature: Smoke test manual (se possível)
 
-- [x] Tecla `?` ou F1: overlay com atalhos
-- [x] Listar: Ctrl+C, Enter, PgUp/Dn, y/n/a, d (diff), /commands, q quit idle
+- [ ] Rodar `cargo run` e iniciar uma implementação de features
+- [ ] Verificar que o streaming retorna normalmente (sem hang)
+- [ ] Verificar que a compactação não trava
+- [ ] Verificar que Ctrl+C ainda cancela o run
 
-### Feature: Mouse scroll (stretch recomendado)
+### Feature: Commit
 
-- [x] Wheel up/down no transcript ajusta `scroll_offset`
-- [x] Desabilitar se causar ruído em alguns terminais (feature-detect / flag)
+- [ ] `git add -A`
+- [ ] Commit com mensagem descritiva, ex:
+      `fix(provider): add timeouts to prevent streaming hangs during feature implementation`
+- [ ] Corpo do commit listando as 4 fases (S0–S3)
 
-### Feature: Robustez
+### Definition of done S4
 
-- [x] Resize terminal (crossterm Resize event) → redraw full
-- [x] Não panicar em draw se área < mínimo (mostrar “terminal too small”)
-- [x] Fallback `--ui cli` / non-TTY documentado no help da TUI
-
-### Definition of done T6
-
-- [x] Sair sempre restaura terminal (testar quit, cancel, erro)
-- [x] Help overlay legível
-- [x] Resize não corrompe UI
-- [x] Mouse scroll funciona **ou** documentado como não suportado
-
----
-
-## T7 — Testes + docs
-
-**Objetivo:** fechar a feature com qualidade e documentação.
-
-### Feature: Testes
-
-- [ ] Unit: `App::apply_event` — TextDelta concat, ToolEnd card, Error line
-- [ ] Unit: stick-to-bottom vs scroll manual
-- [ ] Unit: `unified_diff` helper (edit hunk, empty before, truncate)
-- [ ] Unit: PermissionReply mapping (se lógica pura extraída)
-- [ ] Smoke manual documentado: TUI sobe → glob/read → write pede modal → Ctrl+C cancela
-- [ ] `cargo test` verde; `cargo fmt --check`; clippy sem erros novos
-
-### Feature: Docs
-
-- [ ] `TODO.md` desta TUI: marcar T0–T7 conforme avanço
-- [x] `README.md`: seção TUI (atalhos, `--ui cli`, requirements TTY)
-- [x] `docs/ARCHITECTURE.md`: diagrama surface TUI + abort + askers async
-- [x] `AGENTS.md`: estrutura `ui/tui/*`, padrão de eventos, não usar rustyline na TUI
-- [x] Remover nota “TUI fora de escopo v1” onde ainda existir
-
-### Definition of done T7
-
-- [x] Docs refletem TUI default
-- [ ] Checklist T0–T6 comprovados por testes e/ou smoke
-- [ ] Harness v1 + TUI considerada entregue
-
----
-
-## Definition of done — TUI completa (global)
-
-- [ ] `cargo run` abre TUI ratatui (alternate screen)
-- [ ] Transcript scrollável com cores (user/assistant/tool/error/diff)
-- [ ] Input + slash commands funcionam
-- [ ] Permission modal y/n/a; question modal
-- [ ] Ctrl+C cancela run ativo (`AbortSignal`); idle sai limpo
-- [ ] edit/write mostram diff (ou preview estruturado)
-- [ ] Status bar: agent/model/cwd/run state/iterations/memory
-- [ ] Terminal restaurado ao sair (incl. panic path razoável)
-- [ ] Testes unitários app state + diff helper
-- [ ] CLI fallback para non-TTY / `--ui cli`
-- [ ] TODO + README + ARCHITECTURE + AGENTS atualizados
+- [ ] Todos os testes verdes
+- [ ] Clippy sem novos warnings
+- [ ] Commit criado
 
 ---
 
 ## Ordem de execução
 
 ```text
-T0 deps + scaffold + main switch
- → T1 abort handle + Ctrl+C
- → T2 transcript + scroll + cores + status
- → T3 input + history + slash + spawn prompt
- → T4 async permission/question modals
- → T5 edit/write diff metadata + UI
- → T6 lifecycle polish + help + mouse/resize
- → T7 tests + docs
+S0 timeout client HTTP (causa raiz)
+ → S1 timeout compactação
+ → S2 SseParser \r\n\r\n
+ → S3 timeout processor (segurança)
+ → S4 verificação + commit
 ```
 
-Cada fase: `cargo test` + `cargo check` (+ smoke TUI manual quando UI mudar).
+Cada fase: `cargo test` + `cargo check` (+ `cargo clippy` no final).
 
 ---
 
@@ -425,25 +214,11 @@ Cada fase: `cargo test` + `cargo check` (+ smoke TUI manual quando UI mudar).
 
 | Risco | Mitigação | Status |
 |-------|-----------|--------|
-| rustyline + ratatui brigam pelo TTY | TUI sem rustyline; CLI opcional | ⬜ |
-| Asker bloqueia event loop | oneshot + modal; zero `stdin.lines()` na TUI | ⬜ |
-| Cancel mid-stream LLM | abort entre iterações já existe; checar no stream (T1) | ⬜ |
-| Diff gigante | truncate + `truncated: true` (T5) | ⬜ |
-| CI / piped stdin | `!is_terminal()` → CLI; `--ui cli` | ⬜ |
-| Terminal stuck raw após panic | Drop guard / panic hook (T6) | ⬜ |
-| Processor não emite PermissionAsk | emitir no asker TUI ou no check_permission | ⬜ |
-| `prompt` esconde AbortSignal | signature com `abort:` (T1) | ⬜ |
-
----
-
-## Fora de escopo desta entrega
-
-- [ ] Mouse click em widgets complexos (além de wheel scroll)
-- [ ] Multi-session side-by-side
-- [ ] Tema configurável / full `opencode.json`
-- [ ] Desktop app
-- [ ] Reintroduzir Telegram / plugins / LSP
-- [ ] Bracketed paste avançado (stretch em T3 se sobrar tempo)
+| `read_timeout` de 120s mata streaming de raciocínio longo | Usar `read_timeout` (entre chunks), não `timeout` total; 120s é generoso | ⬜ |
+| Timeout de 300s no processor interrompe resposta legítima | Generoso; só dispara se o client `read_timeout` falhar | ⬜ |
+| Normalizar `\r\n`→`\n` corrompe JSON com `\r\n` literal | JSON escapa como `\\r\\n`; sem colisão real | ⬜ |
+| Compactação com timeout retorna summary ruim | Fallback `"(summary unavailable)"` já existe; melhor que travar | ⬜ |
+| Teste de timeout de compactação demora 120s | Usar timeout curto no teste (ex: 1s) via config ou mock | ⬜ |
 
 ---
 
@@ -451,17 +226,11 @@ Cada fase: `cargo test` + `cargo check` (+ smoke TUI manual quando UI mudar).
 
 | Path | Mudança |
 |------|---------|
-| `Cargo.toml` | +ratatui, +crossterm |
-| `src/main.rs` | default TUI + flag/env UI |
-| `src/harness/ui/mod.rs` | mod tui |
-| `src/harness/ui/tui/*` | **novo** app/draw/input/askers |
-| `src/harness/ui/commands.rs` | **novo** slash compartilhado |
-| `src/harness/ui/cli.rs` | fallback; usar commands compartilhados |
-| `src/harness/runtime.rs` | `prompt(..., abort)` |
-| `src/harness/session/processor.rs` | abort no stream (T1) |
-| `src/harness/tool/edit.rs` / `write.rs` | metadata diff (T5) |
-| `src/harness/event.rs` | garantir Permission* usados |
-| `README.md` / `docs/ARCHITECTURE.md` / `AGENTS.md` | T7 |
+| `src/harness/provider/mod.rs` | `build_http_client()` + `SseParser` `\r\n\r\n` |
+| `src/harness/runtime.rs` | usar `build_http_client()` (linhas 137, 194) |
+| `src/harness/session/compaction.rs` | timeout no `summarize()` + teste |
+| `src/harness/session/processor.rs` | timeout no `stream.next().await` |
+| `src/harness/provider/mod.rs` (tests) | testes `\r\n\r\n` |
 
 ---
 
@@ -469,5 +238,4 @@ Cada fase: `cargo test` + `cargo check` (+ smoke TUI manual quando UI mudar).
 
 | Data | Nota |
 |------|------|
-| 2026-08-29 | Plano TUI completa (ratatui+crossterm) convertido em features T0–T7; TODO.md recriado do zero (conteúdo anterior do harness F0–F7 substituído). |
-| 2026-08-29 | T0–T6 implementados: TUI (app/draw/input/askers), abort+Ctrl+C, transcript scroll+cores+status, input+histórico+slash compartilhado, modals async, diff (edit/write metadata + helper), lifecycle+mouse+help. T7 concluído: 62 testes verdes (incl. diff helper + edit diff) + smoke live CLI; docs (README/ARCHITECTURE/AGENTS) atualizados. |
+| 2026-09-04 | TODO.md recriado: plano de resolução do hang de streaming convertido em features S0–S4 com checklists detalhados. Conteúdo anterior (TUI T0–T7, já concluído) substituído. |

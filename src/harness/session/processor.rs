@@ -12,6 +12,7 @@ use crate::harness::session::{Message, Part, Role, Session, ToolPart};
 use crate::harness::tool::registry::ToolRegistry;
 use futures_util::StreamExt;
 use std::sync::Arc;
+use std::time::Duration;
 
 /// Tunables for one turn of the processor.
 #[derive(Clone, Debug)]
@@ -56,6 +57,10 @@ const DOOM_LOOP_WARN: usize = 3;
 const DOOM_LOOP_STOP: usize = 5;
 const COMPACTION_KEEP_RECENT: usize = 6;
 const COMPACTION_MIN_MESSAGES: usize = 10;
+/// Safety net: if the provider stream stalls (no event for this long), abort
+/// the turn instead of hanging forever. Generous so long reasoning streams
+/// aren't interrupted; the client `read_timeout` normally fires first.
+const STREAM_TIMEOUT_SECS: u64 = 300;
 
 impl SessionProcessor {
     /// Runs one user turn: loops stream -> tool exec until the model answers
@@ -108,11 +113,30 @@ impl SessionProcessor {
             let mut tool_calls: Vec<ToolPart> = Vec::new();
             let mut usage = Usage::default();
 
-            while let Some(ev) = stream.next().await {
+            loop {
                 // Abort responsively mid-stream.
                 if ctx.abort.is_aborted() {
                     break;
                 }
+                let next =
+                    tokio::time::timeout(Duration::from_secs(STREAM_TIMEOUT_SECS), stream.next())
+                        .await;
+                let ev = match next {
+                    Ok(Some(ev)) => ev,
+                    Ok(None) => break, // stream terminou
+                    Err(_) => {
+                        // Safety net: provider stream stalled. Abort the turn
+                        // instead of hanging forever.
+                        let msg = format!("Stream timed out after {}s", STREAM_TIMEOUT_SECS);
+                        let _ = self.events.send(HarnessEvent::Error {
+                            session_id: session.id.clone(),
+                            message: msg.clone(),
+                        });
+                        final_text = msg;
+                        aborted = true;
+                        break;
+                    }
+                };
                 match ev? {
                     ProviderEvent::TextDelta(d) => {
                         text.push_str(&d);
@@ -162,6 +186,12 @@ impl SessionProcessor {
                         }
                     }
                 }
+            }
+
+            // If the stream timed out (or was aborted mid-stream), stop the
+            // whole turn rather than continuing to build/execute tool calls.
+            if aborted {
+                break;
             }
 
             total_usage.input_tokens += usage.input_tokens;
@@ -397,6 +427,7 @@ impl SessionProcessor {
             max_context_tokens: self.config.max_context_tokens,
             keep_recent_messages: COMPACTION_KEEP_RECENT,
             min_messages_to_compact: COMPACTION_MIN_MESSAGES,
+            summary_timeout: std::time::Duration::from_secs(120),
         };
         let before = session.messages.len();
         if let Some(new_messages) = compaction::should_compact_and_execute(

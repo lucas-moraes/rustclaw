@@ -10,6 +10,7 @@ use crate::harness::provider::{LlmRequest, Provider};
 use crate::harness::session::{Message, Part, Role};
 use anyhow::Result;
 use std::sync::Arc;
+use std::time::Duration;
 
 /// Tunables for context-window compaction.
 #[derive(Clone, Debug)]
@@ -17,6 +18,8 @@ pub struct CompactionConfig {
     pub max_context_tokens: usize,
     pub keep_recent_messages: usize,
     pub min_messages_to_compact: usize,
+    /// Max time to wait for the LLM summary before falling back to a placeholder.
+    pub summary_timeout: Duration,
 }
 
 impl Default for CompactionConfig {
@@ -25,6 +28,7 @@ impl Default for CompactionConfig {
             max_context_tokens: 80_000,
             keep_recent_messages: 6,
             min_messages_to_compact: 10,
+            summary_timeout: Duration::from_secs(120),
         }
     }
 }
@@ -52,7 +56,7 @@ pub async fn should_compact_and_execute(
     let dropped: &[Message] = &messages[..cut];
     let recent: &[Message] = &messages[cut..];
 
-    let summary = summarize(dropped, provider).await?;
+    let summary = summarize(dropped, provider, config.summary_timeout).await?;
     let summary_message = Message::new(
         Role::User,
         vec![Part::text(format!(
@@ -69,8 +73,12 @@ pub async fn should_compact_and_execute(
 }
 
 /// Requests an LLM summary of the dropped messages, falling back to a plain
-/// placeholder when the provider fails or returns no text.
-async fn summarize(dropped: &[Message], provider: Arc<dyn Provider>) -> Result<String> {
+/// placeholder when the provider fails, times out, or returns no text.
+async fn summarize(
+    dropped: &[Message],
+    provider: Arc<dyn Provider>,
+    timeout: Duration,
+) -> Result<String> {
     let transcript = build_summary_request(dropped)
         .into_iter()
         .map(|(role, text)| format!("{}: {}", role, text))
@@ -87,8 +95,9 @@ preserving key decisions, file paths, and outcomes."
         max_tokens: None,
         temperature: 0.2,
     };
-    match provider.complete(&summary_req).await {
-        Ok(resp) => {
+    // Timeout so a slow/hung provider never blocks the turn during compaction.
+    match tokio::time::timeout(timeout, provider.complete(&summary_req)).await {
+        Ok(Ok(resp)) => {
             let text = resp
                 .parts
                 .iter()
@@ -102,8 +111,12 @@ preserving key decisions, file paths, and outcomes."
                 Ok(text)
             }
         }
-        Err(e) => {
+        Ok(Err(e)) => {
             tracing::warn!("compaction summary failed, falling back to trim: {}", e);
+            Ok("(summary unavailable)".to_string())
+        }
+        Err(_) => {
+            tracing::warn!("compaction summary timed out after {:?}", timeout);
             Ok("(summary unavailable)".to_string())
         }
     }
@@ -186,6 +199,26 @@ mod tests {
         }
     }
 
+    /// Test double whose `complete` never returns (simulates a hung provider).
+    struct HangingProvider;
+
+    #[async_trait::async_trait]
+    impl Provider for HangingProvider {
+        fn name(&self) -> &str {
+            "hanging"
+        }
+        async fn stream(&self, _req: &LlmRequest) -> anyhow::Result<ProviderStream> {
+            Ok(futures_util::stream::empty().boxed())
+        }
+        async fn complete(
+            &self,
+            _req: &LlmRequest,
+        ) -> anyhow::Result<crate::harness::provider::LlmResponse> {
+            tokio::time::sleep(Duration::from_secs(3600)).await;
+            unreachable!()
+        }
+    }
+
     fn msgs(n: usize) -> Vec<Message> {
         // 100-char messages => ~25 tokens each, enough to exceed small budgets.
         (0..n)
@@ -198,6 +231,21 @@ mod tests {
             max_context_tokens: max,
             keep_recent_messages: keep,
             min_messages_to_compact: min,
+            summary_timeout: Duration::from_secs(120),
+        }
+    }
+
+    fn cfg_with_timeout(
+        max: usize,
+        keep: usize,
+        min: usize,
+        timeout: Duration,
+    ) -> CompactionConfig {
+        CompactionConfig {
+            max_context_tokens: max,
+            keep_recent_messages: keep,
+            min_messages_to_compact: min,
+            summary_timeout: timeout,
         }
     }
 
@@ -280,5 +328,23 @@ mod tests {
         let rendered = render_message(&msg);
         assert!(rendered.contains("[assistant] checking"));
         assert!(rendered.contains("tool bash"));
+    }
+
+    #[tokio::test]
+    async fn test_summary_timeout_falls_back() {
+        // A hung provider must not block the turn: compaction falls back to a
+        // placeholder after the configured timeout.
+        let provider = Arc::new(HangingProvider);
+        let messages = msgs(12);
+        let out = should_compact_and_execute(
+            &messages,
+            provider,
+            &cfg_with_timeout(1, 6, 10, Duration::from_millis(50)),
+        )
+        .await
+        .unwrap()
+        .expect("expected compaction even on summary timeout");
+        assert_eq!(out.len(), 7);
+        assert!(out[0].text_content().contains("(summary unavailable)"));
     }
 }

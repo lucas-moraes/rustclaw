@@ -89,7 +89,7 @@ mod tests {
     #[test]
     fn test_build_provider_routing() {
         let http = HttpConfig {
-            client: reqwest::Client::new(),
+            client: crate::harness::provider::build_http_client(),
             base_url: "https://example.com/v1".into(),
             api_key: "key".into(),
         };

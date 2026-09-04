@@ -183,6 +183,7 @@ pub async fn handle(
                 max_context_tokens: 0,
                 keep_recent_messages: 6,
                 min_messages_to_compact: 1,
+                summary_timeout: std::time::Duration::from_secs(120),
             };
             let before = session.messages.len();
             match compaction::should_compact_and_execute(

@@ -10,6 +10,7 @@ pub mod opencode_go;
 pub mod user_store;
 
 use crate::harness::session::{Message, Part};
+use std::time::Duration;
 
 /// Tool definition sent to the provider (single definition, from tool module).
 pub use crate::harness::tool::ToolSpec;
@@ -138,6 +139,20 @@ pub struct HttpConfig {
     pub api_key: String,
 }
 
+/// Builds the shared HTTP client with timeouts to prevent streaming hangs.
+///
+/// Uses `read_timeout` (time between chunks) rather than a total `timeout`,
+/// because reasoning/streaming responses can legitimately take minutes. A
+/// total timeout would kill long but valid responses. `connect_timeout` fails
+/// fast on dead connections.
+pub fn build_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(30))
+        .read_timeout(Duration::from_secs(120))
+        .build()
+        .expect("failed to build http client")
+}
+
 #[derive(Clone, Copy, Debug)]
 pub enum AuthStyle {
     Bearer,
@@ -173,7 +188,10 @@ impl SseParser {
 
     /// Feeds a chunk and returns any complete data payloads found.
     pub fn push(&mut self, chunk: &[u8]) -> Vec<String> {
-        self.buffer.extend_from_slice(chunk);
+        // Normalize CRLF to LF so the `\n\n` event boundary is found even when
+        // a provider uses the RFC-style `\r\n\r\n` delimiter. Safe because JSON
+        // payloads escape literal CR/LF as `\\r`/`\\n`, so no data corruption.
+        self.buffer.extend_from_slice(&normalize_crlf(chunk));
         let mut events = Vec::new();
         while let Some(pos) = find_subslice(&self.buffer, b"\n\n") {
             let raw: Vec<u8> = self.buffer.drain(..pos + 2).collect();
@@ -210,6 +228,23 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         .position(|window| window == needle)
 }
 
+/// Replaces `\r\n` byte pairs with `\n`, so SSE event boundaries using the
+/// RFC-style `\r\n\r\n` delimiter are recognized as `\n\n`.
+fn normalize_crlf(bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\r' && i + 1 < bytes.len() && bytes[i + 1] == b'\n' {
+            out.push(b'\n');
+            i += 2;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -235,6 +270,44 @@ mod tests {
         parser.push(b"data: hello\n");
         let events = parser.finish();
         assert_eq!(events, vec!["hello"]);
+    }
+
+    #[test]
+    fn test_sse_parser_crlf_delimiter() {
+        let mut parser = SseParser::new();
+        let events = parser.push(b"data: {\"a\":1}\r\n\r\n");
+        assert_eq!(events, vec!["{\"a\":1}"]);
+    }
+
+    #[test]
+    fn test_sse_parser_crlf_done() {
+        let mut parser = SseParser::new();
+        let events = parser.push(b"data: [DONE]\r\n\r\n");
+        assert_eq!(events, vec!["[DONE]"]);
+    }
+
+    #[test]
+    fn test_sse_parser_crlf_split_chunks() {
+        let mut parser = SseParser::new();
+        assert!(parser.push(b"data: {\"a\":1}\r\n").is_empty());
+        let events = parser.push(b"\r\ndata: [DONE]\r\n\r\n");
+        assert_eq!(events, vec!["{\"a\":1}", "[DONE]"]);
+    }
+
+    #[test]
+    fn test_sse_parser_mixed_lf_crlf() {
+        // A provider mixing `\n\n` and `\r\n\r\n` delimiters must still parse.
+        let mut parser = SseParser::new();
+        let events = parser.push(b"data: one\n\ndata: two\r\n\r\n");
+        assert_eq!(events, vec!["one", "two"]);
+    }
+
+    #[test]
+    fn test_normalize_crlf() {
+        assert_eq!(normalize_crlf(b"a\r\nb"), b"a\nb");
+        assert_eq!(normalize_crlf(b"a\nb"), b"a\nb");
+        assert_eq!(normalize_crlf(b"a\rb"), b"a\rb"); // lone CR untouched
+        assert_eq!(normalize_crlf(b"\r\n\r\n"), b"\n\n");
     }
 
     #[test]

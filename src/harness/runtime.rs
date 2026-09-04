@@ -134,7 +134,7 @@ impl SessionRuntime {
         // `Config::load` already resolved provider/model/base_url and picked
         // the token from the auth store; `from_legacy` just adapts it.
         let http = HttpConfig {
-            client: reqwest::Client::new(),
+            client: crate::harness::provider::build_http_client(),
             base_url: cfg.base_url.clone(),
             api_key: cfg.api_key.clone().unwrap_or_default(),
         };
@@ -191,7 +191,7 @@ impl SessionRuntime {
             .unwrap_or_default();
 
         let http = HttpConfig {
-            client: reqwest::Client::new(),
+            client: crate::harness::provider::build_http_client(),
             base_url: base_url.clone(),
             api_key: api_key.clone(),
         };
@@ -626,7 +626,7 @@ mod model_switch_tests {
 
     fn test_runtime(dir: &std::path::Path) -> Result<SessionRuntime> {
         let http = HttpConfig {
-            client: reqwest::Client::new(),
+            client: crate::harness::provider::build_http_client(),
             base_url: "https://api.deepinfra.com/v1/openai".to_string(),
             api_key: "sk-initial-test-key-123456".to_string(),
         };
@@ -747,7 +747,7 @@ mod model_switch_tests {
         // Simulate a fresh unconfigured runtime (no token).
         let dir = tempfile::tempdir().unwrap();
         let http = HttpConfig {
-            client: reqwest::Client::new(),
+            client: crate::harness::provider::build_http_client(),
             base_url: "https://api.deepinfra.com/v1/openai".to_string(),
             api_key: String::new(),
         };

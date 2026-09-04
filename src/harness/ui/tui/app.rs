@@ -557,7 +557,7 @@ impl App {
         let dir = tempfile::tempdir().unwrap();
         let _keep_dir = Box::leak(Box::new(dir)); // db file stays alive for the test
         let http = crate::harness::provider::HttpConfig {
-            client: reqwest::Client::new(),
+            client: crate::harness::provider::build_http_client(),
             base_url: "https://api.example.com/v1".to_string(),
             api_key: String::new(),
         };
