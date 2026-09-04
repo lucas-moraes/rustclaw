@@ -240,6 +240,12 @@ pub async fn handle(
                 runtime.switch_model(&provider, arg)?;
                 out.push(format!("model → {} ({})", arg, runtime.provider.name()));
                 out.push("selection saved to rustclaw.json (this project)".to_string());
+                if !runtime.has_token_for(&provider) {
+                    out.push(format!(
+                        "no token for provider `{}` — use /auth {} to add one",
+                        provider, provider
+                    ));
+                }
             }
         }
         "/provider" => {
@@ -253,6 +259,12 @@ pub async fn handle(
                 runtime.switch_model(arg, default_model)?;
                 out.push(format!("provider → {} · model → {}", arg, default_model));
                 out.push("selection saved to rustclaw.json (this project)".to_string());
+                if !runtime.has_token_for(arg) {
+                    out.push(format!(
+                        "no token for provider `{}` — use /auth {} to add one",
+                        arg, arg
+                    ));
+                }
             } else {
                 out.push(format!(
                     "unknown provider: {} (options: {})",

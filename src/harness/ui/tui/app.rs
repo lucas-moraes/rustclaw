@@ -656,9 +656,12 @@ impl App {
             Err(e) => self.add_system(&format!("[error] model switch failed: {}", e)),
         }
         // Onboarding wizard continuation: no token for this provider yet →
-        // open the (masked) auth prompt right away.
-        if !self.runtime.config.is_configured() && self.auth_prompt.is_none() {
-            self.add_system("token required for this provider — paste it via /auth");
+        // open the (masked) auth prompt right away. This also covers switching
+        // from a configured provider to a new one that has no token stored.
+        if !self.runtime.has_token_for(provider) && self.auth_prompt.is_none() {
+            self.add_system(&format!(
+                "no token for provider `{provider}` — paste it via /auth"
+            ));
             self.auth_prompt = Some(AuthPromptState::new(provider));
         }
         Ok(())

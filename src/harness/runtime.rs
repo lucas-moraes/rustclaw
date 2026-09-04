@@ -182,19 +182,21 @@ impl SessionRuntime {
         let base_url = crate::harness::provider::catalog::default_base_url(provider)
             .map(str::to_string)
             .unwrap_or_else(|| self.config.base_url.clone());
+        // Only use a token that actually belongs to the *new* provider. Never
+        // fall back to the previous provider's token: that would leak the old
+        // credential to a different API. If the new provider has no token, the
+        // caller (TUI/CLI) is expected to prompt for one.
         let api_key = auth
             .get_key(provider)
             .filter(|k| !k.trim().is_empty())
-            .unwrap_or_else(|| self.config.api_key.clone());
+            .unwrap_or_default();
 
         let http = HttpConfig {
             client: reqwest::Client::new(),
             base_url: base_url.clone(),
             api_key: api_key.clone(),
         };
-        if !api_key.is_empty() {
-            self.config.api_key = api_key.clone();
-        }
+        self.config.api_key = api_key;
         self.provider = build_provider_from(provider, http)?;
         self.config.provider = provider.to_string();
         self.config.model = model.to_string();
@@ -208,6 +210,14 @@ impl SessionRuntime {
         proj.save(project_root)
             .context("failed to persist rustclaw.json")?;
         Ok(())
+    }
+
+    /// True when the auth store holds a usable token for `provider`.
+    pub fn has_token_for(&self, provider: &str) -> bool {
+        crate::harness::auth::AuthStore::load()
+            .get_key(provider)
+            .map(|k| k.trim().len() >= 10)
+            .unwrap_or(false)
     }
 
     pub fn resolve_agent(&self, name: &str) -> AgentSpec {
@@ -639,14 +649,31 @@ mod model_switch_tests {
     }
 
     #[tokio::test]
-    async fn test_switch_model_keeps_key_when_auth_store_empty() {
+    async fn test_switch_model_clears_key_when_auth_store_empty() {
+        // Switching to a provider with no stored token must NOT reuse the
+        // previous provider's key (would leak the old credential to a new API).
         let dir = tempfile::tempdir().unwrap();
         let mut rt = test_runtime(dir.path()).unwrap();
         rt.switch_model_at(dir.path(), "openrouter", "z-ai/glm-4.6")
             .unwrap();
         assert_eq!(rt.config.provider, "openrouter");
         assert_eq!(rt.config.model, "z-ai/glm-4.6");
-        assert_eq!(rt.config.api_key, "sk-initial-test-key-123456");
+        assert_eq!(rt.config.api_key, "");
+        assert!(!rt.config.is_configured());
+    }
+
+    #[tokio::test]
+    async fn test_switch_model_uses_token_from_auth_store() {
+        // Switching to a provider that HAS a stored token must use that token.
+        let dir = tempfile::tempdir().unwrap();
+        let mut rt = test_runtime(dir.path()).unwrap();
+        let mut auth = crate::harness::auth::AuthStore::default();
+        auth.set_key("moonshot", "sk-moonshot-1234567890");
+        rt.switch_model_with_auth(dir.path(), &auth, "moonshot", "kimi-k2.5")
+            .unwrap();
+        assert_eq!(rt.config.provider, "moonshot");
+        assert_eq!(rt.config.api_key, "sk-moonshot-1234567890");
+        assert!(rt.config.is_configured());
     }
 
     #[tokio::test]
