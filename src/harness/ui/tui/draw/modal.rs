@@ -131,10 +131,10 @@ fn draw_question(
     tick: u64,
     area: Rect,
 ) {
-    // Question + options + answer field + hints.
+    // Question + options + answer box + hints.
     let opt_rows = req.options.len() as u16;
-    let h = (11 + opt_rows).min(area.height).max(9);
-    let w = area.width.min(72).max(40);
+    let h = (13 + opt_rows).min(area.height).max(11);
+    let w = area.width.min(76).max(44);
     let area = centered_rect_fixed(w, h, area);
     frame.render_widget(Clear, area);
 
@@ -142,85 +142,149 @@ fn draw_question(
         .borders(Borders::ALL)
         .border_style(Style::default().fg(t.accent3))
         .title(Span::styled(
-            " ❯ question ",
+            " ❯ question — type your answer ",
             Style::default().fg(t.accent3).add_modifier(Modifier::BOLD),
         ))
         .style(Style::default().bg(t.surface).fg(t.text));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
 
-    let mut lines = vec![
-        Line::from(""),
+    let mut y = inner.y;
+    let mut push_line = |frame: &mut Frame, line: Line<'static>, row: &mut u16| {
+        if *row < inner.y + inner.height {
+            frame.render_widget(
+                Paragraph::new(line),
+                Rect {
+                    x: inner.x,
+                    y: *row,
+                    width: inner.width,
+                    height: 1,
+                },
+            );
+            *row = row.saturating_add(1);
+        }
+    };
+
+    push_line(frame, Line::from(""), &mut y);
+    // Question text (single visual row; long text is truncated to keep the input visible).
+    let q = truncate(&req.question, inner.width.saturating_sub(4) as usize);
+    push_line(
+        frame,
         Line::from(Span::styled(
-            format!("  {}", req.question),
+            format!("  {}", q),
             Style::default()
                 .fg(t.text_bright)
                 .add_modifier(Modifier::BOLD),
         )),
-        Line::from(""),
-    ];
+        &mut y,
+    );
+    push_line(frame, Line::from(""), &mut y);
+
     for (i, o) in req.options.iter().enumerate() {
-        lines.push(Line::from(vec![
-            Span::styled(format!("  [{}] ", i + 1), Style::default().fg(t.accent)),
-            Span::styled(o.clone(), Style::default().fg(t.text)),
-        ]));
+        let label = truncate(o, inner.width.saturating_sub(8) as usize);
+        push_line(
+            frame,
+            Line::from(vec![
+                Span::styled(format!("  [{}] ", i + 1), Style::default().fg(t.accent)),
+                Span::styled(label, Style::default().fg(t.text)),
+            ]),
+            &mut y,
+        );
     }
     if !req.options.is_empty() {
-        lines.push(Line::from(""));
+        push_line(frame, Line::from(""), &mut y);
     }
 
-    // Answer input row with blinking cursor glyph.
+    // Answer box (2 rows: border-like label + input).
+    push_line(
+        frame,
+        Line::from(Span::styled(
+            "  answer",
+            Style::default().fg(t.text_dim).add_modifier(Modifier::BOLD),
+        )),
+        &mut y,
+    );
+
     let cursor_glyph = if (tick / 5) % 2 == 0 { "▌" } else { " " };
     let chars: Vec<char> = draft.chars().collect();
     let at = cursor.min(chars.len());
     let before: String = chars[..at].iter().collect();
     let after: String = chars[at..].iter().collect();
+    let input_width = inner.width.saturating_sub(4) as usize;
 
-    if draft.is_empty() {
-        lines.push(Line::from(vec![
-            Span::styled("  › ", Style::default().fg(t.accent2)),
+    let answer_line = if draft.is_empty() {
+        Line::from(vec![
+            Span::styled("  ┌ ", Style::default().fg(t.border_focus)),
             Span::styled(cursor_glyph.to_string(), Style::default().fg(t.accent)),
             Span::styled(
-                "type your answer…".to_string(),
+                truncate("type here, then press Enter", input_width.saturating_sub(1)),
                 Style::default().fg(t.text_dim),
             ),
-        ]));
+        ])
     } else {
-        lines.push(Line::from(vec![
-            Span::styled("  › ", Style::default().fg(t.accent2)),
-            Span::styled(before, Style::default().fg(t.text_bright)),
+        // Keep the cursor visible by windowing long drafts.
+        let total = chars.len();
+        let max_shown = input_width.saturating_sub(1).max(8);
+        let mut start = 0usize;
+        if at >= max_shown {
+            start = at + 1 - max_shown;
+        }
+        let end = (start + max_shown).min(total);
+        let vis_before: String = chars[start..at.min(end)].iter().collect();
+        let vis_after: String = chars[at.min(end)..end].iter().collect();
+        let _ = (before, after); // kept for clarity of cursor split
+        Line::from(vec![
+            Span::styled("  ┌ ", Style::default().fg(t.border_focus)),
+            Span::styled(vis_before, Style::default().fg(t.text_bright)),
             Span::styled(cursor_glyph.to_string(), Style::default().fg(t.accent)),
-            Span::styled(after, Style::default().fg(t.text)),
-        ]));
-    }
+            Span::styled(vis_after, Style::default().fg(t.text)),
+        ])
+    };
+    let answer_row = y;
+    push_line(frame, answer_line, &mut y);
+    push_line(
+        frame,
+        Line::from(Span::styled(
+            format!(
+                "  └{}",
+                "─".repeat(inner.width.saturating_sub(4).max(1) as usize)
+            ),
+            Style::default().fg(t.border_focus),
+        )),
+        &mut y,
+    );
 
-    lines.push(Line::from(""));
+    push_line(frame, Line::from(""), &mut y);
     let mut hint = vec![
         Span::styled("  ", Style::default()),
         Span::styled("Enter", Style::default().fg(t.success)),
-        Span::styled(" submit   ", Style::default().fg(t.text_dim)),
+        Span::styled(" send   ", Style::default().fg(t.text_dim)),
         Span::styled("Esc", Style::default().fg(t.accent2)),
         Span::styled(" cancel", Style::default().fg(t.text_dim)),
     ];
     if !req.options.is_empty() {
         hint.extend([
             Span::styled("   ", Style::default()),
-            Span::styled("1..n", Style::default().fg(t.accent)),
+            Span::styled("1..n + Enter", Style::default().fg(t.accent)),
             Span::styled(" pick option", Style::default().fg(t.text_dim)),
         ]);
     }
-    lines.push(Line::from(hint));
+    push_line(frame, Line::from(hint), &mut y);
 
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
-
-    // Place the real terminal cursor on the answer field.
-    // Row layout: blank, question, blank, [options…], [blank if options], answer.
-    let answer_row = 3u16 + opt_rows + if req.options.is_empty() { 0 } else { 1 };
-    let col = 4u16 + at as u16; // "  › " = 4 cols
-    if answer_row < inner.height && col < inner.width {
+    // Real terminal caret on the answer field.
+    let col = 4u16 + {
+        let max_shown = input_width.saturating_sub(1).max(8);
+        let start = if at >= max_shown {
+            at + 1 - max_shown
+        } else {
+            0
+        };
+        (at - start) as u16
+    };
+    if answer_row < inner.y + inner.height && col < inner.width {
         frame.set_cursor_position((
-            inner.x + col.min(inner.width.saturating_sub(1)),
-            inner.y + answer_row.min(inner.height.saturating_sub(1)),
+            (inner.x + col).min(inner.x + inner.width.saturating_sub(1)),
+            answer_row,
         ));
     }
 }

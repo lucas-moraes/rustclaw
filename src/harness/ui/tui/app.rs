@@ -2140,6 +2140,10 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) -> Result<bool> {
             mut cursor,
         }) => {
             use crossterm::event::KeyModifiers;
+
+            let put_back = |app: &mut App, req: QuestionRequest, draft: String, cursor: usize| {
+                app.modal = Some(Modal::Question { req, draft, cursor });
+            };
             let finish = |app: &mut App, req: QuestionRequest, answer: Option<String>| {
                 let _ = req.reply.send(answer.clone());
                 match answer {
@@ -2150,6 +2154,13 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) -> Result<bool> {
                     None => app.push(LineKind::System, "[question] no answer".to_string()),
                 }
             };
+            let insert_char = |draft: &mut String, cursor: &mut usize, c: char| {
+                let mut chars: Vec<char> = draft.chars().collect();
+                let at = (*cursor).min(chars.len());
+                chars.insert(at, c);
+                *draft = chars.into_iter().collect();
+                *cursor = at + 1;
+            };
 
             match key.code {
                 KeyCode::Esc => {
@@ -2157,51 +2168,32 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) -> Result<bool> {
                 }
                 KeyCode::Enter => {
                     let trimmed = draft.trim();
-                    let answer = if trimmed.is_empty() {
-                        None
-                    } else if let Ok(num) = trimmed.parse::<usize>() {
-                        // Bare number still selects a predefined option when present.
+                    if trimmed.is_empty() {
+                        // Keep the modal open until the user types something or Esc.
+                        put_back(app, req, draft, cursor);
+                        return Ok(false);
+                    }
+                    let answer = if let Ok(num) = trimmed.parse::<usize>() {
+                        // Bare number selects a predefined option when present.
                         if num >= 1 && num <= req.options.len() {
-                            Some(req.options[num - 1].clone())
+                            req.options[num - 1].clone()
                         } else {
-                            Some(trimmed.to_string())
+                            trimmed.to_string()
                         }
                     } else {
-                        Some(trimmed.to_string())
+                        trimmed.to_string()
                     };
-                    finish(app, req, answer);
+                    finish(app, req, Some(answer));
                 }
-                // Digits with empty draft + options: instant pick (OpenCode-style shortcuts).
-                KeyCode::Char(c)
-                    if c.is_ascii_digit()
-                        && draft.is_empty()
-                        && !req.options.is_empty()
-                        && !key.modifiers.contains(KeyModifiers::CONTROL)
-                        && !key.modifiers.contains(KeyModifiers::ALT) =>
-                {
-                    if let Some(d) = c.to_digit(10) {
-                        if d >= 1 {
-                            if let Some(opt) = req.options.get(d as usize - 1).cloned() {
-                                finish(app, req, Some(opt));
-                                return Ok(false);
-                            }
-                        }
-                    }
-                    // Digit out of range → treat as free text.
-                    draft.push(c);
-                    cursor = draft.chars().count();
-                    app.modal = Some(Modal::Question { req, draft, cursor });
-                }
+                // Every printable character goes into the free-text draft.
+                // Option shortcuts still work: type "1" + Enter, or just "1" + Enter.
                 KeyCode::Char(c)
                     if !key.modifiers.contains(KeyModifiers::CONTROL)
-                        && !key.modifiers.contains(KeyModifiers::ALT) =>
+                        && !key.modifiers.contains(KeyModifiers::ALT)
+                        && !key.modifiers.contains(KeyModifiers::SUPER) =>
                 {
-                    let mut chars: Vec<char> = draft.chars().collect();
-                    let at = cursor.min(chars.len());
-                    chars.insert(at, c);
-                    draft = chars.into_iter().collect();
-                    cursor = at + 1;
-                    app.modal = Some(Modal::Question { req, draft, cursor });
+                    insert_char(&mut draft, &mut cursor, c);
+                    put_back(app, req, draft, cursor);
                 }
                 KeyCode::Backspace => {
                     if cursor > 0 {
@@ -2210,7 +2202,7 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) -> Result<bool> {
                         draft = chars.into_iter().collect();
                         cursor -= 1;
                     }
-                    app.modal = Some(Modal::Question { req, draft, cursor });
+                    put_back(app, req, draft, cursor);
                 }
                 KeyCode::Delete => {
                     let mut chars: Vec<char> = draft.chars().collect();
@@ -2218,34 +2210,33 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) -> Result<bool> {
                         chars.remove(cursor);
                         draft = chars.into_iter().collect();
                     }
-                    app.modal = Some(Modal::Question { req, draft, cursor });
+                    put_back(app, req, draft, cursor);
                 }
                 KeyCode::Left => {
                     cursor = cursor.saturating_sub(1);
-                    app.modal = Some(Modal::Question { req, draft, cursor });
+                    put_back(app, req, draft, cursor);
                 }
                 KeyCode::Right => {
                     let len = draft.chars().count();
                     if cursor < len {
                         cursor += 1;
                     }
-                    app.modal = Some(Modal::Question { req, draft, cursor });
+                    put_back(app, req, draft, cursor);
                 }
                 KeyCode::Home => {
                     cursor = 0;
-                    app.modal = Some(Modal::Question { req, draft, cursor });
+                    put_back(app, req, draft, cursor);
                 }
                 KeyCode::End => {
                     cursor = draft.chars().count();
-                    app.modal = Some(Modal::Question { req, draft, cursor });
+                    put_back(app, req, draft, cursor);
                 }
                 KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     draft.clear();
                     cursor = 0;
-                    app.modal = Some(Modal::Question { req, draft, cursor });
+                    put_back(app, req, draft, cursor);
                 }
                 KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    // Kill previous word.
                     let chars: Vec<char> = draft.chars().collect();
                     let mut i = cursor.min(chars.len());
                     while i > 0 && chars[i - 1].is_whitespace() {
@@ -2258,10 +2249,10 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) -> Result<bool> {
                     kept.drain(i..cursor.min(kept.len()));
                     draft = kept.into_iter().collect();
                     cursor = i;
-                    app.modal = Some(Modal::Question { req, draft, cursor });
+                    put_back(app, req, draft, cursor);
                 }
                 _ => {
-                    app.modal = Some(Modal::Question { req, draft, cursor });
+                    put_back(app, req, draft, cursor);
                 }
             }
         }
