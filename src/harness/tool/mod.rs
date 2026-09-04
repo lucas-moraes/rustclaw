@@ -4,6 +4,7 @@ pub mod bash;
 pub mod context;
 pub mod diff;
 pub mod edit;
+pub mod fetch_webpage;
 pub mod glob;
 pub mod grep;
 pub mod question;
@@ -13,6 +14,7 @@ pub mod remember;
 pub mod task;
 pub mod todo;
 pub mod truncate;
+pub mod web_search;
 pub mod write;
 
 use crate::harness::session::ToolPart;

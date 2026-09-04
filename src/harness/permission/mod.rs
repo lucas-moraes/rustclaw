@@ -69,7 +69,15 @@ impl PermissionConfig {
     /// Sensible defaults matching the TODO F3 spec.
     pub fn with_defaults() -> Self {
         let mut tools = HashMap::new();
-        for t in ["read", "glob", "grep", "todo_read", "todo_write"] {
+        for t in [
+            "read",
+            "glob",
+            "grep",
+            "todo_read",
+            "todo_write",
+            "web_search",
+            "fetch_webpage",
+        ] {
             tools.insert(t.to_string(), Rule::Allow);
         }
         for t in ["write", "edit", "bash", "task", "question", "remember"] {

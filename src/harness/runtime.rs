@@ -425,6 +425,7 @@ pub fn build_default_registry() -> ToolRegistry {
     use crate::harness::tool::{
         bash::BashTool,
         edit::EditTool,
+        fetch_webpage::FetchWebpageTool,
         glob::GlobTool,
         grep::GrepTool,
         question::QuestionTool,
@@ -432,6 +433,7 @@ pub fn build_default_registry() -> ToolRegistry {
         remember::RememberTool,
         task::TaskTool,
         todo::{TodoReadTool, TodoWriteTool},
+        web_search::WebSearchTool,
         write::WriteTool,
     };
     ToolRegistry::builder()
@@ -446,6 +448,8 @@ pub fn build_default_registry() -> ToolRegistry {
         .register(Arc::new(QuestionTool))
         .register(Arc::new(TaskTool))
         .register(Arc::new(RememberTool))
+        .register(Arc::new(FetchWebpageTool))
+        .register(Arc::new(WebSearchTool))
         .build()
 }
 

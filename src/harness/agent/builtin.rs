@@ -8,7 +8,14 @@ pub const PLAN: &str = "plan";
 pub const EXPLORE: &str = "explore";
 pub const GENERAL: &str = "general";
 
-const READONLY_TOOLS: &[&str] = &["read", "glob", "grep", "todo_read"];
+const READONLY_TOOLS: &[&str] = &[
+    "read",
+    "glob",
+    "grep",
+    "todo_read",
+    "web_search",
+    "fetch_webpage",
+];
 
 /// Default implementation agent: all tools + task subagents.
 pub fn build() -> AgentSpec {
@@ -66,7 +73,13 @@ pub fn general() -> AgentSpec {
     AgentSpec {
         name: GENERAL.into(),
         description: "General-purpose assistant with light tool access.".into(),
-        tools: vec!["read".into(), "glob".into(), "grep".into()],
+        tools: vec![
+            "read".into(),
+            "glob".into(),
+            "grep".into(),
+            "web_search".into(),
+            "fetch_webpage".into(),
+        ],
         system_prompt: "You are RustClaw, a helpful assistant. You can inspect the project with \
 read/glob/grep when needed. Keep answers direct and useful."
             .into(),
