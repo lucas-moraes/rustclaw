@@ -371,6 +371,27 @@ pub struct ModelPickerState {
     pub provider: String,
     /// When `Some`, a free-text custom model is being typed.
     pub custom_input: Option<String>,
+    /// When `Some`, a "add provider" form is being filled (name, base_url,
+    /// default_model). Each entry is one field.
+    pub add_provider: Option<AddProviderForm>,
+}
+
+/// Multi-field form for adding a user-defined provider via the picker.
+#[derive(Clone, Debug)]
+pub struct AddProviderForm {
+    pub fields: [String; 3],
+    /// Index of the field currently being edited (0=name, 1=base_url,
+    /// 2=default_model).
+    pub field: usize,
+}
+
+impl AddProviderForm {
+    pub fn new() -> Self {
+        Self {
+            fields: [String::new(), String::new(), String::new()],
+            field: 0,
+        }
+    }
 }
 
 impl ModelPickerState {
@@ -380,28 +401,25 @@ impl ModelPickerState {
             selected: 0,
             provider: String::new(),
             custom_input: None,
+            add_provider: None,
         }
     }
 
     /// Items of the current stage (providers, or models + custom entry).
     pub fn items(&self) -> Vec<String> {
         if !self.stage_models {
-            crate::harness::provider::catalog::provider_names()
-                .into_iter()
-                .map(str::to_string)
-                .collect()
+            let mut v = crate::harness::provider::catalog::provider_names();
+            v.push("add provider…".to_string());
+            v
         } else {
-            let mut v: Vec<String> = crate::harness::provider::catalog::models_for(&self.provider)
-                .into_iter()
-                .map(str::to_string)
-                .collect();
+            let mut v: Vec<String> = crate::harness::provider::catalog::models_for(&self.provider);
             v.push("custom…".to_string());
             v
         }
     }
 
     pub fn move_sel(&mut self, delta: i32) {
-        if self.custom_input.is_some() {
+        if self.custom_input.is_some() || self.add_provider.is_some() {
             return;
         }
         let len = self.items().len() as i32;
@@ -1895,6 +1913,68 @@ fn handle_model_picker_key(app: &mut App, key: KeyEvent) -> Result<bool> {
         return Ok(false);
     };
 
+    // Adding a provider: multi-field form (name, base_url, default_model).
+    if let Some(form) = picker.add_provider.as_mut() {
+        match key.code {
+            KeyCode::Esc => {
+                picker.add_provider = None;
+            }
+            KeyCode::Tab | KeyCode::Down | KeyCode::Char('j') => {
+                form.field = (form.field + 1) % 3;
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                form.field = (form.field + 2) % 3;
+            }
+            KeyCode::Backspace => {
+                form.fields[form.field].pop();
+            }
+            KeyCode::Enter => {
+                let name = form.fields[0].trim().to_string();
+                let base_url = form.fields[1].trim().to_string();
+                let default_model = form.fields[2].trim().to_string();
+                if name.is_empty() || base_url.is_empty() {
+                    app.add_system("[error] provider needs a name and base_url");
+                } else {
+                    use crate::harness::provider::user_store::{UserProvider, UserProviders};
+                    let mut store = UserProviders::load();
+                    let replaced = store.upsert(UserProvider {
+                        name: name.clone(),
+                        base_url: base_url.clone(),
+                        default_model: default_model.clone(),
+                        models: if default_model.is_empty() {
+                            Vec::new()
+                        } else {
+                            vec![default_model.clone()]
+                        },
+                    });
+                    match store.save() {
+                        Ok(()) => {
+                            app.add_system(&format!(
+                                "provider `{}` {} (providers.json)",
+                                name,
+                                if replaced { "updated" } else { "added" }
+                            ));
+                            // Rebuild the picker at the provider stage so the
+                            // new provider is selectable.
+                            app.model_picker = Some(ModelPickerState::new());
+                        }
+                        Err(e) => app.add_system(&format!("[error] {}", e)),
+                    }
+                }
+            }
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                form.fields[form.field].push(c);
+            }
+            KeyCode::Char('v') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(pasted) = paste_clipboard() {
+                    form.fields[form.field].push_str(&pasted);
+                }
+            }
+            _ => {}
+        }
+        return Ok(false);
+    }
+
     // Typing a custom model name.
     if picker.custom_input.is_some() {
         match key.code {
@@ -1948,7 +2028,11 @@ fn handle_model_picker_key(app: &mut App, key: KeyEvent) -> Result<bool> {
         KeyCode::Enter => {
             if !picker.stage_models {
                 if let Some(name) = picker.items().get(picker.selected).cloned() {
-                    picker.pick_provider(name);
+                    if name == "add provider…" {
+                        picker.add_provider = Some(AddProviderForm::new());
+                    } else {
+                        picker.pick_provider(name);
+                    }
                 }
             } else if let Some(model) = picker.pick_model() {
                 let provider = picker.provider.clone();
@@ -2078,7 +2162,6 @@ fn handle_auth_prompt_key(app: &mut App, key: KeyEvent) -> Result<bool> {
                             app.runtime.config.model.clone()
                         } else {
                             crate::harness::provider::catalog::default_model(&provider)
-                                .map(str::to_string)
                                 .unwrap_or_default()
                         };
                         if let Err(e) = app.runtime.switch_model(&provider, &model) {
@@ -2450,7 +2533,7 @@ async fn submit_input(
             } else if let Some(default_model) =
                 crate::harness::provider::catalog::default_model(provider)
             {
-                app.apply_model_choice(provider, default_model)?;
+                app.apply_model_choice(provider, &default_model)?;
             } else {
                 app.add_system(&format!(
                     "unknown provider: {} (options: {})",

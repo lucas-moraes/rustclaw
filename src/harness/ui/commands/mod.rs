@@ -36,7 +36,7 @@ pub async fn handle(
             out.push(
                 "commands: /help /new /sessions /agent <name> \
                   /compact /theme [name] /usage /memory /models /model <name> \
-                  /provider <name> /auth <provider> /settings /exit"
+                  /provider <name> /provider add|rm|list /auth <provider> /settings /exit"
                     .to_string(),
             );
             out.push("keys: Ctrl+P palette · Ctrl+T theme · ? help · Ctrl+L clear".to_string());
@@ -207,25 +207,54 @@ pub async fn handle(
         }
         "/models" => {
             use crate::harness::provider::catalog;
-            if arg.is_empty() {
-                out.push(format!(
-                    "current: provider `{}` · model `{}`",
-                    runtime.config.provider, runtime.config.model
-                ));
-                out.push(format!(
-                    "providers: {} · usage: /models <provider>",
-                    catalog::provider_names().join(", ")
-                ));
-            } else {
-                let models = catalog::models_for(arg);
-                if models.is_empty() {
-                    out.push(format!("unknown provider: {}", arg));
-                } else {
-                    out.push(format!("models for {} ({}):", arg, models.len()));
-                    for m in models {
-                        out.push(format!("  {}", m));
+            use crate::harness::provider::user_store::UserProviders;
+            let mut parts = arg.split_whitespace();
+            let sub = parts.next().unwrap_or("");
+            match sub {
+                "" => {
+                    out.push(format!(
+                        "current: provider `{}` · model `{}`",
+                        runtime.config.provider, runtime.config.model
+                    ));
+                    out.push(format!(
+                        "providers: {} · usage: /models <provider> · /models add <provider> <model>",
+                        catalog::provider_names().join(", ")
+                    ));
+                }
+                "add" => {
+                    let provider = parts.next().unwrap_or("");
+                    let model = parts.next().unwrap_or("");
+                    if provider.is_empty() || model.is_empty() {
+                        out.push("usage: /models add <provider> <model>".to_string());
+                    } else {
+                        let mut store = UserProviders::load();
+                        if store.add_model(provider, model) {
+                            match store.save() {
+                                Ok(()) => out.push(format!(
+                                    "model `{}` added to provider `{}`",
+                                    model, provider
+                                )),
+                                Err(e) => out.push(format!("[error] {}", e)),
+                            }
+                        } else {
+                            out.push(format!(
+                                "provider `{}` not found or model already present",
+                                provider
+                            ));
+                        }
                     }
-                    out.push("switch with /provider <name> or /model <name>".to_string());
+                }
+                _ => {
+                    let models = catalog::models_for(sub);
+                    if models.is_empty() {
+                        out.push(format!("unknown provider: {}", sub));
+                    } else {
+                        out.push(format!("models for {} ({}):", sub, models.len()));
+                        for m in models {
+                            out.push(format!("  {}", m));
+                        }
+                        out.push("switch with /provider <name> or /model <name>".to_string());
+                    }
                 }
             }
         }
@@ -250,27 +279,96 @@ pub async fn handle(
         }
         "/provider" => {
             use crate::harness::provider::catalog;
-            if arg.is_empty() {
-                out.push(format!(
-                    "current provider: {} (model {}) · usage: /provider <name>",
-                    runtime.config.provider, runtime.config.model
-                ));
-            } else if let Some(default_model) = catalog::default_model(arg) {
-                runtime.switch_model(arg, default_model)?;
-                out.push(format!("provider → {} · model → {}", arg, default_model));
-                out.push("selection saved to rustclaw.json (this project)".to_string());
-                if !runtime.has_token_for(arg) {
+            use crate::harness::provider::user_store::{UserProvider, UserProviders};
+            let mut parts = arg.split_whitespace();
+            let sub = parts.next().unwrap_or("");
+            match sub {
+                "" => {
                     out.push(format!(
-                        "no token for provider `{}` — use /auth {} to add one",
-                        arg, arg
+                        "current provider: {} (model {}) · usage: /provider <name>",
+                        runtime.config.provider, runtime.config.model
+                    ));
+                    out.push(format!(
+                        "providers: {} · manage: /provider add|rm|list",
+                        catalog::provider_names().join(", ")
                     ));
                 }
-            } else {
-                out.push(format!(
-                    "unknown provider: {} (options: {})",
-                    arg,
-                    catalog::provider_names().join(", ")
-                ));
+                "add" => {
+                    let name = parts.next().unwrap_or("");
+                    let base_url = parts.next().unwrap_or("");
+                    let default_model = parts.next().unwrap_or("");
+                    if name.is_empty() || base_url.is_empty() {
+                        out.push(
+                            "usage: /provider add <name> <base_url> [default_model]".to_string(),
+                        );
+                    } else {
+                        let mut store = UserProviders::load();
+                        let replaced = store.upsert(UserProvider {
+                            name: name.to_string(),
+                            base_url: base_url.to_string(),
+                            default_model: default_model.to_string(),
+                            models: if default_model.is_empty() {
+                                Vec::new()
+                            } else {
+                                vec![default_model.to_string()]
+                            },
+                        });
+                        match store.save() {
+                            Ok(()) => out.push(format!(
+                                "provider `{}` {} (providers.json)",
+                                name,
+                                if replaced { "updated" } else { "added" }
+                            )),
+                            Err(e) => out.push(format!("[error] {}", e)),
+                        }
+                    }
+                }
+                "rm" => {
+                    let name = parts.next().unwrap_or("");
+                    if name.is_empty() {
+                        out.push("usage: /provider rm <name>".to_string());
+                    } else {
+                        let mut store = UserProviders::load();
+                        if store.remove(name) {
+                            match store.save() {
+                                Ok(()) => out.push(format!("provider `{}` removed", name)),
+                                Err(e) => out.push(format!("[error] {}", e)),
+                            }
+                        } else {
+                            out.push(format!("no user provider named `{}`", name));
+                        }
+                    }
+                }
+                "list" => {
+                    let all = catalog::all_providers();
+                    out.push(format!("providers ({}):", all.len()));
+                    for p in all {
+                        let tag = if p.user_defined { " (custom)" } else { "" };
+                        out.push(format!(
+                            "  {}{} · {} · default `{}`",
+                            p.name, tag, p.base_url, p.default_model
+                        ));
+                    }
+                }
+                _ => {
+                    if let Some(default_model) = catalog::default_model(sub) {
+                        runtime.switch_model(sub, &default_model)?;
+                        out.push(format!("provider → {} · model → {}", sub, default_model));
+                        out.push("selection saved to rustclaw.json (this project)".to_string());
+                        if !runtime.has_token_for(sub) {
+                            out.push(format!(
+                                "no token for provider `{}` — use /auth {} to add one",
+                                sub, sub
+                            ));
+                        }
+                    } else {
+                        out.push(format!(
+                            "unknown provider: {} (options: {})",
+                            sub,
+                            catalog::provider_names().join(", ")
+                        ));
+                    }
+                }
             }
         }
         "/auth" => {

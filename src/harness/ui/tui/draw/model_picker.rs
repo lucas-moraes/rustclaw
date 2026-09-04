@@ -37,7 +37,51 @@ pub fn draw_picker(frame: &mut Frame, app: &App, picker: &ModelPickerState, area
         Style::default().fg(t.text_dim),
     ))];
 
-    if let Some(inp) = &picker.custom_input {
+    if let Some(form) = &picker.add_provider {
+        // Multi-field form for adding a user-defined provider.
+        let labels = ["name", "base_url", "default_model"];
+        lines.push(Line::from(""));
+        for (i, label) in labels.iter().enumerate() {
+            let active = i == form.field;
+            let value = &form.fields[i];
+            let display = if i == 0 && value.is_empty() {
+                "my-provider".to_string()
+            } else if i == 1 && value.is_empty() {
+                "https://api.example.com/v1".to_string()
+            } else {
+                value.clone()
+            };
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!(" {}: ", label),
+                    Style::default()
+                        .fg(if active { t.accent } else { t.text_dim })
+                        .add_modifier(if active {
+                            Modifier::BOLD
+                        } else {
+                            Modifier::empty()
+                        }),
+                ),
+                Span::styled(
+                    display,
+                    Style::default().fg(t.text_bright).add_modifier(if active {
+                        Modifier::BOLD
+                    } else {
+                        Modifier::empty()
+                    }),
+                ),
+                if active {
+                    Span::styled("▏", Style::default().fg(t.accent))
+                } else {
+                    Span::styled("", Style::default())
+                },
+            ]));
+        }
+        lines.push(Line::from(Span::styled(
+            "  Tab/↑↓ switch field · Enter save · Esc cancel",
+            Style::default().fg(t.text_dim),
+        )));
+    } else if let Some(inp) = &picker.custom_input {
         // Free-text custom model input (masked display not needed for models).
         lines.push(Line::from(""));
         lines.push(Line::from(vec![

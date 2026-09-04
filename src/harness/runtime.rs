@@ -180,7 +180,6 @@ impl SessionRuntime {
         model: &str,
     ) -> Result<()> {
         let base_url = crate::harness::provider::catalog::default_base_url(provider)
-            .map(str::to_string)
             .unwrap_or_else(|| self.config.base_url.clone());
         // Only use a token that actually belongs to the *new* provider. Never
         // fall back to the previous provider's token: that would leak the old

@@ -97,6 +97,8 @@ src/
     │   └── compaction.rs
     ├── provider/
     │   ├── mod.rs       # Trait Provider + ProviderEvent + SSE parser
+    │   ├── catalog.rs   # Catálogo builtin + merge com user providers
+    │   ├── user_store.rs# providers.json (provedores personalizados)
     │   ├── openai.rs    # /chat/completions + tool_calls
     │   ├── anthropic.rs # /messages + tool_use
     │   └── opencode_go.rs # roteia minimax→/messages, senão→/chat/completions
@@ -128,8 +130,12 @@ src/
 - `~/.local/share/rustclaw/auth.json` — API token per provider (0600, via `/auth`)
 - `~/.local/share/rustclaw/config.json` — provider/model, `max_iterations`,
   `max_context_tokens`, theme (via `/settings`, `/models`)
+- `~/.local/share/rustclaw/providers.json` — user-defined providers/models
+  (via `/provider add|rm|list`, `/models add`, or the `/models` picker
+  "add provider…"). Merged with the builtin catalog at runtime; a user
+  provider with the same name as a builtin overrides it.
 - `rustclaw.json` in the project root — per-project provider/model override
-- Precedence: catalog → config.json → rustclaw.json → auth token
+- Precedence: catalog (builtin + user) → config.json → rustclaw.json → auth token
 - UX env vars still honored: `RUSTCLAWUI`/`RUSTCLAW_UI`, `RUSTCLAW_THEME`,
   `RUSTCLAW_SKILLS_DIR`, `NO_COLOR`
 - Install: `scripts/install.sh` (curl releases) / `scripts/link-local.sh` (dev)

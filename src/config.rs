@@ -155,7 +155,6 @@ impl Config {
             settings.base_url.clone()
         } else {
             crate::harness::provider::catalog::default_base_url(&cfg.provider)
-                .map(str::to_string)
                 .unwrap_or_else(|| fallback.base_url.to_string())
         };
 

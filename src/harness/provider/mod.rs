@@ -7,6 +7,7 @@ pub mod anthropic;
 pub mod catalog;
 pub mod openai;
 pub mod opencode_go;
+pub mod user_store;
 
 use crate::harness::session::{Message, Part};
 
