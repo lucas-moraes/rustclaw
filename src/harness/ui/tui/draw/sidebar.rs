@@ -253,58 +253,114 @@ fn mode_row(mode: &str, is_active: bool, t: &Theme, w: usize) -> Line<'static> {
 fn context_block(app: &App, t: &Theme, w: usize) -> Vec<Line<'static>> {
     let ctx = app.context_tokens() as u64;
     let max = app.max_context_tokens() as u64;
+    let free = max.saturating_sub(ctx);
     let pct = if max == 0 {
-        0
+        0u16
     } else {
-        ((ctx * 100) / max) as u16
+        ((ctx * 100) / max).min(100) as u16
     };
-    let bar_w = w.saturating_sub(2).clamp(6, 24);
+    let bar_fg = context_color(pct, t);
+
+    // Progress bar fills the usable width: "  ████░░░░  42%"
+    let pct_label = format!("{pct:>3}%");
+    let bar_w = w
+        .saturating_sub(2 /* gutter */ + 1 /* gap */ + pct_label.len())
+        .clamp(6, 28);
     let filled = ((pct as usize) * bar_w) / 100;
     let empty = bar_w.saturating_sub(filled);
-    let bar_fg = if pct >= 90 {
+
+    let mut lines = Vec::new();
+
+    // Row 1: continuous bar + percent (color shifts with pressure).
+    lines.push(Line::from(vec![
+        Span::styled("  ".to_string(), Style::default()),
+        Span::styled("━".repeat(filled), Style::default().fg(bar_fg)),
+        Span::styled("─".repeat(empty), Style::default().fg(t.border)),
+        Span::styled(" ".to_string(), Style::default()),
+        Span::styled(
+            pct_label,
+            Style::default().fg(bar_fg).add_modifier(Modifier::BOLD),
+        ),
+    ]));
+
+    // Row 2: used / max  ·  free left
+    let used_s = format_tokens(ctx);
+    let max_s = format_tokens(max);
+    let free_s = format_tokens(free);
+    let used_line = format!("{used_s}/{max_s}");
+    // Prefer "used/max · free left" when it fits; otherwise stack free.
+    let free_part = format!(" · {free_s} free");
+    if used_line.chars().count() + free_part.chars().count() + 2 <= w {
+        lines.push(Line::from(vec![
+            Span::styled("  ".to_string(), Style::default()),
+            Span::styled(used_line, Style::default().fg(t.text_bright)),
+            Span::styled(free_part, Style::default().fg(t.text_dim)),
+        ]));
+    } else {
+        lines.push(Line::from(vec![
+            Span::styled("  ".to_string(), Style::default()),
+            Span::styled(used_line, Style::default().fg(t.text_bright)),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("  ".to_string(), Style::default()),
+            Span::styled(format!("{free_s} free"), Style::default().fg(t.text_dim)),
+        ]));
+    }
+
+    // Row 3: session totals (in/out) — compact chip style.
+    let sess_in = format_tokens(app.session_usage.input_tokens);
+    let sess_out = format_tokens(app.session_usage.output_tokens);
+    let sess_total = format_tokens(app.session_usage.total());
+    lines.push(Line::from(vec![
+        Span::styled("  in ".to_string(), Style::default().fg(t.text_dim)),
+        Span::styled(sess_in, Style::default().fg(t.accent)),
+        Span::styled("  out ".to_string(), Style::default().fg(t.text_dim)),
+        Span::styled(sess_out, Style::default().fg(t.accent2)),
+        Span::styled("  Σ ".to_string(), Style::default().fg(t.text_dim)),
+        Span::styled(
+            sess_total,
+            Style::default()
+                .fg(t.text_bright)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]));
+
+    // Row 4 (optional): last turn usage + iterations.
+    if app.last_iterations > 0 || app.last_usage.total() > 0 {
+        let last = format!(
+            "{} · {}it",
+            format_tokens(app.last_usage.total()),
+            app.last_iterations
+        );
+        lines.push(kv_inline("last", last, t, w));
+    }
+
+    // Pressure hint when context is getting tight.
+    if pct >= 90 {
+        lines.push(Line::from(Span::styled(
+            "  ⚠ near limit".to_string(),
+            Style::default().fg(t.error).add_modifier(Modifier::BOLD),
+        )));
+    } else if pct >= 70 {
+        lines.push(Line::from(Span::styled(
+            "  · compaction soon".to_string(),
+            Style::default().fg(t.warn),
+        )));
+    }
+
+    lines
+}
+
+fn context_color(pct: u16, t: &Theme) -> ratatui::style::Color {
+    if pct >= 90 {
         t.error
     } else if pct >= 70 {
         t.warn
-    } else {
+    } else if pct >= 40 {
         t.info
-    };
-
-    let mut lines = Vec::new();
-    lines.push(Line::from(vec![
-        Span::styled("  [".to_string(), Style::default().fg(t.border)),
-        Span::styled("█".repeat(filled), Style::default().fg(bar_fg)),
-        Span::styled("░".repeat(empty), Style::default().fg(t.border)),
-        Span::styled("]".to_string(), Style::default().fg(t.border)),
-    ]));
-    lines.push(Line::from(vec![
-        Span::styled(
-            format!("  {pct}%  "),
-            Style::default().fg(bar_fg).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            format!("{} / {}", format_tokens(ctx), format_tokens(max)),
-            Style::default().fg(t.text_bright),
-        ),
-    ]));
-    lines.push(kv_inline(
-        "session",
-        format_tokens(app.session_usage.total()),
-        t,
-        w,
-    ));
-    if app.last_iterations > 0 {
-        lines.push(kv_inline(
-            "last",
-            format!(
-                "{} · {}it",
-                format_tokens(app.last_usage.total()),
-                app.last_iterations
-            ),
-            t,
-            w,
-        ));
+    } else {
+        t.success
     }
-    lines
 }
 
 fn skills_block(app: &App, t: &Theme, w: usize) -> Vec<Line<'static>> {
