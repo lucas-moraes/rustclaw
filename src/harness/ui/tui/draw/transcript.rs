@@ -3,6 +3,7 @@
 use crate::harness::ui::tui::anim;
 use crate::harness::ui::tui::app::{App, LineKind, TranscriptLine};
 use crate::harness::ui::tui::markdown;
+use crate::harness::ui::tui::selection::{self, selection_style};
 use crate::harness::ui::tui::theme::Theme;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -71,6 +72,8 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
         }
     }
     app.transcript_row_map = row_map;
+    // Plain-text snapshot for mouse hit-testing + clipboard extraction.
+    app.transcript_plain_rows = rows.iter().map(selection::line_to_plain).collect();
 
     let total = rows.len();
     let view_h = content.height as usize;
@@ -80,8 +83,25 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
 
     let start = app.scroll.min(total);
     let end = (start + view_h).min(total);
+
+    // Selection highlight (absolute row coords match plain_rows / row_map).
+    let sel_range = app.selection.as_ref().map(|s| s.normalized());
+    let hi = selection_style(theme.accent, theme.bg);
+
     let visible: Vec<Line> = if start < end {
-        rows[start..end].to_vec()
+        rows[start..end]
+            .iter()
+            .enumerate()
+            .map(|(i, line)| {
+                let abs_row = start + i;
+                let line = line.clone();
+                if let Some((s, e)) = sel_range {
+                    selection::highlight_visible_row(line, abs_row, s, e, hi)
+                } else {
+                    line
+                }
+            })
+            .collect()
     } else {
         Vec::new()
     };

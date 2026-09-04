@@ -8,6 +8,7 @@ pub mod draw;
 pub mod input;
 pub mod markdown;
 pub mod palette;
+pub mod selection;
 pub mod theme;
 
 use crate::harness::permission::PermissionEngine;

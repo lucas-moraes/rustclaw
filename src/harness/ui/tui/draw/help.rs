@@ -75,9 +75,16 @@ fn keys(t: &crate::harness::ui::tui::theme::Theme) -> Vec<Line<'static>> {
         kv("Ctrl+J", "insert line break (macOS fallback)", t),
         kv("Ctrl+A / E", "line start / end", t),
         kv("Ctrl+U / W", "kill to line start / kill word", t),
-        kv("Esc", "cancel run · clear prompt · close overlay", t),
+        kv("Ctrl+Z", "reset prompt input", t),
+        kv(
+            "Esc",
+            "cancel streaming/run · close overlay · clear draft",
+            t,
+        ),
         kv("Up/Down", "prompt history", t),
         kv("PgUp/PgDn", "scroll transcript", t),
+        kv("Drag", "select transcript text (auto-copy)", t),
+        kv("Ctrl+C", "copy selection · quit if none", t),
         kv("Ctrl+P", "command palette", t),
         kv("Ctrl+T", "cycle color theme", t),
         kv("Ctrl+L", "clear local transcript", t),
@@ -95,7 +102,7 @@ fn commands(t: &crate::harness::ui::tui::theme::Theme) -> Vec<Line<'static>> {
         kv("/sessions", "manage sessions (picker)", t),
         kv("/sessions select <id>", "load a session by id", t),
         kv("/agent name", "switch agent", t),
-        kv("/compact", "summarize old messages", t),
+        kv("/compact", "summarize old messages (also auto on open)", t),
         kv("/theme name", "cyberclaw · aurora · ember · mono", t),
         kv("/usage", "tokens in/out + context window", t),
         kv("/memory", "list · rm <id> · clear project memory", t),
@@ -138,6 +145,10 @@ fn tips(t: &crate::harness::ui::tui::theme::Theme) -> Vec<Line<'static>> {
         )),
         Line::from(Span::styled(
             "  · Mouse wheel scrolls the transcript",
+            Style::default().fg(t.text),
+        )),
+        Line::from(Span::styled(
+            "  · Drag to select text · release auto-copies · Esc clears",
             Style::default().fg(t.text),
         )),
         Line::from(Span::styled(

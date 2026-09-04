@@ -104,37 +104,78 @@ Use for builds, tests, git and project inspection. Dangerous/system commands are
 
         let cwd = ctx.cwd.path().to_path_buf();
 
-        let run = tokio::process::Command::new("sh")
+        let mut child = tokio::process::Command::new("sh")
             .arg("-c")
             .arg(&command)
             .current_dir(&cwd)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
-            .output();
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|e| format!("failed to spawn command: {}", e))?;
 
-        let output = tokio::time::timeout(Duration::from_secs(secs), run)
-            .await
-            .map_err(|_| {
-                format!(
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+        let stdout_task = tokio::spawn(async move {
+            let mut buf = Vec::new();
+            if let Some(mut out) = stdout {
+                let _ = tokio::io::AsyncReadExt::read_to_end(&mut out, &mut buf).await;
+            }
+            buf
+        });
+        let stderr_task = tokio::spawn(async move {
+            let mut buf = Vec::new();
+            if let Some(mut err) = stderr {
+                let _ = tokio::io::AsyncReadExt::read_to_end(&mut err, &mut buf).await;
+            }
+            buf
+        });
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(secs);
+        let status = loop {
+            if ctx.abort.is_aborted() {
+                let _ = child.start_kill();
+                let _ = child.wait().await;
+                stdout_task.abort();
+                stderr_task.abort();
+                return Err("aborted".to_string());
+            }
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                let _ = child.start_kill();
+                let _ = child.wait().await;
+                stdout_task.abort();
+                stderr_task.abort();
+                return Err(format!(
                     "command timed out after {}s: {}",
                     secs,
                     preview(&command, 80)
-                )
-            })?
-            .map_err(|e| format!("failed to spawn command: {}", e))?;
+                ));
+            }
+            tokio::select! {
+                biased;
+                status = child.wait() => {
+                    break status.map_err(|e| format!("command failed: {}", e))?;
+                }
+                _ = tokio::time::sleep(Duration::from_millis(50).min(remaining)) => {}
+            }
+        };
+
+        let stdout = stdout_task.await.unwrap_or_default();
+        let stderr = stderr_task.await.unwrap_or_default();
 
         let mut combined = String::new();
-        if !output.stdout.is_empty() {
-            combined.push_str(&String::from_utf8_lossy(&output.stdout));
+        if !stdout.is_empty() {
+            combined.push_str(&String::from_utf8_lossy(&stdout));
         }
-        if !output.stderr.is_empty() {
+        if !stderr.is_empty() {
             if !combined.is_empty() {
                 combined.push_str("\n[stderr]\n");
             }
-            combined.push_str(&String::from_utf8_lossy(&output.stderr));
+            combined.push_str(&String::from_utf8_lossy(&stderr));
         }
-        let code = output.status.code().unwrap_or(-1);
+        let code = status.code().unwrap_or(-1);
         let full = format!("{}\n[exit: {}]", combined.trim_end(), code);
         let truncated = super::truncate::truncate_output(&full, MAX_OUTPUT_BYTES);
 
@@ -169,5 +210,63 @@ mod tests {
         let args = json!({"command": "x", "timeout_secs": 9999});
         assert_eq!(timeout_secs(&args), 600);
         assert_eq!(timeout_secs(&json!({"command": "x"})), 120);
+    }
+
+    #[tokio::test]
+    async fn test_bash_respects_abort_signal() {
+        use crate::harness::permission::PermissionEngine;
+        use crate::harness::tool::context::{
+            AbortSignal, PathBufGuard, PermissionAsker, ToolContext, UserAsker,
+        };
+        use std::sync::Arc;
+
+        struct AllowAsker;
+        struct NoUserAsker;
+        #[async_trait::async_trait]
+        impl PermissionAsker for AllowAsker {
+            async fn ask(&self, _req: crate::harness::tool::context::PermissionAskInput) -> bool {
+                true
+            }
+        }
+        #[async_trait::async_trait]
+        impl UserAsker for NoUserAsker {
+            async fn ask(&self, _q: String, _opts: Vec<String>) -> Option<String> {
+                None
+            }
+        }
+
+        let abort = AbortSignal::new();
+        let ctx = ToolContext {
+            session_id: "s".into(),
+            agent: "build".into(),
+            agent_tools: vec![],
+            cwd: PathBufGuard(std::env::temp_dir()),
+            abort: abort.clone(),
+            permission: Arc::new(PermissionEngine::default()),
+            asker: Arc::new(AllowAsker),
+            user_asker: Arc::new(NoUserAsker),
+            todos: Arc::new(tokio::sync::RwLock::new(Vec::new())),
+            task_runner: None,
+            project_memory: None,
+        };
+
+        // Abort after a short delay while a long sleep is running.
+        let abort2 = abort.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(80)).await;
+            abort2.abort();
+        });
+
+        let started = std::time::Instant::now();
+        let err = BashTool
+            .execute(json!({"command": "sleep 30", "timeout_secs": 60}), &ctx)
+            .await
+            .expect_err("expected abort");
+        assert_eq!(err, "aborted");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "abort should kill sleep quickly, took {:?}",
+            started.elapsed()
+        );
     }
 }

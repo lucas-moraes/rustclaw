@@ -114,13 +114,31 @@ impl SessionProcessor {
             let mut usage = Usage::default();
 
             loop {
-                // Abort responsively mid-stream.
+                // Abort responsively mid-stream (Esc / Ctrl+C cancel).
                 if ctx.abort.is_aborted() {
+                    aborted = true;
                     break;
                 }
-                let next =
-                    tokio::time::timeout(Duration::from_secs(STREAM_TIMEOUT_SECS), stream.next())
-                        .await;
+                // Race the next stream event against a short abort poll so a
+                // stuck/slow provider doesn't ignore Esc until the next token.
+                let next = tokio::select! {
+                    biased;
+                    _ = async {
+                        loop {
+                            if ctx.abort.is_aborted() {
+                                break;
+                            }
+                            tokio::time::sleep(Duration::from_millis(50)).await;
+                        }
+                    } => {
+                        aborted = true;
+                        break;
+                    }
+                    ev = tokio::time::timeout(
+                        Duration::from_secs(STREAM_TIMEOUT_SECS),
+                        stream.next(),
+                    ) => ev,
+                };
                 let ev = match next {
                     Ok(Some(ev)) => ev,
                     Ok(None) => break, // stream terminou
@@ -188,9 +206,13 @@ impl SessionProcessor {
                 }
             }
 
-            // If the stream timed out (or was aborted mid-stream), stop the
-            // whole turn rather than continuing to build/execute tool calls.
-            if aborted {
+            // User cancel or stream timeout: stop the whole turn. Do not
+            // persist a partial assistant message or execute tool calls.
+            if aborted || ctx.abort.is_aborted() {
+                aborted = true;
+                if final_text.is_empty() {
+                    final_text = "Run aborted by user.".to_string();
+                }
                 break;
             }
 
@@ -225,6 +247,15 @@ impl SessionProcessor {
 
             // Execute tool calls (parallel where possible).
             self.execute_tool_calls(session, &assistant_id, ctx).await;
+
+            // Esc during tool execution: stop the turn immediately.
+            if ctx.abort.is_aborted() {
+                aborted = true;
+                if final_text.is_empty() {
+                    final_text = "Run aborted by user.".to_string();
+                }
+                break;
+            }
 
             // Doom loop check (single repeated call across iterations).
             let sigs = assistant
@@ -325,24 +356,85 @@ impl SessionProcessor {
         // Spawn executions (permission-checked, then run concurrently).
         let mut join_set = tokio::task::JoinSet::new();
         for (tool_id, name, input) in pending {
+            if ctx.abort.is_aborted() {
+                if let Some(msg) = session.messages.iter_mut().find(|m| m.id == *assistant_id) {
+                    if let Some(t) = found_tool(msg, &tool_id) {
+                        if t.status == ToolStatus::Pending || t.status == ToolStatus::Running {
+                            t.status = ToolStatus::Error;
+                            t.error = Some("aborted".to_string());
+                        }
+                    }
+                }
+                continue;
+            }
             let registry = self.registry.clone();
             let mut ctx2 = ctx.clone();
             ctx2.session_id = session.id.clone();
             join_set.spawn(async move {
+                if ctx2.abort.is_aborted() {
+                    return (tool_id, name, Err("aborted".to_string()));
+                }
                 let result = match ctx2.check_permission(&name, &input).await {
-                    Ok(()) => registry.execute(&name, input, &ctx2).await,
+                    Ok(()) => {
+                        if ctx2.abort.is_aborted() {
+                            Err("aborted".to_string())
+                        } else {
+                            registry.execute(&name, input, &ctx2).await
+                        }
+                    }
                     Err(e) => Err(e),
                 };
                 (tool_id, name, result)
             });
         }
 
-        // Apply results in completion order.
-        while let Some(joined) = join_set.join_next().await {
+        // Apply results in completion order. Esc mid-batch aborts the rest.
+        while !join_set.is_empty() {
+            if ctx.abort.is_aborted() {
+                join_set.abort_all();
+                if let Some(msg) = session.messages.iter_mut().find(|m| m.id == *assistant_id) {
+                    for p in &mut msg.parts {
+                        if let Part::Tool(t) = p {
+                            if t.status == ToolStatus::Running || t.status == ToolStatus::Pending {
+                                t.status = ToolStatus::Error;
+                                t.error = Some("aborted".to_string());
+                                let _ = self.events.send(HarnessEvent::ToolEnd {
+                                    session_id: session.id.clone(),
+                                    message_id: assistant_id.to_string(),
+                                    tool_id: t.id.clone(),
+                                    name: t.name.clone(),
+                                    status: ToolStatus::Error,
+                                    title: String::new(),
+                                    output_preview: "aborted".to_string(),
+                                    diff: None,
+                                });
+                            }
+                        }
+                    }
+                }
+                break;
+            }
+            let joined = tokio::select! {
+                biased;
+                _ = async {
+                    loop {
+                        if ctx.abort.is_aborted() {
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                    }
+                } => {
+                    continue;
+                }
+                j = join_set.join_next() => j,
+            };
+            let Some(joined) = joined else { break };
             let (tool_id, name, result) = match joined {
                 Ok(tuple) => tuple,
                 Err(e) => {
-                    // JoinSet item panicked: mark any running call as error.
+                    if e.is_cancelled() {
+                        continue;
+                    }
                     if let Some(msg) = session.messages.iter_mut().find(|m| m.id == *assistant_id) {
                         for p in &mut msg.parts {
                             if let Part::Tool(t) = p {
@@ -442,6 +534,11 @@ impl SessionProcessor {
             let summarized = before.saturating_sub(new_messages.len()) + 1;
             session.messages = new_messages;
             session.updated_at = chrono::Utc::now();
+            // Persist immediately so orphaned pre-summary messages are dropped
+            // from SQLite even if the turn aborts later.
+            if let Err(e) = self.store.save_session(session) {
+                tracing::warn!("failed to persist compacted session: {e}");
+            }
             let _ = self.events.send(HarnessEvent::CompactionFinished {
                 session_id: session.id.clone(),
                 summarized_messages: summarized,

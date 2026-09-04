@@ -503,14 +503,7 @@ fn kv_inline(key: &str, value: String, t: &Theme, w: usize) -> Line<'static> {
 }
 
 fn session_title(app: &App) -> String {
-    app.session
-        .messages
-        .iter()
-        .find(|m| m.role.as_str() == "user")
-        .and_then(|m| m.parts.iter().find_map(|p| p.as_text().map(str::to_string)))
-        .map(|s| s.replace('\n', " ").trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "untitled".to_string())
+    app.session.display_title()
 }
 
 fn project_name(app: &App) -> String {

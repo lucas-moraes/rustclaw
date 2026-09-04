@@ -37,7 +37,10 @@ impl Tool for FetchWebpageTool {
         })
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolContext) -> Result<ToolResult, String> {
+    async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolResult, String> {
+        if ctx.abort.is_aborted() {
+            return Err("aborted".to_string());
+        }
         let url = args["url"]
             .as_str()
             .map(str::trim)
@@ -62,6 +65,10 @@ impl Tool for FetchWebpageTool {
             .await
             .map_err(|e| format!("request failed for {}: {}", url, e))?;
 
+        if ctx.abort.is_aborted() {
+            return Err("aborted".to_string());
+        }
+
         if !resp.status().is_success() {
             return Err(format!("HTTP {} for {}", resp.status(), url));
         }
@@ -69,6 +76,10 @@ impl Tool for FetchWebpageTool {
             .text()
             .await
             .map_err(|e| format!("failed to read response body: {}", e))?;
+
+        if ctx.abort.is_aborted() {
+            return Err("aborted".to_string());
+        }
 
         let markdown = convert_html(&html).map_err(|e| format!("HTML->Markdown failed: {}", e))?;
         let output = truncate_output(&markdown, MAX_CONTENT_CHARS);

@@ -3,7 +3,6 @@
 pub mod memory;
 
 use crate::harness::runtime::SessionRuntime;
-use crate::harness::session::compaction::{self, CompactionConfig};
 use crate::harness::session::Session;
 use anyhow::Result;
 
@@ -127,14 +126,28 @@ pub async fn handle(
                         } else if let Err(e) = runtime.set_session_title(id, &title) {
                             out.push(format!("[error] {}", e));
                         } else {
+                            if session.id == id {
+                                session.title = Some(title.clone());
+                            }
                             out.push(format!("renamed session {} → {}", id, title));
                         }
                     }
                     ("select", Some(id)) => match runtime.load_session(id)? {
-                        Some(loaded) => {
+                        Some(mut loaded) => {
+                            let note = if runtime.config.is_configured() {
+                                match runtime.maybe_compact(&mut loaded, false, None).await {
+                                    Ok(n) if n > 0 => {
+                                        format!(" · auto-compacted {n} message(s)")
+                                    }
+                                    Ok(_) => String::new(),
+                                    Err(e) => format!(" · auto-compact failed: {e}"),
+                                }
+                            } else {
+                                String::new()
+                            };
                             *session = loaded;
                             out.push(format!(
-                                "selected session {} ({})",
+                                "selected session {} ({}){note}",
                                 session.id, session.agent
                             ));
                         }
@@ -177,31 +190,11 @@ pub async fn handle(
                 out.push(format!("available: {}", runtime.skills.names().join(", ")));
             }
         }
-        "/compact" => {
-            // Force compaction regardless of size by using a zero token budget.
-            let config = CompactionConfig {
-                max_context_tokens: 0,
-                keep_recent_messages: 6,
-                min_messages_to_compact: 1,
-                summary_timeout: std::time::Duration::from_secs(120),
-            };
-            let before = session.messages.len();
-            match compaction::should_compact_and_execute(
-                &session.messages,
-                runtime.provider.clone(),
-                &config,
-            )
-            .await?
-            {
-                Some(new_messages) => {
-                    let dropped = before.saturating_sub(new_messages.len()) + 1;
-                    session.messages = new_messages;
-                    session.updated_at = chrono::Utc::now();
-                    out.push(format!("compacted {} message(s)", dropped));
-                }
-                None => out.push("nothing to compact".to_string()),
-            }
-        }
+        "/compact" => match runtime.maybe_compact(session, true, None).await {
+            Ok(0) => out.push("nothing to compact".to_string()),
+            Ok(n) => out.push(format!("compacted {} message(s)", n)),
+            Err(e) => out.push(format!("[error] compact failed: {e}")),
+        },
         "/memory" => {
             let args: Vec<&str> = arg.split_whitespace().collect();
             out.push(memory::handle_memory_command(runtime, &args)?);

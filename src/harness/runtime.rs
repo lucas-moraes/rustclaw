@@ -71,6 +71,8 @@ pub struct PromptResult {
     pub final_text: String,
     pub iterations: usize,
     pub usage: crate::harness::provider::Usage,
+    /// True when the turn was cancelled by the user (Esc / abort signal).
+    pub aborted: bool,
 }
 
 pub struct SessionRuntime {
@@ -275,6 +277,73 @@ impl SessionRuntime {
         self.load_last_session_at(&cwd)
     }
 
+    /// Compacts `session` when it exceeds the configured context budget.
+    ///
+    /// Used on session open/resume (auto-compact) and by `/compact` (force).
+    /// When `force` is true the token budget is treated as zero so any session
+    /// with enough messages is summarized. Returns the number of messages
+    /// summarized away (`0` when nothing changed). Persists the result.
+    pub async fn maybe_compact(
+        &self,
+        session: &mut Session,
+        force: bool,
+        events: Option<&EventSender>,
+    ) -> Result<usize> {
+        use crate::harness::session::compaction::{self, CompactionConfig};
+
+        const KEEP_RECENT: usize = 6;
+        const MIN_MESSAGES: usize = 10;
+
+        if let Some(tx) = events {
+            let _ = tx.send(HarnessEvent::CompactionStarted {
+                session_id: session.id.clone(),
+            });
+        }
+
+        let config = CompactionConfig {
+            max_context_tokens: if force {
+                0
+            } else {
+                self.config.max_context_tokens
+            },
+            keep_recent_messages: KEEP_RECENT,
+            // Force still needs at least 2 messages (summary target + keep).
+            min_messages_to_compact: if force { 2 } else { MIN_MESSAGES },
+            summary_timeout: std::time::Duration::from_secs(120),
+        };
+
+        let before = session.messages.len();
+        let summarized = match compaction::should_compact_and_execute(
+            &session.messages,
+            self.provider.clone(),
+            &config,
+        )
+        .await?
+        {
+            Some(new_messages) => {
+                // Summary adds one message, so dropped = before - new + 1.
+                let n = before.saturating_sub(new_messages.len()) + 1;
+                session.messages = new_messages;
+                session.updated_at = chrono::Utc::now();
+                self.store
+                    .save_session(session)
+                    .context("failed to persist compacted session")?;
+                n
+            }
+            None => 0,
+        };
+
+        if let Some(tx) = events {
+            if summarized > 0 {
+                let _ = tx.send(HarnessEvent::CompactionFinished {
+                    session_id: session.id.clone(),
+                    summarized_messages: summarized,
+                });
+            }
+        }
+        Ok(summarized)
+    }
+
     /// Like [`load_last_session`] but scoped to an explicit project root
     /// (testable).
     pub fn load_last_session_at(&self, cwd: &Path) -> Result<Option<Session>> {
@@ -381,11 +450,30 @@ impl SessionRuntime {
             final_text,
             iterations,
             usage,
-            aborted: _,
+            aborted,
         } = processor
             .run_turn(session, &agent, &system_prompt, &ctx)
             .await
             .context("agent turn failed")?;
+
+        // If the user cancelled mid-turn (Esc), drop the just-submitted user
+        // message so an accidental Enter can be retried cleanly. Only roll back
+        // when no assistant reply was persisted yet (abort before first save).
+        if aborted {
+            // Prefer rolling back the user message we just appended when the
+            // turn produced no assistant content worth keeping.
+            let only_user_pending = session
+                .messages
+                .last()
+                .map(|m| m.id == user_msg.id)
+                .unwrap_or(false);
+            if only_user_pending {
+                let _ = self
+                    .store
+                    .delete_messages_from(&session.id, &session.cwd, &user_msg.id);
+                session.messages.pop();
+            }
+        }
 
         // 5. Sync todos back and persist session.
         session.todos = ctx.todos.read().await.clone();
@@ -399,6 +487,7 @@ impl SessionRuntime {
             final_text,
             iterations,
             usage,
+            aborted,
         })
     }
 

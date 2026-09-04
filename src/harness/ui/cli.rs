@@ -180,6 +180,18 @@ pub async fn run(config: crate::config::Config, cwd: std::path::PathBuf) -> Resu
         }
     };
 
+    // Auto-compact oversized sessions on open so the first turn doesn't start
+    // already over the context budget.
+    if runtime.config.is_configured() {
+        match runtime.maybe_compact(&mut session, false, None).await {
+            Ok(n) if n > 0 => {
+                println!("[auto-compact] summarized {n} message(s) on open");
+            }
+            Ok(_) => {}
+            Err(e) => eprintln!("[warn] auto-compact on open failed: {e}"),
+        }
+    }
+
     println!(
         "RustClaw harness — agent: {}, model: {}",
         session.agent, runtime.config.model

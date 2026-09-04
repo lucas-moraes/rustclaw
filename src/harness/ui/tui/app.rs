@@ -10,6 +10,9 @@ use crate::harness::ui::commands::CommandOutcome;
 use crate::harness::ui::tui::anim::{Particle, SplashState};
 use crate::harness::ui::tui::askers::{PermissionRequest, QuestionRequest};
 use crate::harness::ui::tui::palette::{AutoComplete, PaletteState};
+use crate::harness::ui::tui::selection::{
+    self, CellPos, PendingClick, TextSelection, DRAG_THRESHOLD,
+};
 use crate::harness::ui::tui::theme::{self, Theme};
 use anyhow::Result;
 use crossterm::event::KeyEvent;
@@ -266,6 +269,13 @@ pub struct App {
     pub transcript_scroll: usize,
     /// Bounds of the transcript viewport (set during draw).
     pub transcript_area: ratatui::layout::Rect,
+    /// Plain-text snapshot of every rendered transcript row (rebuilt each draw).
+    /// Used for hit-testing and clipboard extraction.
+    pub transcript_plain_rows: Vec<String>,
+    /// Active drag/click selection inside the transcript, if any.
+    pub selection: Option<TextSelection>,
+    /// Mouse-down gesture waiting to become a click or a drag-select.
+    pub pending_click: Option<PendingClick>,
     /// Per-turn skill checkboxes; `None` = not yet initialized (use session defaults).
     pub prompt_toggles: Option<Vec<PromptSkillToggle>>,
     /// Whether the skill chips (not the text input) currently hold focus.
@@ -628,6 +638,9 @@ impl App {
             transcript_row_map: Vec::new(),
             transcript_scroll: 0,
             transcript_area: ratatui::layout::Rect::default(),
+            transcript_plain_rows: Vec::new(),
+            selection: None,
+            pending_click: None,
             prompt_toggles: None,
             skills_focused: false,
             skills_idx: 0,
@@ -657,6 +670,7 @@ impl App {
             || self.model_picker.is_some()
             || self.auth_prompt.is_some()
             || self.resume_picker.is_some()
+            || self.selection.as_ref().map(|s| s.dragging).unwrap_or(false)
     }
 
     /// Opens the `/models` picker (only while idle).
@@ -922,6 +936,34 @@ impl App {
         }
     }
 
+    /// Ctrl+Z: clear the prompt editor (text, cursor, history browse, autocomplete).
+    pub fn clear_prompt_input(&mut self) {
+        self.input.clear();
+        self.input_cursor = 0;
+        self.history_pos = None;
+        self.autocomplete = None;
+    }
+
+    /// Esc while a turn is running: signal abort so streaming/tools stop.
+    /// The prompt text is restored when the cancelled turn finishes (see
+    /// the prompt_task completion handler) so an accidental Enter is recoverable.
+    pub fn cancel_running_turn(&mut self) {
+        if !self.running {
+            return;
+        }
+        self.abort.abort();
+        self.status_msg = Some("cancelling…".to_string());
+        // Avoid spamming the transcript if the user mashes Esc.
+        let already = self
+            .lines
+            .last()
+            .map(|l| l.text.contains("run cancelled by user"))
+            .unwrap_or(false);
+        if !already {
+            self.push(LineKind::System, "[run cancelled by user]".to_string());
+        }
+    }
+
     /// Ctrl+W: delete the word before the cursor (doesn't cross lines).
     pub fn kill_word_back(&mut self) {
         let mut chars: Vec<char> = self.input.chars().collect();
@@ -1058,7 +1100,63 @@ impl App {
         self.tool_status = None;
         self.scroll = 0;
         self.stick_bottom = true;
+        self.clear_selection();
         self.add_system("transcript cleared");
+    }
+
+    /// Drops any active transcript selection / pending click gesture.
+    pub fn clear_selection(&mut self) {
+        self.selection = None;
+        self.pending_click = None;
+    }
+
+    /// True when a non-empty text selection is active.
+    pub fn has_text_selection(&self) -> bool {
+        self.selection
+            .as_ref()
+            .map(|s| !s.is_empty(&self.transcript_plain_rows))
+            .unwrap_or(false)
+    }
+
+    /// Plain text covered by the current selection (empty if none).
+    pub fn selected_text(&self) -> String {
+        let Some(sel) = &self.selection else {
+            return String::new();
+        };
+        selection::extract_text(&self.transcript_plain_rows, sel.anchor, sel.head)
+    }
+
+    /// Copies the current selection to the system clipboard. Returns `true` on
+    /// success. No-ops when the selection is empty/whitespace.
+    pub fn copy_selection_to_clipboard(&mut self) -> bool {
+        let text = self.selected_text();
+        if text.trim().is_empty() {
+            return false;
+        }
+        if copy_to_clipboard(&text) {
+            let n = text.chars().count();
+            self.status_msg = Some(format!("copied {n} chars"));
+            true
+        } else {
+            self.push(LineKind::Error, "[error] clipboard unavailable".to_string());
+            false
+        }
+    }
+
+    /// Maps screen mouse coords to a transcript cell, if inside the viewport.
+    pub fn hit_test_transcript(&self, mx: u16, my: u16) -> Option<CellPos> {
+        selection::hit_test(
+            self.transcript_area,
+            self.transcript_scroll,
+            &self.transcript_plain_rows,
+            mx,
+            my,
+        )
+    }
+
+    /// `lines` index under a rendered cell, if any.
+    pub fn line_idx_at_cell(&self, pos: CellPos) -> Option<usize> {
+        self.transcript_row_map.get(pos.row).copied()
     }
 
     /// (Re)builds per-turn prompt toggles from the session's skill memory.
@@ -1330,6 +1428,23 @@ pub async fn run_tui(
     let _guard = TerminalGuard;
 
     let mut app = App::new(runtime, session, cwd, permission_rx, question_rx);
+
+    // Auto-compact oversized sessions on open so the first turn doesn't start
+    // already over the context budget (and so resume stays snappy).
+    if app.runtime.config.is_configured() {
+        match app
+            .runtime
+            .maybe_compact(&mut app.session, false, None)
+            .await
+        {
+            Ok(n) if n > 0 => {
+                app.add_system(&format!("auto-compacted {n} message(s) on open"));
+            }
+            Ok(_) => {}
+            Err(e) => app.add_system(&format!("[warn] auto-compact on open failed: {e}")),
+        }
+    }
+
     // Unconfigured boot → onboarding wizard: with no model selected yet, open
     // the /models picker first (the auth prompt follows automatically after
     // the model choice, see apply_model_choice). When a model is already
@@ -1397,13 +1512,26 @@ pub async fn run_tui(
             if handle.is_finished() {
                 match handle.await {
                     Ok(Ok((r, updated))) => {
+                        let was_aborted = r.aborted;
                         app.session = updated;
                         app.record_usage(r.usage, r.iterations);
                         app.running = false;
                         app.status_msg = None;
                         app.active_tools.clear();
                         app.flush_streaming();
-                        if r.usage.total() > 0 || r.iterations > 0 {
+                        if was_aborted {
+                            // Accidental Enter recovery: put the last submitted
+                            // prompt back into the editor so the user can edit
+                            // or resend without retyping.
+                            if let Some(last) = app.history.last().cloned() {
+                                if app.input.is_empty() {
+                                    app.input = last;
+                                    app.input_cursor = app.input.chars().count();
+                                    app.autocomplete = None;
+                                }
+                            }
+                            app.add_system("turn cancelled — prompt restored to input");
+                        } else if r.usage.total() > 0 || r.iterations > 0 {
                             app.add_system(&format!(
                                 "turn · in {} · out {} · Σ {} · ctx ~{}/{} · {} iter(s)",
                                 format_tokens(r.usage.input_tokens),
@@ -1461,31 +1589,106 @@ pub async fn run_tui(
                     }
                 }
                 Event::Mouse(m) => {
-                    use crossterm::event::MouseEventKind;
+                    use crossterm::event::{MouseButton, MouseEventKind};
                     if app.splash.is_some() {
                         continue;
                     }
+                    // Overlays own the pointer — don't start transcript selection.
+                    let overlays_open = app.modal.is_some()
+                        || app.palette.is_some()
+                        || app.show_help
+                        || app.skill_picker.is_some()
+                        || app.model_picker.is_some()
+                        || app.auth_prompt.is_some()
+                        || app.resume_picker.is_some();
                     match m.kind {
                         MouseEventKind::ScrollUp => app.scroll_by(-3),
                         MouseEventKind::ScrollDown => app.scroll_by(3),
-                        MouseEventKind::Down(button)
-                            if button == crossterm::event::MouseButton::Left =>
-                        {
-                            let area = app.transcript_area;
-                            // Only clicks inside the transcript viewport hit a bubble.
-                            if area.width > 0 && m.row >= area.y && m.row < area.y + area.height {
-                                let row = app.transcript_scroll
-                                    + (m.row - area.y).saturating_sub(0) as usize;
-                                if let Some(&li) = app.transcript_row_map.get(row) {
-                                    if let Some(line) = app.lines.get(li) {
-                                        if line.kind == LineKind::User && app.modal.is_none() {
-                                            // One prompt popup at a time.
-                                            app.autocomplete = None;
-                                            app.modal = Some(Modal::UserPrompt { line_idx: li });
+                        MouseEventKind::Down(MouseButton::Left) => {
+                            if overlays_open {
+                                continue;
+                            }
+                            if let Some(pos) = app.hit_test_transcript(m.column, m.row) {
+                                let line_idx = app.line_idx_at_cell(pos);
+                                app.pending_click = Some(PendingClick {
+                                    pos,
+                                    screen_col: m.column,
+                                    screen_row: m.row,
+                                    line_idx,
+                                });
+                                // Seed a collapsed selection at the click point; it
+                                // only becomes visible once the drag threshold is met.
+                                app.selection = Some(TextSelection::new(pos));
+                            } else {
+                                // Click outside the transcript clears selection.
+                                app.clear_selection();
+                            }
+                        }
+                        MouseEventKind::Drag(MouseButton::Left) => {
+                            if overlays_open {
+                                continue;
+                            }
+                            let Some(pos) = app.hit_test_transcript(m.column, m.row) else {
+                                continue;
+                            };
+                            if let Some(pending) = &app.pending_click {
+                                if pending.pos.manhattan(pos) >= DRAG_THRESHOLD
+                                    || (m.column.abs_diff(pending.screen_col) as usize
+                                        + m.row.abs_diff(pending.screen_row) as usize)
+                                        >= DRAG_THRESHOLD
+                                {
+                                    if let Some(sel) = app.selection.as_mut() {
+                                        sel.dragging = true;
+                                        sel.set_head(pos);
+                                    } else {
+                                        let mut sel = TextSelection::new(pending.pos);
+                                        sel.dragging = true;
+                                        sel.set_head(pos);
+                                        app.selection = Some(sel);
+                                    }
+                                }
+                            } else if let Some(sel) = app.selection.as_mut() {
+                                if sel.dragging {
+                                    sel.set_head(pos);
+                                }
+                            }
+                        }
+                        MouseEventKind::Up(MouseButton::Left) => {
+                            if overlays_open {
+                                app.pending_click = None;
+                                continue;
+                            }
+                            let dragged =
+                                app.selection.as_ref().map(|s| s.dragging).unwrap_or(false);
+                            if dragged {
+                                // Auto-copy on release when the selection has content.
+                                if app.has_text_selection() {
+                                    app.copy_selection_to_clipboard();
+                                }
+                                if let Some(sel) = app.selection.as_mut() {
+                                    sel.dragging = false;
+                                }
+                                app.pending_click = None;
+                            } else {
+                                // Click without drag: preserve UserPrompt modal behavior.
+                                let pending = app.pending_click.take();
+                                app.selection = None;
+                                if let Some(p) = pending {
+                                    if let Some(li) = p.line_idx {
+                                        if let Some(line) = app.lines.get(li) {
+                                            if line.kind == LineKind::User && app.modal.is_none() {
+                                                app.autocomplete = None;
+                                                app.modal =
+                                                    Some(Modal::UserPrompt { line_idx: li });
+                                            }
                                         }
                                     }
                                 }
                             }
+                        }
+                        MouseEventKind::Down(_) => {
+                            // Other buttons clear selection.
+                            app.clear_selection();
                         }
                         _ => {}
                     }
@@ -1501,7 +1704,9 @@ pub async fn run_tui(
                         app.insert_char_fixed(c);
                     }
                 }
-                Event::Resize(..) => {}
+                Event::Resize(..) => {
+                    app.clear_selection();
+                }
                 _ => {}
             }
         }
@@ -1539,6 +1744,27 @@ async fn handle_key(
 ) -> Result<bool> {
     use crossterm::event::{KeyCode, KeyModifiers};
 
+    // Esc while a turn is streaming/running always cancels first — even if an
+    // overlay (help/palette/selection) is open. Permission/question modals are
+    // handled below so they can deny the ask and then abort.
+    if matches!(key.code, KeyCode::Esc)
+        && app.running
+        && app.modal.is_none()
+        && app.skill_picker.is_none()
+        && app.model_picker.is_none()
+        && app.auth_prompt.is_none()
+        && app.resume_picker.is_none()
+    {
+        app.show_help = false;
+        app.palette = None;
+        app.autocomplete = None;
+        if app.selection.is_some() || app.pending_click.is_some() {
+            app.clear_selection();
+        }
+        app.cancel_running_turn();
+        return Ok(false);
+    }
+
     if app.skill_picker.is_some() {
         return handle_skill_picker_key(app, key);
     }
@@ -1552,7 +1778,7 @@ async fn handle_key(
     }
 
     if app.resume_picker.is_some() {
-        return handle_resume_picker_key(app, key);
+        return handle_resume_picker_key(app, key).await;
     }
 
     if app.modal.is_some() {
@@ -1584,6 +1810,10 @@ async fn handle_key(
     // Global shortcuts
     match key.code {
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            if app.has_text_selection() {
+                app.copy_selection_to_clipboard();
+                return Ok(false);
+            }
             if app.running {
                 app.abort.abort();
             }
@@ -1742,17 +1972,18 @@ async fn handle_key(
         KeyCode::PageUp => app.scroll_by(-8),
         KeyCode::PageDown => app.scroll_by(8),
         KeyCode::Esc => {
-            if app.autocomplete.is_some() {
+            // Priority: cancel whatever is in flight first.
+            // 1) running turn / streaming → abort
+            // 2) overlays / selection / autocomplete → close
+            // 3) draft prompt text → clear
+            if app.running {
+                app.cancel_running_turn();
+            } else if app.selection.is_some() || app.pending_click.is_some() {
+                app.clear_selection();
+            } else if app.autocomplete.is_some() {
                 app.autocomplete = None;
-            } else if app.running {
-                // Cancel the running turn (opencode-style Esc cancel).
-                app.abort.abort();
-                app.status_msg = Some("cancelling…".to_string());
-                app.push(LineKind::System, "[run cancelled by user]".to_string());
             } else if !app.input.is_empty() {
-                app.input.clear();
-                app.input_cursor = 0;
-                app.autocomplete = None;
+                app.clear_prompt_input();
             }
         }
         _ => {}
@@ -2046,7 +2277,7 @@ fn handle_model_picker_key(app: &mut App, key: KeyEvent) -> Result<bool> {
 }
 
 /// Handles a key while the session manager picker (/sessions) is open.
-fn handle_resume_picker_key(app: &mut App, key: KeyEvent) -> Result<bool> {
+async fn handle_resume_picker_key(app: &mut App, key: KeyEvent) -> Result<bool> {
     use crossterm::event::{KeyCode, KeyModifiers};
     let Some(picker) = app.resume_picker.as_mut() else {
         return Ok(false);
@@ -2068,6 +2299,11 @@ fn handle_resume_picker_key(app: &mut App, key: KeyEvent) -> Result<bool> {
                 if !new_title.is_empty() {
                     let id = picker.sessions[picker.selected].id.clone();
                     app.runtime.set_session_title(&id, &new_title)?;
+                    // Keep the live session in sync so the sidebar updates
+                    // immediately when renaming the currently open session.
+                    if app.session.id == id {
+                        app.session.title = Some(new_title.clone());
+                    }
                     app.resume_picker = Some(ResumePickerState::new(app)?);
                     app.add_system("session renamed");
                 }
@@ -2099,11 +2335,26 @@ fn handle_resume_picker_key(app: &mut App, key: KeyEvent) -> Result<bool> {
         KeyCode::Enter => {
             let id = picker.sessions[picker.selected].id.clone();
             app.resume_picker = None;
-            if let Some(loaded) = app.runtime.load_session(&id)? {
+            if let Some(mut loaded) = app.runtime.load_session(&id)? {
+                // Auto-compact oversized sessions when switching via /sessions.
+                if app.runtime.config.is_configured() {
+                    match app.runtime.maybe_compact(&mut loaded, false, None).await {
+                        Ok(n) if n > 0 => {
+                            app.add_system(&format!(
+                                "session selected · auto-compacted {n} message(s)"
+                            ));
+                        }
+                        Ok(_) => app.add_system("session selected"),
+                        Err(e) => {
+                            app.add_system(&format!("session selected · auto-compact failed: {e}"));
+                        }
+                    }
+                } else {
+                    app.add_system("session selected");
+                }
                 app.session = loaded;
                 app.reset_usage();
                 app.sync_prompt_toggles();
-                app.add_system("session selected");
             } else {
                 app.add_system("session not found");
             }
@@ -2205,7 +2456,16 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) -> Result<bool> {
                     app.runtime.permission.set_always_allow(&req.input.tool);
                     true
                 }
-                KeyCode::Char('n') | KeyCode::Esc => false,
+                KeyCode::Char('n') => false,
+                KeyCode::Esc => {
+                    // Esc cancels the whole in-flight turn, not just this ask.
+                    let _ = req.reply.send(false);
+                    app.push(LineKind::System, "[permission] denied".to_string());
+                    if app.running {
+                        app.cancel_running_turn();
+                    }
+                    return Ok(false);
+                }
                 _ => {
                     app.modal = Some(Modal::Permission(req));
                     return Ok(false);
@@ -2248,6 +2508,9 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) -> Result<bool> {
             match key.code {
                 KeyCode::Esc => {
                     finish(app, req, None);
+                    if app.running {
+                        app.cancel_running_turn();
+                    }
                 }
                 KeyCode::Enter => {
                     let trimmed = draft.trim();
@@ -2742,6 +3005,21 @@ mod input_tests {
         app.kill_word_back();
         assert_eq!(app.input, "first \n");
         assert_eq!(app.input_cursor, 6);
+    }
+
+    #[test]
+    fn test_clear_prompt_input_resets_editor() {
+        let mut app = App::inline_for_tests("draft prompt");
+        app.input_cursor = 5;
+        app.history = vec!["old".into()];
+        app.history_pos = Some(0);
+        app.refresh_autocomplete();
+
+        app.clear_prompt_input();
+        assert!(app.input.is_empty());
+        assert_eq!(app.input_cursor, 0);
+        assert!(app.history_pos.is_none());
+        assert!(app.autocomplete.is_none());
     }
 
     #[test]

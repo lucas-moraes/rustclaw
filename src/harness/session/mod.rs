@@ -178,6 +178,10 @@ pub struct Session {
     /// Skills (this session's "memory"). Chosen at session start, editable.
     #[serde(default)]
     pub skills: Vec<crate::harness::skill::SessionSkill>,
+    /// Optional user-defined title (set via /sessions rename). Falls back to
+    /// the first user message when empty/None.
+    #[serde(default)]
+    pub title: Option<String>,
 }
 
 impl Session {
@@ -192,7 +196,25 @@ impl Session {
             messages: Vec::new(),
             todos: Vec::new(),
             skills: Vec::new(),
+            title: None,
         }
+    }
+
+    /// Display title: custom title if set, else first user message preview.
+    pub fn display_title(&self) -> String {
+        if let Some(t) = &self.title {
+            let t = t.trim();
+            if !t.is_empty() {
+                return t.to_string();
+            }
+        }
+        self.messages
+            .iter()
+            .find(|m| m.role.as_str() == "user")
+            .and_then(|m| m.parts.iter().find_map(|p| p.as_text().map(str::to_string)))
+            .map(|s| s.replace('\n', " ").trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "untitled".to_string())
     }
 
     pub fn push_message(&mut self, msg: Message) {
@@ -307,6 +329,18 @@ mod tests {
         let mut session = Session::new("build", PathBuf::from("/tmp"));
         session.push_message(Message::user("a".repeat(400)));
         assert_eq!(session.approx_tokens(), 100);
+    }
+
+    #[test]
+    fn test_display_title_prefers_custom() {
+        let mut session = Session::new("build", PathBuf::from("/tmp"));
+        assert_eq!(session.display_title(), "untitled");
+        session.push_message(Message::user("first prompt here"));
+        assert_eq!(session.display_title(), "first prompt here");
+        session.title = Some("  Meu título  ".into());
+        assert_eq!(session.display_title(), "Meu título");
+        session.title = Some("   ".into());
+        assert_eq!(session.display_title(), "first prompt here");
     }
 
     #[test]

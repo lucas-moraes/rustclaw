@@ -330,7 +330,7 @@ impl SessionStore {
         let row = conn
             .query_row(
                 &format!(
-                    "SELECT id, agent, cwd, created_at, updated_at, todos_json, skills_json
+                    "SELECT id, agent, cwd, created_at, updated_at, todos_json, skills_json, title
                      FROM {sessions_t} WHERE id = ?1"
                 ),
                 params![id],
@@ -343,13 +343,15 @@ impl SessionStore {
                         r.get::<_, String>(4)?,
                         r.get::<_, String>(5)?,
                         r.get::<_, String>(6)?,
+                        r.get::<_, Option<String>>(7)?,
                     ))
                 },
             )
             .optional()
             .context("failed to load session")?;
 
-        let Some((sid, agent, cwd, created_at, updated_at, todos_json, skills_json)) = row else {
+        let Some((sid, agent, cwd, created_at, updated_at, todos_json, skills_json, title)) = row
+        else {
             return Ok(None);
         };
 
@@ -392,6 +394,16 @@ impl SessionStore {
         let skills: Vec<crate::harness::skill::SessionSkill> =
             serde_json::from_str(&skills_json).unwrap_or_default();
 
+        // Normalize empty DB titles to None so display falls back to preview.
+        let title = title.and_then(|t| {
+            let t = t.trim().to_string();
+            if t.is_empty() {
+                None
+            } else {
+                Some(t)
+            }
+        });
+
         Ok(Some(Session {
             id: sid,
             agent,
@@ -401,6 +413,7 @@ impl SessionStore {
             messages,
             todos,
             skills,
+            title,
         }))
     }
 
@@ -510,9 +523,15 @@ impl SessionStore {
     }
 
     /// Persist the whole session (messages + meta). Used after turns.
+    ///
+    /// Message list is treated as the source of truth: new messages are
+    /// inserted, any DB rows no longer present in `session.messages`
+    /// (e.g. after context compaction) are deleted, and `ord` is rewritten
+    /// so a reload matches the in-memory order.
     pub fn save_session(&self, session: &Session) -> Result<()> {
         self.ensure_project(&session.cwd)?;
         let sessions_t = table_name(&session.cwd, "sessions");
+        let messages_t = table_name(&session.cwd, "messages");
         let conn = self.conn.lock().unwrap();
         // Saving a session marks it as updated now, so it becomes the most
         // recently used session (drives "resume last session" on startup).
@@ -533,13 +552,97 @@ impl SessionStore {
             ],
         )
         .context("failed to update session")?;
-        drop(conn);
-        // Save only messages not yet persisted.
-        let existing = self.message_ids(&session.id, &session.cwd)?;
-        for msg in &session.messages {
-            if !existing.contains(&msg.id) {
-                self.save_message(&session.id, &session.cwd, msg)?;
+
+        // Collect existing ids while we hold the lock.
+        let existing: std::collections::HashSet<String> = {
+            let mut stmt = conn
+                .prepare(&format!(
+                    "SELECT id FROM {messages_t} WHERE session_id = ?1"
+                ))
+                .context("failed to prepare ids query")?;
+            let rows = stmt.query_map(params![session.id], |r| r.get::<_, String>(0))?;
+            let mut set = std::collections::HashSet::new();
+            for row in rows {
+                set.insert(row.context("failed to read id")?);
             }
+            set
+        };
+
+        let keep: std::collections::HashSet<String> =
+            session.messages.iter().map(|m| m.id.clone()).collect();
+
+        // Drop messages removed by compaction / revert.
+        for mid in existing.difference(&keep) {
+            conn.execute(
+                &format!("DELETE FROM {messages_t} WHERE session_id = ?1 AND id = ?2"),
+                params![session.id, mid],
+            )
+            .context("failed to delete orphaned message")?;
+        }
+
+        // Upsert every remaining message and rewrite `ord` to match the
+        // in-memory order (critical after compaction inserts a summary at
+        // the front while older kept messages already had higher ords).
+        for (ord, msg) in session.messages.iter().enumerate() {
+            let parts_json =
+                serde_json::to_string(&msg.parts).context("failed to serialize parts")?;
+            let created_at = msg.created_at.to_rfc3339();
+            if existing.contains(&msg.id) {
+                conn.execute(
+                    &format!(
+                        "UPDATE {messages_t}
+                         SET role = ?3, parts_json = ?4, created_at = ?5, ord = ?6
+                         WHERE id = ?1 AND session_id = ?2"
+                    ),
+                    params![
+                        msg.id,
+                        session.id,
+                        msg.role.as_str(),
+                        parts_json,
+                        created_at,
+                        ord as i64
+                    ],
+                )
+                .context("failed to update message ord")?;
+            } else {
+                conn.execute(
+                    &format!(
+                        "INSERT INTO {messages_t}
+                         (id, session_id, role, parts_json, created_at, ord)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6)"
+                    ),
+                    params![
+                        msg.id,
+                        session.id,
+                        msg.role.as_str(),
+                        parts_json,
+                        created_at,
+                        ord as i64
+                    ],
+                )
+                .context("failed to insert message")?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Deletes specific message ids of a session (used when syncing after
+    /// compaction drops older messages that are no longer contiguous by ord).
+    pub fn delete_messages_by_ids(&self, id: &str, cwd: &Path, msg_ids: &[String]) -> Result<()> {
+        if msg_ids.is_empty() {
+            return Ok(());
+        }
+        self.ensure_project(cwd)?;
+        let messages_t = table_name(cwd, "messages");
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(&format!(
+                "DELETE FROM {messages_t} WHERE session_id = ?1 AND id = ?2"
+            ))
+            .context("failed to prepare delete-by-id")?;
+        for mid in msg_ids {
+            stmt.execute(params![id, mid])
+                .context("failed to delete orphaned message")?;
         }
         Ok(())
     }
@@ -759,6 +862,39 @@ mod tests {
     }
 
     #[test]
+    fn test_save_session_drops_orphaned_messages_after_compact() {
+        let (_dir, store) = temp_store();
+        let mut session = store.create_session("build", Path::new("/a")).unwrap();
+        let old1 = Message::user("old-1");
+        let old2 = Message::user("old-2");
+        let keep = Message::user("keep-recent");
+        store
+            .save_message(&session.id, Path::new("/a"), &old1)
+            .unwrap();
+        store
+            .save_message(&session.id, Path::new("/a"), &old2)
+            .unwrap();
+        store
+            .save_message(&session.id, Path::new("/a"), &keep)
+            .unwrap();
+
+        // Simulate compaction: replace history with a summary + recent keep.
+        let summary = Message::user("[Context compacted] Summary of 2 earlier messages:\n…");
+        session.messages = vec![summary, keep];
+        store.save_session(&session).unwrap();
+
+        let loaded = store
+            .load_session(&session.id, Path::new("/a"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.messages.len(), 2);
+        assert!(loaded.messages[0]
+            .text_content()
+            .contains("[Context compacted]"));
+        assert_eq!(loaded.messages[1].text_content(), "keep-recent");
+    }
+
+    #[test]
     fn test_set_session_title() {
         let (_dir, store) = temp_store();
         let s1 = store.create_session("build", Path::new("/a")).unwrap();
@@ -779,6 +915,14 @@ mod tests {
         assert_eq!(list[0].title.as_deref(), Some("Meu título"));
         // The preview stays intact.
         assert_eq!(list[0].preview, "primeiro prompt");
+
+        // load_session also returns the custom title for the sidebar.
+        let loaded = store
+            .load_session(&s1.id, Path::new("/a"))
+            .unwrap()
+            .expect("session");
+        assert_eq!(loaded.title.as_deref(), Some("Meu título"));
+        assert_eq!(loaded.display_title(), "Meu título");
 
         // Reopening the store keeps the title (schema migration is idempotent).
         drop(store);

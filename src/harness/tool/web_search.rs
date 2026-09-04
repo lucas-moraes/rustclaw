@@ -37,7 +37,10 @@ técnicos ou resoluções de erros de compilação."
         })
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolContext) -> Result<ToolResult, String> {
+    async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolResult, String> {
+        if ctx.abort.is_aborted() {
+            return Err("aborted".to_string());
+        }
         let query = args["query"]
             .as_str()
             .map(str::trim)
@@ -57,6 +60,10 @@ técnicos ou resoluções de erros de compilação."
             .await
             .map_err(|e| format!("web search request failed: {}", e))?;
 
+        if ctx.abort.is_aborted() {
+            return Err("aborted".to_string());
+        }
+
         if !resp.status().is_success() {
             return Err(format!("DuckDuckGo returned HTTP {}", resp.status()));
         }
@@ -64,6 +71,10 @@ técnicos ou resoluções de erros de compilação."
             .text()
             .await
             .map_err(|e| format!("failed to read search response: {}", e))?;
+
+        if ctx.abort.is_aborted() {
+            return Err("aborted".to_string());
+        }
 
         let results = parse_results(&html);
         if results.is_empty() {
