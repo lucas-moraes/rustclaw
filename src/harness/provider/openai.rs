@@ -38,8 +38,16 @@ pub fn to_openai_messages(system: &str, messages: &[Message]) -> Vec<Value> {
             }
             Role::Assistant => {
                 let text = msg.text_content();
-                let tool_calls: Vec<Value> = msg
+                // Only include tool calls that actually have a terminal result
+                // (completed or error). Pending/running tool calls from an
+                // interrupted session have no result and would otherwise be
+                // replayed as "did not complete" errors, confusing the model.
+                let terminal: Vec<&ToolPart> = msg
                     .tool_parts()
+                    .into_iter()
+                    .filter(|t| t.is_terminal())
+                    .collect();
+                let tool_calls: Vec<Value> = terminal
                     .iter()
                     .map(|t| {
                         json!({
@@ -64,7 +72,7 @@ pub fn to_openai_messages(system: &str, messages: &[Message]) -> Vec<Value> {
                 }
                 out.push(m);
 
-                for t in msg.tool_parts() {
+                for t in terminal {
                     out.push(tool_result_message(t));
                 }
             }
@@ -442,6 +450,37 @@ mod tests {
         assert_eq!(out[2]["role"], "tool");
         assert_eq!(out[2]["tool_call_id"], "tc1");
         assert_eq!(out[2]["content"], "files");
+    }
+
+    #[test]
+    fn test_to_openai_messages_skips_pending_tool_calls() {
+        // A pending/running tool call (e.g. from an interrupted session) has no
+        // result and must not be replayed as a "did not complete" error.
+        let mut pending = crate::harness::session::ToolPart::pending(
+            "tc-pending",
+            "bash",
+            serde_json::json!({"command": "ls"}),
+        );
+        pending.status = crate::harness::session::ToolStatus::Running;
+        let mut done = crate::harness::session::ToolPart::pending(
+            "tc-done",
+            "read",
+            serde_json::json!({"path": "a.rs"}),
+        );
+        done.status = crate::harness::session::ToolStatus::Completed;
+        done.output = "content".into();
+
+        let msgs = vec![
+            Message::user("do work"),
+            Message::new(Role::Assistant, vec![Part::Tool(pending), Part::Tool(done)]),
+        ];
+        let out = to_openai_messages("", &msgs);
+        // user + assistant(only the completed tool call) + tool result
+        assert_eq!(out.len(), 3);
+        let calls = out[1]["tool_calls"].as_array().unwrap();
+        assert_eq!(calls.len(), 1, "pending tool call must be dropped");
+        assert_eq!(calls[0]["id"], "tc-done");
+        assert_eq!(out[2]["tool_call_id"], "tc-done");
     }
 
     #[test]

@@ -16,7 +16,7 @@ use crate::harness::tool::context::{
 };
 use crate::harness::tool::registry::ToolRegistry;
 use anyhow::{Context, Result};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// Harness runtime configuration (derived from the legacy config or defaults).
@@ -266,6 +266,29 @@ impl SessionRuntime {
     pub fn load_session(&self, id: &str) -> Result<Option<Session>> {
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         self.store.load_session(id, &cwd)
+    }
+
+    /// Loads the most recently used session of the current project, if any.
+    /// `list_sessions` orders by `updated_at DESC`, so the first entry is the
+    /// latest. Returns `None` when the project has no sessions yet.
+    pub fn load_last_session(&self) -> Result<Option<Session>> {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        self.load_last_session_at(&cwd)
+    }
+
+    /// Like [`load_last_session`] but scoped to an explicit project root
+    /// (testable).
+    pub fn load_last_session_at(&self, cwd: &Path) -> Result<Option<Session>> {
+        let latest = self
+            .store
+            .list_sessions(cwd)?
+            .into_iter()
+            .next()
+            .map(|s| s.id);
+        match latest {
+            Some(id) => self.store.load_session(&id, cwd),
+            None => Ok(None),
+        }
     }
 
     pub fn list_sessions(&self) -> Result<Vec<crate::harness::session::store::SessionSummary>> {
@@ -685,6 +708,39 @@ mod model_switch_tests {
         assert_eq!(rt.config.provider, "my-custom-relay");
         // Unknown provider keeps the previous base_url.
         assert_eq!(rt.config.base_url, "https://api.deepinfra.com/v1/openai");
+    }
+
+    #[tokio::test]
+    async fn test_load_last_session_returns_most_recent() {
+        let dir = tempfile::tempdir().unwrap();
+        let rt = test_runtime(dir.path()).unwrap();
+
+        // No sessions yet → None.
+        assert!(rt
+            .load_last_session_at(std::path::Path::new(dir.path()))
+            .unwrap()
+            .is_none());
+
+        // Create two sessions directly in the store (scoped to the tempdir),
+        // the second being the most recently updated.
+        let mut s1 = rt.store.create_session("build", dir.path()).unwrap();
+        let s2 = rt.store.create_session("plan", dir.path()).unwrap();
+
+        let last = rt
+            .load_last_session_at(std::path::Path::new(dir.path()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(last.id, s2.id);
+        assert_eq!(last.agent, "plan");
+
+        // Touching s1 (bumping its updated_at) makes it the most recent again.
+        s1.updated_at = chrono::Utc::now() + chrono::Duration::seconds(1);
+        rt.store.save_session(&s1).unwrap();
+        let last = rt
+            .load_last_session_at(std::path::Path::new(dir.path()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(last.id, s1.id);
     }
 
     #[tokio::test]

@@ -45,9 +45,17 @@ pub async fn run(config: crate::config::Config, cwd: std::path::PathBuf) -> Resu
     let user_asker: Arc<dyn UserAsker> = user_asker;
     let runtime = SessionRuntime::from_legacy(&config, registry, &db_path, asker, user_asker)?;
 
-    let session = runtime
-        .create_session(&runtime.config.default_agent)
-        .await?;
+    // Reopen the most recently used session of this project when one exists;
+    // otherwise start a fresh session. This makes the TUI resume where the
+    // user left off on every launch.
+    let session = match runtime.load_last_session()? {
+        Some(s) => s,
+        None => {
+            runtime
+                .create_session(&runtime.config.default_agent)
+                .await?
+        }
+    };
 
     app::run_tui(runtime, session, cwd, permission_rx, question_rx).await
 }

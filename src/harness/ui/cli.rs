@@ -9,6 +9,7 @@ use crate::harness::ui::commands;
 use anyhow::Result;
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
+use std::io::IsTerminal;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -168,9 +169,16 @@ pub async fn run(config: crate::config::Config, cwd: std::path::PathBuf) -> Resu
     let registry = crate::harness::runtime::build_default_registry();
     let mut runtime = SessionRuntime::from_legacy(&config, registry, &db_path, asker, user_asker)?;
 
-    let mut session = runtime
-        .create_session(&runtime.config.default_agent)
-        .await?;
+    // Reopen the most recently used session of this project when one exists;
+    // otherwise start a fresh session.
+    let mut session = match runtime.load_last_session()? {
+        Some(s) => s,
+        None => {
+            runtime
+                .create_session(&runtime.config.default_agent)
+                .await?
+        }
+    };
 
     println!(
         "RustClaw harness — agent: {}, model: {}",
@@ -178,7 +186,9 @@ pub async fn run(config: crate::config::Config, cwd: std::path::PathBuf) -> Resu
     );
     println!("Working directory: {}", cwd.display());
 
-    // Choose skills for this session's memory (empty = none).
+    // Choose skills for this session's memory (empty = none). Only prompt
+    // interactively when stdin is a TTY; when input is piped, rely on the
+    // RUSTCLAW_SKILLS env var so the first piped line is not consumed.
     if !runtime.skills.skills.is_empty() {
         let names = runtime.skills.names().join(", ");
         println!("Available skills (session memory): {}", names);
@@ -191,16 +201,16 @@ pub async fn run(config: crate::config::Config, cwd: std::path::PathBuf) -> Resu
                 }
             }
             println!("skills from RUSTCLAW_SKILLS: {}", session.skills.len());
-        } else {
+        } else if std::io::stdin().is_terminal() {
             println!("skills (comma-separated ids, empty = none):");
-        }
-        if let Some(Ok(line)) = std::io::stdin().lines().next() {
-            if !line.trim().is_empty() {
-                for id in line.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
-                    if runtime.skills.get(id).is_some() {
-                        session
-                            .skills
-                            .push(crate::harness::skill::SessionSkill::new(id, true));
+            if let Some(Ok(line)) = std::io::stdin().lines().next() {
+                if !line.trim().is_empty() {
+                    for id in line.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                        if runtime.skills.get(id).is_some() {
+                            session
+                                .skills
+                                .push(crate::harness::skill::SessionSkill::new(id, true));
+                        }
                     }
                 }
             }

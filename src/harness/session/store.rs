@@ -514,6 +514,9 @@ impl SessionStore {
         self.ensure_project(&session.cwd)?;
         let sessions_t = table_name(&session.cwd, "sessions");
         let conn = self.conn.lock().unwrap();
+        // Saving a session marks it as updated now, so it becomes the most
+        // recently used session (drives "resume last session" on startup).
+        let now = chrono::Utc::now().to_rfc3339();
         conn.execute(
             &format!(
                 "UPDATE {sessions_t} SET agent = ?2, cwd = ?3, updated_at = ?4,
@@ -524,7 +527,7 @@ impl SessionStore {
                 session.id,
                 session.agent,
                 session.cwd.to_string_lossy(),
-                session.updated_at.to_rfc3339(),
+                now,
                 serde_json::to_string(&session.todos).unwrap_or_else(|_| "[]".into()),
                 serde_json::to_string(&session.skills).unwrap_or_else(|_| "[]".into()),
             ],
@@ -700,6 +703,22 @@ mod tests {
 
         let list_b = store.list_sessions(Path::new("/b")).unwrap();
         assert_eq!(list_b.len(), 1);
+    }
+
+    #[test]
+    fn test_list_orders_most_recent_first() {
+        let (_dir, store) = temp_store();
+        let s1 = store.create_session("build", Path::new("/a")).unwrap();
+        let s2 = store.create_session("build", Path::new("/a")).unwrap();
+        // Touch s1 so it becomes the most recently updated.
+        store
+            .save_message(&s1.id, Path::new("/a"), &Message::user("later"))
+            .unwrap();
+
+        let list = store.list_sessions(Path::new("/a")).unwrap();
+        assert_eq!(list.len(), 2);
+        // Most recently updated session comes first (what load_last_session uses).
+        assert_eq!(list[0].id, s1.id);
     }
 
     #[test]

@@ -47,12 +47,15 @@ pub fn to_anthropic_messages(messages: &[Message]) -> Vec<Value> {
                         }
                         Part::Reasoning { .. } => {}
                         Part::Tool(t) => {
-                            content.push(json!({
-                                "type": "tool_use",
-                                "id": t.id,
-                                "name": t.name,
-                                "input": t.input,
-                            }));
+                            // Skip pending/running tool calls (no result yet).
+                            if t.is_terminal() {
+                                content.push(json!({
+                                    "type": "tool_use",
+                                    "id": t.id,
+                                    "name": t.name,
+                                    "input": t.input,
+                                }));
+                            }
                         }
                         _ => {}
                     }
@@ -62,7 +65,7 @@ pub fn to_anthropic_messages(messages: &[Message]) -> Vec<Value> {
 
                     // Synthesize tool_result blocks in a following user message.
                     let mut results = Vec::new();
-                    for t in msg.tool_parts() {
+                    for t in msg.tool_parts().iter().filter(|t| t.is_terminal()) {
                         let text = match t.status {
                             crate::harness::session::ToolStatus::Completed => t.output.clone(),
                             crate::harness::session::ToolStatus::Error => {
@@ -399,6 +402,27 @@ mod tests {
         assert_eq!(out[2]["content"][0]["type"], "tool_result");
         assert_eq!(out[2]["content"][0]["tool_use_id"], "tu1");
         assert_eq!(out[2]["content"][0]["content"], "out");
+    }
+
+    #[test]
+    fn test_to_anthropic_messages_skips_pending_tool_calls() {
+        use crate::harness::session::ToolStatus;
+        let mut pending = ToolPart::pending("tu-p", "bash", serde_json::json!({"command": "ls"}));
+        pending.status = ToolStatus::Running;
+        let mut done = ToolPart::pending("tu-d", "read", serde_json::json!({"path": "a.rs"}));
+        done.status = ToolStatus::Completed;
+        done.output = "content".into();
+        let msgs = vec![
+            Message::user("run"),
+            Message::new(Role::Assistant, vec![Part::Tool(pending), Part::Tool(done)]),
+        ];
+        let out = to_anthropic_messages(&msgs);
+        // user, assistant(only the completed tool_use), user(tool_result)
+        assert_eq!(out.len(), 3);
+        let blocks = out[1]["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 1, "pending tool_use must be dropped");
+        assert_eq!(blocks[0]["id"], "tu-d");
+        assert_eq!(out[2]["content"][0]["tool_use_id"], "tu-d");
     }
 
     #[test]
