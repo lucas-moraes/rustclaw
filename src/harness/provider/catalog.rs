@@ -29,6 +29,12 @@ pub const PROVIDERS: &[ProviderInfo] = &[
         ],
     },
     ProviderInfo {
+        name: "xai",
+        base_url: "https://api.x.ai/v1",
+        default_model: "grok-4-5",
+        models: &["grok-4-5", "grok-4", "grok-4-fast", "grok-3"],
+    },
+    ProviderInfo {
         name: "opencode-go",
         base_url: "https://opencode.ai/zen/go/v1",
         default_model: "deepseek-v4-flash",
@@ -142,6 +148,7 @@ mod tests {
             "deepinfra",
             "villamarket",
             "huggingface",
+            "xai",
         ] {
             assert!(
                 find_provider(name).is_some(),
