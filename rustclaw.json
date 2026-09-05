@@ -4,7 +4,10 @@
   "base_url": "https://api.deepinfra.com/v1/openai",
   "permission": {
     "tools": {
-      "bash": "allow"
+      "edit": "allow",
+      "bash": "allow",
+      "write": "allow",
+      "remember": "allow"
     },
     "default": null
   }

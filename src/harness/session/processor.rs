@@ -20,6 +20,8 @@ pub struct ProcessorConfig {
     pub model: String,
     pub max_iterations: usize,
     pub max_context_tokens: usize,
+    /// Wall-clock limit per turn, in seconds (0 = default).
+    pub turn_timeout_secs: u64,
     // Temperature is agent-calibrated: see AgentSpec::turn_temperature.
 }
 
@@ -29,6 +31,7 @@ impl Default for ProcessorConfig {
             model: String::new(),
             max_iterations: 50,
             max_context_tokens: 100_000,
+            turn_timeout_secs: DEFAULT_TURN_TIMEOUT_SECS,
         }
     }
 }
@@ -61,6 +64,10 @@ const COMPACTION_MIN_MESSAGES: usize = 10;
 /// the turn instead of hanging forever. Generous so long reasoning streams
 /// aren't interrupted; the client `read_timeout` normally fires first.
 const STREAM_TIMEOUT_SECS: u64 = 300;
+/// Wall-clock safety net for a whole turn: even if every individual stream
+/// and tool call stays under its own timeout, a turn that keeps going for
+/// this long is stopped instead of hanging forever. 0 = use the default.
+const DEFAULT_TURN_TIMEOUT_SECS: u64 = 600;
 
 impl SessionProcessor {
     /// Runs one user turn: loops stream -> tool exec until the model answers
@@ -80,9 +87,25 @@ impl SessionProcessor {
         let mut recent_sigs: Vec<String> = Vec::new();
         let mut warned = false;
 
+        let turn_secs = if self.config.turn_timeout_secs == 0 {
+            DEFAULT_TURN_TIMEOUT_SECS
+        } else {
+            self.config.turn_timeout_secs
+        };
+        let turn_deadline = tokio::time::Instant::now() + Duration::from_secs(turn_secs);
+
         while iterations < self.config.max_iterations {
             if ctx.abort.is_aborted() {
                 aborted = true;
+                break;
+            }
+            if tokio::time::Instant::now() >= turn_deadline {
+                final_text = format!("Stopped: turn exceeded the {}s time limit.", turn_secs);
+                let _ = self.events.send(HarnessEvent::Error {
+                    session_id: session.id.clone(),
+                    message: final_text.clone(),
+                    parent_session_id: None,
+                });
                 break;
             }
             iterations += 1;
@@ -134,6 +157,20 @@ impl SessionProcessor {
                         aborted = true;
                         break;
                     }
+                    _ = tokio::time::sleep(
+                        turn_deadline.saturating_duration_since(tokio::time::Instant::now()),
+                    ) => {
+                        // Turn-level watchdog: stop instead of hanging forever.
+                        let msg = format!("Stopped: turn exceeded the {}s time limit.", turn_secs);
+                        let _ = self.events.send(HarnessEvent::Error {
+                            session_id: session.id.clone(),
+                            message: msg.clone(),
+                            parent_session_id: None,
+                        });
+                        final_text = msg;
+                        aborted = true;
+                        break;
+                    }
                     ev = tokio::time::timeout(
                         Duration::from_secs(STREAM_TIMEOUT_SECS),
                         stream.next(),
@@ -149,6 +186,7 @@ impl SessionProcessor {
                         let _ = self.events.send(HarnessEvent::Error {
                             session_id: session.id.clone(),
                             message: msg.clone(),
+                            parent_session_id: None,
                         });
                         final_text = msg;
                         aborted = true;
@@ -162,6 +200,7 @@ impl SessionProcessor {
                             session_id: session.id.clone(),
                             message_id: assistant_id.to_string(),
                             delta: d,
+                            parent_session_id: None,
                         });
                     }
                     ProviderEvent::ReasoningDelta(d) => {
@@ -170,6 +209,7 @@ impl SessionProcessor {
                             session_id: session.id.clone(),
                             message_id: assistant_id.to_string(),
                             delta: d,
+                            parent_session_id: None,
                         });
                     }
                     ProviderEvent::ToolCallStart { id, name } => {
@@ -177,6 +217,7 @@ impl SessionProcessor {
                         let _ = self.events.send(HarnessEvent::MessageUpdated {
                             session_id: session.id.clone(),
                             message_id: assistant_id.to_string(),
+                            parent_session_id: None,
                         });
                     }
                     ProviderEvent::ToolCallDelta { id, args_delta } => {
@@ -282,6 +323,7 @@ impl SessionProcessor {
                 let _ = self.events.send(HarnessEvent::Error {
                     session_id: session.id.clone(),
                     message: final_text.clone(),
+                    parent_session_id: None,
                 });
                 break;
             }
@@ -341,6 +383,7 @@ impl SessionProcessor {
                         tool_id: t.id.clone(),
                         name: t.name.clone(),
                         input: t.input.clone(),
+                        parent_session_id: None,
                     });
                     (t.id.clone(), t.name.clone(), t.input.clone())
                 })
@@ -407,6 +450,7 @@ impl SessionProcessor {
                                     title: String::new(),
                                     output_preview: "aborted".to_string(),
                                     diff: None,
+                                    parent_session_id: None,
                                 });
                             }
                         }
@@ -476,6 +520,7 @@ impl SessionProcessor {
                             .get("diff")
                             .and_then(|v| v.as_str())
                             .map(|s| s.to_string()),
+                        parent_session_id: None,
                     });
                 }
                 Err(e) => {
@@ -496,6 +541,7 @@ impl SessionProcessor {
                         title: String::new(),
                         output_preview: crate::harness::session::preview(&e, 160),
                         diff: None,
+                        parent_session_id: None,
                     });
                 }
             }
@@ -513,6 +559,7 @@ impl SessionProcessor {
     async fn maybe_compact(&self, session: &mut Session) -> anyhow::Result<()> {
         let _ = self.events.send(HarnessEvent::CompactionStarted {
             session_id: session.id.clone(),
+            parent_session_id: None,
         });
 
         let config = CompactionConfig {
@@ -542,6 +589,7 @@ impl SessionProcessor {
             let _ = self.events.send(HarnessEvent::CompactionFinished {
                 session_id: session.id.clone(),
                 summarized_messages: summarized,
+                parent_session_id: None,
             });
         }
         Ok(())
@@ -553,4 +601,107 @@ fn found_tool<'a>(msg: &'a mut Message, tool_id: &str) -> Option<&'a mut ToolPar
         Part::Tool(t) if t.id == tool_id => Some(t),
         _ => None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::harness::provider::{LlmResponse, ProviderStream};
+    use crate::harness::tool::context::{AbortSignal, PathBufGuard, ToolContext};
+    use std::sync::Arc as StdArc;
+
+    /// Provider whose stream never yields anything and never ends.
+    struct StalledProvider;
+
+    #[async_trait::async_trait]
+    impl Provider for StalledProvider {
+        fn name(&self) -> &str {
+            "stalled"
+        }
+        async fn stream(&self, _req: &LlmRequest) -> anyhow::Result<ProviderStream> {
+            // A stream that stays pending forever.
+            Ok(futures_util::stream::pending::<anyhow::Result<ProviderEvent>>().boxed())
+        }
+        async fn complete(&self, _req: &LlmRequest) -> anyhow::Result<LlmResponse> {
+            unreachable!()
+        }
+    }
+
+    fn test_ctx() -> ToolContext {
+        use crate::harness::permission::PermissionEngine;
+        struct AllowAsker;
+        #[async_trait::async_trait]
+        impl crate::harness::tool::context::PermissionAsker for AllowAsker {
+            async fn ask(&self, _r: crate::harness::tool::context::PermissionAskInput) -> bool {
+                true
+            }
+        }
+        struct NoUserAsker;
+        #[async_trait::async_trait]
+        impl crate::harness::tool::context::UserAsker for NoUserAsker {
+            async fn ask(&self, _q: String, _o: Vec<String>) -> Option<String> {
+                None
+            }
+        }
+        ToolContext {
+            session_id: "s".into(),
+            agent: "build".into(),
+            agent_tools: vec![],
+            cwd: PathBufGuard(std::path::PathBuf::from("/tmp")),
+            abort: AbortSignal::new(),
+            permission: StdArc::new(PermissionEngine::default()),
+            asker: StdArc::new(AllowAsker),
+            user_asker: StdArc::new(NoUserAsker),
+            todos: StdArc::new(tokio::sync::RwLock::new(Vec::new())),
+            task_runner: None,
+            events: crate::harness::event::event_channel().0,
+            project_memory: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_turn_timeout_stops_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = StdArc::new(
+            crate::harness::session::store::SessionStore::open(&dir.path().join("test.db"))
+                .unwrap(),
+        );
+        let (tx, _rx) = crate::harness::event::event_channel();
+        let processor = SessionProcessor {
+            provider: StdArc::new(StalledProvider),
+            registry: crate::harness::tool::registry::ToolRegistry::builder().build(),
+            events: tx,
+            store: store.clone(),
+            config: ProcessorConfig {
+                model: "m".into(),
+                max_iterations: 50,
+                max_context_tokens: 100_000,
+                turn_timeout_secs: 1, // 1s so the test is fast
+            },
+        };
+        let mut session = store
+            .create_session("build", &dir.path().to_path_buf())
+            .unwrap();
+        session.messages.push(Message::user("hello"));
+        let agent = crate::harness::agent::AgentSpec {
+            name: "build".into(),
+            description: String::new(),
+            tools: vec![],
+            system_prompt: String::new(),
+            model: None,
+            temperature: None,
+            permission_overrides: Default::default(),
+        };
+        let ctx = test_ctx();
+        let outcome = processor
+            .run_turn(&mut session, &agent, "sys", &ctx)
+            .await
+            .unwrap();
+        assert!(outcome.aborted, "turn should be aborted by watchdog");
+        assert!(
+            outcome.final_text.contains("time limit"),
+            "unexpected final_text: {}",
+            outcome.final_text
+        );
+    }
 }

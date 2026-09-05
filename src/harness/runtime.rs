@@ -12,7 +12,7 @@ use crate::harness::session::store::SessionStore;
 use crate::harness::session::Session;
 use crate::harness::skill::{inject, SkillCatalog};
 use crate::harness::tool::context::{
-    PathBufGuard, PermissionAsker, SubagentRunner, ToolContext, UserAsker,
+    PathBufGuard, PermissionAsker, SubagentRunner, TaskOutcome, ToolContext, UserAsker,
 };
 use crate::harness::tool::registry::ToolRegistry;
 use anyhow::{Context, Result};
@@ -28,6 +28,8 @@ pub struct HarnessConfig {
     pub api_key: String,
     pub max_iterations: usize,
     pub max_context_tokens: usize,
+    /// Wall-clock limit per turn, in seconds.
+    pub turn_timeout_secs: u64,
     pub default_agent: String,
 }
 
@@ -40,6 +42,7 @@ impl Default for HarnessConfig {
             api_key: String::new(),
             max_iterations: 50,
             max_context_tokens: 100_000,
+            turn_timeout_secs: 600,
             default_agent: "build".to_string(),
         }
     }
@@ -61,6 +64,7 @@ impl HarnessConfig {
             api_key: cfg.api_key.clone().unwrap_or_default(),
             max_iterations: cfg.max_iterations,
             max_context_tokens: cfg.max_context_tokens,
+            turn_timeout_secs: cfg.turn_timeout_secs as u64,
             default_agent: "build".to_string(),
         }
     }
@@ -327,6 +331,7 @@ impl SessionRuntime {
         &mut self,
         max_iterations: Option<usize>,
         max_context_tokens: Option<usize>,
+        turn_timeout_secs: Option<u64>,
     ) -> Result<()> {
         if let Some(n) = max_iterations {
             anyhow::ensure!(n > 0, "max_iterations must be > 0");
@@ -336,9 +341,14 @@ impl SessionRuntime {
             anyhow::ensure!(n >= 1000, "max_context_tokens must be at least 1000");
             self.config.max_context_tokens = n;
         }
+        if let Some(n) = turn_timeout_secs {
+            anyhow::ensure!(n >= 30, "turn_timeout_secs must be at least 30");
+            self.config.turn_timeout_secs = n;
+        }
         let mut s = crate::config::GlobalSettings::load();
         s.max_iterations = self.config.max_iterations;
         s.max_context_tokens = self.config.max_context_tokens;
+        s.turn_timeout_secs = self.config.turn_timeout_secs as usize;
         s.provider = self.config.provider.clone();
         s.model = self.config.model.clone();
         s.save().context("failed to persist config.json")?;
@@ -383,6 +393,7 @@ impl SessionRuntime {
         if let Some(tx) = events {
             let _ = tx.send(HarnessEvent::CompactionStarted {
                 session_id: session.id.clone(),
+                parent_session_id: None,
             });
         }
 
@@ -424,6 +435,7 @@ impl SessionRuntime {
                 let _ = tx.send(HarnessEvent::CompactionFinished {
                     session_id: session.id.clone(),
                     summarized_messages: summarized,
+                    parent_session_id: None,
                 });
             }
         }
@@ -452,6 +464,8 @@ impl SessionRuntime {
 
     pub fn delete_session(&self, id: &str) -> Result<()> {
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        // Garbage-collect child (subagent) sessions of the deleted parent.
+        let _ = self.store.delete_children_of(id, &cwd);
         self.store.delete_session(id, &cwd)
     }
 
@@ -512,7 +526,9 @@ impl SessionRuntime {
             todos: Arc::new(tokio::sync::RwLock::new(session.todos.clone())),
             task_runner: Some(Arc::new(TaskRunner {
                 runtime: Arc::new(self.clone_shareable()),
+                parent_session_id: session.id.clone(),
             })),
+            events: events.clone(),
             project_memory: Some(self.project_memory.clone()),
         };
 
@@ -529,6 +545,7 @@ impl SessionRuntime {
                     .unwrap_or_else(|| self.config.model.clone()),
                 max_iterations: self.config.max_iterations,
                 max_context_tokens: self.config.max_context_tokens,
+                turn_timeout_secs: self.config.turn_timeout_secs,
             },
         };
 
@@ -689,13 +706,22 @@ pub fn build_default_registry() -> ToolRegistry {
 }
 
 /// Runs a subagent in a fresh child session, returning its final summary.
+/// Child events are forwarded to the caller's channel (tagged with the child's
+/// session id and the parent session id) so UIs can render subagent activity.
 pub struct TaskRunner {
     pub runtime: Arc<SessionRuntime>,
+    /// Session that spawned the task (used to tag child events).
+    pub parent_session_id: String,
 }
 
 #[async_trait::async_trait]
 impl SubagentRunner for TaskRunner {
-    async fn run_task(&self, agent: String, prompt: String) -> Result<String, String> {
+    async fn run_task(
+        &self,
+        agent: String,
+        prompt: String,
+        events: crate::harness::event::EventSender,
+    ) -> Result<TaskOutcome, String> {
         // Resolve agent to allow "explore" by default.
         let agent = if agent.is_empty() { "explore" } else { &agent };
         let mut child = self
@@ -705,13 +731,18 @@ impl SubagentRunner for TaskRunner {
             .map_err(|e| e.to_string())?;
         child.agent = agent.to_string();
         let child_cwd = child.cwd.clone();
+        // Link the child to this session so UIs can group its events and the
+        // store can garbage-collect orphans when the parent is deleted.
+        self.runtime
+            .store
+            .set_session_parent(&child.id, &child_cwd, Some(&self.parent_session_id))
+            .map_err(|e| e.to_string())?;
 
-        let (tx, _rx) = crate::harness::event::event_channel();
         let result = self
             .runtime
             .prompt(
                 &mut child,
-                &tx,
+                &events,
                 &prompt,
                 crate::harness::tool::context::AbortSignal::new(),
                 None,
@@ -719,8 +750,11 @@ impl SubagentRunner for TaskRunner {
             .await
             .map_err(|e| e.to_string())?;
 
-        let _ = self.runtime.store.delete_session(&child.id, &child_cwd);
-        Ok(result.final_text)
+        Ok(TaskOutcome {
+            final_text: result.final_text,
+            session_id: child.id.clone(),
+            iterations: result.iterations,
+        })
     }
 }
 
@@ -803,6 +837,80 @@ Then use the read tool to read src/main.rs. Report what tools you used.";
                 .map(|m| m.role.as_str().to_string())
                 .collect::<Vec<_>>()
         );
+    }
+
+    /// A fake SubagentRunner that records the event channel it received and
+    /// emits a child event through it (used to verify event propagation).
+    struct RecordingRunner {
+        parent_session_id: String,
+        seen: std::sync::Mutex<Vec<String>>,
+    }
+
+    #[async_trait::async_trait]
+    impl SubagentRunner for RecordingRunner {
+        async fn run_task(
+            &self,
+            _agent: String,
+            _prompt: String,
+            events: crate::harness::event::EventSender,
+        ) -> Result<TaskOutcome, String> {
+            // Emit a child event tagged with a fake child session id.
+            let child_id = "child-1".to_string();
+            let _ = events.send(HarnessEvent::ToolStart {
+                session_id: child_id.clone(),
+                message_id: "m1".into(),
+                tool_id: "t1".into(),
+                name: "grep".into(),
+                input: serde_json::json!({}),
+                parent_session_id: Some(self.parent_session_id.clone()),
+            });
+            self.seen.lock().unwrap().push(child_id);
+            Ok(TaskOutcome {
+                final_text: "done".into(),
+                session_id: "child-1".into(),
+                iterations: 1,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn test_subagent_events_reach_parent_channel() {
+        let (tx, mut rx) = crate::harness::event::event_channel();
+        let runner = RecordingRunner {
+            parent_session_id: "parent-1".into(),
+            seen: std::sync::Mutex::new(Vec::new()),
+        };
+        let outcome = runner
+            .run_task("explore".into(), "p".into(), tx.clone())
+            .await
+            .unwrap();
+        assert_eq!(outcome.session_id, "child-1");
+        assert_eq!(outcome.final_text, "done");
+        drop(tx);
+        // The child event must arrive tagged with the parent session id.
+        let mut found = false;
+        while let Ok(ev) = rx.try_recv() {
+            if let HarnessEvent::ToolStart { .. } = &ev {
+                assert_eq!(ev.parent_session_id(), Some("parent-1"));
+                assert_eq!(ev.session_id(), Some("child-1"));
+                found = true;
+            }
+        }
+        assert!(found, "child event not received on parent channel");
+    }
+
+    #[test]
+    fn test_parent_session_id_helper() {
+        let ev = HarnessEvent::Error {
+            session_id: "s".into(),
+            message: "m".into(),
+            parent_session_id: Some("p".into()),
+        };
+        assert_eq!(ev.parent_session_id(), Some("p"));
+        let ev = HarnessEvent::RunStarted {
+            session_id: "s".into(),
+        };
+        assert_eq!(ev.parent_session_id(), None);
     }
 }
 

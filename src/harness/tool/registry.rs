@@ -141,6 +141,7 @@ mod tests {
             user_asker: Arc::new(tests_helper::NoUserAsker),
             todos: Arc::new(tokio::sync::RwLock::new(Vec::new())),
             task_runner: None,
+            events: crate::harness::event::event_channel().0,
             project_memory: None,
         }
     }

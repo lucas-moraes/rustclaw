@@ -1,6 +1,7 @@
 //! Tool execution context: session info, abort signal, permission/user askers,
 //! and hooks for subagent spawning.
 
+use crate::harness::event::EventSender;
 use crate::harness::permission::{PermissionDecision, PermissionEngine};
 use crate::harness::project::ProjectMemoryStore;
 use crate::harness::session::TodoItem;
@@ -50,7 +51,23 @@ pub trait UserAsker: Send + Sync {
 /// Runs a subagent task (implemented by the runtime; injected to avoid cycles).
 #[async_trait::async_trait]
 pub trait SubagentRunner: Send + Sync {
-    async fn run_task(&self, agent: String, prompt: String) -> Result<String, String>;
+    /// Runs the task in a child session, forwarding its events to `events`
+    /// (tagged with the child's `session_id` and the parent's id).
+    async fn run_task(
+        &self,
+        agent: String,
+        prompt: String,
+        events: crate::harness::event::EventSender,
+    ) -> Result<TaskOutcome, String>;
+}
+
+/// Result of a completed subagent task.
+#[derive(Clone, Debug)]
+pub struct TaskOutcome {
+    pub final_text: String,
+    /// Child session id (persisted with `parent_id` set).
+    pub session_id: String,
+    pub iterations: usize,
 }
 
 /// Everything a tool needs to run, scoped to the current session.
@@ -70,6 +87,9 @@ pub struct ToolContext {
     pub todos: Arc<tokio::sync::RwLock<Vec<TodoItem>>>,
     /// Extra shared state (e.g. task runner installed by the runtime).
     pub task_runner: Option<Arc<dyn SubagentRunner>>,
+    /// Event channel of the current run; subagents forward their events here
+    /// (tagged with their own session id + this session as parent).
+    pub events: EventSender,
     /// Project memory store (SQLite) used by the `remember` tool.
     pub project_memory: Option<Arc<ProjectMemoryStore>>,
 }

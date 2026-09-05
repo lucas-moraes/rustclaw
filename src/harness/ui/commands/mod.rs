@@ -54,16 +54,19 @@ pub async fn handle(
             let c = &runtime.config;
             if arg.is_empty() {
                 out.push(format!(
-                    "settings · iterations {} · context {} · provider {} · model {}",
-                    c.max_iterations, c.max_context_tokens, c.provider, c.model
+                    "settings · iterations {} · context {} · turn_timeout {}s · provider {} · model {}",
+                    c.max_iterations, c.max_context_tokens, c.turn_timeout_secs, c.provider, c.model
                 ));
-                out.push("usage: /settings iterations <n> · context <n>".to_string());
+                out.push(
+                    "usage: /settings iterations <n> · context <n> · turn_timeout <secs>"
+                        .to_string(),
+                );
             } else {
                 let mut parts = arg.split_whitespace();
                 match parts.next() {
                     Some("iterations") => {
                         match parts.next().and_then(|v| v.parse::<usize>().ok()) {
-                            Some(n) => match runtime.update_settings(Some(n), None) {
+                            Some(n) => match runtime.update_settings(Some(n), None, None) {
                                 Ok(()) => out.push(format!("settings · max_iterations = {}", n)),
                                 Err(e) => out.push(format!("[error] {}", e)),
                             },
@@ -71,15 +74,25 @@ pub async fn handle(
                         }
                     }
                     Some("context") => match parts.next().and_then(|v| v.parse::<usize>().ok()) {
-                        Some(n) => match runtime.update_settings(None, Some(n)) {
+                        Some(n) => match runtime.update_settings(None, Some(n), None) {
                             Ok(()) => out.push(format!("settings · max_context_tokens = {}", n)),
                             Err(e) => out.push(format!("[error] {}", e)),
                         },
                         None => out.push("usage: /settings context <tokens>".to_string()),
                     },
-                    Some(other) => {
-                        out.push(format!("unknown setting: {} (iterations · context)", other))
+                    Some("turn_timeout") => {
+                        match parts.next().and_then(|v| v.parse::<u64>().ok()) {
+                            Some(n) => match runtime.update_settings(None, None, Some(n)) {
+                                Ok(()) => out.push(format!("settings · turn_timeout_secs = {}", n)),
+                                Err(e) => out.push(format!("[error] {}", e)),
+                            },
+                            None => out.push("usage: /settings turn_timeout <secs>".to_string()),
+                        }
                     }
+                    Some(other) => out.push(format!(
+                        "unknown setting: {} (iterations · context · turn_timeout)",
+                        other
+                    )),
                     None => {}
                 }
             }
@@ -111,9 +124,10 @@ pub async fn handle(
             if sub.is_empty() {
                 for s in runtime.list_sessions()? {
                     let label = s.title.clone().unwrap_or_else(|| s.preview.clone());
+                    let marker = if s.parent_id.is_some() { "↳ " } else { "" };
                     out.push(format!(
-                        "{}  [{}]  {} msgs — {}",
-                        s.id, s.agent, s.message_count, label
+                        "{}{}  [{}]  {} msgs — {}",
+                        marker, s.id, s.agent, s.message_count, label
                     ));
                 }
                 if out.is_empty() {

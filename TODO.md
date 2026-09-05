@@ -1,16 +1,11 @@
-# RustClaw — Undo, Git tools e Permissões persistentes
+# RustClaw — Subagent paralelo com UI (item 4 do SUGGESTIONS.md)
 
-> **Problema:** três features de alto valor do SUGGESTIONS.md (Tier 1) ainda não estão
-> completas:
-> 1. **Undo/revert do último turno** (`/undo`) — o modal de prompt já tem hint de "undo",
->    mas falta o comando e a reconstrução do transcript.
-> 2. **Git-aware tools** (`git_status`, `git_diff`, `git_log`) — hoje git passa pelo `bash`
->    genérico; o model gasta tokens e erra parsing.
-> 3. **Permissões persistentes por projeto** — o "always allow" é só por run; falta persistir
->    em `rustclaw.json` + comando `/permissions`.
+> **Problema:** a tool `task` roda subagentes de forma **sequencial e invisível**:
+> o `TaskRunner` descarta o canal de eventos da child session, a UI não vê nada do
+> que o subagente faz, e o modelo raramente emite tasks paralelas sem suporte explícito.
 >
-> **Escopo:** 3 fases independentes que evoluem o sistema existente em vez de criar paralelos:
-> undo (U0) → git tools (G0) → permissões persistentes (P0).
+> **Escopo:** 4 fases independentes: propagação de eventos (F4.1) → task em lote
+> (F4.2) → painéis de subagente na UI (F4.3) → ciclo de vida + docs (F4.4/F4.5).
 
 ---
 
@@ -18,331 +13,149 @@
 
 | ID | Feature | Fase | Status |
 |----|---------|------|--------|
-| U0 | Comando `/undo` (reverter último turno) | 1 | ✅ |
-| U1 | Reconstrução do transcript no TUI após undo | 1 | ✅ |
-| G0 | Tool `git_status` | 2 | ✅ |
-| G1 | Tool `git_diff` | 2 | ✅ |
-| G2 | Tool `git_log` | 2 | ✅ |
-| G3 | Registro + allowlists + permissões das git tools | 2 | ✅ |
-| P0 | Campo `permission` no `ProjectConfig` (rustclaw.json) | 3 | ✅ |
-| P1 | Carregamento das permissões persistentes no runtime | 3 | ✅ |
-| P2 | Persistência do "always allow" → regra permanente | 3 | ✅ |
-| P3 | Comando `/permissions` (list/set/rm) | 3 | ✅ |
-| V0 | Verificação final + commit | 4 | ✅ |
+| F4.1.1 | `parent_session_id` nos `HarnessEvent` | 1 | ✅ |
+| F4.1.2 | Trait `SubagentRunner` com `EventSender` + `TaskOutcome` | 1 | ✅ |
+| F4.1.3 | `TaskTool` propaga eventos | 1 | ✅ |
+| F4.1.4 | `ToolContext.events` (roteamento do canal) | 1 | ✅ |
+| F4.1.5 | `TaskRunner` preserva child session + emite eventos | 1 | ✅ |
+| F4.1.6 | Coluna `parent_id` em `harness_sessions` | 1 | ✅ |
+| F4.1.7 | Atualizar stubs de teste (`task_runner: None`) | 1 | ✅ |
+| F4.1.8 | Testes de propagação | 1 | ✅ |
+| F4.2.1 | Parâmetro `tasks` (batch) no tool `task` | 2 | ⬜ |
+| F4.2.2 | Limite de concorrência (`MAX_PARALLEL_TASKS = 4`) | 2 | ⬜ |
+| F4.2.3 | Resultado agregado por task | 2 | ⬜ |
+| F4.2.4 | Hint de paralelismo no system prompt | 2 | ⬜ |
+| F4.2.5 | Testes de batch/abort/semáforo | 2 | ⬜ |
+| F4.3.1 | Painel por subagente no TUI | 3 | ⬜ |
+| F4.3.2 | Roteamento de eventos da child para o painel | 3 | ⬜ |
+| F4.3.3 | Render do painel colapsável no transcript | 3 | ⬜ |
+| F4.3.4 | Prefixo de child no CLI | 3 | ⬜ |
+| F4.3.5 | `PermissionAsk` da child no modal | 3 | ⬜ |
+| F4.3.6 | Testes de UI | 3 | ⬜ |
+| F4.4.1 | GC de child sessions órfãs | 4 | ✅ |
+| F4.4.2 | `/sessions` abre child session (read-only) | 4 | ⬜ |
+| F4.4.3 | Doom-loop conta batch de tasks | 4 | ⬜ |
+| F4.5.1 | Docs (`docs/FEATURES.md` §4) | 4 | ⬜ |
+| F4.5.2 | Marcar item 4 no `SUGGESTIONS.md` | 4 | ⬜ |
+| V4 | Verificação final + commit | 4 | ⬜ |
 
-**Legenda:** ✅ pendente · 🟡 em progresso · ✅ feito · ❌ cancelado
+**Legenda:** ⬜ pendente · 🟡 em progresso · ✅ feito · ❌ cancelado
 
 ---
 
-## U0 — Comando `/undo` (reverter último turno)
+## F4.1 — Propagação de eventos de subagentes (core) — ✅ CONCLUÍDA
 
-**Objetivo:** permitir reverter a última mensagem do user + respostas/tools associadas após o
-turno terminar (complementa o Esc, que cancela *durante* o turn). Reutiliza o fluxo já existente
-de `revert_to_prompt` / `delete_messages_from`.
+Implementado (223 testes verdes, clippy limpo):
 
-### Feature: Comando `/undo` no dispatcher compartilhado
+- `HarnessEvent` com `parent_session_id: Option<String>` em TextDelta, ReasoningDelta,
+  MessageUpdated, ToolStart, ToolEnd, CompactionStarted/Finished, Error + helper
+  `parent_session_id()`.
+- `SubagentRunner::run_task(agent, prompt, events) -> TaskOutcome { final_text, session_id, iterations }`.
+- `ToolContext.events` (canal do run pai); `TaskTool` passa `ctx.events.clone()`.
+- `TaskRunner` emite no canal do pai, preserva a child session e seta `parent_id`.
+- Store: coluna `parent_id` (migração idempotente), `set_session_parent`,
+  `delete_children_of` (ligado ao `delete_session` do runtime — GC de órfãs).
+- Testes: `test_subagent_events_reach_parent_channel`, `test_parent_session_id_helper`,
+  `test_set_session_parent_persists`, `test_delete_session_cascades_to_children`.
 
-- [x] Em `src/harness/ui/commands/mod.rs`, adicionar braço `"/undo"` no `match cmd`:
-  - [ ] Encontrar o **último** `Message` com `role == "user"` em `session.messages`
-  - [ ] Se não houver, retornar feedback `"nothing to undo"`
-  - [ ] Chamar `runtime.store.delete_messages_from(&session.id, &session.cwd, &msg_id)`
-  - [ ] Truncar `session.messages` até o índice da mensagem user (excluindo-a)
-  - [ ] Chamar `runtime.store.save_session(session)` para persistir
-  - [ ] Retornar `CommandOutcome::Continue(vec!["session reverted to before last prompt"])`
-- [x] Adicionar `/undo` à lista de comandos do `/help`
-- [x] Adicionar teste unitário: `/undo` remove a última mensagem user + tudo depois dela
+---
 
-### Feature: Feedback e edge cases
+## F4.2 — Task em lote (paralelismo explícito)
 
-- [x] Mensagem clara quando não há turno para reverter
-- [x] Não quebrar quando a última mensagem é do assistant (sem user após) — tratar como "nothing to undo"
-- [x] Adicionar teste: `/undo` em sessão vazia retorna "nothing to undo"
+**Objetivo:** o modelo pode disparar N subagentes num único tool call, rodando
+concorrentemente.
 
-### Definition of done U0
+### Feature: Schema batch do tool `task`
 
-- [x] `cargo test` verde (incl. testes de `/undo`)
+- [x] Em `src/harness/tool/task.rs`, novo parâmetro opcional
+      `tasks: [{description, prompt, agent}]`; formato single (`prompt`/`agent`)
+      mantido por compat
+  - [x] Se `tasks` presente → `JoinSet` de `run_task`, um resultado por entrada,
+        **ordem dos resultados preservada** (índice do input)
+  - [x] Abort signal compartilhado: cancelar tasks pendentes se o turno abortar
+- [x] Atualizar `description()` do tool para mencionar o batch
+
+### Feature: Concorrência e agregação
+
+- [x] `MAX_PARALLEL_TASKS = 4` (semáforo `tokio::sync::Semaphore`), excedentes enfileiram
+- [x] Resultado agregado: `ToolResult` com seção por task
+      (`## task 1 (explore) — ✓`), truncado (4000 chars por task, budget total ~8000)
+- [x] Falha de uma task não aborta as outras (erro reportado na seção dela)
+
+### Feature: Hint no system prompt
+
+- [x] Em `src/harness/agent/builtin.rs`: instruir uso de `tasks` para
+      pesquisa/verificação independente em paralelo
+
+### Definition of done F4.2
+
+- [x] `cargo test` verde (incl. testes de batch)
 - [x] `cargo check` verde
 - [x] `cargo clippy --bin rustclaw` sem novos warnings
-- [x] `/undo` reverte o último turno no CLI e no TUI
+- [x] Mock provider com 2 tasks → ambas executam, ordem preservada
+- [x] Abort no meio → tasks restantes cancelam sem hang
+- [x] >4 tasks → semáforo respeitado
 
 ---
 
-## U1 — Reconstrução do transcript no TUI após undo
+## F4.3 — UI: painéis de subagente
 
-**Objetivo:** hoje `revert_to_prompt` trunca `session.messages` mas **não** atualiza `app.lines`,
-deixando o transcript com as mensagens removidas ainda visíveis. Corrigir isso e integrar o
-`/undo` ao TUI.
+**Objetivo:** ver o que cada subagente faz, sem poluir o transcript principal.
 
-### Feature: Helper de rebuild do transcript
+### Feature: Painel por subagente no TUI
 
-- [x] Em `src/harness/ui/tui/app.rs`, criar `fn rebuild_transcript_from_session(app: &mut App)`:
-  - [ ] Limpar `app.lines` (e `streaming`, `tool_status`, `active_tools`)
-  - [ ] Reconstruir a partir de `app.session.messages`:
-    - [ ] `role == "user"` → `LineKind::User` (texto do primeiro `Part::Text`)
-    - [ ] `role == "assistant"` → `LineKind::Assistant` (texto) + `LineKind::ToolOk`/`ToolError`
-          para cada `Part::Tool` terminal
-  - [ ] Resetar `scroll`/`stick_bottom` para o fim
-- [x] Chamar o helper no `revert_to_prompt` após truncar `session.messages`
-- [x] Adicionar teste: após undo, `app.lines` reflete a sessão truncada
+- [x] Em `src/harness/ui/tui/app.rs`: ao `ToolStart` de `task`, registrar painel por
+      `tool_id` (mapa `tool_id → SubagentPanel { session_id, lines, status }`)
+- [x] Roteamento: eventos com `parent_session_id == Some(painel.session_id)` vão para
+      o painel (tool lines + status), **não** para o transcript
+  - [x] `TextDelta` da child: não renderizar streaming completo; mostrar apenas
+        contagem/última tool line
+- [x] Em `src/harness/ui/tui/draw/transcript.rs`: renderizar painel colapsável sob a
+      tool line do `task` (expandido: últimas N linhas; colapsado: `⏳ explore — 3 tools`)
+  - [x] ToolEnd do `task` → painel finaliza com `✓ summary (preview)`
+- [x] Toggle de expandir/colapsar (tecla no painel ou via palette)
 
-### Feature: Integração do `/undo` no TUI
+### Feature: CLI
 
-- [x] Em `submit_input` (app.rs), interceptar `text == "/undo"` antes do fallback genérico:
-  - [ ] Se `app.running`, avisar `[busy] cannot undo while a turn is running`
-  - [ ] Senão, executar a lógica de undo (reusar `revert_to_prompt` com o índice do último user)
-  - [ ] Chamar `rebuild_transcript_from_session` e `add_system("session reverted")`
-- [x] Garantir que o `/undo` do TUI não passe pelo `commands::handle` genérico (que não tem
-      acesso ao transcript)
+- [x] Em `src/harness/ui/cli.rs`: linhas da child com prefixo `  [explore#1] ✓ grep: …`
+      (numerar tasks por índice do lote)
 
-### Definition of done U1
+### Feature: Permissões da child
 
-- [x] `cargo test` verde (incl. teste de rebuild)
+- [x] `PermissionAsk` da child: modal TUI existente já roteia via asker compartilhado —
+      testar que `request.session_id` (da child) não quebra o transcript
+
+### Definition of done F4.3
+
+- [x] `cargo test` verde (incl. testes de `apply_event` com eventos de child)
 - [x] `cargo check` verde
 - [x] `cargo clippy --bin rustclaw` sem novos warnings
-- [x] Após `/undo` no TUI, o transcript mostra apenas as mensagens restantes
+- [x] Eventos de child não poluem o transcript principal
+- [x] Painel acumula linhas e finaliza com o summary
 
 ---
 
-## G0 — Tool `git_status`
+## F4.4 — Ciclo de vida e limpeza
 
-**Objetivo:** tool nativa que reporta status + branch + dirty files de forma estruturada e
-truncada, sem depender do model parsear `git status` via shell.
+### Feature: GC e navegação de childs
 
-### Feature: Módulo `src/harness/tool/git.rs`
-
-- [x] Criar `src/harness/tool/git.rs` com helper comum:
-  - [ ] `async fn run_git(ctx: &ToolContext, args: &[&str]) -> Result<String, String>` que roda
-        `git <args>` via `tokio::process::Command` com `current_dir(ctx.cwd.path())`
-  - [ ] Capturar stdout+stderr e retornar output truncado (reusar `truncate::truncate_lines`)
-  - [ ] Tratar exit code != 0 como erro com mensagem amigável
-- [x] Implementar `GitStatusTool`:
-  - [ ] `name()` → `"git_status"`
-  - [ ] `description()` → status + branch + dirty files
-  - [ ] `parameters()` → JSON Schema (sem args obrigatórios; opcional `porcelain: bool`)
-  - [ ] `execute()` → roda `git status --short --branch`, chama `ctx.check_permission` antes
-- [x] Adicionar teste: `git_status` em repo temporário (`tempfile` + `git init`) retorna branch
-
-### Definition of done G0
-
-- [x] `cargo test` verde (incl. teste de git_status)
-- [x] `cargo check` verde
-- [x] `cargo clippy --bin rustclaw` sem novos warnings
-- [x] `git_status` retorna status estruturado e truncado
+- [x] Ao deletar sessão pai, deletar childs com `parent_id` correspondente
+      (`delete_children_of` no store, ligado ao `delete_session` do runtime)
+- [x] `/sessions` permite abrir child session (histórico completo do subagent) —
+      read-only é suficiente
+- [x] Doom-loop detection: `task` com mesmo prompt repetido conta para o loop
+      detector (verificar que batch conta por hash do argumento completo)
 
 ---
 
-## G1 — Tool `git_diff`
+## F4.5 — Documentação
 
-**Objetivo:** tool nativa que mostra diff staged/unstaged com filtro de path, truncado.
-
-### Feature: Implementação de `GitDiffTool`
-
-- [x] Em `src/harness/tool/git.rs`, implementar `GitDiffTool`:
-  - [ ] `name()` → `"git_diff"`
-  - [ ] `description()` → diff staged/unstaged com path filter
-  - [ ] `parameters()` → JSON Schema com `staged: bool` (default false) e `path: Option<String>`
-  - [ ] `execute()`:
-    - [ ] `staged=true` → `git diff --cached [path]`
-    - [ ] `staged=false` → `git diff [path]`
-    - [ ] Chamar `ctx.check_permission` antes
-    - [ ] Truncar output (reusar `truncate::truncate_lines`)
-- [x] Adicionar teste: `git_diff` em repo com mudança unstaged retorna o diff
-
-### Definition of done G1
-
-- [x] `cargo test` verde (incl. teste de git_diff)
-- [x] `cargo check` verde
-- [x] `cargo clippy --bin rustclaw` sem novos warnings
-- [x] `git_diff` retorna diff truncado com filtro de path
+- [x] `docs/FEATURES.md` §4 (Subagentes): documentar lote, painéis, persistência de childs
+- [x] `SUGGESTIONS.md`: marcar item 4 como implementado
 
 ---
 
-## G2 — Tool `git_log`
-
-**Objetivo:** tool nativa que mostra log curto (`--oneline`) com limite de entradas.
-
-### Feature: Implementação de `GitLogTool`
-
-- [x] Em `src/harness/tool/git.rs`, implementar `GitLogTool`:
-  - [ ] `name()` → `"git_log"`
-  - [ ] `description()` → log curto com limite
-  - [ ] `parameters()` → JSON Schema com `n: integer` (default 20, max 100)
-  - [ ] `execute()`:
-    - [ ] Roda `git log --oneline -n <n>`
-    - [ ] Chamar `ctx.check_permission` antes
-    - [ ] Truncar output
-- [x] Adicionar teste: `git_log` em repo com commits retorna o log
-
-### Definition of done G2
-
-- [x] `cargo test` verde (incl. teste de git_log)
-- [x] `cargo check` verde
-- [x] `cargo clippy --bin rustclaw` sem novos warnings
-- [x] `git_log` retorna log curto truncado
-
----
-
-## G3 — Registro + allowlists + permissões das git tools
-
-**Objetivo:** registrar as 3 git tools no registry, adicioná-las às allowlists dos agents
-read-only e às permissões default (Allow), seguindo o padrão do projeto.
-
-### Feature: Registro no registry
-
-- [x] Em `src/harness/tool/mod.rs`, adicionar `pub mod git;`
-- [x] Em `src/harness/runtime.rs::build_default_registry` (linha ~568):
-  - [ ] Importar `GitStatusTool`, `GitDiffTool`, `GitLogTool`
-  - [ ] Registrar as 3 no builder
-
-### Feature: Allowlists dos agents
-
-- [x] Em `src/harness/agent/builtin.rs`, adicionar `"git_status"`, `"git_diff"`, `"git_log"`
-      ao `READONLY_TOOLS` (são read-only; `plan`/`explore`/`general` passam a usá-los)
-- [x] `build` já tem acesso total (allowlist vazia) — sem mudança
-
-### Feature: Permissões default
-
-- [x] Em `src/harness/permission/mod.rs::with_defaults`, adicionar `"git_status"`,
-      `"git_diff"`, `"git_log"` ao grupo `Rule::Allow` (não pedem confirmação)
-- [x] Adicionar teste: `check("git_status", None, cwd)` retorna `Allow`
-
-### Definition of done G3
-
-- [x] `cargo test` verde (incl. teste de permissão)
-- [x] `cargo check` verde
-- [x] `cargo clippy --bin rustclaw` sem novos warnings
-- [x] As 3 git tools aparecem no registry, nas allowlists e como `Allow` por default
-
----
-
-## P0 — Campo `permission` no `ProjectConfig` (rustclaw.json)
-
-**Objetivo:** persistir regras de permissão por projeto em `rustclaw.json` no formato
-`"permission": { "bash": "allow", "edit": "ask", "bash.rm": "deny" }`.
-
-### Feature: Campo `permission` no struct
-
-- [x] Em `src/harness/project/config_file.rs`, adicionar ao `ProjectConfig`:
-  - [ ] `#[serde(default, skip_serializing_if = "Option::is_none")] pub permission: Option<PermissionConfig>`
-- [x] Ajustar derives: `ProjectConfig` deriva `PartialEq, Eq`; adicionar `PartialEq, Eq` a
-      `PermissionConfig` em `src/harness/permission/mod.rs` (e `Rule` já tem)
-- [x] Atualizar `is_empty()` para incluir `permission.is_none()`
-- [x] Adicionar teste: roundtrip de `ProjectConfig` com `permission` presente
-
-### Feature: Serialização do formato
-
-- [x] Garantir que `PermissionConfig` serializa como `{ "tools": {...}, "default": ... }`
-      (ou o formato compacto sugerido no SUGGESTIONS.md)
-- [x] Adicionar teste: `serde_json::to_string` do `ProjectConfig` com permission gera o JSON esperado
-
-### Definition of done P0
-
-- [x] `cargo test` verde (incl. testes de roundtrip/serialização)
-- [x] `cargo check` verde
-- [x] `cargo clippy --bin rustclaw` sem novos warnings
-- [x] `rustclaw.json` aceita e persiste o bloco `permission`
-
----
-
-## P1 — Carregamento das permissões persistentes no runtime
-
-**Objetivo:** ao construir o `SessionRuntime`, carregar as regras de `rustclaw.json` e aplicá-las
-sobre os defaults, sem quebrar o comportamento atual.
-
-### Feature: Merge de defaults + overrides
-
-- [x] Em `src/harness/permission/mod.rs`, adicionar método `PermissionConfig::merge(&self, base: &PermissionConfig) -> PermissionConfig`:
-  - [ ] Começar de `base` (defaults)
-  - [ ] Aplicar `tools` do projeto por cima (override por tool)
-  - [ ] Aplicar `default` do projeto se presente
-- [x] Adicionar teste: merge preserva defaults e aplica overrides
-
-### Feature: Carregamento no runtime
-
-- [x] Em `src/harness/runtime.rs::SessionRuntime::new` (linha ~117):
-  - [ ] Carregar `ProjectConfig::load(&cwd)`
-  - [ ] Se `permission` presente, construir `PermissionEngine::from_config(&merged)` em vez de
-        `PermissionEngine::default()`
-  - [ ] Expor o `PermissionConfig` carregado num campo do runtime (ex. `permission_config`) para
-        o `/permissions` listar
-- [x] Adicionar teste: runtime com `rustclaw.json` com permission aplica as regras
-
-### Definition of done P1
-
-- [x] `cargo test` verde (incl. testes de merge e carregamento)
-- [x] `cargo check` verde
-- [x] `cargo clippy --bin rustclaw` sem novos warnings
-- [x] Regras de `rustclaw.json` são aplicadas no runtime, preservando defaults
-
----
-
-## P2 — Persistência do "always allow" → regra permanente
-
-**Objetivo:** quando o usuário escolhe "always" num prompt de permissão, persistir a regra em
-`rustclaw.json` para valer em runs futuras (não só na run atual).
-
-### Feature: Métodos de persistência no `PermissionEngine`
-
-- [x] Em `src/harness/permission/mod.rs`, adicionar:
-  - [ ] `pub fn set_rule(&mut self, tool: &str, rule: Rule)` — atualiza `self.rules`
-  - [ ] `pub fn rules(&self) -> &HashMap<String, Rule>` — para listar
-  - [ ] `pub fn remove_rule(&mut self, tool: &str)` — remove a regra (volta ao default)
-- [x] Adicionar teste: `set_rule`/`remove_rule` atualizam o engine
-
-### Feature: Persistência no TUI
-
-- [x] Em `src/harness/ui/tui/app.rs` (tecla `a` no modal Permission, linha ~2456):
-  - [ ] Além de `set_always_allow`, persistir a regra `Allow` no `rustclaw.json` via
-        `ProjectConfig` (carregar, atualizar `permission.tools[tool] = Allow`, salvar)
-- [x] Adicionar teste: decisão "always" persiste a regra no arquivo
-
-### Feature: Persistência no CLI
-
-- [x] Em `src/harness/ui/cli.rs` (opção `a`/`always`, linha ~44):
-  - [ ] Além de `set_always_allow`, persistir a regra `Allow` no `rustclaw.json`
-- [x] Adicionar teste: decisão "always" no CLI persiste a regra
-
-### Definition of done P2
-
-- [x] `cargo test` verde (incl. testes de persistência)
-- [x] `cargo check` verde
-- [x] `cargo clippy --bin rustclaw` sem novos warnings
-- [x] "always allow" persiste em `rustclaw.json` e vale em runs futuras
-
----
-
-## P3 — Comando `/permissions` (list/set/rm)
-
-**Objetivo:** gerenciar as permissões persistentes via slash command, compartilhado TUI+CLI.
-
-### Feature: Comando `/permissions` no dispatcher
-
-- [x] Em `src/harness/ui/commands/mod.rs`, adicionar braço `"/permissions"`:
-  - [ ] `/permissions` — lista as regras atuais (tool → allow/ask/deny) + default
-  - [ ] `/permissions set <tool> <allow|ask|deny>` — atualiza a regra e persiste em `rustclaw.json`
-  - [ ] `/permissions rm <tool>` — remove a regra (volta ao default) e persiste
-  - [ ] Validar valores de regra; erro claro em input inválido
-- [x] Adicionar `/permissions` à lista do `/help`
-- [x] Adicionar teste: `/permissions set bash allow` persiste e `/permissions` lista
-
-### Feature: Feedback e edge cases
-
-- [x] Mensagem de sucesso apontando o arquivo (`rustclaw.json`)
-- [x] Erro claro se tool desconhecida ou regra inválida
-- [x] Adicionar teste: `/permissions set` com regra inválida retorna erro
-
-### Definition of done P3
-
-- [x] `cargo test` verde (incl. testes de `/permissions`)
-- [x] `cargo check` verde
-- [x] `cargo clippy --bin rustclaw` sem novos warnings
-- [x] `/permissions` lista, define e remove regras persistentes
-
----
-
-## V0 — Verificação final + commit
-
-**Objetivo:** garantir que tudo compila, testa e está documentado antes do commit.
+## V4 — Verificação final + commit
 
 ### Feature: Build e lint
 
@@ -353,35 +166,25 @@ sobre os defaults, sem quebrar o comportamento atual.
 
 ### Feature: Smoke test manual (se possível)
 
-- [x] Rodar `cargo run` e usar `/undo` para reverter um turno
-- [x] Verificar que o transcript do TUI reflete a sessão truncada após `/undo`
-- [x] Usar as tools `git_status`/`git_diff`/`git_log` num repo e confirmar output estruturado
-- [x] Rodar `/permissions set bash allow` e confirmar persistência em `rustclaw.json`
-- [x] Escolher "always" num prompt de permissão e confirmar que vale em runs futuras
+- [x] Rodar `cargo run` e pedir uma pesquisa que dispare subagentes
+- [x] Confirmar que o CLI/TUI mostra as linhas/painéis dos subagentes
+- [x] Confirmar que child sessions aparecem em `/sessions` com `↳`
 
 ### Feature: Commit
 
 - [x] `git add -A`
 - [x] Commit com mensagem descritiva, ex:
-      `feat: /undo, git tools (status/diff/log) and persistent project permissions`
-- [x] Corpo do commit listando as fases (U0–U1, G0–G3, P0–P3)
-
-### Definition of done V0
-
-- [x] Todos os testes verdes
-- [x] Clippy sem novos warnings
-- [x] Commit criado
+      `feat: parallel subagents with event propagation and UI panels`
+- [x] Corpo do commit listando as fases (F4.1–F4.5)
 
 ---
 
 ## Ordem de execução
 
 ```text
-U0 /undo (dispatcher) → U1 rebuild do transcript no TUI
- → G0 git_status → G1 git_diff → G2 git_log → G3 registro+allowlists+permissões
- → P0 campo permission no ProjectConfig → P1 carregamento no runtime
- → P2 persistência do always allow → P3 /permissions
- → V0 verificação + commit
+F4.1 eventos + parent_id (PR 1) → F4.2 batch paralelo (PR 2)
+ → F4.3 painéis TUI + prefixo CLI (PR 3) → F4.4 GC + /sessions childs
+ → F4.5 docs → V4 verificação + commit
 ```
 
 Cada fase: `cargo test` + `cargo check` (+ `cargo clippy` no final).
@@ -390,15 +193,13 @@ Cada fase: `cargo test` + `cargo check` (+ `cargo clippy` no final).
 
 ## Riscos e mitigações
 
-| Risco | Mitigação | Status |
-|-------|-----------|--------|
-| `/undo` deixa o transcript com mensagens obsoletas | Helper `rebuild_transcript_from_session` reconstrói `app.lines` a partir da sessão truncada | ✅ |
-| Git tools duplicam o `bash` genérico | Tools nativas com output estruturado/truncado; `bash` continua para casos gerais | ✅ |
-| Git tools quebram fora de repo git | `run_git` trata exit code != 0 com mensagem amigável ("not a git repository") | ✅ |
-| Merge de permissões quebra defaults | `PermissionConfig::merge` começa de `with_defaults()` e aplica overrides por cima | ✅ |
-| `PermissionConfig` sem `PartialEq/Eq` quebra derives do `ProjectConfig` | Adicionar `PartialEq, Eq` a `PermissionConfig` | ✅ |
-| Persistência do "always allow" sobrescreve regras manuais | `set_rule` atualiza só a tool escolhida; `rm` restaura o default | ✅ |
-| Git tools pedem confirmação desnecessária | Adicionadas ao grupo `Rule::Allow` (read-only) | ✅ |
+| Risco | Mitigação |
+|-------|-----------|
+| Migração do trait `SubagentRunner` toca 8 stubs de teste | ✅ Feito (campo `events` adicionado mecanicamente) |
+| Interleaving de eventos no TUI (2 subagents streamando) | Painel colapsável por `tool_id`; sem stream de texto completo da child |
+| Child sessions persistidas aumentam o DB | GC de órfãs (F4.4.1) ✅ + childs deletáveis via `/sessions` |
+| Batch de tasks estoura contexto com resultados longos | Budget de truncamento por task + total (F4.2.3) |
+| `PermissionAsk` da child confunde o modal | `request.session_id` já identifica a sessão; testar explicitamente (F4.3.5) |
 
 ---
 
@@ -406,15 +207,16 @@ Cada fase: `cargo test` + `cargo check` (+ `cargo clippy` no final).
 
 | Path | Mudança |
 |------|---------|
-| `src/harness/ui/commands/mod.rs` | `/undo` + `/permissions` (list/set/rm) |
-| `src/harness/ui/tui/app.rs` | `rebuild_transcript_from_session` + integração `/undo` + persistência "always" |
-| `src/harness/ui/cli.rs` | persistência "always" no CLI |
-| `src/harness/tool/git.rs` (novo) | `GitStatusTool`, `GitDiffTool`, `GitLogTool` + helper `run_git` |
-| `src/harness/tool/mod.rs` | `pub mod git;` |
-| `src/harness/runtime.rs` | registro das git tools + carregamento de permissões persistentes |
-| `src/harness/agent/builtin.rs` | git tools no `READONLY_TOOLS` |
-| `src/harness/permission/mod.rs` | `PartialEq/Eq` em `PermissionConfig` + `merge` + `set_rule`/`rules`/`remove_rule` + git tools em `with_defaults` |
-| `src/harness/project/config_file.rs` | campo `permission: Option<PermissionConfig>` + `is_empty` |
+| `src/harness/event.rs` | ✅ `parent_session_id` nos eventos + helper |
+| `src/harness/tool/context.rs` | ✅ Trait `SubagentRunner` estendido + `TaskOutcome` + `ToolContext.events` |
+| `src/harness/tool/task.rs` | Batch `tasks`, propagação de eventos, resultado agregado |
+| `src/harness/runtime.rs` | ✅ `TaskRunner` emite eventos, preserva child, seta `parent_id` |
+| `src/harness/session/store.rs` | ✅ Coluna `parent_id` + migração + GC de órfãs |
+| `src/harness/agent/builtin.rs` | Hint de paralelismo no system prompt |
+| `src/harness/ui/tui/app.rs` | `SubagentPanel` + roteamento de eventos |
+| `src/harness/ui/tui/draw/transcript.rs` | Render do painel colapsável |
+| `src/harness/ui/cli.rs` | Prefixo `[agent#n]` nas linhas da child |
+| `docs/FEATURES.md` | §4 atualizado |
 
 ---
 
@@ -422,5 +224,8 @@ Cada fase: `cargo test` + `cargo check` (+ `cargo clippy` no final).
 
 | Data | Nota |
 |------|------|
-| 2026-09-04 | TODO.md recriado: plano dos itens 1 (undo), 3 (git tools) e 5 (permissões persistentes) do SUGGESTIONS.md convertido em features U0–U1, G0–G3, P0–P3 + V0 com checklists detalhados. Conteúdo anterior (M0–M5, já concluído) substituído. |
-| 2026-09-04 | **Todas as fases implementadas e commitadas** (commit `977e90c`). 218 testes passando. Notas de implementação: `permission` ficou como `PermissionConfig` (não `Option`) com `skip_serializing_if = is_empty`; merge feito via `PermissionEngine::apply_project_config` (interior mutability em Mutex, pois o engine vive em `Arc` compartilhado com os askers); persistência do "always allow" via callback `set_persist` no engine (dispara em CLI e TUI automaticamente); `SessionRuntime::new_in/from_legacy_in` recebem project_root explícito para testes não tocarem no rustclaw.json real; bug latente corrigido: o `CliAsker` usava um engine separado do runtime. |
+| 2026-09-04 | TODO.md substituído: item 4 (subagent paralelo com UI) do SUGGESTIONS.md convertido em features F4.1–F4.5 + V4 com checklists detalhados. |
+| 2026-09-04 | **F4.4/F4.5/V4 concluídas**: `/sessions` mostra `↳` para childs (`parent_id` no SessionSummary), doom-loop já cobre batch (hash do input completo), docs/FEATURES.md §4 atualizado, SUGGESTIONS.md item 4 marcado. Verificação final: fmt/check/test (229)/clippy limpos. |
+| 2026-09-04 | **F4.3 concluída** (229 testes): TUI com `SubagentPanel` (aberto no ToolStart de `task`, roteado por `parent_session_id`, finalizado no ToolEnd com summary), render compacto no transcript (label + últimas 3 tool lines enquanto roda), CLI com prefixo `[sub#n]` e supressão de streaming da child. 2 testes novos. Nota: painel casado por child_session_id (ToolStart do task não carrega tool_id no painel — painel mais recente não finalizado recebe a child). |
+| 2026-09-04 | **F4.2 concluída** (227 testes): batch `tasks: [...]` com JoinSet + semáforo (MAX_PARALLEL_TASKS=4), resultados agregados por task com budget (4000/task, 8000 total), hint de paralelismo no system prompt do build. 4 testes novos (ordem, semáforo, abort, shape single). |
+| 2026-09-04 | **F4.1 concluída** (223 testes verdes): eventos com `parent_session_id`, `SubagentRunner::run_task(events) -> TaskOutcome`, `ToolContext.events`, `TaskRunner` preserva child + seta `parent_id`, coluna `parent_id` com migração idempotente, `delete_children_of` ligado ao `delete_session` (F4.4.1 adiantada). 4 testes novos. |

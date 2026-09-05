@@ -81,11 +81,35 @@ fn blocking_read_line() -> Option<String> {
 }
 
 /// Consumes events and renders them to the terminal.
+/// Events from subagent (child) sessions are prefixed with `[agent#n]` so the
+/// parent transcript stays readable.
 pub async fn print_events(mut rx: EventReceiver) {
     let mut streaming_text = false;
+    let mut child_labels: std::collections::HashMap<String, String> = Default::default();
+    let mut next_child = 1usize;
     while let Some(event) = rx.recv().await {
+        // Child sessions: prefix + suppress text streaming (only tool activity).
+        let child_prefix = match event.parent_session_id() {
+            Some(_) => {
+                let sid = event.session_id().unwrap_or("").to_string();
+                let label = child_labels
+                    .entry(sid)
+                    .or_insert_with(|| {
+                        let n = next_child;
+                        next_child += 1;
+                        format!("[sub#{}]", n)
+                    })
+                    .clone();
+                format!("  {} ", label)
+            }
+            None => String::new(),
+        };
         match event {
             HarnessEvent::TextDelta { delta, .. } => {
+                if !child_prefix.is_empty() {
+                    // Child text is not streamed; the summary arrives via ToolEnd.
+                    continue;
+                }
                 if !streaming_text {
                     print!("\nassistant: ");
                     streaming_text = true;
@@ -108,7 +132,11 @@ pub async fn print_events(mut rx: EventReceiver) {
                     println!();
                     streaming_text = false;
                 }
-                println!("\n● {}", tool_card(&name, &input.to_string()));
+                println!(
+                    "\n{}● {}",
+                    child_prefix,
+                    tool_card(&name, &input.to_string())
+                );
                 flush_stdout();
             }
             HarnessEvent::ToolEnd {
@@ -123,23 +151,23 @@ pub async fn print_events(mut rx: EventReceiver) {
                     _ => "·",
                 };
                 let label = if title.is_empty() { name } else { title };
-                println!("  {} {}", mark, label);
+                println!("{}{} {}", child_prefix, mark, label);
                 flush_stdout();
             }
             HarnessEvent::CompactionStarted { .. } => {
-                println!("\n[compacting context…]");
+                println!("\n{}[compacting context…]", child_prefix);
             }
             HarnessEvent::CompactionFinished {
                 summarized_messages,
                 ..
             } => {
                 println!(
-                    "[compaction: summarized {} message(s)]",
-                    summarized_messages
+                    "{}[compaction: summarized {} message(s)]",
+                    child_prefix, summarized_messages
                 );
             }
             HarnessEvent::Error { message, .. } => {
-                println!("\n[error] {}", message);
+                println!("\n{}[error] {}", child_prefix, message);
             }
             HarnessEvent::PermissionAsk { .. } | HarnessEvent::PermissionResolved { .. } => {}
             HarnessEvent::RunStarted { .. }

@@ -71,6 +71,33 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
             }
         }
     }
+    // Live subagent panels: one compact block per running/finished `task` call.
+    for (_, panel) in app.subagent_panels.iter().rev().take(3) {
+        let base = rows.len();
+        rows.push(Line::from(vec![
+            Span::styled("  ┊ ".to_string(), Style::default().fg(theme.border)),
+            Span::styled(
+                App::subagent_panel_label(panel),
+                Style::default().fg(if panel.finished {
+                    theme.success
+                } else {
+                    theme.warn
+                }),
+            ),
+        ]));
+        // Show the last few activity lines while running.
+        if !panel.finished {
+            for l in panel.lines.iter().rev().take(3).rev() {
+                rows.push(Line::from(vec![
+                    Span::styled("  ┊   ".to_string(), Style::default().fg(theme.border)),
+                    Span::styled(l.clone(), Style::default().fg(theme.text_dim)),
+                ]));
+            }
+        }
+        for _ in base..rows.len() {
+            row_map.push(app.lines.len());
+        }
+    }
     app.transcript_row_map = row_map;
     // Plain-text snapshot for mouse hit-testing + clipboard extraction.
     app.transcript_plain_rows = rows.iter().map(selection::line_to_plain).collect();

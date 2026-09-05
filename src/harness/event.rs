@@ -25,17 +25,21 @@ pub enum HarnessEvent {
         session_id: String,
         message_id: String,
         delta: String,
+        /// Set when the event comes from a subagent (child session).
+        parent_session_id: Option<String>,
     },
     /// Streaming reasoning delta for the in-flight assistant message.
     ReasoningDelta {
         session_id: String,
         message_id: String,
         delta: String,
+        parent_session_id: Option<String>,
     },
     /// Assistant message finalized/persisted (text, reasoning or tool parts).
     MessageUpdated {
         session_id: String,
         message_id: String,
+        parent_session_id: Option<String>,
     },
     ToolStart {
         session_id: String,
@@ -43,6 +47,7 @@ pub enum HarnessEvent {
         tool_id: String,
         name: String,
         input: Value,
+        parent_session_id: Option<String>,
     },
     ToolEnd {
         session_id: String,
@@ -54,6 +59,7 @@ pub enum HarnessEvent {
         output_preview: String,
         /// Optional unified diff from tools that mutate files (edit/write).
         diff: Option<String>,
+        parent_session_id: Option<String>,
     },
     PermissionAsk {
         request: PermissionRequest,
@@ -64,14 +70,17 @@ pub enum HarnessEvent {
     },
     CompactionStarted {
         session_id: String,
+        parent_session_id: Option<String>,
     },
     CompactionFinished {
         session_id: String,
         summarized_messages: usize,
+        parent_session_id: Option<String>,
     },
     Error {
         session_id: String,
         message: String,
+        parent_session_id: Option<String>,
     },
 }
 
@@ -86,11 +95,42 @@ impl HarnessEvent {
             | HarnessEvent::MessageUpdated { session_id, .. }
             | HarnessEvent::ToolStart { session_id, .. }
             | HarnessEvent::ToolEnd { session_id, .. }
-            | HarnessEvent::CompactionStarted { session_id }
+            | HarnessEvent::CompactionStarted { session_id, .. }
             | HarnessEvent::CompactionFinished { session_id, .. }
             | HarnessEvent::Error { session_id, .. } => Some(session_id),
             HarnessEvent::PermissionAsk { request } => Some(&request.session_id),
             HarnessEvent::PermissionResolved { .. } => None,
+        }
+    }
+
+    /// The parent session when this event comes from a subagent (child session).
+    pub fn parent_session_id(&self) -> Option<&str> {
+        match self {
+            HarnessEvent::TextDelta {
+                parent_session_id, ..
+            }
+            | HarnessEvent::ReasoningDelta {
+                parent_session_id, ..
+            }
+            | HarnessEvent::MessageUpdated {
+                parent_session_id, ..
+            }
+            | HarnessEvent::ToolStart {
+                parent_session_id, ..
+            }
+            | HarnessEvent::ToolEnd {
+                parent_session_id, ..
+            }
+            | HarnessEvent::CompactionStarted {
+                parent_session_id, ..
+            }
+            | HarnessEvent::CompactionFinished {
+                parent_session_id, ..
+            }
+            | HarnessEvent::Error {
+                parent_session_id, ..
+            } => parent_session_id.as_deref(),
+            _ => None,
         }
     }
 }

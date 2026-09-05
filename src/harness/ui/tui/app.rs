@@ -217,6 +217,22 @@ impl ToolBatch {
     }
 }
 
+/// Live view of one subagent (child session), keyed by the `task` tool call id.
+#[derive(Clone, Debug)]
+pub struct SubagentPanel {
+    /// Child session id (events are routed by `parent_session_id`).
+    pub child_session_id: String,
+    /// Agent name shown in the header (parsed from the tool input).
+    pub agent: String,
+    /// Compact activity lines (tool names + status marks).
+    pub lines: Vec<String>,
+    pub done: usize,
+    pub failed: usize,
+    pub finished: bool,
+    /// Final summary preview (set when the `task` tool completes).
+    pub summary: Option<String>,
+}
+
 /// App UI state.
 pub struct App {
     pub runtime: SessionRuntime,
@@ -284,6 +300,8 @@ pub struct App {
     pub skills_idx: usize,
     pub events_tx: crate::harness::event::EventSender,
     pub events_rx: crate::harness::event::EventReceiver,
+    /// Live subagent panels, keyed by the `task` tool call id.
+    pub subagent_panels: Vec<(String, SubagentPanel)>,
     pub permission_rx: mpsc::UnboundedReceiver<PermissionRequest>,
     pub question_rx: mpsc::UnboundedReceiver<QuestionRequest>,
 }
@@ -648,6 +666,7 @@ impl App {
             skills_idx: 0,
             events_tx,
             events_rx,
+            subagent_panels: Vec::new(),
             permission_rx,
             question_rx,
         }
@@ -778,6 +797,12 @@ impl App {
     }
 
     pub fn apply_event(&mut self, ev: HarnessEvent) {
+        // Subagent (child) events are routed into their panel instead of the
+        // main transcript, keeping the parent view clean.
+        if ev.parent_session_id().is_some() {
+            self.apply_subagent_event(&ev);
+            return;
+        }
         match ev {
             HarnessEvent::TextDelta { delta, .. } => {
                 self.streaming
@@ -799,9 +824,29 @@ impl App {
                 self.active_tools.push(ActiveTool { name: name.clone() });
                 let batch = self.tool_status.get_or_insert_with(ToolBatch::default);
                 batch.start(&name, preview(&input.to_string(), 60));
+                // A `task` call opens a live subagent panel.
+                if name == "task" {
+                    let agent = input["agent"].as_str().unwrap_or("explore").to_string();
+                    self.subagent_panels.push((
+                        String::new(), // tool_id unknown here; matched on ToolEnd
+                        SubagentPanel {
+                            child_session_id: String::new(),
+                            agent,
+                            lines: Vec::new(),
+                            done: 0,
+                            failed: 0,
+                            finished: false,
+                            summary: None,
+                        },
+                    ));
+                }
             }
             HarnessEvent::ToolEnd {
-                name, status, diff, ..
+                name,
+                status,
+                diff,
+                output_preview,
+                ..
             } => {
                 self.active_tools.retain(|t| t.name != name);
                 if let Some(batch) = self.tool_status.as_mut() {
@@ -814,6 +859,22 @@ impl App {
                     // Batch complete → emit a single summary line.
                     if batch.pending == 0 {
                         self.finish_tool_batch();
+                    }
+                }
+                // A finished `task` call finalizes the newest open panel.
+                if name == "task" {
+                    if let Some((_, panel)) = self
+                        .subagent_panels
+                        .iter_mut()
+                        .rev()
+                        .find(|(_, p)| !p.finished)
+                    {
+                        panel.finished = true;
+                        panel.summary = Some(if output_preview.is_empty() {
+                            String::new()
+                        } else {
+                            output_preview.clone()
+                        });
                     }
                 }
                 if let Some(d) = diff {
@@ -855,6 +916,82 @@ impl App {
             }
             HarnessEvent::UserMessage { .. } => {}
             HarnessEvent::PermissionAsk { .. } | HarnessEvent::PermissionResolved { .. } => {}
+        }
+    }
+
+    /// Routes a child-session event into its subagent panel (never the transcript).
+    fn apply_subagent_event(&mut self, ev: &HarnessEvent) {
+        let child = ev.session_id().unwrap_or("").to_string();
+        // Find (or create) the open panel for this child session.
+        let pos = self
+            .subagent_panels
+            .iter()
+            .position(|(_, p)| p.child_session_id == child);
+        let idx = match pos {
+            Some(i) => i,
+            None => {
+                // Attach to the newest unfinished panel (task ToolStart arrives
+                // before the child's first event).
+                match self
+                    .subagent_panels
+                    .iter()
+                    .rposition(|(_, p)| !p.finished && p.child_session_id.is_empty())
+                {
+                    Some(i) => {
+                        self.subagent_panels[i].1.child_session_id = child.clone();
+                        i
+                    }
+                    None => return,
+                }
+            }
+        };
+        let panel = &mut self.subagent_panels[idx].1;
+        match ev {
+            HarnessEvent::ToolStart { name, .. } => {
+                panel.lines.push(format!("· {}", name));
+            }
+            HarnessEvent::ToolEnd {
+                name,
+                status,
+                title,
+                ..
+            } => {
+                let mark = match status {
+                    ToolStatus::Completed => {
+                        panel.done += 1;
+                        "✓"
+                    }
+                    ToolStatus::Error => {
+                        panel.failed += 1;
+                        "✗"
+                    }
+                    _ => "·",
+                };
+                let label = if title.is_empty() { name } else { title };
+                panel.lines.push(format!("{} {}", mark, label));
+            }
+            HarnessEvent::Error { message, .. } => {
+                panel.lines.push(format!("✗ {}", message));
+            }
+            // Text/reasoning deltas are not streamed into the panel; the final
+            // summary arrives via the parent's `task` ToolEnd.
+            _ => {}
+        }
+    }
+
+    /// Compact one-line status of a subagent panel: `⏳ explore — 3 tools`.
+    pub fn subagent_panel_label(panel: &SubagentPanel) -> String {
+        let mark = if panel.finished { "✓" } else { "⏳" };
+        let tools = panel.done + panel.failed;
+        match &panel.summary {
+            Some(s) if !s.is_empty() => format!(
+                "{} {} — {} tools · {}",
+                mark,
+                panel.agent,
+                tools,
+                preview(s, 80)
+            ),
+            _ => format!("{} {} — {} tools", mark, panel.agent, tools),
         }
     }
 
@@ -2150,17 +2287,17 @@ fn handle_settings_command(app: &mut App, text: &str) {
         None => {
             let c = &app.runtime.config;
             app.add_system(&format!(
-                "settings · iterations {} · context {} · theme {} · provider {} · model {}",
-                c.max_iterations, c.max_context_tokens, app.theme.name, c.provider, c.model
+                "settings · iterations {} · context {} · turn_timeout {}s · theme {} · provider {} · model {}",
+                c.max_iterations, c.max_context_tokens, c.turn_timeout_secs, app.theme.name, c.provider, c.model
             ));
-            app.add_system("usage: /settings iterations <n> · context <n> · theme <name>");
+            app.add_system("usage: /settings iterations <n> · context <n> · turn_timeout <secs> · theme <name>");
         }
         Some("iterations") => {
             let Some(n) = parts.next().and_then(|v| v.parse::<usize>().ok()) else {
                 app.add_system("usage: /settings iterations <n> (e.g. 50)");
                 return;
             };
-            match app.runtime.update_settings(Some(n), None) {
+            match app.runtime.update_settings(Some(n), None, None) {
                 Ok(()) => app.add_system(&format!("settings · max_iterations = {}", n)),
                 Err(e) => app.add_system(&format!("[error] {}", e)),
             }
@@ -2170,8 +2307,18 @@ fn handle_settings_command(app: &mut App, text: &str) {
                 app.add_system("usage: /settings context <tokens> (e.g. 100000)");
                 return;
             };
-            match app.runtime.update_settings(None, Some(n)) {
+            match app.runtime.update_settings(None, Some(n), None) {
                 Ok(()) => app.add_system(&format!("settings · max_context_tokens = {}", n)),
+                Err(e) => app.add_system(&format!("[error] {}", e)),
+            }
+        }
+        Some("turn_timeout") => {
+            let Some(n) = parts.next().and_then(|v| v.parse::<u64>().ok()) else {
+                app.add_system("usage: /settings turn_timeout <secs> (e.g. 600)");
+                return;
+            };
+            match app.runtime.update_settings(None, None, Some(n)) {
+                Ok(()) => app.add_system(&format!("settings · turn_timeout_secs = {}", n)),
                 Err(e) => app.add_system(&format!("[error] {}", e)),
             }
         }
@@ -3251,5 +3398,96 @@ mod input_tests {
         assert!(!app.lines.iter().any(|l| l.text.contains("stale line")));
         // Tool line carries the title.
         assert!(app.lines.iter().any(|l| l.text.contains("read x")));
+    }
+
+    #[test]
+    fn test_subagent_events_routed_to_panel_not_transcript() {
+        let mut app = App::inline_for_tests("");
+        let before = app.lines.len();
+
+        // Parent: a `task` tool starts → opens a panel.
+        app.apply_event(HarnessEvent::ToolStart {
+            session_id: "parent".into(),
+            message_id: "m".into(),
+            tool_id: "t1".into(),
+            name: "task".into(),
+            input: serde_json::json!({"agent": "explore", "prompt": "p"}),
+            parent_session_id: None,
+        });
+        assert_eq!(app.subagent_panels.len(), 1);
+        assert_eq!(app.subagent_panels[0].1.agent, "explore");
+
+        // Child events (tagged with parent_session_id) go to the panel.
+        app.apply_event(HarnessEvent::ToolStart {
+            session_id: "child-1".into(),
+            message_id: "cm".into(),
+            tool_id: "ct1".into(),
+            name: "grep".into(),
+            input: serde_json::json!({}),
+            parent_session_id: Some("parent".into()),
+        });
+        app.apply_event(HarnessEvent::ToolEnd {
+            session_id: "child-1".into(),
+            message_id: "cm".into(),
+            tool_id: "ct1".into(),
+            name: "grep".into(),
+            status: ToolStatus::Completed,
+            title: "grep: 3 matches".into(),
+            output_preview: String::new(),
+            diff: None,
+            parent_session_id: Some("parent".into()),
+        });
+        // Child text deltas must NOT stream into the transcript.
+        app.apply_event(HarnessEvent::TextDelta {
+            session_id: "child-1".into(),
+            message_id: "cm".into(),
+            delta: "child text".into(),
+            parent_session_id: Some("parent".into()),
+        });
+
+        let panel = &app.subagent_panels[0].1;
+        assert_eq!(panel.child_session_id, "child-1");
+        assert_eq!(panel.done, 1);
+        assert!(panel.lines.iter().any(|l| l.contains("grep: 3 matches")));
+        // Transcript untouched by child events.
+        assert!(
+            !app.lines.iter().any(|l| l.text.contains("child text")),
+            "child events leaked into transcript"
+        );
+        assert!(!app.streaming.is_some());
+
+        // Parent ToolEnd for `task` finalizes the panel with the summary.
+        app.apply_event(HarnessEvent::ToolEnd {
+            session_id: "parent".into(),
+            message_id: "m".into(),
+            tool_id: "t1".into(),
+            name: "task".into(),
+            status: ToolStatus::Completed,
+            title: "task (explore)".into(),
+            output_preview: "Subagent `explore` result:\nfound 3 files".into(),
+            diff: None,
+            parent_session_id: None,
+        });
+        let panel = &app.subagent_panels[0].1;
+        assert!(panel.finished);
+        assert!(panel.summary.as_deref().unwrap().contains("found 3 files"));
+        let label = App::subagent_panel_label(panel);
+        assert!(label.starts_with("✓ explore"));
+        assert!(label.contains("found 3 files"));
+    }
+
+    #[test]
+    fn test_subagent_panel_label_running() {
+        let panel = SubagentPanel {
+            child_session_id: "c".into(),
+            agent: "explore".into(),
+            lines: vec!["· grep".into(), "✓ grep: 2".into()],
+            done: 1,
+            failed: 0,
+            finished: false,
+            summary: None,
+        };
+        let label = App::subagent_panel_label(&panel);
+        assert_eq!(label, "⏳ explore — 1 tools");
     }
 }

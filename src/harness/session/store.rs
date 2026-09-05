@@ -26,6 +26,8 @@ pub struct SessionSummary {
     pub preview: String,
     /// Optional user-defined title (falls back to `preview`).
     pub title: Option<String>,
+    /// Set when this is a subagent (child) session.
+    pub parent_id: Option<String>,
 }
 
 impl SessionStore {
@@ -86,6 +88,23 @@ impl SessionStore {
         if has_title == 0 {
             conn.execute(&format!("ALTER TABLE {sessions} ADD COLUMN title TEXT"), [])
                 .context("failed to add title column")?;
+        }
+        // Add the optional parent_id column (subagent child sessions).
+        let has_parent: i64 = conn
+            .query_row(
+                &format!(
+                    "SELECT COUNT(*) FROM pragma_table_info('{sessions}') WHERE name='parent_id'"
+                ),
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(1);
+        if has_parent == 0 {
+            conn.execute(
+                &format!("ALTER TABLE {sessions} ADD COLUMN parent_id TEXT"),
+                [],
+            )
+            .context("failed to add parent_id column")?;
         }
         Ok(())
     }
@@ -425,7 +444,7 @@ impl SessionStore {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
             .prepare(&format!(
-                "SELECT s.id, s.agent, s.cwd, s.created_at, s.updated_at, s.title,
+                "SELECT s.id, s.agent, s.cwd, s.created_at, s.updated_at, s.title, s.parent_id,
                         (SELECT COUNT(*) FROM {messages_t} m WHERE m.session_id = s.id) AS msg_count,
                         (SELECT m2.parts_json FROM {messages_t} m2
                           WHERE m2.session_id = s.id AND m2.role = 'user'
@@ -442,14 +461,15 @@ impl SessionStore {
                     r.get::<_, String>(3)?,
                     r.get::<_, String>(4)?,
                     r.get::<_, Option<String>>(5)?,
-                    r.get::<_, i64>(6)?,
-                    r.get::<_, Option<String>>(7)?,
+                    r.get::<_, Option<String>>(6)?,
+                    r.get::<_, i64>(7)?,
+                    r.get::<_, Option<String>>(8)?,
                 ))
             })
             .context("failed to query sessions")?;
         let mut out = Vec::new();
         for row in rows {
-            let (id, agent, cwd, created_at, updated_at, title, msg_count, first_user) =
+            let (id, agent, cwd, created_at, updated_at, title, parent_id, msg_count, first_user) =
                 row.context("failed to read session row")?;
             let preview = first_user
                 .and_then(|pj| serde_json::from_str::<Vec<Part>>(&pj).ok())
@@ -468,6 +488,7 @@ impl SessionStore {
                 message_count: msg_count as usize,
                 preview: crate::harness::session::preview(&preview, 80),
                 title,
+                parent_id,
             });
         }
         Ok(out)
@@ -484,6 +505,49 @@ impl SessionStore {
         )
         .context("failed to set session title")?;
         Ok(())
+    }
+
+    /// Links a child (subagent) session to its parent, or clears the link.
+    pub fn set_session_parent(&self, id: &str, cwd: &Path, parent: Option<&str>) -> Result<()> {
+        self.ensure_project(cwd)?;
+        let sessions_t = table_name(cwd, "sessions");
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            &format!("UPDATE {sessions_t} SET parent_id = ?2 WHERE id = ?1"),
+            params![id, parent],
+        )
+        .context("failed to set session parent")?;
+        Ok(())
+    }
+
+    /// Deletes child (subagent) sessions of `parent_id` (GC of orphans).
+    pub fn delete_children_of(&self, parent_id: &str, cwd: &Path) -> Result<Vec<String>> {
+        self.ensure_project(cwd)?;
+        let sessions_t = table_name(cwd, "sessions");
+        let messages_t = table_name(cwd, "messages");
+        let conn = self.conn.lock().unwrap();
+        let children: Vec<String> = {
+            let mut stmt = conn
+                .prepare(&format!("SELECT id FROM {sessions_t} WHERE parent_id = ?1"))
+                .context("failed to query child sessions")?;
+            let rows = stmt
+                .query_map(params![parent_id], |r| r.get::<_, String>(0))
+                .context("failed to read child sessions")?;
+            rows.filter_map(|r| r.ok()).collect()
+        };
+        for id in &children {
+            conn.execute(
+                &format!("DELETE FROM {messages_t} WHERE session_id = ?1"),
+                params![id],
+            )
+            .context("failed to delete child messages")?;
+            conn.execute(
+                &format!("DELETE FROM {sessions_t} WHERE id = ?1"),
+                params![id],
+            )
+            .context("failed to delete child session")?;
+        }
+        Ok(children)
     }
 
     /// Deletes the message `msg_id` and every later message of the session
@@ -701,6 +765,70 @@ mod tests {
         assert_eq!(loaded.cwd, PathBuf::from("/tmp/proj"));
         assert!(loaded.messages.is_empty());
         assert!(loaded.todos.is_empty());
+    }
+
+    #[test]
+    fn test_set_session_parent_persists() {
+        let (_dir, store) = temp_store();
+        let parent = store
+            .create_session("build", Path::new("/tmp/proj"))
+            .unwrap();
+        let child = store
+            .create_session("explore", Path::new("/tmp/proj"))
+            .unwrap();
+        store
+            .set_session_parent(&child.id, Path::new("/tmp/proj"), Some(&parent.id))
+            .unwrap();
+        // Verify via the DB directly (parent_id is store-level metadata).
+        let conn = store.conn.lock().unwrap();
+        let sessions_t = table_name(Path::new("/tmp/proj"), "sessions");
+        let stored: Option<String> = conn
+            .query_row(
+                &format!("SELECT parent_id FROM {sessions_t} WHERE id = ?1"),
+                [&child.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored.as_deref(), Some(parent.id.as_str()));
+        // Clearing works too.
+        drop(conn);
+        store
+            .set_session_parent(&child.id, Path::new("/tmp/proj"), None)
+            .unwrap();
+        let conn = store.conn.lock().unwrap();
+        let cleared: Option<String> = conn
+            .query_row(
+                &format!("SELECT parent_id FROM {sessions_t} WHERE id = ?1"),
+                [&child.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(cleared.is_none());
+    }
+
+    #[test]
+    fn test_delete_session_cascades_to_children() {
+        let (_dir, store) = temp_store();
+        let parent = store
+            .create_session("build", Path::new("/tmp/proj"))
+            .unwrap();
+        let child = store
+            .create_session("explore", Path::new("/tmp/proj"))
+            .unwrap();
+        store
+            .set_session_parent(&child.id, Path::new("/tmp/proj"), Some(&parent.id))
+            .unwrap();
+        store
+            .delete_children_of(&parent.id, Path::new("/tmp/proj"))
+            .unwrap();
+        assert!(store
+            .load_session(&child.id, Path::new("/tmp/proj"))
+            .unwrap()
+            .is_none());
+        assert!(store
+            .load_session(&parent.id, Path::new("/tmp/proj"))
+            .unwrap()
+            .is_some());
     }
 
     #[test]

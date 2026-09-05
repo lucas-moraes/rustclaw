@@ -29,6 +29,9 @@ pub struct GlobalSettings {
     pub max_iterations: usize,
     #[serde(default, skip_serializing_if = "usize_is_zero")]
     pub max_context_tokens: usize,
+    /// Wall-clock limit per turn, in seconds (0 = keep default).
+    #[serde(default, skip_serializing_if = "usize_is_zero")]
+    pub turn_timeout_secs: usize,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub theme: String,
 }
@@ -94,6 +97,8 @@ pub struct Config {
     pub provider: String,
     pub max_iterations: usize,
     pub max_context_tokens: usize,
+    /// Wall-clock limit per turn, in seconds.
+    pub turn_timeout_secs: usize,
 }
 
 impl Config {
@@ -108,6 +113,7 @@ impl Config {
             provider: p.name.to_string(),
             max_iterations: 50,
             max_context_tokens: 100_000,
+            turn_timeout_secs: 600,
         }
     }
 
@@ -164,6 +170,9 @@ impl Config {
         }
         if settings.max_context_tokens != 0 {
             cfg.max_context_tokens = settings.max_context_tokens;
+        }
+        if settings.turn_timeout_secs != 0 {
+            cfg.turn_timeout_secs = settings.turn_timeout_secs;
         }
 
         // 4. Token from the global auth store for the resolved provider.
