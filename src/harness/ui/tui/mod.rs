@@ -44,7 +44,15 @@ pub async fn run(config: crate::config::Config, cwd: std::path::PathBuf) -> Resu
 
     let registry = crate::harness::runtime::build_default_registry();
     let user_asker: Arc<dyn UserAsker> = user_asker;
-    let runtime = SessionRuntime::from_legacy(&config, registry, &db_path, asker, user_asker)?;
+    let runtime = SessionRuntime::from_legacy_in(
+        &cwd,
+        &config,
+        registry,
+        &db_path,
+        permission.clone(),
+        asker,
+        user_asker,
+    )?;
 
     // Reopen the most recently used session of this project when one exists;
     // otherwise start a fresh session. This makes the TUI resume where the

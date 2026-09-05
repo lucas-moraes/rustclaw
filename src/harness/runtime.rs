@@ -89,6 +89,8 @@ pub struct SessionRuntime {
     pub project: Arc<std::sync::Mutex<ProjectProfiler>>,
     /// SQLite-backed project memory cache.
     pub project_memory: Arc<ProjectMemoryStore>,
+    /// Project root (cwd) used to persist `rustclaw.json` selections.
+    pub project_root: std::path::PathBuf,
     /// Custom agents injected by the CLI (overrides builtins).
     pub custom_agents: std::collections::HashMap<String, AgentSpec>,
 }
@@ -100,27 +102,61 @@ impl SessionRuntime {
         registry: ToolRegistry,
         config: HarnessConfig,
         db_path: &std::path::Path,
+        permission: Arc<PermissionEngine>,
         asker: Arc<dyn PermissionAsker>,
         user_asker: Arc<dyn UserAsker>,
     ) -> Result<Self> {
-        let store = Arc::new(SessionStore::open(db_path).context("failed to open session store")?);
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        Self::new_in(
+            &cwd, provider, registry, config, db_path, permission, asker, user_asker,
+        )
+    }
+
+    /// Builds a runtime with an explicit project root (used by tests and by
+    /// the UI entry points, which know the session cwd up front).
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_in(
+        project_root: &std::path::Path,
+        provider: Arc<dyn Provider>,
+        registry: ToolRegistry,
+        config: HarnessConfig,
+        db_path: &std::path::Path,
+        permission: Arc<PermissionEngine>,
+        asker: Arc<dyn PermissionAsker>,
+        user_asker: Arc<dyn UserAsker>,
+    ) -> Result<Self> {
+        let cwd = project_root.to_path_buf();
+        let store = Arc::new(SessionStore::open(db_path).context("failed to open session store")?);
         let skills = Arc::new(crate::harness::skill::loader::load_catalog(&cwd));
         let project_memory = Arc::new(
             ProjectMemoryStore::open(db_path).context("failed to open project memory store")?,
         );
 
+        // Load persistent per-tool permission rules from the project config and
+        // install a callback so "always allow" decisions are persisted too.
+        let proj = crate::harness::project::config_file::ProjectConfig::load(&cwd);
+        permission.apply_project_config(&proj.permission);
+        let persist_root = cwd.clone();
+        permission.set_persist(Some(Arc::new(move |tool: &str| {
+            let mut p = crate::harness::project::config_file::ProjectConfig::load(&persist_root);
+            p.permission
+                .tools
+                .insert(tool.to_string(), crate::harness::permission::Rule::Allow);
+            p.save(&persist_root).map_err(|e| e.to_string())
+        })));
+
         Ok(Self {
             store,
             provider,
             registry,
-            permission: Arc::new(PermissionEngine::default()),
+            permission,
             asker,
             user_asker,
             config,
             skills,
             project: Arc::new(std::sync::Mutex::new(ProjectProfiler::new(&cwd))),
             project_memory,
+            project_root: cwd,
             custom_agents: std::collections::HashMap::new(),
         })
     }
@@ -130,6 +166,22 @@ impl SessionRuntime {
         cfg: &crate::config::Config,
         registry: ToolRegistry,
         db_path: &std::path::Path,
+        permission: Arc<PermissionEngine>,
+        asker: Arc<dyn PermissionAsker>,
+        user_asker: Arc<dyn UserAsker>,
+    ) -> Result<Self> {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        Self::from_legacy_in(&cwd, cfg, registry, db_path, permission, asker, user_asker)
+    }
+
+    /// `from_legacy` with an explicit project root (see `new_in`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_legacy_in(
+        project_root: &std::path::Path,
+        cfg: &crate::config::Config,
+        registry: ToolRegistry,
+        db_path: &std::path::Path,
+        permission: Arc<PermissionEngine>,
         asker: Arc<dyn PermissionAsker>,
         user_asker: Arc<dyn UserAsker>,
     ) -> Result<Self> {
@@ -141,11 +193,13 @@ impl SessionRuntime {
             api_key: cfg.api_key.clone().unwrap_or_default(),
         };
         let provider = build_provider_from(&cfg.provider, http)?;
-        Self::new(
+        Self::new_in(
+            project_root,
             provider,
             registry,
             HarnessConfig::from_legacy(cfg),
             db_path,
+            permission,
             asker,
             user_asker,
         )
@@ -219,6 +273,38 @@ impl SessionRuntime {
             .get_key(provider)
             .map(|k| k.trim().len() >= 10)
             .unwrap_or(false)
+    }
+
+    /// Sets a persistent per-tool permission rule in the project config and
+    /// applies it to the live engine.
+    pub fn set_permission_rule(
+        &self,
+        tool: &str,
+        rule: crate::harness::permission::Rule,
+    ) -> Result<()> {
+        self.permission.set_rule(tool, rule);
+        let mut proj =
+            crate::harness::project::config_file::ProjectConfig::load(&self.project_root);
+        proj.permission.tools.insert(tool.to_string(), rule);
+        proj.save(&self.project_root)
+            .context("failed to persist rustclaw.json")
+    }
+
+    /// Removes a persistent per-tool permission rule from the project config
+    /// and the live engine. Returns true if a rule existed.
+    pub fn remove_permission_rule(&self, tool: &str) -> Result<bool> {
+        let removed = self.permission.remove_rule(tool);
+        let mut proj =
+            crate::harness::project::config_file::ProjectConfig::load(&self.project_root);
+        let existed = proj.permission.tools.remove(tool).is_some();
+        proj.save(&self.project_root)
+            .context("failed to persist rustclaw.json")?;
+        Ok(removed || existed)
+    }
+
+    /// Snapshot of the current per-tool permission rules.
+    pub fn permission_rules(&self) -> Vec<(String, crate::harness::permission::Rule)> {
+        self.permission.rules_snapshot()
     }
 
     pub fn resolve_agent(&self, name: &str) -> AgentSpec {
@@ -504,6 +590,7 @@ impl SessionRuntime {
             skills: self.skills.clone(),
             project: self.project.clone(),
             project_memory: self.project_memory.clone(),
+            project_root: self.project_root.clone(),
             custom_agents: self.custom_agents.clone(),
         }
     }
@@ -570,6 +657,7 @@ pub fn build_default_registry() -> ToolRegistry {
         bash::BashTool,
         edit::EditTool,
         fetch_webpage::FetchWebpageTool,
+        git::{GitDiffTool, GitLogTool, GitStatusTool},
         glob::GlobTool,
         grep::GrepTool,
         question::QuestionTool,
@@ -594,6 +682,9 @@ pub fn build_default_registry() -> ToolRegistry {
         .register(Arc::new(RememberTool))
         .register(Arc::new(FetchWebpageTool))
         .register(Arc::new(WebSearchTool))
+        .register(Arc::new(GitStatusTool))
+        .register(Arc::new(GitDiffTool))
+        .register(Arc::new(GitLogTool))
         .build()
 }
 
@@ -655,13 +746,13 @@ mod smoke_tests {
         let registry = crate::harness::runtime::build_default_registry();
         let db = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/smoke.db");
         let _ = std::fs::remove_file(&db);
-        let asker = Arc::new(crate::harness::ui::cli::CliAsker::new(Arc::new(
-            crate::harness::permission::PermissionEngine::default(),
-        )));
+        let permission = Arc::new(crate::harness::permission::PermissionEngine::default());
+        let asker = Arc::new(crate::harness::ui::cli::CliAsker::new(permission.clone()));
         let runtime = SessionRuntime::from_legacy(
             &config,
             registry,
             &db,
+            permission,
             asker,
             Arc::new(crate::harness::ui::cli::CliUserAsker),
         )
@@ -744,7 +835,8 @@ mod model_switch_tests {
         };
         let provider = build_provider_from("deepinfra", http)?;
         let db = dir.join("test.db");
-        SessionRuntime::new(
+        SessionRuntime::new_in(
+            dir,
             provider,
             ToolRegistry::builder().build(),
             HarnessConfig {
@@ -755,6 +847,7 @@ mod model_switch_tests {
                 ..Default::default()
             },
             &db,
+            Arc::new(crate::harness::permission::PermissionEngine::default()),
             Arc::new(AllowAsker),
             Arc::new(NoUserAsker),
         )
@@ -865,7 +958,8 @@ mod model_switch_tests {
         };
         let provider = build_provider_from("deepinfra", http).unwrap();
         let db = dir.path().join("test.db");
-        let mut rt = SessionRuntime::new(
+        let mut rt = SessionRuntime::new_in(
+            dir.path(),
             provider,
             ToolRegistry::builder().build(),
             HarnessConfig {
@@ -876,6 +970,7 @@ mod model_switch_tests {
                 ..Default::default()
             },
             &db,
+            Arc::new(crate::harness::permission::PermissionEngine::default()),
             Arc::new(AllowAsker),
             Arc::new(NoUserAsker),
         )

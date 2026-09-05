@@ -149,7 +149,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("test.db");
         let store = Arc::new(ProjectMemoryStore::open(&db).unwrap());
-        let runtime = SessionRuntime::new(
+        let runtime = SessionRuntime::new_in(
+            dir.path(),
             crate::harness::provider::opencode_go::build_provider(
                 "opencode-go",
                 crate::harness::provider::HttpConfig {
@@ -162,6 +163,7 @@ mod tests {
             crate::harness::tool::registry::ToolRegistry::builder().build(),
             crate::harness::runtime::HarnessConfig::default(),
             &db,
+            Arc::new(crate::harness::permission::PermissionEngine::default()),
             Arc::new(AllowAsker),
             Arc::new(NoUserAsker),
         )

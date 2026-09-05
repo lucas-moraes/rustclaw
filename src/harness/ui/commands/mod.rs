@@ -17,6 +17,15 @@ pub enum CommandOutcome {
     Exit,
 }
 
+/// Human-readable label for a permission rule.
+fn rule_label(rule: crate::harness::permission::Rule) -> &'static str {
+    match rule {
+        crate::harness::permission::Rule::Allow => "allow",
+        crate::harness::permission::Rule::Ask => "ask",
+        crate::harness::permission::Rule::Deny => "deny",
+    }
+}
+
 /// Dispatches a slash command. `runtime` is mutable so commands may switch
 /// provider/model (`/model`, `/provider`); `session` is mutated in place when
 /// the command changes the current session (e.g. `/new`, `/resume`, `/agent`).
@@ -35,7 +44,8 @@ pub async fn handle(
             out.push(
                 "commands: /help /new /sessions /agent <name> \
                   /compact /theme [name] /usage /memory /models /model <name> \
-                  /provider <name> /provider add|rm|list /auth <provider> /settings /exit"
+                  /provider <name> /provider add|rm|list /auth <provider> /settings \
+                  /undo /permissions /exit"
                     .to_string(),
             );
             out.push("keys: Ctrl+P palette · Ctrl+T theme · ? help · Ctrl+L clear".to_string());
@@ -410,8 +420,272 @@ pub async fn handle(
                 }
             }
         }
+        "/permissions" => {
+            let mut parts = arg.split_whitespace();
+            let sub = parts.next().unwrap_or("");
+            match sub {
+                "" | "list" => {
+                    let rules = runtime.permission_rules();
+                    if rules.is_empty() {
+                        out.push("no per-tool permission rules (defaults apply)".to_string());
+                    } else {
+                        out.push(format!("permission rules ({}):", rules.len()));
+                        for (tool, rule) in rules {
+                            out.push(format!("  {} = {}", tool, rule_label(rule)));
+                        }
+                    }
+                    out.push(
+                        "usage: /permissions set <tool> <allow|ask|deny> · rm <tool>".to_string(),
+                    );
+                }
+                "set" => {
+                    let tool = parts.next().unwrap_or("");
+                    let rule = parts.next().unwrap_or("");
+                    if tool.is_empty() || rule.is_empty() {
+                        out.push("usage: /permissions set <tool> <allow|ask|deny>".to_string());
+                    } else {
+                        let parsed = match rule.to_lowercase().as_str() {
+                            "allow" | "a" => Some(crate::harness::permission::Rule::Allow),
+                            "ask" => Some(crate::harness::permission::Rule::Ask),
+                            "deny" | "d" => Some(crate::harness::permission::Rule::Deny),
+                            _ => None,
+                        };
+                        match parsed {
+                            Some(r) => match runtime.set_permission_rule(tool, r) {
+                                Ok(()) => out.push(format!(
+                                    "permission: {} = {} (saved to rustclaw.json)",
+                                    tool,
+                                    rule_label(r)
+                                )),
+                                Err(e) => out.push(format!("[error] {}", e)),
+                            },
+                            None => {
+                                out.push(format!("unknown rule: {} (allow · ask · deny)", rule))
+                            }
+                        }
+                    }
+                }
+                "rm" | "remove" => {
+                    let tool = parts.next().unwrap_or("");
+                    if tool.is_empty() {
+                        out.push("usage: /permissions rm <tool>".to_string());
+                    } else {
+                        match runtime.remove_permission_rule(tool) {
+                            Ok(true) => out.push(format!(
+                                "permission rule for `{}` removed (falls back to default)",
+                                tool
+                            )),
+                            Ok(false) => out.push(format!("no rule for tool `{}`", tool)),
+                            Err(e) => out.push(format!("[error] {}", e)),
+                        }
+                    }
+                }
+                _ => out.push(format!("unknown subcommand: {} (list · set · rm)", sub)),
+            }
+        }
+        "/undo" => {
+            // Revert the last user prompt and everything after it (replies +
+            // tool results). Reuses the same truncation the TUI's revert action
+            // performs, so the DB and in-memory session stay consistent.
+            let last_user = session
+                .messages
+                .iter()
+                .rposition(|m| m.role.as_str() == "user");
+            match last_user {
+                None => out.push("nothing to undo".to_string()),
+                Some(idx) => {
+                    let msg_id = session.messages[idx].id.clone();
+                    match runtime
+                        .store
+                        .delete_messages_from(&session.id, &session.cwd, &msg_id)
+                    {
+                        Ok(()) => {
+                            session.messages.truncate(idx);
+                            match runtime.store.save_session(session) {
+                                Ok(()) => {
+                                    out.push("session reverted to before last prompt".to_string());
+                                }
+                                Err(e) => out.push(format!("[error] failed to save: {}", e)),
+                            }
+                        }
+                        Err(e) => out.push(format!("[error] failed to revert: {}", e)),
+                    }
+                }
+            }
+        }
         "/exit" | "/quit" => return Ok(CommandOutcome::Exit),
         _ => out.push(format!("unknown command: {} (try /help)", cmd)),
     }
     Ok(CommandOutcome::Continue(out))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::harness::runtime::HarnessConfig;
+    use crate::harness::session::{Message, Part, Role};
+    use crate::harness::tool::context::{PermissionAskInput, PermissionAsker, UserAsker};
+    use crate::harness::tool::registry::ToolRegistry;
+    use std::sync::Arc;
+
+    struct AllowAsker;
+    #[async_trait::async_trait]
+    impl PermissionAsker for AllowAsker {
+        async fn ask(&self, _req: PermissionAskInput) -> bool {
+            true
+        }
+    }
+    struct NoUserAsker;
+    #[async_trait::async_trait]
+    impl UserAsker for NoUserAsker {
+        async fn ask(&self, _q: String, _o: Vec<String>) -> Option<String> {
+            None
+        }
+    }
+
+    fn test_runtime(dir: &std::path::Path) -> Result<SessionRuntime> {
+        let http = crate::harness::provider::HttpConfig {
+            client: crate::harness::provider::build_http_client(),
+            base_url: "https://api.deepinfra.com/v1/openai".to_string(),
+            api_key: "sk-initial-test-key-123456".to_string(),
+        };
+        let provider = crate::harness::provider::opencode_go::build_provider("deepinfra", http)?;
+        let db = dir.join("test.db");
+        SessionRuntime::new_in(
+            dir,
+            provider,
+            ToolRegistry::builder().build(),
+            HarnessConfig {
+                model: "deepseek-ai/DeepSeek-V4-Flash-0731".to_string(),
+                provider: "deepinfra".to_string(),
+                base_url: "https://api.deepinfra.com/v1/openai".to_string(),
+                api_key: "sk-initial-test-key-123456".to_string(),
+                ..Default::default()
+            },
+            &db,
+            Arc::new(crate::harness::permission::PermissionEngine::default()),
+            Arc::new(AllowAsker),
+            Arc::new(NoUserAsker),
+        )
+    }
+
+    #[tokio::test]
+    async fn test_undo_reverts_last_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut rt = test_runtime(dir.path()).unwrap();
+        let mut session = rt.create_session("build").await.unwrap();
+
+        // First user turn + assistant reply.
+        let m1 = Message::user("first prompt");
+        session.push_message(m1.clone());
+        rt.store
+            .save_message(&session.id, &session.cwd, &m1)
+            .unwrap();
+        let a1 = Message::new(Role::Assistant, vec![Part::text("first reply")]);
+        session.push_message(a1.clone());
+        rt.store
+            .save_message(&session.id, &session.cwd, &a1)
+            .unwrap();
+
+        // Second user turn + assistant reply (the one to undo).
+        let m2 = Message::user("second prompt");
+        session.push_message(m2.clone());
+        rt.store
+            .save_message(&session.id, &session.cwd, &m2)
+            .unwrap();
+        let a2 = Message::new(Role::Assistant, vec![Part::text("second reply")]);
+        session.push_message(a2.clone());
+        rt.store
+            .save_message(&session.id, &session.cwd, &a2)
+            .unwrap();
+
+        assert_eq!(session.messages.len(), 4);
+
+        let outcome = handle(&mut rt, &mut session, "/undo").await.unwrap();
+        let CommandOutcome::Continue(lines) = outcome else {
+            panic!("expected Continue");
+        };
+        assert!(lines.iter().any(|l| l.contains("reverted")));
+
+        // Only the first user + assistant remain.
+        assert_eq!(session.messages.len(), 2);
+        assert_eq!(session.messages[0].parts[0].as_text(), Some("first prompt"));
+        assert_eq!(session.messages[1].parts[0].as_text(), Some("first reply"));
+
+        // Persisted state matches.
+        let loaded = rt
+            .store
+            .load_session(&session.id, &session.cwd)
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.messages.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_undo_empty_session_reports_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut rt = test_runtime(dir.path()).unwrap();
+        let mut session = rt.create_session("build").await.unwrap();
+
+        let outcome = handle(&mut rt, &mut session, "/undo").await.unwrap();
+        let CommandOutcome::Continue(lines) = outcome else {
+            panic!("expected Continue");
+        };
+        assert!(lines.iter().any(|l| l.contains("nothing to undo")));
+    }
+
+    #[tokio::test]
+    async fn test_permissions_set_list_rm_persists() {
+        use crate::harness::permission::Rule;
+        let dir = tempfile::tempdir().unwrap();
+        let mut rt = test_runtime(dir.path()).unwrap();
+        let mut session = rt.create_session("build").await.unwrap();
+
+        // set
+        let outcome = handle(&mut rt, &mut session, "/permissions set bash allow")
+            .await
+            .unwrap();
+        let CommandOutcome::Continue(lines) = outcome else {
+            panic!("expected Continue");
+        };
+        assert!(lines.iter().any(|l| l.contains("bash = allow")));
+
+        // Persisted in rustclaw.json.
+        let proj = crate::harness::project::config_file::ProjectConfig::load(dir.path());
+        assert_eq!(proj.permission.tools.get("bash"), Some(&Rule::Allow));
+
+        // list
+        let outcome = handle(&mut rt, &mut session, "/permissions").await.unwrap();
+        let CommandOutcome::Continue(lines) = outcome else {
+            panic!("expected Continue");
+        };
+        assert!(lines.iter().any(|l| l.contains("bash = allow")));
+
+        // rm
+        let outcome = handle(&mut rt, &mut session, "/permissions rm bash")
+            .await
+            .unwrap();
+        let CommandOutcome::Continue(lines) = outcome else {
+            panic!("expected Continue");
+        };
+        assert!(lines.iter().any(|l| l.contains("removed")));
+
+        let proj = crate::harness::project::config_file::ProjectConfig::load(dir.path());
+        assert!(proj.permission.tools.get("bash").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_permissions_set_rejects_unknown_rule() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut rt = test_runtime(dir.path()).unwrap();
+        let mut session = rt.create_session("build").await.unwrap();
+
+        let outcome = handle(&mut rt, &mut session, "/permissions set bash maybe")
+            .await
+            .unwrap();
+        let CommandOutcome::Continue(lines) = outcome else {
+            panic!("expected Continue");
+        };
+        assert!(lines.iter().any(|l| l.contains("unknown rule")));
+    }
 }

@@ -5,6 +5,7 @@ pub mod context;
 pub mod diff;
 pub mod edit;
 pub mod fetch_webpage;
+pub mod git;
 pub mod glob;
 pub mod grep;
 pub mod question;

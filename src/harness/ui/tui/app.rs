@@ -573,11 +573,13 @@ impl App {
         };
         let provider =
             crate::harness::provider::opencode_go::build_provider("deepinfra", http).unwrap();
-        let runtime = SessionRuntime::new(
+        let runtime = SessionRuntime::new_in(
+            _keep_dir.path(),
             provider,
             crate::harness::tool::registry::ToolRegistry::builder().build(),
             crate::harness::runtime::HarnessConfig::default(),
             &_keep_dir.path().join("test.db"),
+            Arc::new(crate::harness::permission::PermissionEngine::default()),
             Arc::new(AllowAsker),
             Arc::new(NoUserAsker),
         )
@@ -1102,6 +1104,62 @@ impl App {
         self.stick_bottom = true;
         self.clear_selection();
         self.add_system("transcript cleared");
+    }
+
+    /// Rebuilds the transcript lines from the current session messages.
+    /// Used after an undo/revert so the on-screen transcript matches the
+    /// (truncated) persisted conversation instead of leaving stale lines.
+    pub fn rebuild_transcript_from_session(&mut self) {
+        self.lines.clear();
+        self.streaming = None;
+        self.tool_status = None;
+        self.active_tools.clear();
+        self.scroll = 0;
+        self.stick_bottom = true;
+        self.clear_selection();
+        // Clone so we can push to self.lines while iterating.
+        let messages = self.session.messages.clone();
+        for msg in &messages {
+            match msg.role.as_str() {
+                "user" => {
+                    let text = msg
+                        .parts
+                        .iter()
+                        .find_map(|p| p.as_text().map(str::to_string))
+                        .unwrap_or_default();
+                    if !text.trim().is_empty() {
+                        self.push(LineKind::User, text);
+                    }
+                }
+                "assistant" => {
+                    for part in &msg.parts {
+                        match part {
+                            crate::harness::session::Part::Text { text } => {
+                                if !text.trim().is_empty() {
+                                    self.push(LineKind::Assistant, text.clone());
+                                }
+                            }
+                            crate::harness::session::Part::Tool(tp) => {
+                                let kind = match tp.status {
+                                    crate::harness::session::ToolStatus::Error => {
+                                        LineKind::ToolError
+                                    }
+                                    _ => LineKind::ToolOk,
+                                };
+                                let label = if tp.title.is_empty() {
+                                    tp.name.clone()
+                                } else {
+                                    tp.title.clone()
+                                };
+                                self.push(kind, format!("  {} {}", mark_for(kind), label));
+                            }
+                            crate::harness::session::Part::Reasoning { .. } => {}
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 
     /// Drops any active transcript selection / pending click gesture.
@@ -2653,6 +2711,47 @@ fn copy_to_clipboard(text: &str) -> bool {
     }
 }
 
+/// Returns the status mark for a tool line kind (✓ for ok, ✗ for error).
+fn mark_for(kind: LineKind) -> &'static str {
+    match kind {
+        LineKind::ToolOk => "✓",
+        LineKind::ToolError => "✗",
+        _ => "·",
+    }
+}
+
+/// Reverts the last user prompt and everything after it (TUI `/undo`).
+/// Returns a user-facing message describing the outcome.
+fn undo_last_turn(app: &mut App) -> String {
+    let last_user = app
+        .session
+        .messages
+        .iter()
+        .rposition(|m| m.role.as_str() == "user");
+    let Some(idx) = last_user else {
+        return "nothing to undo".to_string();
+    };
+    let msg_id = app.session.messages[idx].id.clone();
+    match app
+        .runtime
+        .store
+        .delete_messages_from(&app.session.id, &app.session.cwd, &msg_id)
+    {
+        Ok(()) => {
+            app.session.messages.truncate(idx);
+            match app.runtime.store.save_session(&app.session) {
+                Ok(()) => {
+                    app.tool_status = None;
+                    app.rebuild_transcript_from_session();
+                    "session reverted to before last prompt".to_string()
+                }
+                Err(e) => format!("[error] failed to save: {}", e),
+            }
+        }
+        Err(e) => format!("[error] failed to revert: {}", e),
+    }
+}
+
 /// Removes the clicked user prompt and everything after it (memory + SQLite).
 fn revert_to_prompt(app: &mut App, line_idx: usize) -> Result<()> {
     // The clicked User bubble is the nth user prompt in the transcript.
@@ -2686,6 +2785,8 @@ fn revert_to_prompt(app: &mut App, line_idx: usize) -> Result<()> {
     app.session.messages.truncate(msg_index);
     app.runtime.store.save_session(&app.session)?;
     app.tool_status = None;
+    // Rebuild the on-screen transcript so removed messages disappear.
+    app.rebuild_transcript_from_session();
     Ok(())
 }
 
@@ -2847,6 +2948,15 @@ async fn submit_input(
                 } else {
                     app.resume_picker = Some(picker);
                 }
+            }
+            return Ok(false);
+        }
+        if text == "/undo" {
+            if app.running {
+                app.add_system("[busy] cannot undo while a turn is running");
+            } else {
+                let msg = undo_last_turn(app);
+                app.add_system(&msg);
             }
             return Ok(false);
         }
@@ -3089,5 +3199,57 @@ mod input_tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_rebuild_transcript_from_session() {
+        use crate::harness::session::{Message, Part, Role, ToolPart, ToolStatus};
+
+        let mut app = App::inline_for_tests("");
+        // Seed a stale line that should be wiped by the rebuild.
+        app.push(LineKind::System, "stale line".to_string());
+
+        // user → assistant (text + tool) → user → assistant.
+        app.session.push_message(Message::user("first prompt"));
+        app.session.push_message(Message::new(
+            Role::Assistant,
+            vec![
+                Part::text("first reply"),
+                Part::Tool(ToolPart {
+                    id: "t1".into(),
+                    name: "read".into(),
+                    input: serde_json::json!({"path": "x"}),
+                    status: ToolStatus::Completed,
+                    output: "content".into(),
+                    title: "read x".into(),
+                    error: None,
+                }),
+            ],
+        ));
+        app.session.push_message(Message::user("second prompt"));
+        app.session.push_message(Message::new(
+            Role::Assistant,
+            vec![Part::text("second reply")],
+        ));
+
+        app.rebuild_transcript_from_session();
+
+        let kinds: Vec<LineKind> = app.lines.iter().map(|l| l.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                LineKind::User,
+                LineKind::Assistant,
+                LineKind::ToolOk,
+                LineKind::User,
+                LineKind::Assistant,
+            ],
+            "expected rebuilt kinds, got {:?}",
+            kinds
+        );
+        // Stale line removed.
+        assert!(!app.lines.iter().any(|l| l.text.contains("stale line")));
+        // Tool line carries the title.
+        assert!(app.lines.iter().any(|l| l.text.contains("read x")));
     }
 }

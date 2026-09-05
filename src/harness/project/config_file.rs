@@ -6,6 +6,8 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+use crate::harness::permission::PermissionConfig;
+
 /// Project-scoped model/provider selection (`rustclaw.json`).
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProjectConfig {
@@ -15,6 +17,9 @@ pub struct ProjectConfig {
     pub model: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub base_url: String,
+    /// Persistent per-tool permission rules (e.g. `{ "bash": "allow" }`).
+    #[serde(default, skip_serializing_if = "PermissionConfig::is_empty")]
+    pub permission: PermissionConfig,
 }
 
 impl ProjectConfig {
@@ -55,7 +60,10 @@ impl ProjectConfig {
 
     /// True when the file carries any explicit selection.
     pub fn is_empty(&self) -> bool {
-        self.provider.is_empty() && self.model.is_empty() && self.base_url.is_empty()
+        self.provider.is_empty()
+            && self.model.is_empty()
+            && self.base_url.is_empty()
+            && self.permission.is_empty()
     }
 }
 
@@ -102,9 +110,30 @@ mod tests {
             provider: "deepinfra".into(),
             model: String::new(),
             base_url: String::new(),
+            permission: Default::default(),
         };
         assert!(!c.is_empty());
         c.provider = String::new();
         assert!(c.is_empty());
+    }
+
+    #[test]
+    fn test_permission_roundtrip() {
+        use crate::harness::permission::Rule;
+        let d = tempfile::tempdir().unwrap();
+        let mut c = ProjectConfig::default();
+        c.permission.tools.insert("bash".to_string(), Rule::Allow);
+        c.save(d.path()).unwrap();
+
+        let back = ProjectConfig::load(d.path());
+        assert_eq!(
+            back.permission.tools.get("bash"),
+            Some(&Rule::Allow),
+            "permission rule should roundtrip through rustclaw.json"
+        );
+        // Empty permission is skipped in the JSON output.
+        let empty = ProjectConfig::default();
+        let json = serde_json::to_string(&empty).unwrap();
+        assert!(!json.contains("permission"), "got: {}", json);
     }
 }

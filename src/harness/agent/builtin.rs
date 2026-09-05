@@ -15,6 +15,9 @@ const READONLY_TOOLS: &[&str] = &[
     "todo_read",
     "web_search",
     "fetch_webpage",
+    "git_status",
+    "git_diff",
+    "git_log",
 ];
 
 /// Default implementation agent: all tools + task subagents.
@@ -79,6 +82,9 @@ pub fn general() -> AgentSpec {
             "grep".into(),
             "web_search".into(),
             "fetch_webpage".into(),
+            "git_status".into(),
+            "git_diff".into(),
+            "git_log".into(),
         ],
         system_prompt: "You are RustClaw, a helpful assistant. You can inspect the project with \
 read/glob/grep when needed. Keep answers direct and useful."

@@ -8,6 +8,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 
 /// Request shown to the user when a tool needs approval.
 #[derive(Clone, Debug)]
@@ -35,7 +36,7 @@ pub enum Rule {
     Deny,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct PermissionConfig {
     /// Per-tool rules, e.g. { "bash": "ask", "edit": "allow" }
     #[serde(default)]
@@ -50,13 +51,21 @@ impl PermissionConfig {
     pub fn from_json(value: &serde_json::Value) -> Option<Self> {
         serde_json::from_value(value.get("permission")?.clone()).ok()
     }
+
+    /// True when no explicit rules or default are set.
+    pub fn is_empty(&self) -> bool {
+        self.tools.is_empty() && self.default.is_none()
+    }
 }
 
 pub struct PermissionEngine {
-    rules: HashMap<String, Rule>,
-    default: Option<Rule>,
+    rules: std::sync::Mutex<HashMap<String, Rule>>,
+    default: std::sync::Mutex<Option<Rule>>,
     /// "always allow" decisions cached per session run.
     always_allow: std::sync::Mutex<std::collections::HashSet<String>>,
+    /// Optional callback invoked when a tool is marked "always allow", so the
+    /// decision can be persisted (e.g. to the project's `rustclaw.json`).
+    persist: std::sync::Mutex<Option<Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>>>,
 }
 
 impl Default for PermissionEngine {
@@ -77,6 +86,9 @@ impl PermissionConfig {
             "todo_write",
             "web_search",
             "fetch_webpage",
+            "git_status",
+            "git_diff",
+            "git_log",
         ] {
             tools.insert(t.to_string(), Rule::Allow);
         }
@@ -93,14 +105,64 @@ impl PermissionConfig {
 impl PermissionEngine {
     pub fn from_config(config: &PermissionConfig) -> Self {
         Self {
-            rules: config.tools.clone(),
-            default: config.default,
+            rules: std::sync::Mutex::new(config.tools.clone()),
+            default: std::sync::Mutex::new(config.default),
             always_allow: std::sync::Mutex::new(std::collections::HashSet::new()),
+            persist: std::sync::Mutex::new(None),
         }
+    }
+
+    /// Merges project-level rules into the engine. Project rules override the
+    /// builtin defaults; the project `default` (if any) overrides ours.
+    pub fn apply_project_config(&self, config: &PermissionConfig) {
+        let mut rules = self.rules.lock().unwrap();
+        for (tool, rule) in &config.tools {
+            rules.insert(tool.clone(), *rule);
+        }
+        if let Some(d) = config.default {
+            *self.default.lock().unwrap() = Some(d);
+        }
+    }
+
+    /// Installs a callback invoked whenever a tool is marked "always allow",
+    /// so the decision can be persisted across sessions.
+    pub fn set_persist(&self, f: Option<Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>>) {
+        *self.persist.lock().unwrap() = f;
     }
 
     pub fn set_always_allow(&self, tool: &str) {
         self.always_allow.lock().unwrap().insert(tool.to_string());
+        if let Some(persist) = self.persist.lock().unwrap().as_ref() {
+            if let Err(e) = persist(tool) {
+                eprintln!(
+                    "[warn] failed to persist always-allow for `{}`: {}",
+                    tool, e
+                );
+            }
+        }
+    }
+
+    /// Snapshot of the current per-tool rules (for `/permissions list`).
+    pub fn rules_snapshot(&self) -> Vec<(String, Rule)> {
+        let mut v: Vec<(String, Rule)> = self
+            .rules
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(k, r)| (k.clone(), *r))
+            .collect();
+        v.sort_by(|a, b| a.0.cmp(&b.0));
+        v
+    }
+
+    /// Sets a per-tool rule in memory (used by `/permissions set`).
+    pub fn set_rule(&self, tool: &str, rule: Rule) {
+        self.rules.lock().unwrap().insert(tool.to_string(), rule);
+    }
+
+    /// Removes a per-tool rule, falling back to the default (used by `/permissions rm`).
+    pub fn remove_rule(&self, tool: &str) -> bool {
+        self.rules.lock().unwrap().remove(tool).is_some()
     }
 
     /// Resolves the decision for `tool` with optional `path` (absolute).
@@ -113,8 +175,10 @@ impl PermissionEngine {
 
         let rule = self
             .rules
+            .lock()
+            .unwrap()
             .get(tool)
-            .or(self.default.as_ref())
+            .or(self.default.lock().unwrap().as_ref())
             .copied()
             .unwrap_or(Rule::Ask);
 
@@ -236,5 +300,64 @@ mod tests {
         let cwd = Path::new("/proj");
         assert_eq!(engine.check("bash", None, cwd), PermissionDecision::Allow);
         assert_eq!(engine.check("edit", None, cwd), PermissionDecision::Deny);
+    }
+
+    #[test]
+    fn test_apply_project_config_overrides_defaults() {
+        let engine = PermissionEngine::default();
+        let cwd = Path::new("/proj");
+        assert_eq!(engine.check("bash", None, cwd), PermissionDecision::Ask);
+        let mut tools = HashMap::new();
+        tools.insert("bash".to_string(), Rule::Allow);
+        engine.apply_project_config(&PermissionConfig {
+            tools,
+            default: None,
+        });
+        assert_eq!(engine.check("bash", None, cwd), PermissionDecision::Allow);
+        // Unrelated defaults survive.
+        assert_eq!(engine.check("read", None, cwd), PermissionDecision::Allow);
+    }
+
+    #[test]
+    fn test_set_and_remove_rule() {
+        let engine = PermissionEngine::default();
+        let cwd = Path::new("/proj");
+        engine.set_rule("bash", Rule::Allow);
+        assert_eq!(engine.check("bash", None, cwd), PermissionDecision::Allow);
+        assert!(engine.remove_rule("bash"));
+        assert_eq!(engine.check("bash", None, cwd), PermissionDecision::Ask);
+        assert!(!engine.remove_rule("bash"));
+    }
+
+    #[test]
+    fn test_rules_snapshot_sorted() {
+        let engine = PermissionEngine::default();
+        engine.set_rule("zzz", Rule::Deny);
+        engine.set_rule("aa", Rule::Allow);
+        let snap = engine.rules_snapshot();
+        let names: Vec<&str> = snap.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names.first().copied(), Some("aa"));
+        assert!(names.contains(&"zzz"));
+    }
+
+    #[test]
+    fn test_persist_callback_invoked_on_always_allow() {
+        let engine = PermissionEngine::default();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        engine.set_persist(Some(Arc::new(move |tool: &str| {
+            sink.lock().unwrap().push(tool.to_string());
+            Ok(())
+        })));
+        engine.set_always_allow("bash");
+        assert_eq!(*seen.lock().unwrap(), vec!["bash".to_string()]);
+    }
+
+    #[test]
+    fn test_persist_error_does_not_panic() {
+        let engine = PermissionEngine::default();
+        engine.set_persist(Some(Arc::new(|_: &str| Err("boom".to_string()))));
+        // Must not panic even when the callback fails.
+        engine.set_always_allow("bash");
     }
 }
