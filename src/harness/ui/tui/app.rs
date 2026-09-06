@@ -737,6 +737,12 @@ impl App {
 
     /// Applies a provider/model selection and closes the picker.
     pub fn apply_model_choice(&mut self, provider: &str, model: &str) -> Result<()> {
+        // Persist free-form ("custom…") models in the user store so they show
+        // up in the picker next time. Best effort: a failure here must not
+        // block the switch itself.
+        if let Err(e) = persist_custom_model(provider, model) {
+            tracing::warn!("failed to persist custom model: {}", e);
+        }
         match self.runtime.switch_model(provider, model) {
             Ok(()) => {
                 let name = self.runtime.provider.name().to_string();
@@ -2383,6 +2389,20 @@ fn handle_settings_command(app: &mut App, text: &str) {
             other
         )),
     }
+}
+
+/// Persists a model in the user store (creating a builtin override when
+/// needed) so custom models survive restarts. Skips models already known.
+fn persist_custom_model(provider: &str, model: &str) -> anyhow::Result<()> {
+    use crate::harness::provider::user_store::UserProviders;
+    if crate::harness::provider::catalog::models_for(provider).contains(&model.to_string()) {
+        return Ok(()); // already listed — nothing to persist
+    }
+    let mut store = UserProviders::load();
+    if store.add_model_anywhere(provider, model) {
+        store.save()?;
+    }
+    Ok(())
 }
 
 /// Handles a key while the `/models` picker is open.

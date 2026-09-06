@@ -246,7 +246,7 @@ pub async fn handle(
                         out.push("usage: /models add <provider> <model>".to_string());
                     } else {
                         let mut store = UserProviders::load();
-                        if store.add_model(provider, model) {
+                        if store.add_model_anywhere(provider, model) {
                             match store.save() {
                                 Ok(()) => out.push(format!(
                                     "model `{}` added to provider `{}`",
@@ -255,10 +255,7 @@ pub async fn handle(
                                 Err(e) => out.push(format!("[error] {}", e)),
                             }
                         } else {
-                            out.push(format!(
-                                "provider `{}` not found or model already present",
-                                provider
-                            ));
+                            out.push(format!("unknown provider: `{}`", provider));
                         }
                     }
                 }

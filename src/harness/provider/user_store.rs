@@ -101,6 +101,46 @@ impl UserProviders {
         false
     }
 
+    /// Adds a model to any provider, including builtins: when the provider is
+    /// not in the user store, a user entry is created (overriding the builtin
+    /// in the catalog) seeded with the builtin's base_url/default_model.
+    /// Returns `true` when the model was added (or already present).
+    pub fn add_model_anywhere(&mut self, name: &str, model: &str) -> bool {
+        if self.add_model(name, model) {
+            return true;
+        }
+        // Already present in an existing user entry?
+        if self
+            .providers
+            .iter()
+            .any(|p| p.name.eq_ignore_ascii_case(name) && p.models.iter().any(|m| m == model))
+        {
+            return true;
+        }
+        // Seed from the builtin catalog (if any) so the override keeps the
+        // builtin's connection defaults.
+        let (base_url, default_model, mut models) =
+            match crate::harness::provider::catalog::find_provider(name) {
+                Some(info) if !info.user_defined => {
+                    (info.base_url, info.default_model, info.models)
+                }
+                _ => (String::new(), String::new(), Vec::new()),
+            };
+        if base_url.is_empty() {
+            return false; // unknown provider entirely
+        }
+        if !models.iter().any(|m| m == model) {
+            models.push(model.to_string());
+        }
+        self.upsert(UserProvider {
+            name: name.to_string(),
+            base_url,
+            default_model,
+            models,
+        });
+        true
+    }
+
     /// Looks up a provider by name (case-insensitive).
     #[allow(dead_code)] // public store API, exercised in tests
     pub fn find(&self, name: &str) -> Option<&UserProvider> {
@@ -181,5 +221,22 @@ mod tests {
         let d = dir();
         let store = UserProviders::load_from(&d.path().join("nope.json")).unwrap();
         assert!(store.providers.is_empty());
+    }
+
+    #[test]
+    fn test_add_model_anywhere_seeds_builtin_override() {
+        let mut store = UserProviders::default();
+        // Builtin provider not yet in the user store.
+        assert!(store.add_model_anywhere("moonshot", "kimi-new-model"));
+        let p = store.find("moonshot").unwrap();
+        assert_eq!(p.base_url, "https://api.moonshot.ai/v1");
+        assert_eq!(p.default_model, "kimi-k2.5");
+        assert!(p.models.contains(&"kimi-new-model".to_string()));
+        assert!(p.models.contains(&"kimi-k2.5".to_string()));
+        // Idempotent.
+        assert!(store.add_model_anywhere("moonshot", "kimi-new-model"));
+        assert_eq!(store.find("moonshot").unwrap().models.len(), 4);
+        // Unknown provider → false.
+        assert!(!store.add_model_anywhere("ghost", "m"));
     }
 }
