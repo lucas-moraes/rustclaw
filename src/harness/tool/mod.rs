@@ -51,6 +51,11 @@ pub trait Tool: Send + Sync {
     fn description(&self) -> &str;
     /// JSON Schema (draft 2020-12) describing the `input` object.
     fn parameters(&self) -> serde_json::Value;
+    /// True when the tool does not modify the environment (MCP `readOnlyHint`).
+    /// Used by readonly agents (plan/explore) to admit MCP tools.
+    fn read_only(&self) -> bool {
+        false
+    }
     async fn execute(
         &self,
         args: serde_json::Value,

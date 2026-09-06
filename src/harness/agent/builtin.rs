@@ -18,6 +18,8 @@ const READONLY_TOOLS: &[&str] = &[
     "git_status",
     "git_diff",
     "git_log",
+    // Special marker: admits MCP tools annotated `readOnlyHint: true`.
+    "mcp_readonly",
 ];
 
 /// Default implementation agent: all tools + task subagents.

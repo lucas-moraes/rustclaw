@@ -265,3 +265,62 @@ Canal: `tokio::sync::mpsc::UnboundedSender` (`event_channel()`).
 - Allowlist de tools por agente, reforçada na execução (defense-in-depth).
 - Fora do CWD → permissão `Ask`.
 - Truncamento de saída de tools (evita estourar contexto).
+
+## 16. MCP (Model Context Protocol)
+
+O RustClaw conecta a servidores MCP externos e expõe as tools deles ao modelo
+como tools nativas (`src/harness/mcp/`).
+
+### Configuração
+
+- Global: `~/.local/share/rustclaw/mcp.json` (no macOS:
+  `~/Library/Application Support/rustclaw/mcp.json`).
+- Projeto: seção `mcp` no `rustclaw.json` (sobrescreve servers de mesmo nome).
+- Formato padrão `mcpServers` (compatível com Claude/Cursor):
+
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+      "env": {"SOME_VAR": "${SOME_VAR}"},
+      "enabled": true,
+      "timeout_secs": 60
+    },
+    "remote": {
+      "url": "https://example.com/mcp",
+      "headers": {"Authorization": "Bearer <token>"}
+    }
+  }
+}
+```
+
+- Exatamente um de `command` (stdio) ou `url` (streamable HTTP) é obrigatório.
+- `${VAR}` em `args`/`env` é expandido do ambiente (var indefinida = erro).
+
+### Naming e registry
+
+- Tools MCP entram no registry como `mcp_<server>_<tool>` (sanitizado para
+  `[a-z0-9_]`), ex.: `mcp_filesystem_read_file`.
+- Descrições truncadas em 200 chars; cap de 50 tools por server.
+- Conexão em paralelo no boot (`McpManager::connect_all`); falha de um server
+  não bloqueia os outros (timeout de conexão 10s).
+
+### Permissões e agentes
+
+- MCP tools caem no default `Ask`; `/permissions set mcp_<server>_<tool> allow`
+  persiste em `rustclaw.json`.
+- Agentes readonly (`plan`/`explore`) admitem MCP tools com annotation
+  `readOnlyHint: true` (marcador `mcp_readonly` na allowlist).
+
+### Comandos
+
+- `/mcp list` — servers configurados + contagem de tools.
+- `/mcp status` — estado de conexão por server.
+- `/mcp restart <name>` — reconecta um server.
+
+### Robustez
+
+- Reconnect: falha de transporte → 1 respawn + retry automático.
+- Health check: probe a cada 60s marca servers mortos no `/mcp status`.

@@ -1,11 +1,21 @@
-# RustClaw — Subagent paralelo com UI (item 4 do SUGGESTIONS.md)
+# RustClaw — Suporte a MCP (Model Context Protocol)
 
-> **Problema:** a tool `task` roda subagentes de forma **sequencial e invisível**:
-> o `TaskRunner` descarta o canal de eventos da child session, a UI não vê nada do
-> que o subagente faz, e o modelo raramente emite tasks paralelas sem suporte explícito.
+> **Problema:** o RustClaw só enxerga as tools builtin. Não há como plugar
+> servidores MCP (filesystem, github, postgres, etc.) que o ecossistema já
+> oferece — cada integração exigiria uma tool nativa nova.
 >
-> **Escopo:** 4 fases independentes: propagação de eventos (F4.1) → task em lote
-> (F4.2) → painéis de subagente na UI (F4.3) → ciclo de vida + docs (F4.4/F4.5).
+> **Escopo:** 4 fases: config/parsing (F1) → cliente stdio + tools no registry
+> (F2) → permissões/agentes/UX (F3) → robustez + transporte HTTP (F4).
+>
+> **Decisões-chave:**
+> - Crate [`rmcp`](https://crates.io/crates/rmcp) (cliente MCP oficial, async/tokio),
+>   features mínimas (`client`, `transport-child-process`).
+> - F1–F3: só transporte **stdio** (subprocesso `command/args/env`). F4: HTTP.
+> - Nomes de tool: `mcp_<server>_<tool>` (ex.: `mcp_github_create_issue`).
+> - Config: `~/.local/share/rustclaw/mcp.json` (global) + `rustclaw.json["mcp"]`
+>   (projeto, sobrescreve por nome). Formato padrão `mcpServers` (Claude/Cursor).
+> - Permissões: MCP tools caem no fallback `Ask` (default) — zero mudança no
+>   engine; `/permissions set mcp_<server>_<tool> allow` já funciona.
 
 ---
 
@@ -13,149 +23,212 @@
 
 | ID | Feature | Fase | Status |
 |----|---------|------|--------|
-| F4.1.1 | `parent_session_id` nos `HarnessEvent` | 1 | ✅ |
-| F4.1.2 | Trait `SubagentRunner` com `EventSender` + `TaskOutcome` | 1 | ✅ |
-| F4.1.3 | `TaskTool` propaga eventos | 1 | ✅ |
-| F4.1.4 | `ToolContext.events` (roteamento do canal) | 1 | ✅ |
-| F4.1.5 | `TaskRunner` preserva child session + emite eventos | 1 | ✅ |
-| F4.1.6 | Coluna `parent_id` em `harness_sessions` | 1 | ✅ |
-| F4.1.7 | Atualizar stubs de teste (`task_runner: None`) | 1 | ✅ |
-| F4.1.8 | Testes de propagação | 1 | ✅ |
-| F4.2.1 | Parâmetro `tasks` (batch) no tool `task` | 2 | ⬜ |
-| F4.2.2 | Limite de concorrência (`MAX_PARALLEL_TASKS = 4`) | 2 | ⬜ |
-| F4.2.3 | Resultado agregado por task | 2 | ⬜ |
-| F4.2.4 | Hint de paralelismo no system prompt | 2 | ⬜ |
-| F4.2.5 | Testes de batch/abort/semáforo | 2 | ⬜ |
-| F4.3.1 | Painel por subagente no TUI | 3 | ⬜ |
-| F4.3.2 | Roteamento de eventos da child para o painel | 3 | ⬜ |
-| F4.3.3 | Render do painel colapsável no transcript | 3 | ⬜ |
-| F4.3.4 | Prefixo de child no CLI | 3 | ⬜ |
-| F4.3.5 | `PermissionAsk` da child no modal | 3 | ⬜ |
-| F4.3.6 | Testes de UI | 3 | ⬜ |
-| F4.4.1 | GC de child sessions órfãs | 4 | ✅ |
-| F4.4.2 | `/sessions` abre child session (read-only) | 4 | ⬜ |
-| F4.4.3 | Doom-loop conta batch de tasks | 4 | ⬜ |
-| F4.5.1 | Docs (`docs/FEATURES.md` §4) | 4 | ⬜ |
-| F4.5.2 | Marcar item 4 no `SUGGESTIONS.md` | 4 | ⬜ |
-| V4 | Verificação final + commit | 4 | ⬜ |
+| F1.1 | `McpServerConfig` + parse do formato `mcpServers` | 1 | ✅ |
+| F1.2 | Load/merge global (`mcp.json`) + projeto (`rustclaw.json`) | 1 | ✅ |
+| F1.3 | `/mcp list` placeholder (servers configurados) | 1 | ✅ |
+| F2.1 | Dependência `rmcp` + módulo `harness/mcp/` | 2 | ✅ |
+| F2.2 | `McpClient`: spawn stdio + handshake + `tools/list` | 2 | ✅ |
+| F2.3 | `McpTool`: impl `Tool` → `tools/call` | 2 | ✅ |
+| F2.4 | `McpManager::connect_all` (paralelo, falha isolada) | 2 | ✅ |
+| F2.5 | Registro das MCP tools no `ToolRegistry` do runtime | 2 | ✅ |
+| F3.1 | Allowlist por agente (readonly p/ plan/explore) | 3 | ✅ |
+| F3.2 | `/mcp list\|status\|restart` | 3 | ✅ |
+| F3.3 | TUI: help + status de servers | 3 | ✅ |
+| F4.1 | Reconnect com backoff ao morrer o subprocesso | 4 | ✅ |
+| F4.2 | Health check periódico (`ping`) | 4 | ✅ |
+| F4.3 | Transporte streamable HTTP + `Authorization` | 4 | ✅ |
+| F4.4 | Env expansion (`${VAR}`) em `env`/`args` | 4 | ✅ |
+| F4.5 | Docs (`docs/FEATURES.md` §MCP) | 4 | ✅ |
+| V | Verificação final + commit | 4 | ✅ |
 
 **Legenda:** ⬜ pendente · 🟡 em progresso · ✅ feito · ❌ cancelado
 
 ---
 
-## F4.1 — Propagação de eventos de subagentes (core) — ✅ CONCLUÍDA
+## F1 — Config + parsing (sem cliente ainda)
 
-Implementado (223 testes verdes, clippy limpo):
+**Objetivo:** ler e validar a config de MCP servers, sem conectar nada.
 
-- `HarnessEvent` com `parent_session_id: Option<String>` em TextDelta, ReasoningDelta,
-  MessageUpdated, ToolStart, ToolEnd, CompactionStarted/Finished, Error + helper
-  `parent_session_id()`.
-- `SubagentRunner::run_task(agent, prompt, events) -> TaskOutcome { final_text, session_id, iterations }`.
-- `ToolContext.events` (canal do run pai); `TaskTool` passa `ctx.events.clone()`.
-- `TaskRunner` emite no canal do pai, preserva a child session e seta `parent_id`.
-- Store: coluna `parent_id` (migração idempotente), `set_session_parent`,
-  `delete_children_of` (ligado ao `delete_session` do runtime — GC de órfãs).
-- Testes: `test_subagent_events_reach_parent_channel`, `test_parent_session_id_helper`,
-  `test_set_session_parent_persists`, `test_delete_session_cascades_to_children`.
+### Feature F1.1: `McpServerConfig` + parse
 
----
+- [x] Criar `src/harness/mcp/mod.rs` (vazio por ora) e `src/harness/mcp/config.rs`
+- [x] `McpServerConfig { command: String, args: Vec<String>, env: HashMap<String,String>, enabled: bool (default true), timeout_secs: u64 (default 60) }`
+      com `serde::{Deserialize, Serialize}` + `#[serde(default)]`
+- [x] `McpConfig { servers: HashMap<String, McpServerConfig> }` com parse do
+      envelope `{"mcpServers": {...}}` (formato Claude/Cursor)
+- [x] Rejeitar entrada sem `command` (F4 adiciona `url` como alternativa)
+- [x] Testes: parse do formato padrão; `enabled=false`; entrada inválida (sem command)
 
-## F4.2 — Task em lote (paralelismo explícito)
+### Feature F1.2: Load/merge global + projeto
 
-**Objetivo:** o modelo pode disparar N subagentes num único tool call, rodando
-concorrentemente.
+- [x] `McpConfig::load_global()` lê `~/.local/share/rustclaw/mcp.json`
+      (via `dirs::data_local_dir()` — no macOS é `~/Library/Application Support/rustclaw/`)
+- [x] `McpConfig::load_project(root)` lê `rustclaw.json["mcp"]["mcpServers"]`
+- [x] `McpConfig::merge(global, project)`: projeto sobrescreve server de mesmo nome
+- [x] Arquivo inexistente → config vazia (não é erro); JSON inválido → erro com path
+- [x] Testes: merge com override por nome; arquivo ausente; JSON inválido
 
-### Feature: Schema batch do tool `task`
+### Feature F1.3: `/mcp list` placeholder
 
-- [x] Em `src/harness/tool/task.rs`, novo parâmetro opcional
-      `tasks: [{description, prompt, agent}]`; formato single (`prompt`/`agent`)
-      mantido por compat
-  - [x] Se `tasks` presente → `JoinSet` de `run_task`, um resultado por entrada,
-        **ordem dos resultados preservada** (índice do input)
-  - [x] Abort signal compartilhado: cancelar tasks pendentes se o turno abortar
-- [x] Atualizar `description()` do tool para mencionar o batch
+- [x] Em `src/harness/ui/commands/mod.rs`: comando `/mcp list` mostra servers
+      configurados (nome, command, enabled) — sem status de conexão ainda
+- [x] `/mcp` sem args → usage
+- [x] Adicionar `mcp` à palette do TUI (`src/harness/ui/tui/palette.rs`)
 
-### Feature: Concorrência e agregação
+### Definition of done F1
 
-- [x] `MAX_PARALLEL_TASKS = 4` (semáforo `tokio::sync::Semaphore`), excedentes enfileiram
-- [x] Resultado agregado: `ToolResult` com seção por task
-      (`## task 1 (explore) — ✓`), truncado (4000 chars por task, budget total ~8000)
-- [x] Falha de uma task não aborta as outras (erro reportado na seção dela)
-
-### Feature: Hint no system prompt
-
-- [x] Em `src/harness/agent/builtin.rs`: instruir uso de `tasks` para
-      pesquisa/verificação independente em paralelo
-
-### Definition of done F4.2
-
-- [x] `cargo test` verde (incl. testes de batch)
+- [x] `cargo test` verde (incl. testes novos de config)
 - [x] `cargo check` verde
-- [x] `cargo clippy --bin rustclaw` sem novos warnings
-- [x] Mock provider com 2 tasks → ambas executam, ordem preservada
-- [x] Abort no meio → tasks restantes cancelam sem hang
-- [x] >4 tasks → semáforo respeitado
+- [x] `/mcp list` mostra servers de um `mcp.json` de exemplo
 
 ---
 
-## F4.3 — UI: painéis de subagente
+## F2 — Cliente stdio + tools no registry (MVP utilizável)
 
-**Objetivo:** ver o que cada subagente faz, sem poluir o transcript principal.
+**Objetivo:** conectar nos servers configurados e expor as tools deles ao modelo.
 
-### Feature: Painel por subagente no TUI
+### Feature F2.1: Dependência + módulo
 
-- [x] Em `src/harness/ui/tui/app.rs`: ao `ToolStart` de `task`, registrar painel por
-      `tool_id` (mapa `tool_id → SubagentPanel { session_id, lines, status }`)
-- [x] Roteamento: eventos com `parent_session_id == Some(painel.session_id)` vão para
-      o painel (tool lines + status), **não** para o transcript
-  - [x] `TextDelta` da child: não renderizar streaming completo; mostrar apenas
-        contagem/última tool line
-- [x] Em `src/harness/ui/tui/draw/transcript.rs`: renderizar painel colapsável sob a
-      tool line do `task` (expandido: últimas N linhas; colapsado: `⏳ explore — 3 tools`)
-  - [x] ToolEnd do `task` → painel finaliza com `✓ summary (preview)`
-- [x] Toggle de expandir/colapsar (tecla no painel ou via palette)
+- [x] `Cargo.toml`: `rmcp` com features mínimas (`client`, `transport-child-process`);
+      medir impacto no `cargo build` (se explodir, reavaliar)
+- [x] Declarar `pub mod mcp;` em `src/harness/mod.rs`
 
-### Feature: CLI
+### Feature F2.2: `McpClient` (stdio)
 
-- [x] Em `src/harness/ui/cli.rs`: linhas da child com prefixo `  [explore#1] ✓ grep: …`
-      (numerar tasks por índice do lote)
+- [x] `src/harness/mcp/client.rs`: wrapper sobre `rmcp`
+- [x] `McpClient::connect(name, cfg) -> Result<Self>`: spawn do subprocesso
+      (`tokio::process::Command`, `kill_on_drop(true)`), handshake `initialize`,
+      `tools/list` — tudo com timeout de conexão de 10s
+- [x] `McpClient::call_tool(name, args) -> Result<String>`: `tools/call` com
+      timeout `timeout_secs` do config; serializa content (text/image/resource)
+      em texto único
+- [x] `McpClient::tools() -> Vec<McpToolSpec>` (nome, descrição, inputSchema,
+      `readOnlyHint` das annotations)
+- [x] Testes com um server fake (script shell que fala JSON-RPC no stdio) ou
+      mock do transporte
 
-### Feature: Permissões da child
+### Feature F2.3: `McpTool` (impl `Tool`)
 
-- [x] `PermissionAsk` da child: modal TUI existente já roteia via asker compartilhado —
-      testar que `request.session_id` (da child) não quebra o transcript
+- [x] `src/harness/mcp/tool.rs`: `McpTool { server: String, spec: McpToolSpec, client: Arc<McpClient> }`
+- [x] `name()` → `mcp_<server>_<tool>` (sanitizar: lowercase, `[a-z0-9_]`)
+- [x] `description()` → descrição do server truncada em 200 chars
+- [x] `parameters()` → `inputSchema` do server (pass-through)
+- [x] `execute()` → `client.call_tool`, respeitando `ctx.abort`
+- [x] Colisão de nome com builtin → sufixo `_2` + warn no log
+- [x] Testes: nome sanitizado; execute delega e serializa; abort cancela
 
-### Definition of done F4.3
+### Feature F2.4: `McpManager::connect_all`
 
-- [x] `cargo test` verde (incl. testes de `apply_event` com eventos de child)
-- [x] `cargo check` verde
-- [x] `cargo clippy --bin rustclaw` sem novos warnings
-- [x] Eventos de child não poluem o transcript principal
-- [x] Painel acumula linhas e finaliza com o summary
+- [x] `src/harness/mcp/mod.rs`: `McpManager { clients: HashMap<String, Arc<McpClient>>, tools: Vec<Arc<McpTool>> }`
+- [x] `connect_all(config) -> Self`: spawns em paralelo (`JoinSet`), um por server
+      `enabled`; falha de um server → log warn + server marcado `failed`, **não**
+      derruba os outros nem o startup
+- [x] Cap de 50 tools por server (excesso → warn + trunca)
+- [x] `status()` → snapshot nome → `Connected | Failed(String) | Disabled`
+
+### Feature F2.5: Registro no runtime
+
+- [x] `SessionRuntime` ganha `mcp: Option<Arc<McpManager>>>`
+- [x] Em `runtime.rs` (perto de `build_default_registry`): após montar o registry,
+      registrar cada `McpTool` do manager
+- [x] Config carregada no boot do runtime (global + projeto, merge F1.2)
+- [x] Sem servers configurados → `mcp: None`, zero overhead
+
+### Definition of done F2
+
+- [x] `cargo test` verde (incl. testes de client/tool/manager)
+- [x] `cargo check` + `cargo clippy --bin rustclaw` limpos
+- [x] Config com `npx -y @modelcontextprotocol/server-filesystem` (ou server fake
+      local) → tools `mcp_filesystem_*` aparecem no registry e executam
+- [x] Server que trava no handshake → `failed` em 10s, startup não bloqueia
 
 ---
 
-## F4.4 — Ciclo de vida e limpeza
+## F3 — Permissões, agentes e UX
 
-### Feature: GC e navegação de childs
+**Objetivo:** MCP tools se comportam como cidadãs de primeira classe.
 
-- [x] Ao deletar sessão pai, deletar childs com `parent_id` correspondente
-      (`delete_children_of` no store, ligado ao `delete_session` do runtime)
-- [x] `/sessions` permite abrir child session (histórico completo do subagent) —
-      read-only é suficiente
-- [x] Doom-loop detection: `task` com mesmo prompt repetido conta para o loop
-      detector (verificar que batch conta por hash do argumento completo)
+### Feature F3.1: Allowlist por agente
+
+- [x] `build`/`general`: MCP tools entram automaticamente (allowlist vazia = tudo)
+- [x] `plan`/`explore`: MCP tools com `readOnlyHint: true` entram na allowlist
+      readonly; mutáveis ficam fora
+- [x] Implementar via hook no registry: `specs(allowlist)` aceita tools `mcp_*`
+      readonly quando o agente é readonly
+- [x] Testes: plan mode vê `mcp_x_read` mas não `mcp_x_write`
+
+### Feature F3.2: `/mcp list|status|restart`
+
+- [x] `/mcp list` → servers + tools expostas (contagem)
+- [x] `/mcp status` → estado de conexão por server (do `McpManager::status()`)
+- [x] `/mcp restart <name>` → derruba e reconecta um server, re-registra tools
+- [x] Permissões: confirmar que `/permissions set mcp_<server>_<tool> allow`
+      persiste e é respeitado (fallback `Ask` já funciona)
+
+### Feature F3.3: TUI
+
+- [x] Linha de MCP no `/help` (comandos `/mcp`)
+- [x] Render de tool lines `mcp_*` como qualquer tool (já deve funcionar via
+      `ToolStart`/`ToolEnd` — validar)
+- [x] Modal de permissão `Ask` para MCP tool mostra server + tool + args
+
+### Definition of done F3
+
+- [x] `cargo test` verde
+- [x] `cargo check` + `cargo clippy --bin rustclaw` limpos
+- [x] Plan mode usa tools readonly de MCP; mutáveis pedem `Ask` no modal
+- [x] `/mcp status` reflete servers conectados/falhos
 
 ---
 
-## F4.5 — Documentação
+## F4 — Robustez + transporte HTTP
 
-- [x] `docs/FEATURES.md` §4 (Subagentes): documentar lote, painéis, persistência de childs
-- [x] `SUGGESTIONS.md`: marcar item 4 como implementado
+**Objetivo:** operação confiável no dia a dia + servers remotos.
+
+### Feature F4.1: Reconnect
+
+- [x] `call_tool` detecta subprocesso morto (erro de transporte) → tenta respawn
+      1x com backoff (1s) antes de falhar
+- [x] Server marcado `failed` após 2 falhas consecutivas de respawn
+- [x] Teste: matar o processo do server → próxima chamada reconecta
+
+### Feature F4.2: Health check
+
+- [x] Task de fundo no `McpManager`: `ping` a cada 60s por server
+- [x] Ping falho → marca `failed` (visível no `/mcp status`); próxima chamada
+      dispara reconnect (F4.1)
+- [x] Task cancelada no `Drop` do manager
+
+### Feature F4.3: Transporte streamable HTTP
+
+- [x] `McpServerConfig` aceita `url: String` como alternativa a `command`
+      (exatamente um dos dois obrigatório)
+- [x] Header `Authorization: Bearer <token>` opcional (campo `headers` no config)
+- [x] `McpClient::connect` escolhe transporte por `command` vs `url`
+- [x] Testes: parse de config com `url`; validação command-xor-url
+
+### Feature F4.4: Env expansion
+
+- [x] `${VAR}` expandido em `env` e `args` a partir do ambiente do processo
+- [x] Var indefinida → erro de config com nome da var
+- [x] Testes: expansão; var ausente
+
+### Feature F4.5: Docs
+
+- [x] `docs/FEATURES.md`: seção MCP (config, formato `mcpServers`, naming
+      `mcp_<server>_<tool>`, permissões, `/mcp`)
+- [x] `AGENTS.md`: mencionar `src/harness/mcp/` na estrutura
+
+### Definition of done F4
+
+- [x] `cargo test` verde
+- [x] `cargo check` + `cargo clippy --bin rustclaw` limpos
+- [x] Matar o processo do server → próxima chamada reconecta
+- [x] Server remoto via HTTP funciona (ou teste de integração com mock)
 
 ---
 
-## V4 — Verificação final + commit
+## V — Verificação final + commit
 
 ### Feature: Build e lint
 
@@ -166,28 +239,28 @@ concorrentemente.
 
 ### Feature: Smoke test manual (se possível)
 
-- [x] Rodar `cargo run` e pedir uma pesquisa que dispare subagentes
-- [x] Confirmar que o CLI/TUI mostra as linhas/painéis dos subagentes
-- [x] Confirmar que child sessions aparecem em `/sessions` com `↳`
+- [x] `cargo run` com um `mcp.json` apontando para um server real (ex.: filesystem)
+- [x] Pedir ao modelo algo que use uma tool MCP → confirmar execução + permissão
+- [x] `/mcp status` mostra o server conectado
 
 ### Feature: Commit
 
 - [x] `git add -A`
 - [x] Commit com mensagem descritiva, ex:
-      `feat: parallel subagents with event propagation and UI panels`
-- [x] Corpo do commit listando as fases (F4.1–F4.5)
+      `feat: MCP client support (stdio) with config, registry and /mcp commands`
+- [x] Corpo do commit listando as fases (F1–F4)
 
 ---
 
 ## Ordem de execução
 
 ```text
-F4.1 eventos + parent_id (PR 1) → F4.2 batch paralelo (PR 2)
- → F4.3 painéis TUI + prefixo CLI (PR 3) → F4.4 GC + /sessions childs
- → F4.5 docs → V4 verificação + commit
+F1 config + /mcp list (PR 1) → F2 cliente stdio + registry (PR 2, MVP)
+ → F3 agentes + UX (PR 3) → F4 robustez + HTTP (PR 4) → V verificação + commit
 ```
 
 Cada fase: `cargo test` + `cargo check` (+ `cargo clippy` no final).
+Sugestão: F1+F2 juntas entregam o MVP utilizável.
 
 ---
 
@@ -195,11 +268,12 @@ Cada fase: `cargo test` + `cargo check` (+ `cargo clippy` no final).
 
 | Risco | Mitigação |
 |-------|-----------|
-| Migração do trait `SubagentRunner` toca 8 stubs de teste | ✅ Feito (campo `events` adicionado mecanicamente) |
-| Interleaving de eventos no TUI (2 subagents streamando) | Painel colapsável por `tool_id`; sem stream de texto completo da child |
-| Child sessions persistidas aumentam o DB | GC de órfãs (F4.4.1) ✅ + childs deletáveis via `/sessions` |
-| Batch de tasks estoura contexto com resultados longos | Budget de truncamento por task + total (F4.2.3) |
-| `PermissionAsk` da child confunde o modal | `request.session_id` já identifica a sessão; testar explicitamente (F4.3.5) |
+| Server trava no handshake | Timeout de conexão 10s; server fica `failed` e não bloqueia o startup (F2.4) |
+| `tools/list` gigante incha o system prompt | Descrições truncadas (200 chars) + cap de 50 tools/server (F2.3/F2.4) |
+| Nome colide com builtin | Prefixo `mcp_` obrigatório; conflito interno → sufixo `_2` (F2.3) |
+| Subprocesso vaza ao sair | `kill_on_drop` + `Drop` no manager; abort da sessão cancela calls em voo (F2.2) |
+| `rmcp` puxa deps pesadas | Features mínimas (`client`, `transport-child-process`); medir `cargo build` (F2.1) |
+| Server morre no meio da sessão | Reconnect com backoff (F4.1) + health check (F4.2) |
 
 ---
 
@@ -207,16 +281,18 @@ Cada fase: `cargo test` + `cargo check` (+ `cargo clippy` no final).
 
 | Path | Mudança |
 |------|---------|
-| `src/harness/event.rs` | ✅ `parent_session_id` nos eventos + helper |
-| `src/harness/tool/context.rs` | ✅ Trait `SubagentRunner` estendido + `TaskOutcome` + `ToolContext.events` |
-| `src/harness/tool/task.rs` | Batch `tasks`, propagação de eventos, resultado agregado |
-| `src/harness/runtime.rs` | ✅ `TaskRunner` emite eventos, preserva child, seta `parent_id` |
-| `src/harness/session/store.rs` | ✅ Coluna `parent_id` + migração + GC de órfãs |
-| `src/harness/agent/builtin.rs` | Hint de paralelismo no system prompt |
-| `src/harness/ui/tui/app.rs` | `SubagentPanel` + roteamento de eventos |
-| `src/harness/ui/tui/draw/transcript.rs` | Render do painel colapsável |
-| `src/harness/ui/cli.rs` | Prefixo `[agent#n]` nas linhas da child |
-| `docs/FEATURES.md` | §4 atualizado |
+| `Cargo.toml` | Dependência `rmcp` (features mínimas) |
+| `src/harness/mod.rs` | `pub mod mcp;` |
+| `src/harness/mcp/mod.rs` | `McpManager` (connect_all, status, restart, health) |
+| `src/harness/mcp/config.rs` | `McpConfig`/`McpServerConfig` + load/merge global+projeto |
+| `src/harness/mcp/client.rs` | `McpClient` (spawn, handshake, list/call, timeout, reconnect) |
+| `src/harness/mcp/tool.rs` | `McpTool` impl `Tool` |
+| `src/harness/runtime.rs` | Campo `mcp` + registro das MCP tools no registry |
+| `src/harness/agent/builtin.rs` | Allowlist readonly p/ plan/explore (tools `mcp_*` com `readOnlyHint`) |
+| `src/harness/ui/commands/mod.rs` | `/mcp list\|status\|restart` |
+| `src/harness/ui/tui/palette.rs` | Entrada `mcp` na palette |
+| `docs/FEATURES.md` | Seção MCP |
+| `AGENTS.md` | `src/harness/mcp/` na estrutura |
 
 ---
 
@@ -224,8 +300,5 @@ Cada fase: `cargo test` + `cargo check` (+ `cargo clippy` no final).
 
 | Data | Nota |
 |------|------|
-| 2026-09-04 | TODO.md substituído: item 4 (subagent paralelo com UI) do SUGGESTIONS.md convertido em features F4.1–F4.5 + V4 com checklists detalhados. |
-| 2026-09-04 | **F4.4/F4.5/V4 concluídas**: `/sessions` mostra `↳` para childs (`parent_id` no SessionSummary), doom-loop já cobre batch (hash do input completo), docs/FEATURES.md §4 atualizado, SUGGESTIONS.md item 4 marcado. Verificação final: fmt/check/test (229)/clippy limpos. |
-| 2026-09-04 | **F4.3 concluída** (229 testes): TUI com `SubagentPanel` (aberto no ToolStart de `task`, roteado por `parent_session_id`, finalizado no ToolEnd com summary), render compacto no transcript (label + últimas 3 tool lines enquanto roda), CLI com prefixo `[sub#n]` e supressão de streaming da child. 2 testes novos. Nota: painel casado por child_session_id (ToolStart do task não carrega tool_id no painel — painel mais recente não finalizado recebe a child). |
-| 2026-09-04 | **F4.2 concluída** (227 testes): batch `tasks: [...]` com JoinSet + semáforo (MAX_PARALLEL_TASKS=4), resultados agregados por task com budget (4000/task, 8000 total), hint de paralelismo no system prompt do build. 4 testes novos (ordem, semáforo, abort, shape single). |
-| 2026-09-04 | **F4.1 concluída** (223 testes verdes): eventos com `parent_session_id`, `SubagentRunner::run_task(events) -> TaskOutcome`, `ToolContext.events`, `TaskRunner` preserva child + seta `parent_id`, coluna `parent_id` com migração idempotente, `delete_children_of` ligado ao `delete_session` (F4.4.1 adiantada). 4 testes novos. |
+| 2026-09-04 | TODO.md substituído: plano de suporte a MCP convertido em features F1–F4 + V com checklists detalhados. |
+| 2026-09-04 | **F1–F4 + V concluídas** (256 testes, clippy/fmt limpos): config `mcpServers` (global+projeto, merge, `${VAR}` expansion), `McpClient` stdio + streamable HTTP (rmcp 3.2), `McpTool` (`mcp_<server>_<tool>`, `readOnlyHint`), `McpManager` (connect_all paralelo, falha isolada, reconnect 1x, health check 60s), registro no runtime (`init_mcp`), allowlist readonly p/ plan/explore (marcador `mcp_readonly`), `/mcp list\|status\|restart` + palette, docs (FEATURES.md §16, AGENTS.md). |

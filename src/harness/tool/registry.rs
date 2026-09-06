@@ -19,6 +19,16 @@ impl ToolRegistry {
         ToolRegistryBuilder::default()
     }
 
+    /// Returns a copy of the registry with an extra tool registered
+    /// (used to inject MCP tools after the initial build).
+    pub fn with_tool(&self, tool: Arc<dyn Tool>) -> Self {
+        let mut tools = (*self.tools).clone();
+        tools.insert(tool.name().to_string(), tool);
+        ToolRegistry {
+            tools: Arc::new(tools),
+        }
+    }
+
     pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
         self.tools.get(name).cloned()
     }
@@ -32,10 +42,19 @@ impl ToolRegistry {
     }
 
     /// Specs filtered by an allowlist (empty = all).
+    /// The special entry `mcp_readonly` admits MCP tools annotated with
+    /// `readOnlyHint: true` (used by readonly agents like plan/explore).
     pub fn specs(&self, allow: &[String]) -> Vec<ToolSpec> {
+        let mcp_readonly = allow.iter().any(|a| a == "mcp_readonly");
         self.tools
             .values()
-            .filter(|t| allow.is_empty() || allow.iter().any(|a| a == t.name()))
+            .filter(|t| {
+                allow.is_empty()
+                    || allow.iter().any(|a| a == t.name())
+                    || (mcp_readonly
+                        && t.name().starts_with("mcp_")
+                        && is_readonly_tool(t.as_ref()))
+            })
             .map(|t| ToolSpec::from_tool(t.as_ref()))
             .collect()
     }
@@ -51,6 +70,11 @@ impl ToolRegistry {
             .ok_or_else(|| format!("unknown tool `{}`", name))?;
         tool.execute(args, ctx).await
     }
+}
+
+/// True when the tool is an MCP tool annotated `readOnlyHint: true`.
+fn is_readonly_tool(tool: &dyn Tool) -> bool {
+    tool.name().starts_with("mcp_") && tool.read_only()
 }
 
 #[derive(Default)]
@@ -113,6 +137,58 @@ mod tests {
 
         let filtered = registry.specs(&["other".to_string()]);
         assert!(filtered.is_empty());
+    }
+
+    struct McpEchoTool;
+
+    #[async_trait::async_trait]
+    impl Tool for McpEchoTool {
+        fn name(&self) -> &str {
+            "mcp_fs_read"
+        }
+        fn description(&self) -> &str {
+            "mcp read"
+        }
+        fn parameters(&self) -> Value {
+            json!({"type": "object"})
+        }
+        fn read_only(&self) -> bool {
+            true
+        }
+        async fn execute(&self, _args: Value, _ctx: &ToolContext) -> Result<ToolResult, String> {
+            Ok(ToolResult::simple("mcp", ""))
+        }
+    }
+
+    struct McpWriteTool;
+
+    #[async_trait::async_trait]
+    impl Tool for McpWriteTool {
+        fn name(&self) -> &str {
+            "mcp_fs_write"
+        }
+        fn description(&self) -> &str {
+            "mcp write"
+        }
+        fn parameters(&self) -> Value {
+            json!({"type": "object"})
+        }
+        async fn execute(&self, _args: Value, _ctx: &ToolContext) -> Result<ToolResult, String> {
+            Ok(ToolResult::simple("mcp", ""))
+        }
+    }
+
+    #[test]
+    fn test_specs_mcp_readonly_marker() {
+        let registry = ToolRegistry::builder()
+            .register(Arc::new(McpEchoTool))
+            .register(Arc::new(McpWriteTool))
+            .build();
+        let allow = ["mcp_readonly".to_string()];
+        let specs = registry.specs(&allow);
+        // Only the readonly MCP tool is admitted.
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].name, "mcp_fs_read");
     }
 
     #[tokio::test]

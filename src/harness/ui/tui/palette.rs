@@ -202,6 +202,13 @@ pub fn all_items() -> Vec<PaletteItem> {
             "/memory ",
         ),
         item(
+            "mcp",
+            "/mcp",
+            "MCP servers: list / status / restart",
+            PaletteKind::Command,
+            "/mcp ",
+        ),
+        item(
             "models",
             "/models",
             "Switch provider/model (opencode-style picker)",

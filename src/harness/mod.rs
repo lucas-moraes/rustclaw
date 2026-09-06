@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod auth;
 pub mod event;
+pub mod mcp;
 pub mod permission;
 pub mod project;
 pub mod provider;

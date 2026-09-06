@@ -97,6 +97,8 @@ pub struct SessionRuntime {
     pub project_root: std::path::PathBuf,
     /// Custom agents injected by the CLI (overrides builtins).
     pub custom_agents: std::collections::HashMap<String, AgentSpec>,
+    /// MCP manager (None when no servers are configured).
+    pub mcp: Option<Arc<crate::harness::mcp::McpManager>>,
 }
 
 impl SessionRuntime {
@@ -162,6 +164,7 @@ impl SessionRuntime {
             project_memory,
             project_root: cwd,
             custom_agents: std::collections::HashMap::new(),
+            mcp: None,
         })
     }
 
@@ -595,6 +598,28 @@ impl SessionRuntime {
         })
     }
 
+    /// Connects to configured MCP servers (global + project config) and
+    /// registers their tools into the runtime registry. Safe to call once at
+    /// startup; a no-op when no servers are configured.
+    pub async fn init_mcp(&mut self) {
+        let cfg = match crate::harness::mcp::config::McpConfig::load_merged(&self.project_root) {
+            Ok(cfg) if !cfg.servers.is_empty() => cfg,
+            Ok(_) => return,
+            Err(e) => {
+                eprintln!("[warn] failed to load mcp config: {e:#}");
+                return;
+            }
+        };
+        let manager = crate::harness::mcp::McpManager::connect_all(cfg).await;
+        manager.start_health_checks();
+        let mut registry = self.registry.clone();
+        for tool in manager.tools().await {
+            registry = registry.with_tool(tool);
+        }
+        self.registry = registry;
+        self.mcp = Some(manager);
+    }
+
     /// Returns an Arc to this runtime (for subagent spawning). Clones shared fields.
     pub fn clone_shareable(&self) -> Self {
         Self {
@@ -610,6 +635,7 @@ impl SessionRuntime {
             project_memory: self.project_memory.clone(),
             project_root: self.project_root.clone(),
             custom_agents: self.custom_agents.clone(),
+            mcp: self.mcp.clone(),
         }
     }
 

@@ -45,7 +45,7 @@ pub async fn handle(
                 "commands: /help /new /sessions /agent <name> \
                   /compact /theme [name] /usage /memory /models /model <name> \
                   /provider <name> /provider add|rm|list /auth <provider> /settings \
-                  /undo /permissions /exit"
+                  /undo /permissions /mcp /exit"
                     .to_string(),
             );
             out.push("keys: Ctrl+P palette · Ctrl+T theme · ? help · Ctrl+L clear".to_string());
@@ -429,6 +429,76 @@ pub async fn handle(
                         Err(e) => out.push(format!("[error] failed to save token: {}", e)),
                     }
                 }
+            }
+        }
+        "/mcp" => {
+            let mut parts = arg.split_whitespace();
+            let sub = parts.next().unwrap_or("");
+            match runtime.mcp.as_ref() {
+                None => {
+                    out.push(
+                        "no MCP servers configured (add ~/.local/share/rustclaw/mcp.json \
+                         or `mcp` section in rustclaw.json)"
+                            .to_string(),
+                    );
+                }
+                Some(mgr) => match sub {
+                    "" | "list" => {
+                        let configured = mgr.configured().await;
+                        if configured.is_empty() {
+                            out.push("no MCP servers configured".to_string());
+                        } else {
+                            out.push(format!("mcp servers ({}):", configured.len()));
+                            for (name, target, enabled) in configured {
+                                let tools = mgr
+                                    .tools()
+                                    .await
+                                    .iter()
+                                    .filter(|t| t.server == name)
+                                    .count();
+                                out.push(format!(
+                                    "  {} {} ({}{})",
+                                    if enabled { "•" } else { "○" },
+                                    name,
+                                    target,
+                                    if enabled {
+                                        format!(", {} tools", tools)
+                                    } else {
+                                        ", disabled".to_string()
+                                    }
+                                ));
+                            }
+                        }
+                    }
+                    "status" => {
+                        for (name, status) in mgr.status_snapshot().await {
+                            let label = match status {
+                                crate::harness::mcp::McpServerStatus::Connected => {
+                                    "connected".to_string()
+                                }
+                                crate::harness::mcp::McpServerStatus::Failed(e) => {
+                                    format!("failed: {e}")
+                                }
+                                crate::harness::mcp::McpServerStatus::Disabled => {
+                                    "disabled".to_string()
+                                }
+                            };
+                            out.push(format!("  {name}: {label}"));
+                        }
+                    }
+                    "restart" => {
+                        let name = parts.next().unwrap_or("");
+                        if name.is_empty() {
+                            out.push("usage: /mcp restart <name>".to_string());
+                        } else {
+                            match mgr.restart(name).await {
+                                Ok(()) => out.push(format!("mcp server `{name}` restarted")),
+                                Err(e) => out.push(format!("[error] {e:#}")),
+                            }
+                        }
+                    }
+                    other => out.push(format!("usage: /mcp list|status|restart (got `{other}`)")),
+                },
             }
         }
         "/permissions" => {

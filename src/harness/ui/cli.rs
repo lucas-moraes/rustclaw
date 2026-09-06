@@ -215,6 +215,7 @@ pub async fn run(config: crate::config::Config, cwd: std::path::PathBuf) -> Resu
         asker,
         user_asker,
     )?;
+    runtime.init_mcp().await;
 
     // Reopen the most recently used session of this project when one exists;
     // otherwise start a fresh session.

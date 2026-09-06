@@ -110,6 +110,11 @@ src/
     │   ├── todo.rs question.rs task.rs
     │   └── truncate.rs
     ├── permission/mod.rs # allow/ask/deny engine
+    ├── mcp/          # MCP (Model Context Protocol) client
+    │   ├── mod.rs    # McpManager (connect_all, status, restart, health)
+    │   ├── config.rs # McpConfig (mcpServers) + load/merge global+projeto
+    │   ├── client.rs # McpClient (stdio/HTTP, handshake, list/call, reconnect)
+    │   └── tool.rs   # McpTool impl Tool (mcp_<server>_<tool>)
     ├── agent/
     │   ├── mod.rs        # AgentSpec + build_system_prompt
     │   └── builtin.rs    # build/plan/explore/general
