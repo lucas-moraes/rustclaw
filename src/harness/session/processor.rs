@@ -29,7 +29,7 @@ impl Default for ProcessorConfig {
     fn default() -> Self {
         Self {
             model: String::new(),
-            max_iterations: 50,
+            max_iterations: 100,
             max_context_tokens: 100_000,
             turn_timeout_secs: DEFAULT_TURN_TIMEOUT_SECS,
         }
@@ -52,12 +52,17 @@ pub type ArcProvider = Arc<dyn Provider>;
 pub struct TurnOutcome {
     pub final_text: String,
     pub iterations: usize,
+    /// How many times the turn auto-continued after hitting the limit.
+    pub continuations: usize,
     pub usage: Usage,
     pub aborted: bool,
 }
 
 const DOOM_LOOP_WARN: usize = 3;
 const DOOM_LOOP_STOP: usize = 5;
+/// How many times a turn may auto-continue after hitting max_iterations
+/// (effective iteration budget = (N + 1) × max_iterations).
+const DEFAULT_MAX_CONTINUATIONS: usize = 3;
 const COMPACTION_KEEP_RECENT: usize = 6;
 const COMPACTION_MIN_MESSAGES: usize = 10;
 /// Safety net: if the provider stream stalls (no event for this long), abort
@@ -67,7 +72,7 @@ const STREAM_TIMEOUT_SECS: u64 = 300;
 /// Wall-clock safety net for a whole turn: even if every individual stream
 /// and tool call stays under its own timeout, a turn that keeps going for
 /// this long is stopped instead of hanging forever. 0 = use the default.
-const DEFAULT_TURN_TIMEOUT_SECS: u64 = 600;
+const DEFAULT_TURN_TIMEOUT_SECS: u64 = 1800;
 
 impl SessionProcessor {
     /// Runs one user turn: loops stream -> tool exec until the model answers
@@ -86,268 +91,348 @@ impl SessionProcessor {
         let mut aborted = false;
         let mut recent_sigs: Vec<String> = Vec::new();
         let mut warned = false;
+        let mut continuations = 0usize;
+        let mut total_iterations = 0usize;
+        let mut stop_reason: Option<String> = None;
 
         let turn_secs = if self.config.turn_timeout_secs == 0 {
             DEFAULT_TURN_TIMEOUT_SECS
         } else {
             self.config.turn_timeout_secs
         };
-        let turn_deadline = tokio::time::Instant::now() + Duration::from_secs(turn_secs);
+        let mut turn_deadline = tokio::time::Instant::now() + Duration::from_secs(turn_secs);
 
-        while iterations < self.config.max_iterations {
-            if ctx.abort.is_aborted() {
-                aborted = true;
-                break;
-            }
-            if tokio::time::Instant::now() >= turn_deadline {
-                final_text = format!("Stopped: turn exceeded the {}s time limit.", turn_secs);
-                let _ = self.events.send(HarnessEvent::Error {
-                    session_id: session.id.clone(),
-                    message: final_text.clone(),
-                    parent_session_id: None,
-                });
-                break;
-            }
-            iterations += 1;
-
-            // Compaction on overflow.
-            self.maybe_compact(session).await?;
-            if ctx.abort.is_aborted() {
-                aborted = true;
-                break;
-            }
-
-            let req = LlmRequest {
-                model: agent
-                    .model
-                    .clone()
-                    .unwrap_or_else(|| self.config.model.clone()),
-                system: system_prompt.to_string(),
-                messages: session.messages.clone(),
-                tools: tool_specs.clone(),
-                max_tokens: None,
-                temperature: agent.turn_temperature(),
-            };
-
-            let mut stream = self.provider.stream(&req).await?;
-            let assistant_id = crate::harness::session::new_id();
-            let mut text = String::new();
-            let mut reasoning = String::new();
-            let mut tool_calls: Vec<ToolPart> = Vec::new();
-            let mut usage = Usage::default();
-
-            loop {
-                // Abort responsively mid-stream (Esc / Ctrl+C cancel).
+        'turn: loop {
+            while iterations < self.config.max_iterations {
                 if ctx.abort.is_aborted() {
                     aborted = true;
                     break;
                 }
-                // Race the next stream event against a short abort poll so a
-                // stuck/slow provider doesn't ignore Esc until the next token.
-                let next = tokio::select! {
-                    biased;
-                    _ = async {
-                        loop {
-                            if ctx.abort.is_aborted() {
-                                break;
+                if tokio::time::Instant::now() >= turn_deadline {
+                    stop_reason = Some(format!("turn exceeded the {}s time limit", turn_secs));
+                    break;
+                }
+                iterations += 1;
+                total_iterations += 1;
+
+                // Compaction on overflow.
+                self.maybe_compact(session).await?;
+                if ctx.abort.is_aborted() {
+                    aborted = true;
+                    break;
+                }
+
+                let req = LlmRequest {
+                    model: agent
+                        .model
+                        .clone()
+                        .unwrap_or_else(|| self.config.model.clone()),
+                    system: system_prompt.to_string(),
+                    messages: session.messages.clone(),
+                    tools: tool_specs.clone(),
+                    max_tokens: None,
+                    temperature: agent.turn_temperature(),
+                };
+
+                let mut stream = self.provider.stream(&req).await?;
+                let assistant_id = crate::harness::session::new_id();
+                let mut text = String::new();
+                let mut reasoning = String::new();
+                let mut tool_calls: Vec<ToolPart> = Vec::new();
+                let mut usage = Usage::default();
+
+                loop {
+                    // Abort responsively mid-stream (Esc / Ctrl+C cancel).
+                    if ctx.abort.is_aborted() {
+                        aborted = true;
+                        break;
+                    }
+                    // Race the next stream event against a short abort poll so a
+                    // stuck/slow provider doesn't ignore Esc until the next token.
+                    let next = tokio::select! {
+                        biased;
+                        _ = async {
+                            loop {
+                                if ctx.abort.is_aborted() {
+                                    break;
+                                }
+                                tokio::time::sleep(Duration::from_millis(50)).await;
                             }
-                            tokio::time::sleep(Duration::from_millis(50)).await;
+                        } => {
+                            aborted = true;
+                            break;
                         }
-                    } => {
-                        aborted = true;
-                        break;
-                    }
-                    _ = tokio::time::sleep(
-                        turn_deadline.saturating_duration_since(tokio::time::Instant::now()),
-                    ) => {
-                        // Turn-level watchdog: stop instead of hanging forever.
-                        let msg = format!("Stopped: turn exceeded the {}s time limit.", turn_secs);
-                        let _ = self.events.send(HarnessEvent::Error {
-                            session_id: session.id.clone(),
-                            message: msg.clone(),
-                            parent_session_id: None,
-                        });
-                        final_text = msg;
-                        aborted = true;
-                        break;
-                    }
-                    ev = tokio::time::timeout(
-                        Duration::from_secs(STREAM_TIMEOUT_SECS),
-                        stream.next(),
-                    ) => ev,
-                };
-                let ev = match next {
-                    Ok(Some(ev)) => ev,
-                    Ok(None) => break, // stream terminou
-                    Err(_) => {
-                        // Safety net: provider stream stalled. Abort the turn
-                        // instead of hanging forever.
-                        let msg = format!("Stream timed out after {}s", STREAM_TIMEOUT_SECS);
-                        let _ = self.events.send(HarnessEvent::Error {
-                            session_id: session.id.clone(),
-                            message: msg.clone(),
-                            parent_session_id: None,
-                        });
-                        final_text = msg;
-                        aborted = true;
-                        break;
-                    }
-                };
-                match ev? {
-                    ProviderEvent::TextDelta(d) => {
-                        text.push_str(&d);
-                        let _ = self.events.send(HarnessEvent::TextDelta {
-                            session_id: session.id.clone(),
-                            message_id: assistant_id.to_string(),
-                            delta: d,
-                            parent_session_id: None,
-                        });
-                    }
-                    ProviderEvent::ReasoningDelta(d) => {
-                        reasoning.push_str(&d);
-                        let _ = self.events.send(HarnessEvent::ReasoningDelta {
-                            session_id: session.id.clone(),
-                            message_id: assistant_id.to_string(),
-                            delta: d,
-                            parent_session_id: None,
-                        });
-                    }
-                    ProviderEvent::ToolCallStart { id, name } => {
-                        tool_calls.push(ToolPart::pending(id, name, serde_json::Value::Null));
-                        let _ = self.events.send(HarnessEvent::MessageUpdated {
-                            session_id: session.id.clone(),
-                            message_id: assistant_id.to_string(),
-                            parent_session_id: None,
-                        });
-                    }
-                    ProviderEvent::ToolCallDelta { id, args_delta } => {
-                        // Consume but do not surface; args complete at ToolCallEnd.
-                        let _ = (id, args_delta);
-                    }
-                    ProviderEvent::ToolCallEnd { id, arguments } => {
-                        if let Some(part) = tool_calls.iter_mut().find(|t| t.id == id) {
-                            match serde_json::from_str::<serde_json::Value>(&arguments) {
-                                Ok(v) => part.input = v,
-                                Err(e) => {
-                                    part.status = crate::harness::event::ToolStatus::Error;
-                                    part.error = Some(format!("invalid tool arguments: {}", e));
+                        _ = tokio::time::sleep(
+                            turn_deadline.saturating_duration_since(tokio::time::Instant::now()),
+                        ) => {
+                            // Turn-level watchdog: stop this attempt but let the
+                            // restart decision decide whether to resume.
+                            stop_reason =
+                                Some(format!("turn exceeded the {}s time limit", turn_secs));
+                            break;
+                        }
+                        ev = tokio::time::timeout(
+                            Duration::from_secs(STREAM_TIMEOUT_SECS),
+                            stream.next(),
+                        ) => ev,
+                    };
+                    let ev = match next {
+                        Ok(Some(ev)) => ev,
+                        Ok(None) => break, // stream terminou
+                        Err(_) => {
+                            // Safety net: provider stream stalled. Record and
+                            // let the restart decision decide.
+                            stop_reason =
+                                Some(format!("stream timed out after {}s", STREAM_TIMEOUT_SECS));
+                            break;
+                        }
+                    };
+                    match ev? {
+                        ProviderEvent::TextDelta(d) => {
+                            text.push_str(&d);
+                            let _ = self.events.send(HarnessEvent::TextDelta {
+                                session_id: session.id.clone(),
+                                message_id: assistant_id.to_string(),
+                                delta: d,
+                                parent_session_id: None,
+                            });
+                        }
+                        ProviderEvent::ReasoningDelta(d) => {
+                            reasoning.push_str(&d);
+                            let _ = self.events.send(HarnessEvent::ReasoningDelta {
+                                session_id: session.id.clone(),
+                                message_id: assistant_id.to_string(),
+                                delta: d,
+                                parent_session_id: None,
+                            });
+                        }
+                        ProviderEvent::ToolCallStart { id, name } => {
+                            tool_calls.push(ToolPart::pending(id, name, serde_json::Value::Null));
+                            let _ = self.events.send(HarnessEvent::MessageUpdated {
+                                session_id: session.id.clone(),
+                                message_id: assistant_id.to_string(),
+                                parent_session_id: None,
+                            });
+                        }
+                        ProviderEvent::ToolCallDelta { id, args_delta } => {
+                            // Consume but do not surface; args complete at ToolCallEnd.
+                            let _ = (id, args_delta);
+                        }
+                        ProviderEvent::ToolCallEnd { id, arguments } => {
+                            if let Some(part) = tool_calls.iter_mut().find(|t| t.id == id) {
+                                match serde_json::from_str::<serde_json::Value>(&arguments) {
+                                    Ok(v) => part.input = v,
+                                    Err(e) => {
+                                        part.status = crate::harness::event::ToolStatus::Error;
+                                        part.error = Some(format!("invalid tool arguments: {}", e));
+                                    }
                                 }
                             }
                         }
-                    }
-                    ProviderEvent::End {
-                        stop_reason: _,
-                        usage: u,
-                    } => {
-                        if let Some(u) = u {
-                            usage.input_tokens += u.input_tokens;
-                            usage.output_tokens += u.output_tokens;
+                        ProviderEvent::End {
+                            stop_reason: _,
+                            usage: u,
+                        } => {
+                            if let Some(u) = u {
+                                usage.input_tokens += u.input_tokens;
+                                usage.output_tokens += u.output_tokens;
+                            }
                         }
                     }
                 }
-            }
 
-            // User cancel or stream timeout: stop the whole turn. Do not
-            // persist a partial assistant message or execute tool calls.
-            if aborted || ctx.abort.is_aborted() {
-                aborted = true;
-                if final_text.is_empty() {
-                    final_text = "Run aborted by user.".to_string();
+                // User cancel or watchdog/stream timeout: stop this attempt.
+                // Aborts skip saving partial state; watchdogs go through the
+                // restart decision below (after the inner while).
+                if aborted || ctx.abort.is_aborted() {
+                    aborted = true;
+                    if final_text.is_empty() {
+                        final_text = "Run aborted by user.".to_string();
+                    }
+                    break;
                 }
-                break;
-            }
-
-            total_usage.input_tokens += usage.input_tokens;
-            total_usage.output_tokens += usage.output_tokens;
-
-            // Build assistant message.
-            let mut parts = Vec::new();
-            if !reasoning.is_empty() {
-                parts.push(Part::Reasoning { text: reasoning });
-            }
-            if !text.is_empty() {
-                parts.push(Part::text(text.clone()));
-            }
-            for t in tool_calls {
-                parts.push(Part::Tool(t));
-            }
-            if parts.is_empty() {
-                parts.push(Part::text(""));
-            }
-
-            let assistant = Message::with_id(assistant_id.clone(), Role::Assistant, parts);
-            session.push_message(assistant.clone());
-            let _ = self
-                .store
-                .save_message(&session.id, &session.cwd, &assistant);
-
-            if !assistant.has_tool_calls() {
-                final_text = text;
-                break;
-            }
-
-            // Execute tool calls (parallel where possible).
-            self.execute_tool_calls(session, &assistant_id, ctx).await;
-
-            // Esc during tool execution: stop the turn immediately.
-            if ctx.abort.is_aborted() {
-                aborted = true;
-                if final_text.is_empty() {
-                    final_text = "Run aborted by user.".to_string();
+                if let Some(reason) = stop_reason.take() {
+                    if continuations >= DEFAULT_MAX_CONTINUATIONS {
+                        final_text = format!(
+                            "Stopped: {} after {} continuation(s).",
+                            reason, continuations
+                        );
+                        break;
+                    }
+                    continuations += 1;
+                    let note = Message::user(format!(
+                        "[turn restart {}/{}] The turn was interrupted: {}. Review the state \
+                         so far, identify what happened, and decide whether to continue the \
+                         task from where it stopped or report the blocker.",
+                        continuations, DEFAULT_MAX_CONTINUATIONS, reason
+                    ));
+                    session.push_message(note.clone());
+                    let _ = self.store.save_message(&session.id, &session.cwd, &note);
+                    let _ = self.events.send(HarnessEvent::AutoContinue {
+                        session_id: session.id.clone(),
+                        round: continuations,
+                        total: DEFAULT_MAX_CONTINUATIONS,
+                        reason: format!("{} — turn restarted", reason),
+                        parent_session_id: None,
+                    });
+                    total_usage.input_tokens += usage.input_tokens;
+                    total_usage.output_tokens += usage.output_tokens;
+                    iterations = 0;
+                    turn_deadline = tokio::time::Instant::now() + Duration::from_secs(turn_secs);
+                    continue 'turn;
                 }
-                break;
-            }
 
-            // Doom loop check (single repeated call across iterations).
-            let sigs = assistant
-                .tool_parts()
-                .iter()
-                .map(|t| format!("{}:{}", t.name, t.input))
-                .collect::<Vec<_>>();
-            if sigs.len() == 1 {
-                let sig = sigs[0].clone();
-                if recent_sigs.last().map(|s| s == &sig).unwrap_or(false) {
-                    recent_sigs.push(sig.clone());
+                total_usage.input_tokens += usage.input_tokens;
+                total_usage.output_tokens += usage.output_tokens;
+
+                // Build assistant message.
+                let mut parts = Vec::new();
+                if !reasoning.is_empty() {
+                    parts.push(Part::Reasoning { text: reasoning });
+                }
+                if !text.is_empty() {
+                    parts.push(Part::text(text.clone()));
+                }
+                for t in tool_calls {
+                    parts.push(Part::Tool(t));
+                }
+                if parts.is_empty() {
+                    parts.push(Part::text(""));
+                }
+
+                let assistant = Message::with_id(assistant_id.clone(), Role::Assistant, parts);
+                session.push_message(assistant.clone());
+                let _ = self
+                    .store
+                    .save_message(&session.id, &session.cwd, &assistant);
+
+                if !assistant.has_tool_calls() {
+                    final_text = text;
+                    break;
+                }
+
+                // Execute tool calls (parallel where possible).
+                self.execute_tool_calls(session, &assistant_id, ctx).await;
+
+                // Esc during tool execution: stop the turn immediately.
+                if ctx.abort.is_aborted() {
+                    aborted = true;
+                    if final_text.is_empty() {
+                        final_text = "Run aborted by user.".to_string();
+                    }
+                    break;
+                }
+
+                // Doom loop check (single repeated call across iterations).
+                let sigs = assistant
+                    .tool_parts()
+                    .iter()
+                    .map(|t| format!("{}:{}", t.name, t.input))
+                    .collect::<Vec<_>>();
+                if sigs.len() == 1 {
+                    let sig = sigs[0].clone();
+                    if recent_sigs.last().map(|s| s == &sig).unwrap_or(false) {
+                        recent_sigs.push(sig.clone());
+                    } else {
+                        recent_sigs.clear();
+                        recent_sigs.push(sig);
+                    }
                 } else {
                     recent_sigs.clear();
-                    recent_sigs.push(sig);
                 }
-            } else {
-                recent_sigs.clear();
+
+                if recent_sigs.len() >= DOOM_LOOP_STOP {
+                    final_text =
+                        "Stopped: the same tool call was repeated many times without progress."
+                            .to_string();
+                    let _ = self.events.send(HarnessEvent::Error {
+                        session_id: session.id.clone(),
+                        message: final_text.clone(),
+                        parent_session_id: None,
+                    });
+                    break;
+                }
+                if recent_sigs.len() == DOOM_LOOP_WARN && !warned {
+                    warned = true;
+                    let warn = Message::user(
+                        "System note: you just repeated the same tool call. Change the input \
+                     or try a different approach.",
+                    );
+                    session.push_message(warn.clone());
+                    let _ = self.store.save_message(&session.id, &session.cwd, &warn);
+                }
             }
 
-            if recent_sigs.len() >= DOOM_LOOP_STOP {
-                final_text =
-                    "Stopped: the same tool call was repeated many times without progress."
-                        .to_string();
-                let _ = self.events.send(HarnessEvent::Error {
+            // Automatic continuation: the iteration limit was reached but the
+            // turn is neither aborted nor has a final answer, so resume from
+            // where it left off (up to DEFAULT_MAX_CONTINUATIONS times).
+            if aborted || !final_text.is_empty() {
+                break 'turn;
+            }
+            if let Some(reason) = stop_reason.take() {
+                // Watchdog stop (e.g. time limit): let the model review what
+                // happened and decide whether to continue, budget permitting.
+                if continuations >= DEFAULT_MAX_CONTINUATIONS {
+                    final_text = format!(
+                        "Stopped: {} after {} continuation(s).",
+                        reason, continuations
+                    );
+                    break 'turn;
+                }
+                continuations += 1;
+                let note = Message::user(format!(
+                    "[turn restart {}/{}] The turn was interrupted: {}. Review the state \
+                     so far, identify what happened, and decide whether to continue the \
+                     task from where it stopped or report the blocker.",
+                    continuations, DEFAULT_MAX_CONTINUATIONS, reason
+                ));
+                session.push_message(note.clone());
+                let _ = self.store.save_message(&session.id, &session.cwd, &note);
+                let _ = self.events.send(HarnessEvent::AutoContinue {
                     session_id: session.id.clone(),
-                    message: final_text.clone(),
+                    round: continuations,
+                    total: DEFAULT_MAX_CONTINUATIONS,
+                    reason: format!("{} — turn restarted", reason),
                     parent_session_id: None,
                 });
-                break;
+                iterations = 0;
+                turn_deadline = tokio::time::Instant::now() + Duration::from_secs(turn_secs);
+                continue 'turn;
             }
-            if recent_sigs.len() == DOOM_LOOP_WARN && !warned {
-                warned = true;
-                let warn = Message::user(
-                    "System note: you just repeated the same tool call. Change the input \
-                     or try a different approach.",
+            if continuations >= DEFAULT_MAX_CONTINUATIONS {
+                final_text = format!(
+                    "Stopped: reached the iteration limit after {} continuation(s).",
+                    continuations
                 );
-                session.push_message(warn.clone());
-                let _ = self.store.save_message(&session.id, &session.cwd, &warn);
+                break 'turn;
             }
+            continuations += 1;
+            let note = Message::user(format!(
+                "[auto-continue {}/{}] iteration limit reached — resuming the task \
+                 exactly where it stopped.",
+                continuations, DEFAULT_MAX_CONTINUATIONS
+            ));
+            session.push_message(note.clone());
+            let _ = self.store.save_message(&session.id, &session.cwd, &note);
+            let _ = self.events.send(HarnessEvent::AutoContinue {
+                session_id: session.id.clone(),
+                round: continuations,
+                total: DEFAULT_MAX_CONTINUATIONS,
+                reason: "iteration limit reached".to_string(),
+                parent_session_id: None,
+            });
+            iterations = 0;
+            turn_deadline = tokio::time::Instant::now() + Duration::from_secs(turn_secs);
         }
 
-        if iterations >= self.config.max_iterations && final_text.is_empty() {
-            final_text = "Stopped: reached the maximum number of iterations.".to_string();
-        }
         if ctx.abort.is_aborted() && final_text.is_empty() {
             final_text = "Run aborted by user.".to_string();
         }
 
         Ok(TurnOutcome {
             final_text,
-            iterations,
+            iterations: total_iterations,
+            continuations,
             usage: total_usage,
             aborted,
         })
@@ -697,11 +782,100 @@ mod tests {
             .run_turn(&mut session, &agent, "sys", &ctx)
             .await
             .unwrap();
-        assert!(outcome.aborted, "turn should be aborted by watchdog");
+        // The watchdog now restarts the turn (up to 3 continuations); each
+        // segment lasts the configured 1s before the next restart/stop.
+        assert_eq!(outcome.continuations, 3);
+        assert!(!outcome.aborted);
         assert!(
             outcome.final_text.contains("time limit"),
             "unexpected final_text: {}",
             outcome.final_text
         );
+    }
+
+    /// Provider that always ends the assistant message with exactly one tool
+    /// call (never a final answer). Simulates a long TODO-list run.
+    struct ToolCallProvider;
+
+    #[async_trait::async_trait]
+    impl Provider for ToolCallProvider {
+        fn name(&self) -> &str {
+            "toolcall"
+        }
+        async fn stream(&self, _req: &LlmRequest) -> anyhow::Result<ProviderStream> {
+            let evs: Vec<anyhow::Result<ProviderEvent>> = vec![
+                Ok(ProviderEvent::ToolCallStart {
+                    id: "t".to_string(),
+                    name: "read".into(),
+                }),
+                Ok(ProviderEvent::ToolCallEnd {
+                    id: "t".to_string(),
+                    arguments: r#"{"path":"x"}"#.to_string(),
+                }),
+                Ok(ProviderEvent::End {
+                    stop_reason: None,
+                    usage: None,
+                }),
+            ];
+            Ok(futures_util::stream::iter(evs).boxed())
+        }
+        async fn complete(&self, _req: &LlmRequest) -> anyhow::Result<LlmResponse> {
+            unreachable!()
+        }
+    }
+
+    #[tokio::test]
+    async fn test_auto_continuation_resumes_after_max_iterations() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = StdArc::new(
+            crate::harness::session::store::SessionStore::open(&dir.path().join("test.db"))
+                .unwrap(),
+        );
+        let (tx, _rx) = crate::harness::event::event_channel();
+        let processor = SessionProcessor {
+            provider: StdArc::new(ToolCallProvider),
+            registry: crate::harness::tool::registry::ToolRegistry::builder().build(),
+            events: tx,
+            store: store.clone(),
+            config: ProcessorConfig {
+                model: "m".into(),
+                max_iterations: 1,
+                max_context_tokens: 100_000,
+                turn_timeout_secs: 5, // generous: no watchdog interference
+            },
+        };
+        let mut session = store
+            .create_session("build", &dir.path().to_path_buf())
+            .unwrap();
+        session.messages.push(Message::user("do the long todo run"));
+        let agent = crate::harness::agent::AgentSpec {
+            name: "build".into(),
+            description: String::new(),
+            tools: vec![],
+            system_prompt: String::new(),
+            model: None,
+            temperature: None,
+            permission_overrides: Default::default(),
+        };
+        let ctx = test_ctx();
+        let outcome = processor
+            .run_turn(&mut session, &agent, "sys", &ctx)
+            .await
+            .unwrap();
+        // One tool call per iteration + 3 automatic continuations.
+        assert_eq!(outcome.continuations, 3);
+        assert_eq!(outcome.iterations, 4);
+        assert!(
+            outcome.final_text.contains("after 3 continuation(s)"),
+            "unexpected final_text: {}",
+            outcome.final_text
+        );
+        // The auto-continue notes were persisted with the session history.
+        let notes = session
+            .messages
+            .iter()
+            .filter(|m| m.role.as_str() == "user" && m.text_content().contains("[auto-continue"))
+            .count();
+        assert_eq!(notes, 3);
     }
 }

@@ -105,7 +105,11 @@ fn commands(t: &crate::harness::ui::tui::theme::Theme) -> Vec<Line<'static>> {
         kv("/compact", "summarize old messages (also auto on open)", t),
         kv("/theme name", "cyberclaw · aurora · ember · mono", t),
         kv("/usage", "tokens in/out + context window", t),
-        kv("/memory", "list · rm <id> · clear project memory", t),
+        kv(
+            "/memory",
+            "list · search <q> · rm <id> · clear project memory",
+            t,
+        ),
         kv("/models", "switch provider/model (picker)", t),
         kv("/model name", "set model for this project", t),
         kv("/provider name", "set provider (default model)", t),

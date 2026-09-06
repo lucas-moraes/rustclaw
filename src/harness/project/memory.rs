@@ -63,7 +63,14 @@ pub const MAX_MEMORY_CHARS: usize = 2048;
 /// lower-priority facts into the `archive` column.
 pub const MAX_SUMMARY_CHARS: usize = 4096;
 
-/// Weights for the relevance score.
+/// Facts with `hit_count >= AUTO_PROMOTE_HITS` are auto-promoted to skills
+/// by `/memory gc`.
+pub const AUTO_PROMOTE_HITS: i64 = 5;
+
+/// Weight of the BM25 (FTS5) rank in the hybrid relevance score.
+const W_BM25: f64 = 0.35;
+/// Weights of the non-BM25 components when BM25 is available (they are
+/// rescaled to sum to 1 - W_BM25).
 const W_RECENCY: f64 = 0.4;
 const W_HITS: f64 = 0.3;
 const W_LEXICAL: f64 = 0.3;
@@ -101,6 +108,38 @@ pub fn score_fact(fact: &MemoryFact, query: &str, now: &chrono::DateTime<chrono:
     W_RECENCY * recency + W_HITS * hits + W_LEXICAL * lexical
 }
 
+/// Hybrid score combining `score_fact` with an optional FTS5 BM25 rank
+/// (lower rank value = more relevant). When `bm25` is `Some`, the base
+/// weights are rescaled to make room for the BM25 component.
+pub fn score_fact_bm25(
+    fact: &MemoryFact,
+    query: &str,
+    now: &chrono::DateTime<chrono::Utc>,
+    bm25: Option<f64>,
+) -> f64 {
+    let Some(bm25) = bm25 else {
+        return score_fact(fact, query, now);
+    };
+    let base = score_fact(fact, query, now); // in [0, 1], weights sum to 1
+    let base_w = 1.0 - W_BM25;
+    // Normalize BM25 (negative, unbounded) into [0, 1]: rank 0 → 1.0,
+    // rank <= -10 → 0.0.
+    let bm25_norm = (1.0 + bm25 / 10.0).clamp(0.0, 1.0);
+    base * base_w + W_BM25 * bm25_norm
+}
+
+/// Escapes a user query for FTS5 MATCH: quotes each alphanumeric token so
+/// special characters cannot break the query syntax, and joins them with
+/// implicit AND. Returns an empty string when there are no usable terms.
+fn fts_escape(query: &str) -> String {
+    let tokens: Vec<String> = query
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .map(|t| format!("\"{}\"", t.replace('"', "")))
+        .collect();
+    tokens.join(" ")
+}
+
 /// Fraction of query tokens (lowercased, alphanumeric) present in `text`.
 fn lexical_overlap(query: &str, text: &str) -> f64 {
     let text_lower = text.to_lowercase();
@@ -122,12 +161,25 @@ fn lexical_overlap(query: &str, text: &str) -> f64 {
 
 /// Renders the top active facts for the system prompt, ordered by relevance
 /// and bounded by `max_chars`. Only non-archived facts are considered.
+#[allow(dead_code)] // thin wrapper kept for tests / external callers
 pub fn render_memory(facts: &[MemoryFact], query: &str, max_chars: usize) -> String {
+    render_memory_ranked(facts, query, max_chars, &std::collections::HashMap::new())
+}
+
+/// Like `render_memory`, but boosts facts that matched an FTS5 full-text
+/// query. `ranks` maps fact id → BM25 rank (lower = more relevant); facts
+/// absent from the map are scored without the BM25 component.
+pub fn render_memory_ranked(
+    facts: &[MemoryFact],
+    query: &str,
+    max_chars: usize,
+    ranks: &std::collections::HashMap<i64, f64>,
+) -> String {
     let now = chrono::Utc::now();
     let mut active: Vec<&MemoryFact> = facts.iter().filter(|f| !f.archived).collect();
     active.sort_by(|a, b| {
-        score_fact(b, query, &now)
-            .partial_cmp(&score_fact(a, query, &now))
+        score_fact_bm25(b, query, &now, ranks.get(&b.id).copied())
+            .partial_cmp(&score_fact_bm25(a, query, &now, ranks.get(&a.id).copied()))
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
@@ -278,11 +330,94 @@ impl ProjectMemoryStore {
             CREATE INDEX IF NOT EXISTS idx_{table}_archived ON {table}(archived);"
         ))
         .with_context(|| format!("failed to ensure facts table for {}", cwd.display()))?;
+        // Same lock guard (re-locking would deadlock the non-reentrant Mutex).
+        self.ensure_facts_fts(&conn, &table)?;
         drop(conn);
 
         // Migrate legacy facts embedded in the summary (lines starting with
         // `- [timestamp]`) into the facts table, then strip them from summary.
         self.migrate_summary_facts(cwd)
+    }
+
+    /// Creates the FTS5 full-text index over the facts table (idempotent).
+    /// Uses an external-content virtual table kept in sync by triggers, so
+    /// every write path (append/dedup/archive/delete/clear) stays indexed
+    /// automatically. Rebuilds the index when the table pre-dates FTS.
+    fn ensure_facts_fts(&self, conn: &Connection, table: &str) -> Result<()> {
+        let fts = format!("{table}_fts");
+        let exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                params![fts],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap_or(0)
+            > 0;
+        if !exists {
+            conn.execute_batch(&format!(
+                "CREATE VIRTUAL TABLE {fts} USING fts5(text, content='{table}', content_rowid='id');
+                 CREATE TRIGGER {table}_fts_ai AFTER INSERT ON {table} BEGIN
+                     INSERT INTO {fts}(rowid, text) VALUES (new.id, new.text);
+                 END;
+                 CREATE TRIGGER {table}_fts_ad AFTER DELETE ON {table} BEGIN
+                     INSERT INTO {fts}({fts}, rowid, text) VALUES('delete', old.id, old.text);
+                 END;
+                 CREATE TRIGGER {table}_fts_au AFTER UPDATE ON {table} BEGIN
+                     INSERT INTO {fts}({fts}, rowid, text) VALUES('delete', old.id, old.text);
+                     INSERT INTO {fts}(rowid, text) VALUES (new.id, new.text);
+                 END;"
+            ))
+            .with_context(|| format!("failed to create FTS index {fts}"))?;
+            // Index pre-existing rows (migration for tables created before FTS).
+            conn.execute_batch(&format!(
+                "INSERT INTO {fts}({fts}, rowid, text) SELECT 'rebuild', id, text FROM {table};"
+            ))
+            .with_context(|| format!("failed to rebuild FTS index {fts}"))?;
+        }
+        Ok(())
+    }
+
+    /// Full-text search over the project's facts using FTS5 (BM25 ranking).
+    /// Returns matching facts (active and archived) ordered by relevance.
+    /// Falls back to an empty result when the query has no usable terms.
+    pub fn search_facts(&self, cwd: &Path, query: &str) -> Result<Vec<(MemoryFact, f64)>> {
+        self.ensure_facts(cwd)?;
+        let table = table_name(cwd, "facts");
+        let fts = format!("{table}_fts");
+        let match_query = fts_escape(query);
+        if match_query.is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT f.id, f.text, f.kind, f.confidence, f.hit_count, f.last_used, f.archived,
+                        bm25({fts}) AS rank
+                 FROM {fts}
+                 JOIN {table} f ON f.id = {fts}.rowid
+                 WHERE {fts} MATCH ?1
+                 ORDER BY rank"
+            ))
+            .context("failed to prepare facts FTS query")?;
+        let rows = stmt
+            .query_map(params![match_query], |r| {
+                Ok((
+                    MemoryFact {
+                        id: r.get(0)?,
+                        text: r.get(1)?,
+                        kind: r.get(2)?,
+                        confidence: r.get(3)?,
+                        hit_count: r.get(4)?,
+                        last_used: r.get(5)?,
+                        archived: r.get::<_, i64>(6)? != 0,
+                    },
+                    r.get::<_, f64>(7)?,
+                ))
+            })
+            .context("failed to run facts FTS query")?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .context("failed to collect facts FTS results")?;
+        Ok(rows)
     }
 
     /// Moves legacy `- [timestamp] ...` lines from the `summary` column into
@@ -694,6 +829,36 @@ impl ProjectMemoryStore {
         Ok(moved)
     }
 
+    /// Auto-promotes heavily-used active facts (`hit_count >= threshold`) into
+    /// permanent `SKILL.md` files under `<cwd>/.agents/skills/<slug>/` and
+    /// archives the fact so it no longer pollutes active memory. Returns the
+    /// promoted skill paths.
+    pub fn auto_promote(&self, cwd: &Path, threshold: i64) -> Result<Vec<String>> {
+        let facts: Vec<MemoryFact> = self
+            .active_facts(cwd)?
+            .into_iter()
+            .filter(|f| f.hit_count >= threshold)
+            .collect();
+        let mut promoted = Vec::new();
+        for fact in facts {
+            let text = strip_timestamp_prefix(&fact.text);
+            let slug = crate::harness::skill::loader::sanitize_id(&text);
+            let dir = cwd.join(".agents").join("skills").join(&slug);
+            std::fs::create_dir_all(&dir)
+                .map_err(|e| anyhow::anyhow!("failed to create skill dir: {}", e))?;
+            let skill_path = dir.join("SKILL.md");
+            let body = format!(
+                "---\nname: {}\ndescription: \"{}\"\n---\n\n{}",
+                slug, fact.kind, text
+            );
+            std::fs::write(&skill_path, body)
+                .map_err(|e| anyhow::anyhow!("failed to write SKILL.md: {}", e))?;
+            self.set_archived(cwd, fact.id, true)?;
+            promoted.push(skill_path.display().to_string());
+        }
+        Ok(promoted)
+    }
+
     /// Overwrites the project's `summary` column (used by memory management).
     fn set_summary(&self, cwd: &Path, summary: &str) -> Result<()> {
         self.ensure_project(cwd)?;
@@ -985,6 +1150,37 @@ mod tests {
 
         let archived = s.archive_stale(d.path(), 60).unwrap();
         assert_eq!(archived, 1);
+        let facts = s.list_fact_rows(d.path()).unwrap();
+        assert!(facts[0].archived);
+        assert!(!facts[1].archived);
+    }
+
+    #[test]
+    fn test_auto_promote_heavily_used_facts() {
+        let (d, s) = store();
+        s.append_fact(d.path(), "use cargo test", "command", "inferred")
+            .unwrap();
+        let id = s.list_fact_rows(d.path()).unwrap()[0].id;
+        for _ in 0..AUTO_PROMOTE_HITS {
+            s.bump_usage(d.path(), id).unwrap();
+        }
+        // Low-usage fact must not be promoted.
+        s.append_fact(d.path(), "rarely used fact", "fact", "inferred")
+            .unwrap();
+
+        let promoted = s.auto_promote(d.path(), AUTO_PROMOTE_HITS).unwrap();
+        assert_eq!(promoted.len(), 1);
+        assert!(promoted[0].contains(".agents/skills/"));
+
+        let skill_md = d
+            .path()
+            .join(".agents/skills/use-cargo-test")
+            .join("SKILL.md");
+        let content = std::fs::read_to_string(&skill_md).unwrap();
+        assert!(content.contains("use cargo test"));
+        assert!(content.contains("name: use-cargo-test"));
+
+        // Promoted fact archived; low-usage fact still active.
         let facts = s.list_fact_rows(d.path()).unwrap();
         assert!(facts[0].archived);
         assert!(!facts[1].archived);

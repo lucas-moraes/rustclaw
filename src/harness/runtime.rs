@@ -40,9 +40,9 @@ impl Default for HarnessConfig {
             provider: String::new(),
             base_url: String::new(),
             api_key: String::new(),
-            max_iterations: 50,
+            max_iterations: 100,
             max_context_tokens: 100_000,
-            turn_timeout_secs: 600,
+            turn_timeout_secs: 1800,
             default_agent: "build".to_string(),
         }
     }
@@ -552,6 +552,7 @@ impl SessionRuntime {
         let TurnOutcome {
             final_text,
             iterations,
+            continuations: _,
             usage,
             aborted,
         } = processor
@@ -644,11 +645,23 @@ impl SessionRuntime {
         }
 
         // Append curated memory facts, ranked by relevance to the current turn.
+        // FTS5 full-text match boosts facts that share terms with the query.
         let facts = self.project_memory.active_facts(cwd)?;
-        let memory_block = crate::harness::project::memory::render_memory(
+        let ranks: std::collections::HashMap<i64, f64> = if query.trim().is_empty() {
+            std::collections::HashMap::new()
+        } else {
+            self.project_memory
+                .search_facts(cwd, query)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(f, rank)| (f.id, rank))
+                .collect()
+        };
+        let memory_block = crate::harness::project::memory::render_memory_ranked(
             &facts,
             query,
             crate::harness::project::memory::MAX_MEMORY_CHARS,
+            &ranks,
         );
         // Bump usage for the facts that were actually injected.
         if !memory_block.is_empty() {

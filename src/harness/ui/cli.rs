@@ -157,6 +157,17 @@ pub async fn print_events(mut rx: EventReceiver) {
             HarnessEvent::CompactionStarted { .. } => {
                 println!("\n{}[compacting context…]", child_prefix);
             }
+            HarnessEvent::AutoContinue {
+                round,
+                total,
+                reason,
+                ..
+            } => {
+                println!(
+                    "\n{}[auto-continue {}/{}] {} — resuming…",
+                    child_prefix, round, total, reason
+                );
+            }
             HarnessEvent::CompactionFinished {
                 summarized_messages,
                 ..

@@ -197,7 +197,7 @@ pub fn all_items() -> Vec<PaletteItem> {
         item(
             "memory",
             "/memory",
-            "List / rm / clear project memory (remember tool)",
+            "List / search / rm / clear project memory (remember tool)",
             PaletteKind::Command,
             "/memory ",
         ),

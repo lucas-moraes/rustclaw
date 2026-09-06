@@ -15,7 +15,7 @@ anyhow = "1.0"
 regex = "1"
 async-trait = "0.1"
 glob = "0.3"
-rusqlite = { version = "0.32", features = ["chrono"] }
+rusqlite = { version = "0.32", features = ["chrono", "bundled"] }
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }

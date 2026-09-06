@@ -196,16 +196,23 @@ impl ToolBatch {
         }
     }
 
-    /// Summary like `read ×3 · bash ×1`.
+    /// Summary like `read ×3 · bash ×1 (cargo test …)` — the trailing
+    /// parentheses show the most recent call label so the user can see what
+    /// the tools were actually doing.
     pub fn summary(&self) -> String {
-        self.counts
+        let mut s = self
+            .counts
             .iter()
             .map(|(n, c)| format!("{} ×{}", n, c))
             .collect::<Vec<_>>()
-            .join(" · ")
+            .join(" · ");
+        if !self.last_path.trim().is_empty() && s.chars().count() < 60 {
+            s.push_str(&format!(" ({})", self.last_path));
+        }
+        s
     }
 
-    /// Transient label while running: `read src/x (2/4)`.
+    /// Transient label while running: `bash cargo test … (2/4)`.
     pub fn live_label(&self) -> String {
         format!(
             "{} {} ({}/{})",
@@ -215,6 +222,30 @@ impl ToolBatch {
             self.pending + self.done + self.failed
         )
     }
+}
+
+/// Human-friendly one-line label of a tool call input (opencode-style):
+/// key fields first (`command`/`path`/`query`…), falling back to a compact
+/// JSON preview. Used on the transcript tool status lines.
+pub fn tool_arg_label(name: &str, input: &serde_json::Value) -> String {
+    let _ = name;
+    for key in [
+        "command",
+        "cmd",
+        "path",
+        "file_path",
+        "query",
+        "pattern",
+        "url",
+        "text",
+    ] {
+        if let Some(s) = input.get(key).and_then(|v| v.as_str()) {
+            if !s.trim().is_empty() {
+                return preview(s, 60);
+            }
+        }
+    }
+    preview(&input.to_string(), 60)
 }
 
 /// Live view of one subagent (child session), keyed by the `task` tool call id.
@@ -823,7 +854,7 @@ impl App {
                 self.status_msg = Some(format!("running: {}", name));
                 self.active_tools.push(ActiveTool { name: name.clone() });
                 let batch = self.tool_status.get_or_insert_with(ToolBatch::default);
-                batch.start(&name, preview(&input.to_string(), 60));
+                batch.start(&name, tool_arg_label(&name, &input));
                 // A `task` call opens a live subagent panel.
                 if name == "task" {
                     let agent = input["agent"].as_str().unwrap_or("explore").to_string();
@@ -898,6 +929,18 @@ impl App {
                         "[compaction: {} message(s) summarized]",
                         summarized_messages
                     ),
+                );
+            }
+            HarnessEvent::AutoContinue {
+                round,
+                total,
+                reason,
+                ..
+            } => {
+                self.flush_streaming();
+                self.push(
+                    LineKind::System,
+                    format!("[auto-continue {}/{}] {}", round, total, reason),
                 );
             }
             HarnessEvent::Error { message, .. } => {

@@ -77,6 +77,16 @@ pub enum HarnessEvent {
         summarized_messages: usize,
         parent_session_id: Option<String>,
     },
+    /// The turn was interrupted (iteration limit / watchdog); the processor
+    /// persists a restart note so the model reviews the state and resumes.
+    AutoContinue {
+        session_id: String,
+        round: usize,
+        total: usize,
+        /// Human-readable reason (e.g. "time limit exceeded").
+        reason: String,
+        parent_session_id: Option<String>,
+    },
     Error {
         session_id: String,
         message: String,
@@ -97,6 +107,7 @@ impl HarnessEvent {
             | HarnessEvent::ToolEnd { session_id, .. }
             | HarnessEvent::CompactionStarted { session_id, .. }
             | HarnessEvent::CompactionFinished { session_id, .. }
+            | HarnessEvent::AutoContinue { session_id, .. }
             | HarnessEvent::Error { session_id, .. } => Some(session_id),
             HarnessEvent::PermissionAsk { request } => Some(&request.session_id),
             HarnessEvent::PermissionResolved { .. } => None,
@@ -125,6 +136,9 @@ impl HarnessEvent {
                 parent_session_id, ..
             }
             | HarnessEvent::CompactionFinished {
+                parent_session_id, ..
+            }
+            | HarnessEvent::AutoContinue {
                 parent_session_id, ..
             }
             | HarnessEvent::Error {

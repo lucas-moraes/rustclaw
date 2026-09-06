@@ -59,10 +59,43 @@ fn render_memory_command(runtime: &SessionRuntime, cwd: &Path, args: &[&str]) ->
             let merged = runtime.project_memory.dedup(cwd)?;
             let archived = runtime.project_memory.archive_stale(cwd, 60)?;
             let compacted = runtime.project_memory.compact(cwd)?;
-            Ok(format!(
+            let promoted = runtime
+                .project_memory
+                .auto_promote(cwd, crate::harness::project::memory::AUTO_PROMOTE_HITS)
+                .unwrap_or_default();
+            let mut out = format!(
                 "gc: merged {} duplicate(s), archived {} stale fact(s), compacted {} fact(s)",
                 merged, archived, compacted
-            ))
+            );
+            for p in &promoted {
+                out.push_str(&format!("\n  auto-promoted → {}", p));
+            }
+            Ok(out)
+        }
+        ["search", rest @ ..] => {
+            let q = rest.join(" ");
+            if q.trim().is_empty() {
+                return Ok("usage: /memory search <query>".to_string());
+            }
+            let hits = runtime.project_memory.search_facts(cwd, &q)?;
+            if hits.is_empty() {
+                return Ok(format!("no memory matches for \"{}\"", q));
+            }
+            let all = runtime.project_memory.list_fact_rows(cwd)?;
+            let mut out = format!("memory matches for \"{}\" ({}):", q, hits.len());
+            for (f, _rank) in &hits {
+                let index = all.iter().position(|x| x.id == f.id).map(|i| i + 1);
+                let mark = if f.archived { " (archived)" } else { "" };
+                out.push_str(&format!(
+                    "\n  [{}] {} [{}|{}|hits {}]{mark}",
+                    index.map(|i| i.to_string()).unwrap_or_else(|| "?".into()),
+                    f.text,
+                    f.kind,
+                    f.confidence,
+                    f.hit_count
+                ));
+            }
+            Ok(out)
         }
         ["promote", id] => {
             let index: usize = match id.trim().parse() {
@@ -76,7 +109,10 @@ fn render_memory_command(runtime: &SessionRuntime, cwd: &Path, args: &[&str]) ->
             };
             promote_fact(runtime, cwd, index)
         }
-        _ => Ok("usage: /memory [list] [rm|delete <id>] [clear] [promote <id>]".to_string()),
+        _ => Ok(
+            "usage: /memory [list] [search <q>] [gc] [rm|delete <id>] [promote <id>] [clear]"
+                .to_string(),
+        ),
     }
 }
 
@@ -330,6 +366,24 @@ mod tests {
             .unwrap();
         let out = render_memory_command(&tr.runtime, cwd, &["promote", "1"]).unwrap();
         assert!(out.contains("already archived"));
+    }
+
+    #[test]
+    fn test_memory_gc_auto_promotes_heavily_used() {
+        let tr = test_runtime();
+        let cwd = tr._dir.path();
+        tr.runtime
+            .project_memory
+            .append_fact(cwd, "use cargo test", "command", "inferred")
+            .unwrap();
+        let id = tr.runtime.project_memory.list_fact_rows(cwd).unwrap()[0].id;
+        for _ in 0..crate::harness::project::memory::AUTO_PROMOTE_HITS {
+            tr.runtime.project_memory.bump_usage(cwd, id).unwrap();
+        }
+        let out = render_memory_command(&tr.runtime, cwd, &["gc"]).unwrap();
+        assert!(out.contains("auto-promoted →"));
+        assert!(out.contains(".agents/skills/"));
+        assert!(tr.runtime.project_memory.list_fact_rows(cwd).unwrap()[0].archived);
     }
 
     #[test]
