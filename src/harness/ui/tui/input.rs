@@ -20,6 +20,8 @@ pub const HELP: &str = "\
   Ctrl+P     command palette
   Ctrl+T     cycle theme
   Ctrl+L     clear transcript
+  Ctrl+Y     copy last code block
+  Ctrl+S     save last code block to file
   ? / F1     help overlay
   Tab        autocomplete (in /) / cycle mode
   y/n/a      permission modal

@@ -88,6 +88,8 @@ fn keys(t: &crate::harness::ui::tui::theme::Theme) -> Vec<Line<'static>> {
         kv("Ctrl+P", "command palette", t),
         kv("Ctrl+T", "cycle color theme", t),
         kv("Ctrl+L", "clear local transcript", t),
+        kv("Ctrl+Y", "copy last code block", t),
+        kv("Ctrl+S", "save last code block to file", t),
         kv("? / F1", "this help", t),
         kv("Tab", "autocomplete (in /) · cycle mode", t),
         kv("y / n / a", "permission allow · deny · always", t),

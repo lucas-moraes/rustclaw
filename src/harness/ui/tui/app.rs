@@ -1387,6 +1387,86 @@ impl App {
         }
     }
 
+    /// Extracts the last code block (``` fenced) from the transcript.
+    /// Returns the code content without the fence markers.
+    pub fn last_code_block(&self) -> Option<String> {
+        // Walk assistant lines in reverse, collecting fenced content.
+        let mut fence_lines: Vec<String> = Vec::new();
+        let mut in_fence = false;
+        for line in self.lines.iter().rev() {
+            if line.kind != LineKind::Assistant {
+                if in_fence {
+                    break;
+                }
+                continue;
+            }
+            for raw in line.text.lines().rev() {
+                let trimmed = raw.trim_start();
+                if trimmed.starts_with("```") {
+                    if in_fence {
+                        // Opening fence found: block complete.
+                        fence_lines.reverse();
+                        return Some(fence_lines.join("\n"));
+                    }
+                    in_fence = true;
+                    continue;
+                }
+                if in_fence {
+                    fence_lines.push(raw.to_string());
+                }
+            }
+            if in_fence {
+                break;
+            }
+        }
+        None
+    }
+
+    /// Copies the last code block to the clipboard (Ctrl+Y).
+    pub fn copy_last_code_block(&mut self) {
+        match self.last_code_block() {
+            Some(code) => {
+                if copy_to_clipboard(&code) {
+                    let n = code.chars().count();
+                    self.status_msg = Some(format!("copied code block ({n} chars)"));
+                } else {
+                    self.push(LineKind::Error, "[error] clipboard unavailable".to_string());
+                }
+            }
+            None => {
+                self.status_msg = Some("no code block found".to_string());
+            }
+        }
+    }
+
+    /// Saves the last code block to a file (Ctrl+S). Writes to
+    /// `rustclaw-code-<n>.txt` in the project cwd (or appends a counter).
+    pub fn save_last_code_block(&mut self) {
+        let Some(code) = self.last_code_block() else {
+            self.status_msg = Some("no code block found".to_string());
+            return;
+        };
+        for n in 1..=999 {
+            let path = self.cwd.join(format!("rustclaw-code-{n}.txt"));
+            if path.exists() {
+                continue;
+            }
+            match std::fs::write(&path, &code) {
+                Ok(()) => {
+                    self.status_msg = Some(format!("saved code block → {}", path.display()));
+                }
+                Err(e) => {
+                    self.push(LineKind::Error, format!("[error] failed to save: {e}"));
+                }
+            }
+            return;
+        }
+        self.push(
+            LineKind::Error,
+            "[error] too many code files (999+)".to_string(),
+        );
+    }
+
     /// Maps screen mouse coords to a transcript cell, if inside the viewport.
     pub fn hit_test_transcript(&self, mx: u16, my: u16) -> Option<CellPos> {
         selection::hit_test(
@@ -2101,10 +2181,13 @@ async fn handle_key(
             return Ok(false);
         }
         KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            if app.session.skills.is_empty() {
-                return Ok(false);
-            }
-            app.cycle_focus();
+            // Save the last code block to a file.
+            app.save_last_code_block();
+            return Ok(false);
+        }
+        KeyCode::Char('y') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            // Copy the last code block to the clipboard.
+            app.copy_last_code_block();
             return Ok(false);
         }
         _ => {}
@@ -3552,5 +3635,59 @@ mod input_tests {
         };
         let label = App::subagent_panel_label(&panel);
         assert_eq!(label, "⏳ explore — 1 tools");
+    }
+}
+
+#[cfg(test)]
+mod code_block_tests {
+    use super::*;
+
+    fn app_with_lines(lines: Vec<(&str, &str)>) -> App {
+        let mut app = App::inline_for_tests("");
+        app.lines = lines
+            .into_iter()
+            .map(|(k, t)| TranscriptLine {
+                kind: match k {
+                    "assistant" => LineKind::Assistant,
+                    "user" => LineKind::User,
+                    _ => LineKind::System,
+                },
+                text: t.to_string(),
+            })
+            .collect();
+        app
+    }
+
+    #[test]
+    fn test_last_code_block_extracts_fenced() {
+        let app = app_with_lines(vec![
+            ("user", "write a function"),
+            ("assistant", "here:\n```rust\nfn main() {}\n```\ndone"),
+        ]);
+        assert_eq!(app.last_code_block().unwrap(), "fn main() {}");
+    }
+
+    #[test]
+    fn test_last_code_block_takes_latest() {
+        let app = app_with_lines(vec![
+            ("assistant", "```\nfirst\n```"),
+            ("assistant", "```\nsecond\n```"),
+        ]);
+        assert_eq!(app.last_code_block().unwrap(), "second");
+    }
+
+    #[test]
+    fn test_last_code_block_none_without_fence() {
+        let app = app_with_lines(vec![("assistant", "no code here")]);
+        assert!(app.last_code_block().is_none());
+    }
+
+    #[test]
+    fn test_last_code_block_multiline() {
+        let app = app_with_lines(vec![(
+            "assistant",
+            "text\n```python\nprint(1)\nprint(2)\n```\nmore",
+        )]);
+        assert_eq!(app.last_code_block().unwrap(), "print(1)\nprint(2)");
     }
 }

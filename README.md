@@ -12,6 +12,8 @@ Coding agent harness em Rust, no estilo OpenCode / Claude Code. Loop de agente c
 - 🎭 **Agents** — `build`, `plan`, `explore`, `general` + subagente via tool `task`
 - 🛠️ **Tools de coding** — bash, read, write, edit, glob, grep, todo, question, task
 - 🔌 **MCP (Model Context Protocol)** — conecta a servidores MCP externos (stdio ou streamable HTTP) e expõe as tools deles como tools nativas (`mcp_<server>_<tool>`)
+- 🌐 **Web Research Gratuito** — busca no DuckDuckGo (`web_search`) e conversão de documentações HTML para Markdown limpo (`fetch_webpage`) sem dependência de API keys pagas
+- 📋 **Exportação Rápida de Código** — copie (`Ctrl+Y`) ou salve em arquivo (`Ctrl+S`) os blocos de código gerados pelo agente instantaneamente através da TUI
 - 🎨 **TUI Cyberclaw (ratatui + crossterm)** — tema colorido (4 temas trocáveis), splash animado, transcript em bubbles, status bar com tokens/contexto, command palette, permission/question modals, diff colorido. CLI streaming como fallback (`RUSTCLAW_UI=cli` ou non-TTY).
 - 🔁 **Compaction** — resume de contexto em overflow
 - 🐛 **Doom-loop detection** — para quando o agente repete a mesma tool call
@@ -101,6 +103,8 @@ só as marcadas entram no prompt daquele turno.
 | `Ctrl+T` | troca tema (cyberclaw·aurora·ember·mono) |
 | `Ctrl+S` | foca os chips de skills (navega com `←/→`, marca com `Space`) |
 | `Ctrl+L` | limpa o transcript local |
+| `Ctrl+Y` | copia o último bloco de código para o clipboard |
+| `Ctrl+S` | salva o último bloco de código em arquivo (`rustclaw-code-<n>.txt`) |
 | `?` / `F1` | help overlay (seções com `Tab`) |
 | `Esc` | limpa input / fecha overlay |
 | `↑/↓` | histórico (ou navega nos chips com foco) |
