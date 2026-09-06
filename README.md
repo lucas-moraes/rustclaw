@@ -11,6 +11,7 @@ Coding agent harness em Rust, no estilo OpenCode / Claude Code. Loop de agente c
 - 🔐 **Permissions HITL** — allow / ask / deny por tool e path (y/n/always no CLI)
 - 🎭 **Agents** — `build`, `plan`, `explore`, `general` + subagente via tool `task`
 - 🛠️ **Tools de coding** — bash, read, write, edit, glob, grep, todo, question, task
+- 🔌 **MCP (Model Context Protocol)** — conecta a servidores MCP externos (stdio ou streamable HTTP) e expõe as tools deles como tools nativas (`mcp_<server>_<tool>`)
 - 🎨 **TUI Cyberclaw (ratatui + crossterm)** — tema colorido (4 temas trocáveis), splash animado, transcript em bubbles, status bar com tokens/contexto, command palette, permission/question modals, diff colorido. CLI streaming como fallback (`RUSTCLAW_UI=cli` ou non-TTY).
 - 🔁 **Compaction** — resume de contexto em overflow
 - 🐛 **Doom-loop detection** — para quando o agente repete a mesma tool call
@@ -59,7 +60,8 @@ Toda a configuração vive em arquivos — nenhuma variável de ambiente obrigat
 |---------|--------|----------|
 | `~/.local/share/rustclaw/auth.json` | global | API key por provider (chmod 600) |
 | `~/.local/share/rustclaw/config.json` | global | provider/model, `max_iterations`, `max_context_tokens`, tema |
-| `rustclaw.json` (raiz do projeto) | por projeto | provider/model/base_url (grava pelo `/models`) |
+| `~/.local/share/rustclaw/mcp.json` | global | servidores MCP (`mcpServers`) |
+| `rustclaw.json` (raiz do projeto) | por projeto | provider/model/base_url (grava pelo `/models`), seção `mcp` |
 
 Na **primeira execução**, a TUI abre um wizard: escolha **provider → modelo** (`/models`)
 e cole o **token** (`/auth <provider>`) — nada é editado manualmente. Comandos de config:
@@ -124,6 +126,7 @@ Prompt simples:
 | `/compact` | Compactar contexto manualmente |
 | `/skills` | Gerir skills (`list`·`add <id>`·`rm <id>`·`default <id> on\|off`·`picker`) |
 | `/theme [name]` | Listar ou aplicar tema |
+| `/mcp list\|status\|restart` | Servidores MCP (listar/status/reconectar) |
 | `/usage` | Tokens in/out + janela de contexto da sessão |
 | `/help` / `/exit` | Ajuda / sair |
 
@@ -135,6 +138,43 @@ Tools destrutivas (`bash`, `write`, `edit`, `task`) pedem confirmação:
   allow? [y]es/[n]o/[a]lways:
 ```
 `a`/`always` aprova a tool pelo resto da sessão. Paths fora do working directory são sempre escalados para `ask`.
+
+### MCP (servidores externos)
+
+Conecte servidores MCP (filesystem, github, postgres, etc.) via `~/.local/share/rustclaw/mcp.json`
+ou seção `mcp` no `rustclaw.json` do projeto — formato padrão `mcpServers`:
+
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+    },
+    "remote": {
+      "url": "https://example.com/mcp",
+      "headers": { "Authorization": "Bearer <token>" }
+    }
+  }
+}
+```
+
+- As tools aparecem como `mcp_<server>_<tool>` (ex.: `mcp_filesystem_read_file`) e pedem
+  permissão como qualquer tool mutável (`/permissions set mcp_... allow` para liberar).
+- `${VAR}` em `args`/`env` é expandido do ambiente; `timeout_secs` controla o timeout por
+  chamada (default 60); `enabled: false` desativa um server.
+- Em modo `plan`/`explore`, só tools com annotation `readOnlyHint: true` ficam disponíveis.
+
+Comandos:
+
+| Comando | Descrição |
+|---------|-----------|
+| `/mcp list` | servers configurados + contagem de tools |
+| `/mcp status` | estado de conexão (connected/failed/disabled) |
+| `/mcp restart <name>` | reconecta um server |
+
+Se o subprocesso de um server morrer, a próxima chamada reconecta automaticamente (1 retry);
+um health check a cada 60s marca servers mortos no `/mcp status`.
 
 ## 🧱 Arquitetura
 
@@ -150,6 +190,7 @@ src/
     ├── session/     # Session/Message/Part + store SQLite + processor + compaction
     ├── provider/    # OpenAI, Anthropic, opencode-go adapters (streaming + native tools)
     ├── tool/        # Trait Tool + registry + bash/read/write/edit/glob/grep/todo/question/task
+    ├── mcp/         # MCP client (config mcpServers, stdio/HTTP, McpManager, McpTool)
     ├── permission/  # allow/ask/deny
     ├── agent/       # AgentSpec + builtin (build/plan/explore/general)
     └── ui/          # tui/ (app, draw, input, askers) + cli/ (fallback) + commands/

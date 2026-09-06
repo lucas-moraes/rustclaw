@@ -139,7 +139,10 @@ src/
   (via `/provider add|rm|list`, `/models add`, or the `/models` picker
   "add provider…"). Merged with the builtin catalog at runtime; a user
   provider with the same name as a builtin overrides it.
+- `~/.local/share/rustclaw/mcp.json` — MCP servers (`mcpServers` format);
+  merged with the `mcp` section of `rustclaw.json` (project wins by name)
 - `rustclaw.json` in the project root — per-project provider/model override
+  + optional `mcp` section
 - Precedence: catalog (builtin + user) → config.json → rustclaw.json → auth token
 - UX env vars still honored: `RUSTCLAWUI`/`RUSTCLAW_UI`, `RUSTCLAW_THEME`,
   `RUSTCLAW_SKILLS_DIR`, `NO_COLOR`
@@ -157,6 +160,7 @@ impl Tool for MyTool {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
     fn parameters(&self) -> serde_json::Value; // JSON Schema
+    // opcional: fn read_only(&self) -> bool { true }  // MCP readOnlyHint
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolResult, String>;
 }
 ```
@@ -185,3 +189,19 @@ impl Tool for MyTool {
 ### Permissions
 - `PermissionEngine` decide Allow/Ask/Deny por tool + path (fora do CWD → Ask)
 - Tools mutáveis pedem confirmação no CLI (y/n/always)
+
+### MCP (Model Context Protocol)
+- `McpManager` (`mcp/mod.rs`): `connect_all` paralelo no boot (falha de um
+  server não bloqueia os outros; timeout de conexão 10s), `restart`,
+  health check a cada 60s, reconnect 1x em falha de transporte
+- Config: formato padrão `mcpServers` (Claude/Cursor); `command` (stdio) XOR
+  `url` (streamable HTTP + `headers.Authorization`); `${VAR}` expandido em
+  `args`/`env`; `timeout_secs` por chamada (default 60)
+- `McpTool` (`mcp/tool.rs`) impl `Tool` com nome `mcp_<server>_<tool>`
+  (sanitizado `[a-z0-9_]`); descrição truncada 200 chars; cap 50 tools/server
+- Registro: `SessionRuntime::init_mcp()` (chamado no boot do CLI/TUI) injeta
+  as tools no `ToolRegistry` via `registry.with_tool`
+- Permissões: MCP tools caem no default `Ask`; `/permissions set mcp_... allow`
+  persiste. Agentes readonly (plan/explore) admitem tools com `readOnlyHint`
+  via marcador `mcp_readonly` na allowlist (`Tool::read_only()` no trait)
+- Comandos: `/mcp list|status|restart` (`ui/commands/mod.rs`)
