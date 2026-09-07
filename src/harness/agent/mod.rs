@@ -189,28 +189,50 @@ mod tests {
     }
 
     #[test]
-    fn test_explore_is_readonly() {
+    fn test_explore_has_build_tools_except_write() {
         let explore = builtin::explore();
         assert!(explore.allows_tool("read"));
         assert!(explore.allows_tool("grep"));
+        assert!(explore.allows_tool("bash"));
+        assert!(explore.allows_tool("task"));
+        assert!(explore.allows_tool("remember"));
         assert!(!explore.allows_tool("write"));
         assert!(!explore.allows_tool("edit"));
-        assert!(!explore.allows_tool("bash"));
     }
 
-    /// Only build may change project files.
+    /// Every non-build mode gets the full build toolset except file writing
+    /// (write/edit). bash/remember/task are allowed.
     #[test]
-    fn test_only_build_can_mutate_files() {
-        let mutating = ["write", "edit", "bash", "remember"];
+    fn test_non_build_modes_allow_all_except_write_edit() {
+        let file_writing = ["write", "edit"];
+        let build_tools = [
+            "bash",
+            "read",
+            "glob",
+            "grep",
+            "ast_search",
+            "todo_read",
+            "todo_write",
+            "question",
+            "task",
+            "remember",
+            "fetch_webpage",
+            "web_search",
+            "git_status",
+            "git_diff",
+            "git_log",
+        ];
         for name in ["plan", "explore", "general", "chat-free"] {
             let spec = crate::harness::agent::find_builtin(name).unwrap();
-            for m in mutating {
+            for m in file_writing {
                 assert!(!spec.allows_tool(m), "{name} must not allow {m}");
             }
-            assert!(spec.allows_tool("read"), "{name} must allow read");
+            for t in build_tools {
+                assert!(spec.allows_tool(t), "{name} must allow {t}");
+            }
         }
         let build = crate::harness::agent::find_builtin("build").unwrap();
-        for m in mutating {
+        for m in file_writing {
             assert!(build.allows_tool(m));
         }
     }
@@ -227,14 +249,14 @@ mod tests {
         assert_eq!(chat.name, "chat-free");
         // Conversational: higher temperature.
         assert_eq!(chat.turn_temperature(), 0.8);
-        // Light read-only tools, no mutating ones.
+        // Full build toolset except file writing.
         assert!(chat.allows_tool("web_search"));
         assert!(chat.allows_tool("fetch_webpage"));
         assert!(chat.allows_tool("read"));
+        assert!(chat.allows_tool("bash"));
+        assert!(chat.allows_tool("task"));
         assert!(!chat.allows_tool("write"));
         assert!(!chat.allows_tool("edit"));
-        assert!(!chat.allows_tool("bash"));
-        assert!(!chat.allows_tool("task"));
         // Prompt is conversational, not coding-focused.
         assert!(chat.system_prompt.contains("friendly"));
         assert!(chat

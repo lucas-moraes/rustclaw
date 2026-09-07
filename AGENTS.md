@@ -173,8 +173,8 @@ impl Tool for MyTool {
 - Nó `impl_item` NÃO tem campo `name` — o nome é montado dos fields `trait`
   e `type` ("Trait for Type"). `child_by_field_name("name")` vale para
   function/struct/enum/trait items.
-- `read_only() = true`; registrado em `build_default_registry`, na allowlist
-  `READONLY_TOOLS` (explore/plan) e na lista `Allow` do `PermissionEngine`.
+- `read_only() = true`; registrado em `build_default_registry` e na lista
+  `Allow` do `PermissionEngine`.
 - Nós >3000 chars são truncados para o cabeçalho (protege a janela de contexto).
 
 ### Provider
@@ -214,6 +214,6 @@ impl Tool for MyTool {
 - Registro: `SessionRuntime::init_mcp()` (chamado no boot do CLI/TUI) injeta
   as tools no `ToolRegistry` via `registry.with_tool`
 - Permissões: MCP tools caem no default `Ask`; `/permissions set mcp_... allow`
-  persiste. Agentes readonly (plan/explore) admitem tools com `readOnlyHint`
-  via marcador `mcp_readonly` na allowlist (`Tool::read_only()` no trait)
+  persiste. Todos os modos admitem tools MCP com `readOnlyHint` via marcador
+  `mcp_readonly` na allowlist (`Tool::read_only()` no trait)
 - Comandos: `/mcp list|status|restart` (`ui/commands/mod.rs`)

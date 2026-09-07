@@ -170,7 +170,8 @@ ou seção `mcp` no `rustclaw.json` do projeto — formato padrão `mcpServers`:
   permissão como qualquer tool mutável (`/permissions set mcp_... allow` para liberar).
 - `${VAR}` em `args`/`env` é expandido do ambiente; `timeout_secs` controla o timeout por
   chamada (default 60); `enabled: false` desativa um server.
-- Em modo `plan`/`explore`, só tools com annotation `readOnlyHint: true` ficam disponíveis.
+- Em modo `plan`/`explore`, as tools MCP com annotation `readOnlyHint: true` são admitidas
+  automaticamente (marcador `mcp_readonly`); as demais tools MCP caem no default `Ask`.
 
 Comandos:
 
