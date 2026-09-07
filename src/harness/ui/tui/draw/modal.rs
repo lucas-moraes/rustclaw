@@ -10,13 +10,16 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 
 pub fn draw(frame: &mut Frame, modal: &Modal, theme: &Theme, tick: u64, area: Rect) {
-    let modal_area = centered_rect(70, 45, area);
-    frame.render_widget(Clear, modal_area);
-
     match modal {
-        Modal::Permission(req) => draw_permission(frame, req, theme, tick, modal_area),
+        Modal::Permission(req) => {
+            let modal_area = centered_rect(70, 45, area);
+            frame.render_widget(Clear, modal_area);
+            draw_permission(frame, req, theme, tick, modal_area)
+        }
         Modal::Question { req, draft, cursor } => {
-            draw_question(frame, req, draft, *cursor, theme, tick, modal_area)
+            // The question modal sizes itself against the full screen so it can
+            // grow to use the available space for long questions/options.
+            draw_question(frame, req, draft, *cursor, theme, tick, area)
         }
         Modal::UserPrompt { .. } => {
             let fixed = centered_rect_fixed(48, 11, area);
@@ -135,10 +138,33 @@ fn draw_question(
     tick: u64,
     area: Rect,
 ) {
-    // Question + options + answer box + hints.
+    // Size the modal to use the available screen space: width grows with the
+    // longest content line (capped at ~90% of the screen), and height grows
+    // with the wrapped content (capped at ~90% of the screen) so long
+    // questions/options are not clipped.
+    let max_w = ((area.width as f32) * 0.9) as u16;
+    let longest = req
+        .question
+        .lines()
+        .chain(req.options.iter().flat_map(|o| o.lines()))
+        .map(|l| l.chars().count())
+        .max()
+        .unwrap_or(0);
+    let w = (longest as u16 + 8).clamp(44, max_w.max(44)).min(110);
+
+    // Question + options + answer box + hints (height grows with wrapped rows).
+    let q_width = (w.saturating_sub(6) as usize).max(10);
+    let q_rows = crate::harness::ui::tui::markdown::wrap_plain(&req.question, q_width).len() as u16;
+    let mut opt_extra = 0u16;
+    for o in &req.options {
+        let rows = crate::harness::ui::tui::markdown::wrap_plain(o, q_width).len();
+        opt_extra = opt_extra.saturating_add(rows.saturating_sub(1) as u16);
+    }
     let opt_rows = req.options.len() as u16;
-    let h = (13 + opt_rows).min(area.height).max(11);
-    let w = area.width.clamp(44, 76);
+    let max_h = ((area.height as f32) * 0.9) as u16;
+    let h = (13 + opt_rows + q_rows.saturating_sub(1) + opt_extra)
+        .min(max_h.max(11))
+        .max(11);
     let area = centered_rect_fixed(w, h, area);
     frame.render_widget(Clear, area);
 
@@ -170,30 +196,55 @@ fn draw_question(
     };
 
     push_line(frame, Line::from(""), &mut y);
-    // Question text (single visual row; long text is truncated to keep the input visible).
-    let q = truncate(&req.question, inner.width.saturating_sub(4) as usize);
-    push_line(
-        frame,
-        Line::from(Span::styled(
-            format!("  {}", q),
-            Style::default()
-                .fg(t.text_bright)
-                .add_modifier(Modifier::BOLD),
-        )),
-        &mut y,
-    );
+    // Question text (soft-wrapped over multiple rows; grows the modal height).
+    let q_width_full = inner.width.saturating_sub(4) as usize;
+    let q_lines = crate::harness::ui::tui::markdown::wrap_plain(&req.question, q_width_full);
+    if q_lines.is_empty() {
+        push_line(frame, Line::from(""), &mut y);
+    }
+    for q in q_lines.iter() {
+        let prefix = "  ";
+        push_line(
+            frame,
+            Line::from(Span::styled(
+                format!("{}{}", prefix, q),
+                Style::default()
+                    .fg(t.text_bright)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            &mut y,
+        );
+    }
     push_line(frame, Line::from(""), &mut y);
 
     for (i, o) in req.options.iter().enumerate() {
-        let label = truncate(o, inner.width.saturating_sub(8) as usize);
-        push_line(
-            frame,
-            Line::from(vec![
-                Span::styled(format!("  [{}] ", i + 1), Style::default().fg(t.accent)),
-                Span::styled(label, Style::default().fg(t.text)),
-            ]),
-            &mut y,
-        );
+        let label_width = inner.width.saturating_sub(8) as usize;
+        let label_lines = crate::harness::ui::tui::markdown::wrap_plain(o, label_width);
+        if label_lines.is_empty() {
+            push_line(
+                frame,
+                Line::from(vec![
+                    Span::styled(format!("  [{}] ", i + 1), Style::default().fg(t.accent)),
+                    Span::styled("", Style::default().fg(t.text)),
+                ]),
+                &mut y,
+            );
+            continue;
+        }
+        for (j, label) in label_lines.iter().enumerate() {
+            let spans = if j == 0 {
+                vec![
+                    Span::styled(format!("  [{}] ", i + 1), Style::default().fg(t.accent)),
+                    Span::styled(label.clone(), Style::default().fg(t.text)),
+                ]
+            } else {
+                vec![
+                    Span::styled("     ", Style::default()),
+                    Span::styled(label.clone(), Style::default().fg(t.text)),
+                ]
+            };
+            push_line(frame, Line::from(spans), &mut y);
+        }
     }
     if !req.options.is_empty() {
         push_line(frame, Line::from(""), &mut y);
