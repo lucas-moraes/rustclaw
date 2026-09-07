@@ -74,6 +74,23 @@ const STREAM_TIMEOUT_SECS: u64 = 300;
 const DEFAULT_TURN_TIMEOUT_SECS: u64 = 1800;
 
 impl SessionProcessor {
+    /// Persists a message to the store, logging a warning on failure instead
+    /// of silently swallowing the error (so the history never silently diverges
+    /// from what the agent sees).
+    fn persist(&self, session_id: &str, cwd: &std::path::Path, msg: &Message) {
+        if let Err(e) = self.store.save_message(session_id, cwd, msg) {
+            tracing::warn!("failed to persist message (session={}): {}", session_id, e);
+        }
+    }
+
+    /// Emits an event to the bus, logging a warning on failure instead of
+    /// silently dropping it.
+    fn emit(&self, ev: HarnessEvent) {
+        if let Err(e) = self.events.send(ev) {
+            tracing::warn!("failed to emit event: {}", e);
+        }
+    }
+
     /// Runs one user turn: loops stream -> tool exec until the model answers
     /// without tool calls, hits max iterations, or is aborted.
     pub async fn run_turn(
@@ -93,6 +110,14 @@ impl SessionProcessor {
         let mut continuations = 0usize;
         let mut total_iterations = 0usize;
         let mut stop_reason: Option<String> = None;
+
+        tracing::info!(
+            "turn start: session={} agent={} model={} tools={}",
+            session.id,
+            agent.name,
+            agent.model.as_deref().unwrap_or(&self.config.model),
+            tool_specs.len()
+        );
 
         let turn_secs = if self.config.turn_timeout_secs == 0 {
             DEFAULT_TURN_TIMEOUT_SECS
@@ -133,7 +158,26 @@ impl SessionProcessor {
                     temperature: agent.turn_temperature(),
                 };
 
-                let mut stream = self.provider.stream(&req).await?;
+                let retry_policy = crate::harness::provider::retry::RetryPolicy::default();
+                let provider = self.provider.clone();
+                let req_clone = req.clone();
+                let abort_flag = ctx.abort.clone();
+                let mut stream = crate::harness::provider::retry::retry_with_policy(
+                    &retry_policy,
+                    || {
+                        let provider = provider.clone();
+                        let req = req_clone.clone();
+                        let abort = abort_flag.clone();
+                        async move {
+                            if abort.is_aborted() {
+                                return Err(anyhow::anyhow!("aborted by user"));
+                            }
+                            provider.stream(&req).await
+                        }
+                    },
+                    || ctx.abort.is_aborted(),
+                )
+                .await?;
                 let assistant_id = crate::harness::session::new_id();
                 let mut text = String::new();
                 let mut reasoning = String::new();
@@ -189,7 +233,7 @@ impl SessionProcessor {
                     match ev? {
                         ProviderEvent::TextDelta(d) => {
                             text.push_str(&d);
-                            let _ = self.events.send(HarnessEvent::TextDelta {
+                            self.emit(HarnessEvent::TextDelta {
                                 session_id: session.id.clone(),
                                 message_id: assistant_id.to_string(),
                                 delta: d,
@@ -198,7 +242,7 @@ impl SessionProcessor {
                         }
                         ProviderEvent::ReasoningDelta(d) => {
                             reasoning.push_str(&d);
-                            let _ = self.events.send(HarnessEvent::ReasoningDelta {
+                            self.emit(HarnessEvent::ReasoningDelta {
                                 session_id: session.id.clone(),
                                 message_id: assistant_id.to_string(),
                                 delta: d,
@@ -207,7 +251,7 @@ impl SessionProcessor {
                         }
                         ProviderEvent::ToolCallStart { id, name } => {
                             tool_calls.push(ToolPart::pending(id, name, serde_json::Value::Null));
-                            let _ = self.events.send(HarnessEvent::MessageUpdated {
+                            self.emit(HarnessEvent::MessageUpdated {
                                 session_id: session.id.clone(),
                                 message_id: assistant_id.to_string(),
                                 parent_session_id: None,
@@ -266,8 +310,15 @@ impl SessionProcessor {
                         continuations, DEFAULT_MAX_CONTINUATIONS, reason
                     ));
                     session.push_message(note.clone());
-                    let _ = self.store.save_message(&session.id, &session.cwd, &note);
-                    let _ = self.events.send(HarnessEvent::AutoContinue {
+                    self.persist(&session.id, &session.cwd, &note);
+                    tracing::info!(
+                        "turn restart {}/{}: {} (session={})",
+                        continuations,
+                        DEFAULT_MAX_CONTINUATIONS,
+                        reason,
+                        session.id
+                    );
+                    self.emit(HarnessEvent::AutoContinue {
                         session_id: session.id.clone(),
                         round: continuations,
                         total: DEFAULT_MAX_CONTINUATIONS,
@@ -341,10 +392,15 @@ impl SessionProcessor {
                 }
 
                 if recent_sigs.len() >= DOOM_LOOP_STOP {
+                    tracing::warn!(
+                        "doom loop detected: same tool call repeated {} times (session={})",
+                        recent_sigs.len(),
+                        session.id
+                    );
                     final_text =
                         "Stopped: the same tool call was repeated many times without progress."
                             .to_string();
-                    let _ = self.events.send(HarnessEvent::Error {
+                    self.emit(HarnessEvent::Error {
                         session_id: session.id.clone(),
                         message: final_text.clone(),
                         parent_session_id: None,
@@ -358,7 +414,7 @@ impl SessionProcessor {
                      or try a different approach.",
                     );
                     session.push_message(warn.clone());
-                    let _ = self.store.save_message(&session.id, &session.cwd, &warn);
+                    self.persist(&session.id, &session.cwd, &warn);
                 }
             }
 
@@ -386,8 +442,15 @@ impl SessionProcessor {
                     continuations, DEFAULT_MAX_CONTINUATIONS, reason
                 ));
                 session.push_message(note.clone());
-                let _ = self.store.save_message(&session.id, &session.cwd, &note);
-                let _ = self.events.send(HarnessEvent::AutoContinue {
+                self.persist(&session.id, &session.cwd, &note);
+                tracing::info!(
+                    "turn restart {}/{}: {} (session={})",
+                    continuations,
+                    DEFAULT_MAX_CONTINUATIONS,
+                    reason,
+                    session.id
+                );
+                self.emit(HarnessEvent::AutoContinue {
                     session_id: session.id.clone(),
                     round: continuations,
                     total: DEFAULT_MAX_CONTINUATIONS,
@@ -412,8 +475,14 @@ impl SessionProcessor {
                 continuations, DEFAULT_MAX_CONTINUATIONS
             ));
             session.push_message(note.clone());
-            let _ = self.store.save_message(&session.id, &session.cwd, &note);
-            let _ = self.events.send(HarnessEvent::AutoContinue {
+            self.persist(&session.id, &session.cwd, &note);
+            tracing::info!(
+                "auto-continue {}/{}: iteration limit reached (session={})",
+                continuations,
+                DEFAULT_MAX_CONTINUATIONS,
+                session.id
+            );
+            self.emit(HarnessEvent::AutoContinue {
                 session_id: session.id.clone(),
                 round: continuations,
                 total: DEFAULT_MAX_CONTINUATIONS,
@@ -427,6 +496,16 @@ impl SessionProcessor {
         if ctx.abort.is_aborted() && final_text.is_empty() {
             final_text = "Run aborted by user.".to_string();
         }
+
+        tracing::info!(
+            "turn end: session={} iterations={} continuations={} aborted={} input_tokens={} output_tokens={}",
+            session.id,
+            total_iterations,
+            continuations,
+            aborted,
+            total_usage.input_tokens,
+            total_usage.output_tokens
+        );
 
         Ok(TurnOutcome {
             final_text,
@@ -461,7 +540,7 @@ impl SessionProcessor {
                 .filter(|t| t.status == ToolStatus::Pending)
                 .map(|t| {
                     t.status = ToolStatus::Running;
-                    let _ = self.events.send(HarnessEvent::ToolStart {
+                    self.emit(HarnessEvent::ToolStart {
                         session_id: session.id.clone(),
                         message_id: assistant_id.to_string(),
                         tool_id: t.id.clone(),
@@ -475,9 +554,7 @@ impl SessionProcessor {
         };
         if let Some(msg) = session.messages.iter().find(|m| m.id == *assistant_id) {
             let snapshot = msg.clone();
-            let _ = self
-                .store
-                .save_message(&session.id, &session.cwd, &snapshot);
+            self.persist(&session.id, &session.cwd, &snapshot);
         }
 
         // Spawn executions (permission-checked, then run concurrently).
@@ -525,7 +602,7 @@ impl SessionProcessor {
                             if t.status == ToolStatus::Running || t.status == ToolStatus::Pending {
                                 t.status = ToolStatus::Error;
                                 t.error = Some("aborted".to_string());
-                                let _ = self.events.send(HarnessEvent::ToolEnd {
+                                self.emit(HarnessEvent::ToolEnd {
                                     session_id: session.id.clone(),
                                     message_id: assistant_id.to_string(),
                                     tool_id: t.id.clone(),
@@ -579,6 +656,7 @@ impl SessionProcessor {
 
             match result {
                 Ok(r) => {
+                    tracing::debug!("tool call completed: {} (session={})", name, session.id);
                     if let Some(msg) = session.messages.iter_mut().find(|m| m.id == *assistant_id) {
                         if let Some(t) = found_tool(msg, &tool_id) {
                             t.status = ToolStatus::Completed;
@@ -591,7 +669,7 @@ impl SessionProcessor {
                             t.error = None;
                         }
                     }
-                    let _ = self.events.send(HarnessEvent::ToolEnd {
+                    self.emit(HarnessEvent::ToolEnd {
                         session_id: session.id.clone(),
                         message_id: assistant_id.to_string(),
                         tool_id: tool_id.clone(),
@@ -608,6 +686,7 @@ impl SessionProcessor {
                     });
                 }
                 Err(e) => {
+                    tracing::warn!("tool call failed: {} (session={}): {}", name, session.id, e);
                     if let Some(msg) = session.messages.iter_mut().find(|m| m.id == *assistant_id) {
                         if let Some(t) = found_tool(msg, &tool_id) {
                             t.status = ToolStatus::Error;
@@ -616,7 +695,7 @@ impl SessionProcessor {
                             t.title = name.clone();
                         }
                     }
-                    let _ = self.events.send(HarnessEvent::ToolEnd {
+                    self.emit(HarnessEvent::ToolEnd {
                         session_id: session.id.clone(),
                         message_id: assistant_id.to_string(),
                         tool_id: tool_id.clone(),
@@ -634,9 +713,7 @@ impl SessionProcessor {
         // Persist tool results.
         if let Some(msg) = session.messages.iter().find(|m| m.id == *assistant_id) {
             let snapshot = msg.clone();
-            let _ = self
-                .store
-                .save_message(&session.id, &session.cwd, &snapshot);
+            self.persist(&session.id, &session.cwd, &snapshot);
         }
     }
 

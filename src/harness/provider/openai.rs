@@ -376,8 +376,19 @@ impl Provider for OpenAiProvider {
 
         let status = response.status();
         if !status.is_success() {
+            let retry_after = response
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse::<u64>().ok());
             let text = response.text().await.unwrap_or_default();
-            return Err(anyhow!("API error ({}): {}", status, text));
+            let kind = super::retry::classify_status(status.as_u16());
+            return Err(super::retry::provider_error(
+                kind,
+                Some(status.as_u16()),
+                retry_after,
+                format!("API error ({}): {}", status, text),
+            ));
         }
         Ok(response_to_events(response))
     }
@@ -395,8 +406,19 @@ impl Provider for OpenAiProvider {
             .map_err(|e| anyhow!("HTTP request to {} failed: {}", url, e))?;
         let status = response.status();
         if !status.is_success() {
+            let retry_after = response
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse::<u64>().ok());
             let text = response.text().await.unwrap_or_default();
-            return Err(anyhow!("API error ({}): {}", status, text));
+            let kind = super::retry::classify_status(status.as_u16());
+            return Err(super::retry::provider_error(
+                kind,
+                Some(status.as_u16()),
+                retry_after,
+                format!("API error ({}): {}", status, text),
+            ));
         }
         let json: Value = response.json().await.context("failed to parse response")?;
         let (parts, usage, stop_reason) = parse_response(&json)?;

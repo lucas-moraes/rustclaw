@@ -59,7 +59,7 @@ impl SessionStore {
     pub fn ensure_project(&self, cwd: &Path) -> Result<()> {
         let sessions = table_name(cwd, "sessions");
         let messages = table_name(cwd, "messages");
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let sql = format!(
             "CREATE TABLE IF NOT EXISTS {sessions} (
                 id TEXT PRIMARY KEY,
@@ -117,7 +117,7 @@ impl SessionStore {
 
     /// Migrates rows from the legacy flat tables into per-project tables.
     fn migrate_legacy(&self) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let has_sessions = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='harness_sessions'",
@@ -137,7 +137,7 @@ impl SessionStore {
     fn migrate_sessions(&self) -> Result<()> {
         // Snapshot legacy rows while holding the lock, then release it.
         let (sessions, messages) = {
-            let conn = self.conn.lock().unwrap();
+            let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
 
             // Legacy `harness_sessions` may predate the skills_json column.
             let skills_col: Option<usize> = conn
@@ -212,7 +212,7 @@ impl SessionStore {
         }
 
         // Insert phase (re-lock).
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         for (id, agent, cwd, created_at, updated_at, todos_json, skills_json) in sessions {
             let cwd_path = PathBuf::from(&cwd);
             let sessions_t = table_name(&cwd_path, "sessions");
@@ -265,7 +265,7 @@ impl SessionStore {
         self.ensure_project(cwd)?;
         let session = Session::new(agent, cwd.to_path_buf());
         let sessions_t = table_name(cwd, "sessions");
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             &format!(
                 "INSERT INTO {sessions_t}
@@ -289,7 +289,7 @@ impl SessionStore {
         self.ensure_project(cwd)?;
         let messages_t = table_name(cwd, "messages");
         let sessions_t = table_name(cwd, "sessions");
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let parts_json = serde_json::to_string(&msg.parts).context("failed to serialize parts")?;
         let created_at = msg.created_at.to_rfc3339();
 
@@ -351,7 +351,7 @@ impl SessionStore {
         self.ensure_project(cwd)?;
         let sessions_t = table_name(cwd, "sessions");
         let messages_t = table_name(cwd, "messages");
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let row = conn
             .query_row(
                 &format!(
@@ -447,7 +447,7 @@ impl SessionStore {
         self.ensure_project(cwd)?;
         let sessions_t = table_name(cwd, "sessions");
         let messages_t = table_name(cwd, "messages");
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare(&format!(
                 "SELECT s.id, s.agent, s.cwd, s.created_at, s.updated_at, s.title, s.parent_id,
@@ -504,7 +504,7 @@ impl SessionStore {
     pub fn set_session_title(&self, id: &str, cwd: &Path, title: &str) -> Result<()> {
         self.ensure_project(cwd)?;
         let sessions_t = table_name(cwd, "sessions");
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             &format!("UPDATE {sessions_t} SET title = ?2 WHERE id = ?1"),
             params![id, title],
@@ -517,7 +517,7 @@ impl SessionStore {
     pub fn set_session_parent(&self, id: &str, cwd: &Path, parent: Option<&str>) -> Result<()> {
         self.ensure_project(cwd)?;
         let sessions_t = table_name(cwd, "sessions");
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             &format!("UPDATE {sessions_t} SET parent_id = ?2 WHERE id = ?1"),
             params![id, parent],
@@ -531,7 +531,7 @@ impl SessionStore {
         self.ensure_project(cwd)?;
         let sessions_t = table_name(cwd, "sessions");
         let messages_t = table_name(cwd, "messages");
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let children: Vec<String> = {
             let mut stmt = conn
                 .prepare(&format!("SELECT id FROM {sessions_t} WHERE parent_id = ?1"))
@@ -561,7 +561,7 @@ impl SessionStore {
     pub fn delete_messages_from(&self, id: &str, cwd: &Path, msg_id: &str) -> Result<()> {
         self.ensure_project(cwd)?;
         let messages_t = table_name(cwd, "messages");
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             &format!(
                 "DELETE FROM {messages_t}
@@ -578,7 +578,7 @@ impl SessionStore {
         self.ensure_project(cwd)?;
         let sessions_t = table_name(cwd, "sessions");
         let messages_t = table_name(cwd, "messages");
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             &format!("DELETE FROM {messages_t} WHERE session_id = ?1"),
             params![id],
@@ -602,7 +602,7 @@ impl SessionStore {
         self.ensure_project(&session.cwd)?;
         let sessions_t = table_name(&session.cwd, "sessions");
         let messages_t = table_name(&session.cwd, "messages");
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         // Saving a session marks it as updated now, so it becomes the most
         // recently used session (drives "resume last session" on startup).
         let now = chrono::Utc::now().to_rfc3339();
@@ -706,7 +706,7 @@ impl SessionStore {
         }
         self.ensure_project(cwd)?;
         let messages_t = table_name(cwd, "messages");
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare(&format!(
                 "DELETE FROM {messages_t} WHERE session_id = ?1 AND id = ?2"
@@ -727,7 +727,7 @@ impl SessionStore {
         cwd: &Path,
     ) -> Result<std::collections::HashSet<String>> {
         let messages_t = table_name(cwd, "messages");
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare(&format!(
                 "SELECT id FROM {messages_t} WHERE session_id = ?1"
@@ -790,7 +790,7 @@ mod tests {
             .set_session_parent(&child.id, Path::new("/tmp/proj"), Some(&parent.id))
             .unwrap();
         // Verify via the DB directly (parent_id is store-level metadata).
-        let conn = store.conn.lock().unwrap();
+        let conn = store.conn.lock().unwrap_or_else(|e| e.into_inner());
         let sessions_t = table_name(Path::new("/tmp/proj"), "sessions");
         let stored: Option<String> = conn
             .query_row(
@@ -805,7 +805,7 @@ mod tests {
         store
             .set_session_parent(&child.id, Path::new("/tmp/proj"), None)
             .unwrap();
-        let conn = store.conn.lock().unwrap();
+        let conn = store.conn.lock().unwrap_or_else(|e| e.into_inner());
         let cleared: Option<String> = conn
             .query_row(
                 &format!("SELECT parent_id FROM {sessions_t} WHERE id = ?1"),

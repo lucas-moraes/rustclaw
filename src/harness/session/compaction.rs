@@ -171,7 +171,20 @@ preserving key decisions, file paths, and outcomes."
         temperature: 0.2,
     };
     // Timeout so a slow/hung provider never blocks the turn during compaction.
-    match tokio::time::timeout(timeout, provider.complete(&summary_req)).await {
+    // Retry transient errors (429/5xx) with backoff before falling back.
+    let retry_policy = crate::harness::provider::retry::RetryPolicy::default();
+    let provider2 = provider.clone();
+    let summary_req2 = summary_req.clone();
+    let complete_fut = crate::harness::provider::retry::retry_with_policy(
+        &retry_policy,
+        || {
+            let provider = provider2.clone();
+            let req = summary_req2.clone();
+            async move { provider.complete(&req).await }
+        },
+        || false,
+    );
+    match tokio::time::timeout(timeout, complete_fut).await {
         Ok(Ok(resp)) => {
             let text = resp
                 .parts

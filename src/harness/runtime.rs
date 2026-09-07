@@ -834,7 +834,10 @@ Then use the read tool to read src/main.rs. Report what tools you used.";
                 input: serde_json::json!({}),
                 parent_session_id: Some(self.parent_session_id.clone()),
             });
-            self.seen.lock().unwrap().push(child_id);
+            self.seen
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(child_id);
             Ok(TaskOutcome {
                 final_text: "done".into(),
                 session_id: "child-1".into(),

@@ -115,10 +115,22 @@ impl Default for RuntimeConfig {
 }
 
 impl RuntimeConfig {
+    /// Fallback provider info for opencode-go, used if the catalog lookup
+    /// somehow fails (defensive; the catalog always contains it).
+    fn opencode_go_fallback() -> crate::harness::provider::catalog::ProviderInfo {
+        crate::harness::provider::catalog::ProviderInfo {
+            name: "opencode-go".to_string(),
+            base_url: "https://opencode.ai/api".to_string(),
+            default_model: "grok-4.5".to_string(),
+            models: vec!["grok-4.5".to_string()],
+            user_defined: false,
+        }
+    }
+
     /// Catalog-derived defaults.
     pub fn defaults() -> Self {
         let p = crate::harness::provider::catalog::find_provider("opencode-go")
-            .expect("opencode-go must exist in the catalog");
+            .unwrap_or_else(Self::opencode_go_fallback);
         Self {
             api_key: String::new(),
             base_url: p.base_url.to_string(),
@@ -143,7 +155,7 @@ impl RuntimeConfig {
     /// Testable resolution given explicit inputs.
     pub fn resolve(project_root: &Path, settings: &GlobalSettings, auth: &AuthStore) -> Self {
         let fallback = crate::harness::provider::catalog::find_provider("opencode-go")
-            .expect("opencode-go must exist in the catalog");
+            .unwrap_or_else(Self::opencode_go_fallback);
         let mut cfg = RuntimeConfig::defaults();
 
         // 1. Provider/model: catalog <- global settings <- project config.

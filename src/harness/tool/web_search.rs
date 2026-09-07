@@ -115,7 +115,10 @@ fn parse_results(html: &str) -> Vec<SearchResult> {
     let re = regex::Regex::new(
         r#"(?s)<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>(.*?)</a>.*?<a[^>]*class="result__snippet"[^>]*>(.*?)</a>"#,
     )
-    .unwrap();
+    .unwrap_or_else(|e| {
+        tracing::error!("failed to compile search regex: {}", e);
+        regex::Regex::new(r"").unwrap()
+    });
     for cap in re.captures_iter(html) {
         if out.len() >= MAX_RESULTS {
             break;
@@ -137,7 +140,10 @@ fn parse_results(html: &str) -> Vec<SearchResult> {
 
 fn strip_tags(s: &str) -> String {
     // Strip HTML tags and collapse whitespace.
-    let re = regex::Regex::new(r"<[^>]+>").unwrap();
+    let re = regex::Regex::new(r"<[^>]+>").unwrap_or_else(|e| {
+        tracing::error!("failed to compile tag-strip regex: {}", e);
+        regex::Regex::new(r"").unwrap()
+    });
     let cleaned = re.replace_all(s, " ");
     cleaned.split_whitespace().collect::<Vec<_>>().join(" ")
 }

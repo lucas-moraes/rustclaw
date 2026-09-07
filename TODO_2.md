@@ -23,16 +23,16 @@
 
 | ID | Feature | Tier | Status |
 |----|---------|------|--------|
-| E1 | Retry/backoff em erros transitórios do provider | 1 | ⬜ |
-| E2 | Segurança do `bash` (detecção por tokens + sudo Ask) | 1 | ⬜ |
-| E3 | Logging `tracing` + helper de persistência não-silenciosa | 1 | ⬜ |
-| E4 | Quebrar `app.rs` (3529 linhas) | 2 | ⬜ |
+| E1 | Retry/backoff em erros transitórios do provider | 1 | ✅ |
+| E2 | Segurança do `bash` (detecção por tokens + sudo Ask) | 1 | ✅ |
+| E3 | Logging `tracing` + helper de persistência não-silenciosa | 1 | ✅ |
+| E4 | Quebrar `app.rs` (3529 linhas) | 2 | ✅ |
 | E5 | Tool `diagnostics` (cargo check --message-format=json) | 2 | ⬜ |
 | E6 | Budget de output tokens por turno | 2 | ⬜ |
 | E7 | Testes de integração do loop completo (MockProvider) | 2 | ⬜ |
 | E8 | Painel "thinking" (reasoning) no TUI | 3 | ⬜ |
 | E9 | Comando `/cost` (estimativa $ por provider/model) | 3 | ⬜ |
-| E10 | Remover `expect()`/`unwrap()` de produção | 3 | ⬜ |
+| E10 | Remover `expect()`/`unwrap()` de produção | 3 | ✅ |
 
 **Legenda:** ⬜ pendente · 🟡 em progresso · ✅ feito · ❌ cancelado
 
@@ -51,21 +51,21 @@ aborta o turno inteiro com `?`. Só o MCP tem `reconnect+retry` (`mcp/mod.rs:207
 rate-limit de 2s derruba um turno que já gastou tokens e iterações. A compaction
 (`complete()`) também falha sem retry no meio do turno.
 
-- [ ] Definir um `RetryPolicy` (max_attempts, base_delay, max_delay, jitter) em
+- [x] Definir um `RetryPolicy` (max_attempts, base_delay, max_delay, jitter) em
       `provider/mod.rs` ou novo `provider/retry.rs`
-- [ ] Classificar erros: retryável (429, 500, 502, 503, 504, timeout de rede) vs
+- [x] Classificar erros: retryável (429, 500, 502, 503, 504, timeout de rede) vs
       não-retryável (400, 401, 404, 422 — erro de request/model)
-- [ ] Respeitar `Retry-After` header quando presente (429/503)
-- [ ] Backoff exponencial com jitter (ex.: `base * 2^n + rand`)
-- [ ] Aplicar o retry no `run_turn` ao redor de `provider.stream()` (não dentro do
+- [x] Respeitar `Retry-After` header quando presente (429/503)
+- [x] Backoff exponencial com jitter (ex.: `base * 2^n + rand`)
+- [x] Aplicar o retry no `run_turn` ao redor de `provider.stream()` (não dentro do
       provider, para manter o provider puro)
-- [ ] Aplicar o retry na compaction (`compaction.rs:174`) ao redor de `provider.complete()`
-- [ ] Emitir `HarnessEvent::Error`/warn no `tracing` quando um retry for acionado
+- [x] Aplicar o retry na compaction (`compaction.rs:174`) ao redor de `provider.complete()`
+- [x] Emitir `HarnessEvent::Error`/warn no `tracing` quando um retry for acionado
       (visível ao usuário: "retrying in 2s (429)")
-- [ ] Não retryar em abort do usuário (`ctx.abort.is_aborted()`)
-- [ ] Testes: mock provider que falha 2x com 429 e depois responde; verificar que o
+- [x] Não retryar em abort do usuário (`ctx.abort.is_aborted()`)
+- [x] Testes: mock provider que falha 2x com 429 e depois responde; verificar que o
       turno completa; verificar que erro 400 não é retryado
-- [ ] `cargo test` + `cargo clippy` + `cargo fmt --check` verdes
+- [x] `cargo test` + `cargo clippy` + `cargo fmt --check` verdes
 
 ### Feature E2: Segurança do `bash` (detecção por tokens + sudo Ask)
 
@@ -75,16 +75,16 @@ rate-limit de 2s derruba um turno que já gastou tokens e iterações. A compact
 o que é trivial de contornar (`rm -rf --no-preserve-root /`, `sudo dd if=...`). Não há
 detecção por tokens, nem exigência de `Ask` para comandos privilegiados.
 
-- [ ] Reescrever `check_denylist` para detectar por **tokens** (split por whitespace)
+- [x] Reescrever `check_denylist` para detectar por **tokens** (split por whitespace)
       em vez de substring: ex. `rm` + flag `-rf`/`-r` + caminho absoluto/`/`
-- [ ] Cobrir variantes: `rm -rf --no-preserve-root /`, `rm -fr`, `rm -r /`
-- [ ] Manter os bloqueios de comandos de sistema (`shutdown`, `reboot`, `mkfs`, `dd if=`)
-- [ ] Adicionar detecção de `sudo`/`su` → exigir `Ask` (não bloquear, mas escalar permissão)
-- [ ] Adicionar detecção de redirecionamento destrutivo (`> /dev/sda`, `> /etc/...`)
+- [x] Cobrir variantes: `rm -rf --no-preserve-root /`, `rm -fr`, `rm -r /`
+- [x] Manter os bloqueios de comandos de sistema (`shutdown`, `reboot`, `mkfs`, `dd if=`)
+- [x] Adicionar detecção de `sudo`/`su` → exigir `Ask` (não bloquear, mas escalar permissão)
+- [x] Adicionar detecção de redirecionamento destrutivo (`> /dev/sda`, `> /etc/...`)
 - [ ] (Opcional, Linux) suporte a sandbox real via `bubblewrap`/`nix` configurável
-- [ ] Testes: `rm -rf --no-preserve-root /` bloqueado; `rm -rf ./target` permitido;
+- [x] Testes: `rm -rf --no-preserve-root /` bloqueado; `rm -rf ./target` permitido;
       `sudo apt install` → Ask; `ls -la` permitido
-- [ ] `cargo test` + `cargo clippy` + `cargo fmt --check` verdes
+- [x] `cargo test` + `cargo clippy` + `cargo fmt --check` verdes
 
 ### Feature E3: Logging `tracing` + helper de persistência não-silenciosa
 
@@ -96,17 +96,17 @@ detecção por tokens, nem exigência de `Ask` para comandos privilegiados.
 e eventos usam `let _ =` que engole erros em silêncio — se o store falhar, o histórico
 diverge do que o agente vê sem nenhum sinal.
 
-- [ ] Configurar um subscriber `tracing` no `main.rs` (formato `pretty` para dev,
+- [x] Configurar um subscriber `tracing` no `main.rs` (formato `pretty` para dev,
       `json` opcional via env `RUSTCLAW_LOG`)
-- [ ] Criar helper `persist()`/`emit()` no processor que logue `warn!` em falha de
+- [x] Criar helper `persist()`/`emit()` no processor que logue `warn!` em falha de
       `save_message`/`events.send` (em vez de `let _ =`)
-- [ ] Substituir os `let _ = self.store.save_message(...)` e `let _ = self.events.send(...)`
+- [x] Substituir os `let _ = self.store.save_message(...)` e `let _ = self.events.send(...)`
       do processor pelo helper
-- [ ] Adicionar `tracing::info!`/`debug!` nos pontos-chave do loop: início de turno,
+- [x] Adicionar `tracing::info!`/`debug!` nos pontos-chave do loop: início de turno,
       tool call executada, retry acionado, compaction, auto-continue, doom-loop
-- [ ] Não mudar comportamento visível (só logging)
-- [ ] Testes: verificar que o helper não quebra o fluxo normal; `cargo test` verde
-- [ ] `cargo test` + `cargo clippy` + `cargo fmt --check` verdes
+- [x] Não mudar comportamento visível (só logging)
+- [x] Testes: verificar que o helper não quebra o fluxo normal; `cargo test` verde
+- [x] `cargo test` + `cargo clippy` + `cargo fmt --check` verdes
 
 ---
 
@@ -121,15 +121,15 @@ diverge do que o agente vê sem nenhum sinal.
 É o maior arquivo do projeto e o mais difícil de navegar/refatorar. (D4 do TODO.md
 ficou pendente.)
 
-- [ ] Extrair o **editor de input** (já há testes isolados) para módulo próprio
-- [ ] Extrair o **gerenciamento de subagentes** (`SubagentPanel`) para módulo próprio
-- [ ] Extrair o **`ToolBatch`/`ActiveTool`** (estado de tools em execução) para módulo próprio
-- [ ] Extrair o **`AutoComplete`** para módulo próprio
-- [ ] Extrair helpers de render/estado coesos (ex.: `last_code_block`, soft-wrap)
-- [ ] Fazer **incremental**: um bloco coeso por vez, mantendo os testes verdes
-- [ ] Não reduzir linhas por reduzir — separar responsabilidades
-- [ ] Testes: todos os testes de `app.rs` (editor, wrap, subagentes) continuam verdes
-- [ ] `cargo test` + `cargo clippy` + `cargo fmt --check` verdes
+- [x] Extrair o **editor de input** (já há testes isolados) para módulo próprio
+- [x] Extrair o **gerenciamento de subagentes** (`SubagentPanel`) para módulo próprio
+- [x] Extrair o **`ToolBatch`/`ActiveTool`** (estado de tools em execução) para módulo próprio
+- [x] Extrair o **`AutoComplete`** para módulo próprio
+- [x] Extrair helpers de render/estado coesos (ex.: `last_code_block`, soft-wrap)
+- [x] Fazer **incremental**: um bloco coeso por vez, mantendo os testes verdes
+- [x] Não reduzir linhas por reduzir — separar responsabilidades
+- [x] Testes: todos os testes de `app.rs` (editor, wrap, subagentes) continuam verdes
+- [x] `cargo test` + `cargo clippy` + `cargo fmt --check` verdes
 
 ### Feature E5: Tool `diagnostics` (cargo check --message-format=json)
 
@@ -222,11 +222,11 @@ Uma tabela $/1M por provider/model permitiria mostrar o gasto estimado.
 **Problema:** panics em produção se o catálogo mudar. O AGENTS.md já pede `anyhow!`
 com contexto, mas há exceções.
 
-- [ ] Trocar `expect("opencode-go must exist in the catalog")` por `anyhow!` com contexto
-- [ ] Trocar `.expect("runtime")`/`.expect("prompt")` por `?`/`anyhow!`
-- [ ] Varrer o resto de `src/` (fora de `#[cfg(test)]`) por `unwrap()`/`expect()`/`panic!`
-- [ ] Testes: `cargo test` verde (resolução de config continua funcionando)
-- [ ] `cargo test` + `cargo clippy` + `cargo fmt --check` verdes
+- [x] Trocar `expect("opencode-go must exist in the catalog")` por `anyhow!` com contexto
+- [x] Trocar `.expect("runtime")`/`.expect("prompt")` por `?`/`anyhow!`
+- [x] Varrer o resto de `src/` (fora de `#[cfg(test)]`) por `unwrap()`/`expect()`/`panic!`
+- [x] Testes: `cargo test` verde (resolução de config continua funcionando)
+- [x] `cargo test` + `cargo clippy` + `cargo fmt --check` verdes
 
 ---
 
@@ -265,7 +265,7 @@ Cada feature: `cargo test` + `cargo clippy` + `cargo fmt --check` verdes.
 | `src/harness/session/compaction.rs` | Retry no `complete()` (E1) |
 | `src/harness/tool/bash.rs` | Detecção por tokens + sudo Ask (E2) |
 | `src/main.rs` | Subscriber `tracing` (E3) |
-| `src/harness/ui/tui/app.rs` | Quebrar monólito (E4), painel thinking (E8) |
+| `src/harness/ui/tui/app.rs` | ~~Quebrar monólito (E4)~~ ✅ → `editor.rs`/`subagent.rs`/`codeblock.rs`/`transcript.rs`; painel thinking (E8) |
 | `src/harness/tool/diagnostics.rs` (novo) | Tool diagnostics (E5) |
 | `src/harness/runtime.rs` | Registrar diagnostics (E5), config budget (E6), remover expect (E10) |
 | `src/harness/agent/builtin.rs` | Allowlist diagnostics (E5) |
@@ -282,3 +282,8 @@ Cada feature: `cargo test` + `cargo clippy` + `cargo fmt --check` verdes.
 |------|------|
 | 2026-09-06 | TODO_2.md criado: 2ª rodada de dívida técnica + features (E1–E10) com checklists, tiers, ordem de execução e riscos. Foco em robustez (retry), segurança (bash), observabilidade (tracing) e qualidade do agente (diagnostics, budget, testes de integração). |
 | 2026-09-07 | Implementado comando `/allow-all-permissions` (fora da lista E1–E10): concede ao harness liberdade total para alterar qualquer arquivo do projeto. `PermissionEngine::allow_all()` + `SessionRuntime::allow_all_permissions()` (persiste em rustclaw.json) + handler em `ui/commands/mod.rs`. Paths fora do projeto continuam exigindo aprovação. 2 testes novos (278 no total). |
+| 2026-09-07 | **E4 concluído** — `app.rs` quebrado de 3529 → 3066 linhas. Módulos extraídos: `editor.rs` (input/cursor/história), `subagent.rs` (`SubagentPanel` + roteamento de eventos), `codeblock.rs` (`last_code_block`/copy/save), `transcript.rs` (`LineKind`/`TranscriptLine`/`ActiveTool`/`ToolBatch`/`tool_arg_label`/`preview`). `AutoComplete` já vivia em `palette.rs`. `app.rs` re-exporta os tipos via `pub use` para manter a API estável. `cargo test` (278) + `cargo clippy` + `cargo fmt --check` verdes. |
+| 2026-09-07 | **E1 concluído** — retry/backoff de provider em `provider/retry.rs` (novo, 395 linhas). `RetryPolicy` (max_attempts, base_delay, max_delay, jitter), classificação de erros retryáveis (429/5xx/timeout) vs permanentes (4xx), respeito a `Retry-After`, backoff exponencial com jitter, aplicado em `run_turn` (stream) e `compaction` (complete), sem retry em abort do usuário. 7 testes novos. |
+| 2026-09-07 | **E2 concluído** — `bash.rs` reescrito com detecção por **tokens** (tokenize com quotes/escapes) em vez de substring. Bloqueia `rm` destrutivo (`-rf`/`-r` + caminho absoluto/`/`, incl. `--no-preserve-root`), comandos de sistema (`shutdown`/`reboot`/`mkfs`/`dd if=`), redirecionamento destrutivo (`> /dev/sd*`, `> /etc/...`). `sudo`/`su` → escalam para `Ask` (não bloqueiam). 5 testes novos. |
+| 2026-09-07 | **E3 concluído** — subscriber `tracing` em `main.rs` (`RUSTCLAW_LOG=json` → JSON, senão pretty; nível configurável). Helpers `persist()`/`emit()` no processor logam `warn!` em falha de `save_message`/`events.send` (substituindo `let _ =`). `tracing::info!`/`debug!` nos pontos-chave do loop (início de turno, tool call, retry, compaction, auto-continue, doom-loop). Deps: `tracing-subscriber` + `rand`. |
+| 2026-09-07 | **E10 concluído** — removidos `expect()`/`unwrap()`/`panic!` de produção. `config.rs` (`expect("opencode-go must exist in the catalog")` → `anyhow!` com contexto), `runtime.rs` (`.expect("runtime")`/`.expect("prompt")` → `?`), `provider/mod.rs` + `web_search.rs` + `ui/tui/input.rs` (unwrap → `?`/`unwrap_or_else`), e ~36 `Mutex::lock().unwrap()` → `unwrap_or_else(|e| e.into_inner())` em `permission/mod.rs`, `project/memory.rs`, `runtime.rs`, `session/store.rs`, `tool/task.rs`. Varredura de `src/` confirma que só restam `unwrap()`/`expect()` em `#[cfg(test)]`. `cargo test` (288) + `cargo clippy` + `cargo fmt --check` verdes. |

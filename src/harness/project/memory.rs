@@ -270,7 +270,7 @@ impl ProjectMemoryStore {
     /// Creates the per-project memory table for `cwd` (idempotent).
     pub fn ensure_project(&self, cwd: &Path) -> Result<()> {
         let table = table_name(cwd, "memory");
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute_batch(&format!(
             "CREATE TABLE IF NOT EXISTS {table} (
                 project_path TEXT PRIMARY KEY,
@@ -314,7 +314,7 @@ impl ProjectMemoryStore {
     pub fn ensure_facts(&self, cwd: &Path) -> Result<()> {
         self.ensure_project(cwd)?;
         let table = table_name(cwd, "facts");
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute_batch(&format!(
             "CREATE TABLE IF NOT EXISTS {table} (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -388,7 +388,7 @@ impl ProjectMemoryStore {
         if match_query.is_empty() {
             return Ok(Vec::new());
         }
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare(&format!(
                 "SELECT f.id, f.text, f.kind, f.confidence, f.hit_count, f.last_used, f.archived,
@@ -441,7 +441,7 @@ impl ProjectMemoryStore {
         }
         let table = table_name(cwd, "facts");
         let now = chrono::Utc::now().to_rfc3339();
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         for fact in &legacy {
             conn.execute(
                 &format!(
@@ -461,7 +461,7 @@ impl ProjectMemoryStore {
     /// tables (idempotent; no-op if the legacy table is absent).
     fn migrate_legacy(&self) -> Result<()> {
         let has_legacy: bool = {
-            let conn = self.conn.lock().unwrap();
+            let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
             conn.query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='project_memory'",
                 [],
@@ -476,7 +476,7 @@ impl ProjectMemoryStore {
 
         // Snapshot legacy rows while holding the lock, then release it.
         let rows: Vec<(String, String, String, String)> = {
-            let conn = self.conn.lock().unwrap();
+            let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
             let mut stmt = conn
                 .prepare(
                     "SELECT project_path, stack, summary, manifest_mtimes
@@ -501,7 +501,7 @@ impl ProjectMemoryStore {
         }
 
         // Insert phase (re-lock).
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         for (project_path, stack, summary, mtimes_json) in rows {
             let cwd = Path::new(&project_path);
             let table = table_name(cwd, "memory");
@@ -525,7 +525,7 @@ impl ProjectMemoryStore {
         self.ensure_project(cwd)?;
         let table = table_name(cwd, "memory");
         let key = cwd.to_string_lossy().to_string();
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let row = conn
             .query_row(
                 &format!(
@@ -567,7 +567,7 @@ impl ProjectMemoryStore {
         let key = ctx.cwd.to_string_lossy().to_string();
         let mtimes_json = serde_json::to_string(&ctx.source_mtimes)?;
         let now = chrono::Utc::now().to_rfc3339();
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             &format!(
                 "INSERT INTO {table}
@@ -591,7 +591,7 @@ impl ProjectMemoryStore {
         self.ensure_facts(cwd)?;
         let table = table_name(cwd, "facts");
         let now = chrono::Utc::now().to_rfc3339();
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             &format!(
                 "INSERT INTO {table}
@@ -628,7 +628,7 @@ impl ProjectMemoryStore {
     pub fn list_fact_rows(&self, cwd: &Path) -> Result<Vec<MemoryFact>> {
         self.ensure_facts(cwd)?;
         let table = table_name(cwd, "facts");
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare(&format!(
                 "SELECT id, text, kind, confidence, hit_count, last_used, archived
@@ -672,7 +672,7 @@ impl ProjectMemoryStore {
         }
         let id = facts[index - 1].id;
         let table = table_name(cwd, "facts");
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(&format!("DELETE FROM {table} WHERE id = ?1"), params![id])
             .context("failed to delete project memory fact")?;
         Ok(true)
@@ -682,7 +682,7 @@ impl ProjectMemoryStore {
     pub fn clear_memory(&self, cwd: &Path) -> Result<()> {
         self.ensure_facts(cwd)?;
         let table = table_name(cwd, "facts");
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(&format!("DELETE FROM {table}"), [])
             .context("failed to clear project memory facts")?;
         Ok(())
@@ -693,7 +693,7 @@ impl ProjectMemoryStore {
         self.ensure_facts(cwd)?;
         let table = table_name(cwd, "facts");
         let now = chrono::Utc::now().to_rfc3339();
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             &format!(
                 "UPDATE {table} SET hit_count = hit_count + 1, last_used = ?1, updated_at = ?1
@@ -710,7 +710,7 @@ impl ProjectMemoryStore {
         self.ensure_facts(cwd)?;
         let table = table_name(cwd, "facts");
         let now = chrono::Utc::now().to_rfc3339();
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             &format!("UPDATE {table} SET archived = ?1, updated_at = ?2 WHERE id = ?3"),
             params![if archived { 1 } else { 0 }, now, id],
@@ -751,7 +751,7 @@ impl ProjectMemoryStore {
             // Sum hit counts into the kept fact.
             if total_hits > keep.hit_count {
                 let table = table_name(cwd, "facts");
-                let conn = self.conn.lock().unwrap();
+                let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
                 conn.execute(
                     &format!("UPDATE {table} SET hit_count = ?1 WHERE id = ?2"),
                     params![total_hits, keep.id],
@@ -865,7 +865,7 @@ impl ProjectMemoryStore {
         let table = table_name(cwd, "memory");
         let key = cwd.to_string_lossy().to_string();
         let now = chrono::Utc::now().to_rfc3339();
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             &format!("UPDATE {table} SET summary = ?1, updated_at = ?2 WHERE project_path = ?3"),
             params![summary, now, key],
@@ -1128,7 +1128,7 @@ mod tests {
         // Force an old last_used.
         let table = table_name(d.path(), "facts");
         {
-            let conn = s.conn.lock().unwrap();
+            let conn = s.conn.lock().unwrap_or_else(|e| e.into_inner());
             conn.execute(
                 &format!("UPDATE {table} SET last_used = ?1 WHERE id = ?2"),
                 params!["2020-01-01T00:00:00+00:00", old_id],
@@ -1140,7 +1140,7 @@ mod tests {
             .unwrap();
         let conf_id = s.list_fact_rows(d.path()).unwrap()[1].id;
         {
-            let conn = s.conn.lock().unwrap();
+            let conn = s.conn.lock().unwrap_or_else(|e| e.into_inner());
             conn.execute(
                 &format!("UPDATE {table} SET last_used = ?1 WHERE id = ?2"),
                 params!["2020-01-01T00:00:00+00:00", conf_id],

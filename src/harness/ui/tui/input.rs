@@ -38,26 +38,38 @@ pub fn wrap_visual(input: &str, width: usize) -> Vec<VisualRow> {
             continue;
         }
         if row_len + 1 > width {
-            if let Some(b) = break_at.filter(|b| *b + 1 < rows.last().unwrap().idxs.len()) {
+            let last_len = rows.last().map(|r| r.idxs.len()).unwrap_or(0);
+            if let Some(b) = break_at.filter(|b| *b + 1 < last_len) {
                 // Move the trailing word (after the break space) to a new row.
-                let cut: Vec<usize> = rows.last_mut().unwrap().idxs.drain(b + 1..).collect();
-                rows.push(VisualRow {
-                    start: cut[0],
-                    idxs: cut,
-                });
+                if let Some(last) = rows.last_mut() {
+                    let cut: Vec<usize> = last.idxs.drain(b + 1..).collect();
+                    if let Some(&first) = cut.first() {
+                        rows.push(VisualRow {
+                            start: first,
+                            idxs: cut,
+                        });
+                    }
+                }
             } else {
                 rows.push(VisualRow {
                     idxs: Vec::new(),
                     start: i,
                 });
             }
-            row_len = rows.last().unwrap().idxs.len();
+            row_len = rows.last().map(|r| r.idxs.len()).unwrap_or(0);
             break_at = None;
         }
-        rows.last_mut().unwrap().idxs.push(i);
+        if let Some(last) = rows.last_mut() {
+            last.idxs.push(i);
+        }
         row_len += 1;
         if c == ' ' {
-            break_at = Some(rows.last().unwrap().idxs.len() - 1);
+            break_at = Some(
+                rows.last()
+                    .map(|r| r.idxs.len())
+                    .unwrap_or(0)
+                    .saturating_sub(1),
+            );
         }
     }
     rows

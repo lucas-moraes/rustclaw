@@ -365,7 +365,10 @@ mod tests {
                 _prompt: String,
                 _events: EventSender,
             ) -> Result<TaskOutcome, String> {
-                self.0.lock().unwrap().push(agent.clone());
+                self.0
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(agent.clone());
                 Ok(TaskOutcome {
                     final_text: "the answer".into(),
                     session_id: "c".into(),
@@ -384,6 +387,6 @@ mod tests {
             .unwrap();
         assert!(result.output.contains("Subagent `explore` result:"));
         assert!(result.output.contains("the answer"));
-        assert_eq!(echo.0.lock().unwrap().len(), 1);
+        assert_eq!(echo.0.lock().unwrap_or_else(|e| e.into_inner()).len(), 1);
     }
 }

@@ -7,6 +7,7 @@ pub mod anthropic;
 pub mod catalog;
 pub mod openai;
 pub mod opencode_go;
+pub mod retry;
 pub mod user_store;
 
 use crate::harness::session::{Message, Part};
@@ -111,6 +112,7 @@ pub type ProviderStream =
 use std::pin::Pin;
 
 /// LLM request in harness form; adapters convert messages/tools.
+#[derive(Clone)]
 pub struct LlmRequest {
     pub model: String,
     pub system: String,
@@ -161,7 +163,12 @@ pub fn build_http_client() -> reqwest::Client {
         .connect_timeout(Duration::from_secs(30))
         .read_timeout(Duration::from_secs(120))
         .build()
-        .expect("failed to build http client")
+        .unwrap_or_else(|e| {
+            // A client that fails to build is a hard error; log and fall back
+            // to a default client so the harness can still start.
+            tracing::error!("failed to build http client with timeouts: {}", e);
+            reqwest::Client::new()
+        })
 }
 
 #[derive(Clone, Copy, Debug)]

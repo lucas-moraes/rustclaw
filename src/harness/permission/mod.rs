@@ -148,24 +148,32 @@ impl PermissionEngine {
     /// Merges project-level rules into the engine. Project rules override the
     /// builtin defaults; the project `default` (if any) overrides ours.
     pub fn apply_project_config(&self, config: &PermissionConfig) {
-        let mut rules = self.rules.lock().unwrap();
+        let mut rules = self.rules.lock().unwrap_or_else(|e| e.into_inner());
         for (tool, rule) in &config.tools {
             rules.insert(tool.clone(), *rule);
         }
         if let Some(d) = config.default {
-            *self.default.lock().unwrap() = Some(d);
+            *self.default.lock().unwrap_or_else(|e| e.into_inner()) = Some(d);
         }
     }
 
     /// Installs a callback invoked whenever a tool is marked "always allow",
     /// so the decision can be persisted across sessions.
     pub fn set_persist(&self, f: Option<PersistFn>) {
-        *self.persist.lock().unwrap() = f;
+        *self.persist.lock().unwrap_or_else(|e| e.into_inner()) = f;
     }
 
     pub fn set_always_allow(&self, tool: &str) {
-        self.always_allow.lock().unwrap().insert(tool.to_string());
-        if let Some(persist) = self.persist.lock().unwrap().as_ref() {
+        self.always_allow
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(tool.to_string());
+        if let Some(persist) = self
+            .persist
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
             if let Err(e) = persist(tool) {
                 eprintln!(
                     "[warn] failed to persist always-allow for `{}`: {}",
@@ -181,12 +189,12 @@ impl PermissionEngine {
     /// within the project. Paths outside the project still escalate to `Ask`
     /// (see `check`), so this never grants access beyond the project root.
     pub fn allow_all(&self) {
-        let mut always = self.always_allow.lock().unwrap();
+        let mut always = self.always_allow.lock().unwrap_or_else(|e| e.into_inner());
         for t in ALL_TOOLS {
             always.insert(t.to_string());
         }
         drop(always);
-        *self.default.lock().unwrap() = Some(Rule::Allow);
+        *self.default.lock().unwrap_or_else(|e| e.into_inner()) = Some(Rule::Allow);
     }
 
     /// Snapshot of the current per-tool rules (for `/permissions list`).
@@ -204,12 +212,19 @@ impl PermissionEngine {
 
     /// Sets a per-tool rule in memory (used by `/permissions set`).
     pub fn set_rule(&self, tool: &str, rule: Rule) {
-        self.rules.lock().unwrap().insert(tool.to_string(), rule);
+        self.rules
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(tool.to_string(), rule);
     }
 
     /// Removes a per-tool rule, falling back to the default (used by `/permissions rm`).
     pub fn remove_rule(&self, tool: &str) -> bool {
-        self.rules.lock().unwrap().remove(tool).is_some()
+        self.rules
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(tool)
+            .is_some()
     }
 
     /// Resolves the decision for `tool` with optional `path` (absolute).
@@ -218,14 +233,22 @@ impl PermissionEngine {
     /// blanket permission for files inside the project.
     pub fn check(&self, tool: &str, path: Option<&str>, cwd: &Path) -> PermissionDecision {
         // Explicit "always allow" wins for this run, but only inside the cwd.
-        let always = self.always_allow.lock().unwrap().contains(tool);
+        let always = self
+            .always_allow
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(tool);
 
         let rule = self
             .rules
             .lock()
             .unwrap()
             .get(tool)
-            .or(self.default.lock().unwrap().as_ref())
+            .or(self
+                .default
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref())
             .copied()
             .unwrap_or(Rule::Ask);
 
@@ -420,11 +443,16 @@ mod tests {
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink = seen.clone();
         engine.set_persist(Some(Arc::new(move |tool: &str| {
-            sink.lock().unwrap().push(tool.to_string());
+            sink.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(tool.to_string());
             Ok(())
         })));
         engine.set_always_allow("bash");
-        assert_eq!(*seen.lock().unwrap(), vec!["bash".to_string()]);
+        assert_eq!(
+            *seen.lock().unwrap_or_else(|e| e.into_inner()),
+            vec!["bash".to_string()]
+        );
     }
 
     #[test]

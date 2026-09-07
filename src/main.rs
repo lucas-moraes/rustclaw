@@ -16,6 +16,10 @@ struct Args {}
 async fn main() -> anyhow::Result<()> {
     Args::parse();
 
+    // Set up tracing subscriber. Default: pretty format at INFO level.
+    // RUSTCLAW_LOG=json enables JSON output; RUSTCLAW_LOG=debug|trace changes level.
+    init_tracing();
+
     // File-based config only (auth.json + config.json + rustclaw.json).
     // A missing API key is tolerated: the TUI handles onboarding.
     let config = config::RuntimeConfig::load();
@@ -50,4 +54,34 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+/// Initializes the `tracing` subscriber.
+///
+/// - `RUSTCLAW_LOG=json` → JSON output (machine-readable).
+/// - `RUSTCLAW_LOG=debug|trace|warn|error` → sets the level (default: info).
+/// - Otherwise → pretty format for dev.
+fn init_tracing() {
+    use tracing_subscriber::EnvFilter;
+
+    let env = std::env::var("RUSTCLAW_LOG").unwrap_or_default();
+    let level = if env.is_empty() || env == "json" {
+        "info".to_string()
+    } else {
+        env.clone()
+    };
+
+    let filter = EnvFilter::try_new(level).unwrap_or_else(|_| EnvFilter::new("info"));
+
+    if env == "json" {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .json()
+            .try_init();
+    } else {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .pretty()
+            .try_init();
+    }
 }
