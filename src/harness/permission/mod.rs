@@ -10,6 +10,28 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
+/// Every builtin harness tool name. Used by `allow_all` to grant the harness
+/// full freedom over files inside the project.
+pub const ALL_TOOLS: &[&str] = &[
+    "read",
+    "glob",
+    "grep",
+    "ast_search",
+    "todo_read",
+    "todo_write",
+    "web_search",
+    "fetch_webpage",
+    "git_status",
+    "git_diff",
+    "git_log",
+    "write",
+    "edit",
+    "bash",
+    "task",
+    "question",
+    "remember",
+];
+
 /// Callback invoked when a tool is marked "always allow", so the decision can
 /// be persisted (e.g. to the project's `rustclaw.json`).
 type PersistFn = Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
@@ -153,6 +175,20 @@ impl PermissionEngine {
         }
     }
 
+    /// Grants the harness full freedom to run **any** tool on files inside the
+    /// project (the session cwd). Marks every known tool as `always_allow` and
+    /// sets the default rule to `Allow`, so unknown/MCP tools are also admitted
+    /// within the project. Paths outside the project still escalate to `Ask`
+    /// (see `check`), so this never grants access beyond the project root.
+    pub fn allow_all(&self) {
+        let mut always = self.always_allow.lock().unwrap();
+        for t in ALL_TOOLS {
+            always.insert(t.to_string());
+        }
+        drop(always);
+        *self.default.lock().unwrap() = Some(Rule::Allow);
+    }
+
     /// Snapshot of the current per-tool rules (for `/permissions list`).
     pub fn rules_snapshot(&self) -> Vec<(String, Rule)> {
         let mut v: Vec<(String, Rule)> = self
@@ -283,6 +319,33 @@ mod tests {
         );
         // Other mutating tools still ask.
         assert_eq!(engine.check("write", None, cwd), PermissionDecision::Ask);
+    }
+
+    #[test]
+    fn test_allow_all_grants_every_tool_inside_project() {
+        let engine = PermissionEngine::default();
+        let cwd = Path::new("/proj");
+        engine.allow_all();
+
+        // Every builtin tool is allowed inside the project.
+        for tool in ALL_TOOLS {
+            assert_eq!(
+                engine.check(tool, Some("/proj/src/main.rs"), cwd),
+                PermissionDecision::Allow,
+                "tool `{}` should be allowed inside the project",
+                tool
+            );
+        }
+        // Unknown/MCP tools are also allowed (default = Allow).
+        assert_eq!(
+            engine.check("mcp_fs_write", Some("/proj/x"), cwd),
+            PermissionDecision::Allow
+        );
+        // Paths outside the project still escalate to Ask.
+        assert_eq!(
+            engine.check("edit", Some("/etc/passwd"), cwd),
+            PermissionDecision::Ask
+        );
     }
 
     #[test]

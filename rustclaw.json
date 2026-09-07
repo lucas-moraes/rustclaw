@@ -4,11 +4,12 @@
   "base_url": "https://api.deepinfra.com/v1/openai",
   "permission": {
     "tools": {
+      "task": "allow",
+      "question": "allow",
       "write": "allow",
-      "edit": "allow",
       "bash": "allow",
-      "remember": "allow",
-      "question": "allow"
+      "edit": "allow",
+      "remember": "allow"
     },
     "default": null
   }

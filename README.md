@@ -135,6 +135,7 @@ Prompt simples:
 | `/usage` | Tokens in/out + janela de contexto da sessão |
 | `/memory list\|rm\|clear\|promote\|gc` | Memória de projeto (fatos ranqueados por recência/uso) |
 | `/permissions set\|rm <tool> <rule>` | Regras de permissão por tool (allow/ask/deny) |
+| `/allow-all-permissions` | Concede ao harness liberdade total para alterar qualquer arquivo do projeto (persistido em `rustclaw.json`) |
 | `/help` / `/exit` | Ajuda / sair |
 
 ### Permissões
@@ -145,6 +146,11 @@ Tools destrutivas (`bash`, `write`, `edit`, `task`) pedem confirmação:
   allow? [y]es/[n]o/[a]lways:
 ```
 `a`/`always` aprova a tool pelo resto da sessão. Paths fora do working directory são sempre escalados para `ask`.
+
+Para dar ao harness liberdade total de alterar **qualquer arquivo do projeto** (sem pedir
+confirmação a cada tool), use `/allow-all-permissions`. Ele marca todas as tools como
+`allow` e persiste em `rustclaw.json` (sobrevive a reinícios). Paths **fora** do projeto
+continuam exigindo aprovação — a liberdade fica restrita ao diretório do projeto.
 
 ### MCP (servidores externos)
 

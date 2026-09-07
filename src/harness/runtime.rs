@@ -264,6 +264,23 @@ impl SessionRuntime {
         Ok(removed || existed)
     }
 
+    /// Grants the harness full freedom to run any tool on files inside the
+    /// project. Marks every known tool as `always_allow` in the live engine and
+    /// persists an `allow` rule for each in `rustclaw.json`, so the freedom
+    /// survives restarts. Paths outside the project still require approval.
+    pub fn allow_all_permissions(&self) -> Result<()> {
+        self.permission.allow_all();
+        let mut proj =
+            crate::harness::project::config_file::ProjectConfig::load(&self.project_root);
+        for tool in crate::harness::permission::ALL_TOOLS {
+            proj.permission
+                .tools
+                .insert(tool.to_string(), crate::harness::permission::Rule::Allow);
+        }
+        proj.save(&self.project_root)
+            .context("failed to persist rustclaw.json")
+    }
+
     /// Snapshot of the current per-tool permission rules.
     pub fn permission_rules(&self) -> Vec<(String, crate::harness::permission::Rule)> {
         self.permission.rules_snapshot()

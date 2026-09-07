@@ -45,7 +45,7 @@ pub async fn handle(
                 "commands: /help /new /sessions /agent <name> \
                   /compact /theme [name] /usage /memory /models /model <name> \
                   /provider <name> /provider add|rm|list /auth <provider> /settings \
-                  /undo /permissions /mcp /exit"
+                  /undo /permissions /allow-all-permissions /mcp /exit"
                     .to_string(),
             );
             out.push("keys: Ctrl+P palette · Ctrl+T theme · ? help · Ctrl+L clear".to_string());
@@ -565,6 +565,21 @@ pub async fn handle(
                 _ => out.push(format!("unknown subcommand: {} (list · set · rm)", sub)),
             }
         }
+        "/allow-all-permissions" => match runtime.allow_all_permissions() {
+            Ok(()) => {
+                out.push(
+                    "✅ all permissions granted: the harness may modify any file inside \
+                         the project (saved to rustclaw.json)."
+                        .to_string(),
+                );
+                out.push(
+                    "Paths outside the project still require approval. Use \
+                         `/permissions rm <tool>` to revoke a specific tool."
+                        .to_string(),
+                );
+            }
+            Err(e) => out.push(format!("[error] {}", e)),
+        },
         "/undo" => {
             // Revert the last user prompt and everything after it (replies +
             // tool results). Reuses the same truncation the TUI's revert action
@@ -754,6 +769,49 @@ mod tests {
 
         let proj = crate::harness::project::config_file::ProjectConfig::load(dir.path());
         assert!(proj.permission.tools.get("bash").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_allow_all_permissions_grants_and_persists() {
+        use crate::harness::permission::Rule;
+        let dir = tempfile::tempdir().unwrap();
+        let mut rt = test_runtime(dir.path()).unwrap();
+        let mut session = rt.create_session("build").await.unwrap();
+
+        let outcome = handle(&mut rt, &mut session, "/allow-all-permissions")
+            .await
+            .unwrap();
+        let CommandOutcome::Continue(lines) = outcome else {
+            panic!("expected Continue");
+        };
+        assert!(lines.iter().any(|l| l.contains("all permissions granted")));
+
+        // Every builtin tool is persisted as allow in rustclaw.json.
+        let proj = crate::harness::project::config_file::ProjectConfig::load(dir.path());
+        for tool in crate::harness::permission::ALL_TOOLS {
+            assert_eq!(
+                proj.permission.tools.get(*tool),
+                Some(&Rule::Allow),
+                "tool `{}` should be persisted as allow",
+                tool
+            );
+        }
+
+        // The live engine now allows a mutating tool inside the project.
+        let cwd = std::path::Path::new(dir.path());
+        assert_eq!(
+            rt.permission.check(
+                "edit",
+                Some(&dir.path().join("x.rs").to_string_lossy()),
+                cwd
+            ),
+            crate::harness::permission::PermissionDecision::Allow
+        );
+        // Paths outside the project still escalate to Ask.
+        assert_eq!(
+            rt.permission.check("edit", Some("/etc/passwd"), cwd),
+            crate::harness::permission::PermissionDecision::Ask
+        );
     }
 
     #[tokio::test]
