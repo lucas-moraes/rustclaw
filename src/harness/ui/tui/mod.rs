@@ -4,12 +4,16 @@
 pub mod anim;
 pub mod app;
 pub mod askers;
+pub mod codeblock;
 pub mod draw;
+pub mod editor;
 pub mod input;
 pub mod markdown;
 pub mod palette;
 pub mod selection;
+pub mod subagent;
 pub mod theme;
+pub mod transcript;
 
 use crate::harness::permission::PermissionEngine;
 use crate::harness::runtime::SessionRuntime;

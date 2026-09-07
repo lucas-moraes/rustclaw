@@ -42,7 +42,7 @@ pub async fn handle(
     match cmd {
         "/help" => {
             out.push(
-                "commands: /help /new /sessions /agent <name> \
+                "commands: /help /new /sessions /agent <name> /skills \
                   /compact /theme [name] /usage /memory /models /model <name> \
                   /provider <name> /provider add|rm|list /auth <provider> /settings \
                   /undo /permissions /allow-all-permissions /mcp /exit"

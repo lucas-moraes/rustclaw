@@ -1,5 +1,7 @@
 //! TUI application state and main loop.
 
+pub use crate::harness::ui::tui::subagent::SubagentPanel;
+
 use crate::harness::event::{HarnessEvent, ToolStatus};
 use crate::harness::provider::{format_tokens, Usage};
 use crate::harness::runtime::{PromptResult, SessionRuntime};
@@ -9,7 +11,6 @@ use crate::harness::tool::context::AbortSignal;
 use crate::harness::ui::commands::CommandOutcome;
 use crate::harness::ui::tui::anim::{Particle, SplashState};
 use crate::harness::ui::tui::askers::{PermissionRequest, QuestionRequest};
-use crate::harness::ui::tui::input::{row_char_idx, visual_row_col, wrap_visual};
 use crate::harness::ui::tui::palette::{AutoComplete, PaletteState};
 use crate::harness::ui::tui::selection::{
     self, CellPos, PendingClick, TextSelection, DRAG_THRESHOLD,
@@ -19,134 +20,13 @@ use anyhow::Result;
 use crossterm::event::KeyEvent;
 use tokio::sync::mpsc;
 
-fn preview(s: &str, max: usize) -> String {
-    crate::harness::session::preview(s, max)
-}
+pub use crate::harness::ui::tui::transcript::{
+    preview, tool_arg_label, ActiveTool, LineKind, ToolBatch, TranscriptLine,
+};
 
 /// Modes cycled by the prompt mode selector (like opencode's primary agents).
 /// `general` stays available via `/agent general` and the palette.
 pub const MODES: &[&str] = &["build", "plan", "explore", "general", "chat-free"];
-
-/// Kind of a transcript line, used to pick colors.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LineKind {
-    User,
-    Assistant,
-    Reasoning,
-    ToolStart,
-    ToolOk,
-    ToolError,
-    System,
-    Error,
-    Diff,
-}
-
-#[derive(Clone, Debug)]
-pub struct TranscriptLine {
-    pub kind: LineKind,
-    pub text: String,
-}
-
-#[derive(Clone, Debug)]
-pub struct ActiveTool {
-    pub name: String,
-}
-
-/// Transient state of the current parallel tool batch. Instead of pushing one
-/// line per tool call, a single status line is overwritten while the batch is
-/// running and a unique summary line is emitted when the batch completes.
-#[derive(Clone, Debug, Default)]
-pub struct ToolBatch {
-    /// Per-tool completion counts, e.g. [("read", 3), ("bash", 1)].
-    pub counts: Vec<(String, usize)>,
-    /// Path/args preview of the most recently started tool.
-    pub last_path: String,
-    /// Last started tool name (used for the transient "running" line).
-    pub last_name: String,
-    pub done: usize,
-    pub failed: usize,
-    pub pending: usize,
-}
-
-impl ToolBatch {
-    pub fn start(&mut self, name: &str, path: String) {
-        self.last_name = name.to_string();
-        self.last_path = path;
-        self.pending += 1;
-        if let Some(e) = self.counts.iter_mut().find(|(n, _)| n == name) {
-            e.1 += 1;
-        } else {
-            self.counts.push((name.to_string(), 1));
-        }
-    }
-
-    /// Summary like `read ×3 · bash ×1 (cargo test …)` — the trailing
-    /// parentheses show the most recent call label so the user can see what
-    /// the tools were actually doing.
-    pub fn summary(&self) -> String {
-        let mut s = self
-            .counts
-            .iter()
-            .map(|(n, c)| format!("{} ×{}", n, c))
-            .collect::<Vec<_>>()
-            .join(" · ");
-        if !self.last_path.trim().is_empty() && s.chars().count() < 60 {
-            s.push_str(&format!(" ({})", self.last_path));
-        }
-        s
-    }
-
-    /// Transient label while running: `bash cargo test … (2/4)`.
-    pub fn live_label(&self) -> String {
-        format!(
-            "{} {} ({}/{})",
-            self.last_name,
-            self.last_path,
-            self.done + self.failed,
-            self.pending + self.done + self.failed
-        )
-    }
-}
-
-/// Human-friendly one-line label of a tool call input (opencode-style):
-/// key fields first (`command`/`path`/`query`…), falling back to a compact
-/// JSON preview. Used on the transcript tool status lines.
-pub fn tool_arg_label(name: &str, input: &serde_json::Value) -> String {
-    let _ = name;
-    for key in [
-        "command",
-        "cmd",
-        "path",
-        "file_path",
-        "query",
-        "pattern",
-        "url",
-        "text",
-    ] {
-        if let Some(s) = input.get(key).and_then(|v| v.as_str()) {
-            if !s.trim().is_empty() {
-                return preview(s, 60);
-            }
-        }
-    }
-    preview(&input.to_string(), 60)
-}
-
-/// Live view of one subagent (child session), keyed by the `task` tool call id.
-#[derive(Clone, Debug)]
-pub struct SubagentPanel {
-    /// Child session id (events are routed by `parent_session_id`).
-    pub child_session_id: String,
-    /// Agent name shown in the header (parsed from the tool input).
-    pub agent: String,
-    /// Compact activity lines (tool names + status marks).
-    pub lines: Vec<String>,
-    pub done: usize,
-    pub failed: usize,
-    pub finished: bool,
-    /// Final summary preview (set when the `task` tool completes).
-    pub summary: Option<String>,
-}
 
 /// App UI state.
 pub struct App {
@@ -695,7 +575,7 @@ impl App {
         self.autocomplete = AutoComplete::from_input(&self.input);
     }
 
-    fn push(&mut self, kind: LineKind, text: impl Into<String>) {
+    pub(crate) fn push(&mut self, kind: LineKind, text: impl Into<String>) {
         self.lines.push(TranscriptLine {
             kind,
             text: text.into(),
@@ -852,82 +732,6 @@ impl App {
         }
     }
 
-    /// Routes a child-session event into its subagent panel (never the transcript).
-    fn apply_subagent_event(&mut self, ev: &HarnessEvent) {
-        let child = ev.session_id().unwrap_or("").to_string();
-        // Find (or create) the open panel for this child session.
-        let pos = self
-            .subagent_panels
-            .iter()
-            .position(|(_, p)| p.child_session_id == child);
-        let idx = match pos {
-            Some(i) => i,
-            None => {
-                // Attach to the newest unfinished panel (task ToolStart arrives
-                // before the child's first event).
-                match self
-                    .subagent_panels
-                    .iter()
-                    .rposition(|(_, p)| !p.finished && p.child_session_id.is_empty())
-                {
-                    Some(i) => {
-                        self.subagent_panels[i].1.child_session_id = child.clone();
-                        i
-                    }
-                    None => return,
-                }
-            }
-        };
-        let panel = &mut self.subagent_panels[idx].1;
-        match ev {
-            HarnessEvent::ToolStart { name, .. } => {
-                panel.lines.push(format!("· {}", name));
-            }
-            HarnessEvent::ToolEnd {
-                name,
-                status,
-                title,
-                ..
-            } => {
-                let mark = match status {
-                    ToolStatus::Completed => {
-                        panel.done += 1;
-                        "✓"
-                    }
-                    ToolStatus::Error => {
-                        panel.failed += 1;
-                        "✗"
-                    }
-                    _ => "·",
-                };
-                let label = if title.is_empty() { name } else { title };
-                panel.lines.push(format!("{} {}", mark, label));
-            }
-            HarnessEvent::Error { message, .. } => {
-                panel.lines.push(format!("✗ {}", message));
-            }
-            // Text/reasoning deltas are not streamed into the panel; the final
-            // summary arrives via the parent's `task` ToolEnd.
-            _ => {}
-        }
-    }
-
-    /// Compact one-line status of a subagent panel: `⏳ explore — 3 tools`.
-    pub fn subagent_panel_label(panel: &SubagentPanel) -> String {
-        let mark = if panel.finished { "✓" } else { "⏳" };
-        let tools = panel.done + panel.failed;
-        match &panel.summary {
-            Some(s) if !s.is_empty() => format!(
-                "{} {} — {} tools · {}",
-                mark,
-                panel.agent,
-                tools,
-                preview(s, 80)
-            ),
-            _ => format!("{} {} — {} tools", mark, panel.agent, tools),
-        }
-    }
-
     pub fn flush_streaming(&mut self) {
         if let Some(s) = self.streaming.take() {
             if !s.trim().is_empty() {
@@ -942,78 +746,6 @@ impl App {
 
     pub fn add_system(&mut self, text: &str) {
         self.push(LineKind::System, text.to_string());
-    }
-
-    pub fn insert_char_fixed(&mut self, c: char) {
-        let mut chars: Vec<char> = self.input.chars().collect();
-        let idx = self.input_cursor.min(chars.len());
-        chars.insert(idx, c);
-        self.input = chars.into_iter().collect();
-        self.input_cursor += 1;
-        self.refresh_autocomplete();
-    }
-
-    /// Removes the char at the cursor (Delete key).
-    pub fn delete_forward(&mut self) {
-        if self.input_cursor < self.input.chars().count() {
-            let mut chars: Vec<char> = self.input.chars().collect();
-            chars.remove(self.input_cursor.min(chars.len() - 1));
-            self.input = chars.into_iter().collect();
-            self.refresh_autocomplete();
-        }
-    }
-
-    /// Char bounds of the logical line containing `self.input_cursor`.
-    fn current_line_bounds(&self) -> (usize, usize) {
-        let total = self.input.chars().count();
-        let mut line_start = 0usize;
-        for (i, c) in self.input.chars().enumerate() {
-            if i >= self.input_cursor {
-                break;
-            }
-            if c == '\n' {
-                line_start = i + 1;
-            }
-        }
-        let line_end = self
-            .input
-            .chars()
-            .enumerate()
-            .find(|(i, c)| c == &'\n' && *i >= self.input_cursor)
-            .map(|(i, _)| i)
-            .unwrap_or(total);
-        (line_start, line_end)
-    }
-
-    /// Moves the cursor to the start of the current logical line (Home/Ctrl+A).
-    pub fn cursor_line_start(&mut self) {
-        self.input_cursor = self.current_line_bounds().0;
-    }
-
-    /// Moves the cursor to the end of the current logical line (End/Ctrl+E).
-    pub fn cursor_line_end(&mut self) {
-        let (_, end) = self.current_line_bounds();
-        self.input_cursor = end;
-    }
-
-    /// Ctrl+U: delete from the current line start up to the cursor.
-    pub fn kill_to_line_start(&mut self) {
-        let (start, _) = self.current_line_bounds();
-        if start < self.input_cursor {
-            let mut chars: Vec<char> = self.input.chars().collect();
-            chars.drain(start..self.input_cursor);
-            self.input = chars.into_iter().collect();
-            self.input_cursor = start;
-            self.refresh_autocomplete();
-        }
-    }
-
-    /// Ctrl+Z: clear the prompt editor (text, cursor, history browse, autocomplete).
-    pub fn clear_prompt_input(&mut self) {
-        self.input.clear();
-        self.input_cursor = 0;
-        self.history_pos = None;
-        self.autocomplete = None;
     }
 
     /// Esc while a turn is running: signal abort so streaming/tools stop.
@@ -1034,124 +766,6 @@ impl App {
         if !already {
             self.push(LineKind::System, "[run cancelled by user]".to_string());
         }
-    }
-
-    /// Ctrl+W: delete the word before the cursor (doesn't cross lines).
-    pub fn kill_word_back(&mut self) {
-        let mut chars: Vec<char> = self.input.chars().collect();
-        let mut i = self.input_cursor.min(chars.len());
-        // Skip spaces right before the cursor.
-        while i > 0 && chars.get(i - 1) == Some(&' ') {
-            i -= 1;
-        }
-        // Then skip the word chars.
-        while i > 0 && chars.get(i - 1) != Some(&' ') && chars.get(i - 1) != Some(&'\n') {
-            i -= 1;
-        }
-        chars.drain(i..self.input_cursor);
-        self.input = chars.into_iter().collect();
-        self.input_cursor = i;
-        self.refresh_autocomplete();
-    }
-
-    /// Visual cursor position after soft-wrapping: (row, col).
-    /// Public helper; kept for API completeness (not currently consumed).
-    #[allow(dead_code)]
-    pub fn visual_cursor(&self, width: usize) -> (usize, usize) {
-        let width = if width == 0 {
-            self.input_inner_width.max(20) as usize
-        } else {
-            width
-        };
-        let rows = wrap_visual(&self.input, width);
-        visual_row_col(&rows, self.input_cursor)
-    }
-
-    /// Up: move to the previous visual row (opencode-style multi-line editor).
-    pub fn cursor_visual_up(&mut self) {
-        let width = self.input_inner_width.max(20) as usize;
-        let rows = wrap_visual(&self.input, width);
-        if rows.len() < 2 {
-            return;
-        }
-        let (r, col) = visual_row_col(&rows, self.input_cursor);
-        if r == 0 {
-            return;
-        }
-        self.input_cursor = row_char_idx(&rows[r - 1], col, &self.input);
-    }
-
-    /// Down: move to the next visual row.
-    pub fn cursor_visual_down(&mut self) {
-        let width = self.input_inner_width.max(20) as usize;
-        let rows = wrap_visual(&self.input, width);
-        if rows.len() < 2 {
-            return;
-        }
-        let (r, col) = visual_row_col(&rows, self.input_cursor);
-        if r + 1 >= rows.len() {
-            return;
-        }
-        self.input_cursor = row_char_idx(&rows[r + 1], col, &self.input);
-    }
-
-    pub fn backspace(&mut self) {
-        if self.input_cursor > 0 {
-            let mut chars: Vec<char> = self.input.chars().collect();
-            chars.remove(self.input_cursor - 1);
-            self.input = chars.into_iter().collect();
-            self.input_cursor -= 1;
-            self.refresh_autocomplete();
-        }
-    }
-
-    pub fn cursor_left(&mut self) {
-        self.input_cursor = self.input_cursor.saturating_sub(1);
-    }
-    pub fn cursor_right(&mut self) {
-        if self.input_cursor < self.input.chars().count() {
-            self.input_cursor += 1;
-        }
-    }
-    /// Move cursor to start of input. Public helper; kept for API completeness.
-    #[allow(dead_code)]
-    pub fn cursor_home(&mut self) {
-        self.input_cursor = 0;
-    }
-    /// Move cursor to end of input. Public helper; kept for API completeness.
-    #[allow(dead_code)]
-    pub fn cursor_end(&mut self) {
-        self.input_cursor = self.input.chars().count();
-    }
-
-    pub fn history_up(&mut self) {
-        if self.history.is_empty() {
-            return;
-        }
-        let pos = self.history_pos.unwrap_or(self.history.len());
-        if pos == 0 {
-            return;
-        }
-        let new_pos = pos - 1;
-        self.history_pos = Some(new_pos);
-        self.input = self.history[new_pos].clone();
-        self.input_cursor = self.input.chars().count();
-        self.refresh_autocomplete();
-    }
-    pub fn history_down(&mut self) {
-        let Some(pos) = self.history_pos else { return };
-        if pos + 1 >= self.history.len() {
-            self.history_pos = None;
-            self.input.clear();
-            self.input_cursor = 0;
-            self.refresh_autocomplete();
-            return;
-        }
-        let new_pos = pos + 1;
-        self.history_pos = Some(new_pos);
-        self.input = self.history[new_pos].clone();
-        self.input_cursor = self.input.chars().count();
-        self.refresh_autocomplete();
     }
 
     pub fn scroll_by(&mut self, delta: i32) {
@@ -1279,84 +893,6 @@ impl App {
 
     /// Extracts the last code block (``` fenced) from the transcript.
     /// Returns the code content without the fence markers.
-    pub fn last_code_block(&self) -> Option<String> {
-        // Walk assistant lines in reverse, collecting fenced content.
-        let mut fence_lines: Vec<String> = Vec::new();
-        let mut in_fence = false;
-        for line in self.lines.iter().rev() {
-            if line.kind != LineKind::Assistant {
-                if in_fence {
-                    break;
-                }
-                continue;
-            }
-            for raw in line.text.lines().rev() {
-                let trimmed = raw.trim_start();
-                if trimmed.starts_with("```") {
-                    if in_fence {
-                        // Opening fence found: block complete.
-                        fence_lines.reverse();
-                        return Some(fence_lines.join("\n"));
-                    }
-                    in_fence = true;
-                    continue;
-                }
-                if in_fence {
-                    fence_lines.push(raw.to_string());
-                }
-            }
-            if in_fence {
-                break;
-            }
-        }
-        None
-    }
-
-    /// Copies the last code block to the clipboard (Ctrl+Y).
-    pub fn copy_last_code_block(&mut self) {
-        match self.last_code_block() {
-            Some(code) => {
-                if copy_to_clipboard(&code) {
-                    let n = code.chars().count();
-                    self.status_msg = Some(format!("copied code block ({n} chars)"));
-                } else {
-                    self.push(LineKind::Error, "[error] clipboard unavailable".to_string());
-                }
-            }
-            None => {
-                self.status_msg = Some("no code block found".to_string());
-            }
-        }
-    }
-
-    /// Saves the last code block to a file (Ctrl+S). Writes to
-    /// `rustclaw-code-<n>.txt` in the project cwd (or appends a counter).
-    pub fn save_last_code_block(&mut self) {
-        let Some(code) = self.last_code_block() else {
-            self.status_msg = Some("no code block found".to_string());
-            return;
-        };
-        for n in 1..=999 {
-            let path = self.cwd.join(format!("rustclaw-code-{n}.txt"));
-            if path.exists() {
-                continue;
-            }
-            match std::fs::write(&path, &code) {
-                Ok(()) => {
-                    self.status_msg = Some(format!("saved code block → {}", path.display()));
-                }
-                Err(e) => {
-                    self.push(LineKind::Error, format!("[error] failed to save: {e}"));
-                }
-            }
-            return;
-        }
-        self.push(
-            LineKind::Error,
-            "[error] too many code files (999+)".to_string(),
-        );
-    }
-
     /// Maps screen mouse coords to a transcript cell, if inside the viewport.
     pub fn hit_test_transcript(&self, mx: u16, my: u16) -> Option<CellPos> {
         selection::hit_test(
@@ -2938,7 +2474,7 @@ fn user_prompt_text(app: &App, line_idx: usize) -> String {
         .unwrap_or_default()
 }
 
-fn copy_to_clipboard(text: &str) -> bool {
+pub(crate) fn copy_to_clipboard(text: &str) -> bool {
     match arboard::Clipboard::new() {
         Ok(mut cb) => cb.set_text(text.to_string()).is_ok(),
         Err(_) => false,
@@ -3252,6 +2788,7 @@ async fn submit_input(
 #[cfg(test)]
 mod input_tests {
     use super::*;
+    use crate::harness::ui::tui::input::{row_char_idx, visual_row_col, wrap_visual};
 
     #[test]
     fn test_visual_up_down_move_between_rows() {

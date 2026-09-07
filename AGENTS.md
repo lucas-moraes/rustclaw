@@ -125,6 +125,10 @@ src/
         └── tui/         # TUI ratatui + crossterm
             ├── mod.rs   # entry + TTY selection + askers wiring
             ├── app.rs   # App state, apply_event, loop principal, modals
+            ├── editor.rs# prompt input editor (cursor/editing/history)
+            ├── subagent.rs # live subagent panels (task tool)
+            ├── codeblock.rs # last-code-block copy/save helpers
+            ├── transcript.rs # LineKind/TranscriptLine/ToolBatch types
             ├── draw.rs  # widgets (header/transcript/status/input/help/modal)
             ├── input.rs # key bindings
             └── askers.rs# TuiAsker/TuiUserAsker (channels oneshot)

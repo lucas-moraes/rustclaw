@@ -24,7 +24,7 @@
 | D1 | Consolidar camadas de config (3 → 1) | 1 | ✅ |
 | D2 | `default_temperature` conhecer `chat-free` | 1 | ✅ |
 | D3 | Dedup do `maybe_compact` (runtime + processor) | 1 | ✅ |
-| D4 | Quebrar `app.rs` (3745 linhas) | 2 | ⬜ |
+| D4 | Quebrar `app.rs` (3745 linhas) | 2 | ✅ |
 | D5 | `cwd` vs `project_root` no runtime | 1 | ✅ |
 | D6 | Unificar defaults de `HarnessConfig`/`Config` | 1 | ✅ |
 | D7 | Limpar warnings de clippy pré-existentes | 3 | ✅ |
@@ -134,12 +134,12 @@ turno pode rodar com limites diferentes do que o `/settings` mostra.
 editor de input + subagentes + testes. É o maior arquivo do projeto e o mais difícil
 de navegar/refatorar.
 
-- [ ] Extrair o **editor de input** (já há testes isolados disso) para módulo próprio
-- [ ] Extrair o **gerenciamento de subagentes** (painel/accordion) para módulo próprio
-- [ ] Extrair helpers de render/estado coesos (ex.: `last_code_block`, soft-wrap)
-- [ ] Fazer **incremental**: um bloco coeso por vez, mantendo os testes verdes
-- [ ] Não reduzir linhas por reduzir — separar responsabilidades
-- [ ] Testes: todos os testes de `app.rs` (editor, wrap, subagentes) continuam verdes
+- [x] Extrair o **editor de input** (já há testes isolados disso) para módulo próprio
+- [x] Extrair o **gerenciamento de subagentes** (painel/accordion) para módulo próprio
+- [x] Extrair helpers de render/estado coesos (ex.: `last_code_block`, soft-wrap)
+- [x] Fazer **incremental**: um bloco coeso por vez, mantendo os testes verdes
+- [x] Não reduzir linhas por reduzir — separar responsabilidades
+- [x] Testes: todos os testes de `app.rs` (editor, wrap, subagentes) continuam verdes
 
 ---
 

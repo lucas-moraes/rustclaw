@@ -118,6 +118,14 @@ fn commands(t: &crate::harness::ui::tui::theme::Theme) -> Vec<Line<'static>> {
         kv("/auth provider", "save API token (auth.json)", t),
         kv("/settings", "view · set iterations/context/theme", t),
         kv("/skills", "manage session skill memory", t),
+        kv("/permissions", "set <tool> <allow|ask|deny> · rm <tool>", t),
+        kv(
+            "/allow-all-permissions",
+            "grant all in-project permissions",
+            t,
+        ),
+        kv("/undo", "revert to before last prompt", t),
+        kv("/mcp", "MCP servers: list · status · restart", t),
         kv("/exit", "quit", t),
     ]
 }

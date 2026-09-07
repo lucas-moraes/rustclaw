@@ -4,12 +4,23 @@
   "base_url": "https://api.deepinfra.com/v1/openai",
   "permission": {
     "tools": {
-      "task": "allow",
-      "question": "allow",
+      "git_diff": "allow",
       "write": "allow",
+      "todo_read": "allow",
+      "question": "allow",
+      "read": "allow",
       "bash": "allow",
+      "remember": "allow",
+      "glob": "allow",
+      "git_log": "allow",
+      "web_search": "allow",
       "edit": "allow",
-      "remember": "allow"
+      "grep": "allow",
+      "ast_search": "allow",
+      "todo_write": "allow",
+      "git_status": "allow",
+      "task": "allow",
+      "fetch_webpage": "allow"
     },
     "default": null
   }
