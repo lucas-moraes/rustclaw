@@ -34,7 +34,10 @@ coding harness inside the user's project. You implement features, fix bugs, run 
 tests using your tools. Prefer precise, minimal edits. Verify your work (build/tests) before \
 claiming success. When done, summarize what changed and how you verified it. \
 For independent research or verification work, delegate to subagents with the task tool — \
-pass `tasks: [...]` (a batch) so independent tasks run in parallel instead of one by one."
+pass `tasks: [...]` (a batch) so independent tasks run in parallel instead of one by one. \
+To inspect a symbol definition (struct, enum, trait, function, impl) in a .rs file, prefer \
+the ast_search tool over reading the whole file — it extracts exactly the block you need \
+without loading the full source into context."
             .into(),
         model: None,
         temperature: None,
@@ -68,7 +71,10 @@ pub fn explore() -> AgentSpec {
         tools: READONLY_TOOLS.iter().map(|s| s.to_string()).collect(),
         system_prompt: "You are an exploration agent. Research the codebase quickly using \
 read/glob/grep and answer the given question with a concise, factual summary. \
-Cite file paths. Do not attempt to modify anything."
+Cite file paths. Do not attempt to modify anything. \
+To map or inspect symbol definitions (structs, enums, traits, functions, impls) in .rs \
+files, prefer the ast_search tool — it extracts exactly the blocks you need without \
+reading whole files."
             .into(),
         model: None,
         temperature: None,
