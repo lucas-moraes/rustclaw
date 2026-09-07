@@ -34,7 +34,8 @@ pub fn truncate_lines(text: &str, max_lines: usize) -> String {
     )
 }
 
-/// Short preview helper (delegates to session::preview).
+/// Short preview helper (delegates to session::preview). Only used by tests.
+#[cfg(test)]
 pub fn preview(s: &str, max: usize) -> String {
     crate::harness::session::preview(s, max)
 }

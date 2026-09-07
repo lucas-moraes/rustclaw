@@ -9,8 +9,8 @@ Coding agent harness em Rust, no estilo OpenCode / Claude Code. Loop de agente c
 - 💾 **Sessões SQLite** — messages/parts persistidos; listar, resumir, deletar
 - 🧠 **Skills (memória da sessão)** — escolha skills por sessão, injetadas no prompt por turno (checkbox)
 - 🔐 **Permissions HITL** — allow / ask / deny por tool e path (y/n/always no CLI)
-- 🎭 **Agents** — `build`, `plan`, `explore`, `general` + subagente via tool `task`
-- 🛠️ **Tools de coding** — bash, read, write, edit, glob, grep, ast_search, todo, question, task
+- 🎭 **Agents** — `build`, `plan`, `explore`, `general`, `chat-free` + subagente via tool `task`
+- 🛠️ **Tools de coding** — bash, read, write, edit, glob, grep, ast_search, todo, question, task, remember, git_status, git_diff, git_log
 - 🔍 **Busca sintática (Tree-Sitter)** — `ast_search` extrai structs, enums, traits, funções e impls de arquivos `.rs` via AST, sem regex ou falsos positivos
 - 🔌 **MCP (Model Context Protocol)** — conecta a servidores MCP externos (stdio ou streamable HTTP) e expõe as tools deles como tools nativas (`mcp_<server>_<tool>`)
 - 🌐 **Web Research Gratuito** — busca no DuckDuckGo (`web_search`) e conversão de documentações HTML para Markdown limpo (`fetch_webpage`) sem dependência de API keys pagas
@@ -127,12 +127,14 @@ Prompt simples:
 | `/new` | Nova sessão (abre o picker de skills) |
 | `/sessions` | Gerenciar sessões (picker: listar/selecionar/excluir/renomear) |
 | `/sessions select <id>` | Selecionar sessão por id |
-| `/agent <name>` | Trocar agent (build/plan/explore/general) |
+| `/agent <name>` | Trocar agent (build/plan/explore/general/chat-free) |
 | `/compact` | Compactar contexto manualmente |
 | `/skills` | Gerir skills (`list`·`add <id>`·`rm <id>`·`default <id> on\|off`·`picker`) |
 | `/theme [name]` | Listar ou aplicar tema |
 | `/mcp list\|status\|restart` | Servidores MCP (listar/status/reconectar) |
 | `/usage` | Tokens in/out + janela de contexto da sessão |
+| `/memory list\|rm\|clear\|promote\|gc` | Memória de projeto (fatos ranqueados por recência/uso) |
+| `/permissions set\|rm <tool> <rule>` | Regras de permissão por tool (allow/ask/deny) |
 | `/help` / `/exit` | Ajuda / sair |
 
 ### Permissões
@@ -197,7 +199,7 @@ src/
     ├── tool/        # Trait Tool + registry + bash/read/write/edit/glob/grep/ast_search/todo/question/task
     ├── mcp/         # MCP client (config mcpServers, stdio/HTTP, McpManager, McpTool)
     ├── permission/  # allow/ask/deny
-    ├── agent/       # AgentSpec + builtin (build/plan/explore/general)
+    ├── agent/       # AgentSpec + builtin (build/plan/explore/general/chat-free)
     └── ui/          # tui/ (app, draw, input, askers) + cli/ (fallback) + commands/
 ```
 

@@ -77,7 +77,11 @@ fn draw_permission(
     tick: u64,
     area: Rect,
 ) {
-    let warn_icon = if (tick / 6) % 2 == 0 { "⚠" } else { "!" };
+    let warn_icon = if (tick / 6).is_multiple_of(2) {
+        "⚠"
+    } else {
+        "!"
+    };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(t.warn))
@@ -134,7 +138,7 @@ fn draw_question(
     // Question + options + answer box + hints.
     let opt_rows = req.options.len() as u16;
     let h = (13 + opt_rows).min(area.height).max(11);
-    let w = area.width.min(76).max(44);
+    let w = area.width.clamp(44, 76);
     let area = centered_rect_fixed(w, h, area);
     frame.render_widget(Clear, area);
 
@@ -150,7 +154,7 @@ fn draw_question(
     frame.render_widget(block, area);
 
     let mut y = inner.y;
-    let mut push_line = |frame: &mut Frame, line: Line<'static>, row: &mut u16| {
+    let push_line = |frame: &mut Frame, line: Line<'static>, row: &mut u16| {
         if *row < inner.y + inner.height {
             frame.render_widget(
                 Paragraph::new(line),
@@ -205,7 +209,11 @@ fn draw_question(
         &mut y,
     );
 
-    let cursor_glyph = if (tick / 5) % 2 == 0 { "▌" } else { " " };
+    let cursor_glyph = if (tick / 5).is_multiple_of(2) {
+        "▌"
+    } else {
+        " "
+    };
     let chars: Vec<char> = draft.chars().collect();
     let at = cursor.min(chars.len());
     let before: String = chars[..at].iter().collect();

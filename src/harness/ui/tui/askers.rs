@@ -22,6 +22,9 @@ pub struct QuestionRequest {
 
 /// PermissionAsker that publishes requests to the App.
 pub struct TuiAsker {
+    /// Permission engine used by `set_always_allow`; kept for the public API
+    /// even though the TUI currently resolves "always" via the modal directly.
+    #[allow(dead_code)]
     engine: Arc<PermissionEngine>,
     tx: mpsc::UnboundedSender<PermissionRequest>,
 }
@@ -48,7 +51,9 @@ impl PermissionAsker for TuiAsker {
 }
 
 impl TuiAsker {
-    /// Marks a tool as "always allow" for the session.
+    /// Marks a tool as "always allow" for the session. Public API; the TUI
+    /// currently resolves "always" via the modal, so this is not yet invoked.
+    #[allow(dead_code)]
     pub fn set_always_allow(&self, tool: &str) {
         self.engine.set_always_allow(tool);
     }

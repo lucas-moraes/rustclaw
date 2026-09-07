@@ -83,6 +83,9 @@ impl ToolSpec {
 }
 
 /// Builds a `ToolPart` (pending) for a completed provider tool call.
+/// Public helper; kept for API completeness (the processor builds tool parts
+/// inline).
+#[allow(dead_code)]
 pub fn tool_part_from_call(id: &str, name: &str, arguments: &str) -> Result<ToolPart, String> {
     let input: serde_json::Value = if arguments.trim().is_empty() {
         serde_json::Value::Object(serde_json::Map::new())

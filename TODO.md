@@ -1,266 +1,201 @@
-# RustClaw — Suporte a MCP (Model Context Protocol)
+# RustClaw — Dívida Técnica (refactor)
 
-> **Problema:** o RustClaw só enxerga as tools builtin. Não há como plugar
-> servidores MCP (filesystem, github, postgres, etc.) que o ecossistema já
-> oferece — cada integração exigiria uma tool nativa nova.
+> **Problema:** o RustClaw cresceu rápido (MCP, skills, memória, subagentes, TUI)
+> e acumulou dívidas de manutenção: camadas de config sobrepostas, duplicação de
+> lógica, arquivos grandes e documentação desatualizada. Antes de adicionar novas
+> features (checkpoints, export, plan→build), vale pagar os "juros".
 >
-> **Escopo:** 4 fases: config/parsing (F1) → cliente stdio + tools no registry
-> (F2) → permissões/agentes/UX (F3) → robustez + transporte HTTP (F4).
+> **Escopo:** 3 tiers de prioridade. Tier 1 = pagar juros (config, temperatura,
+> dedup, cwd). Tier 2 = quebrar arquivos grandes. Tier 3 = higiene/docs.
 >
 > **Decisões-chave:**
-> - Crate [`rmcp`](https://crates.io/crates/rmcp) (cliente MCP oficial, async/tokio),
->   features mínimas (`client`, `transport-child-process`).
-> - F1–F3: só transporte **stdio** (subprocesso `command/args/env`). F4: HTTP.
-> - Nomes de tool: `mcp_<server>_<tool>` (ex.: `mcp_github_create_issue`).
-> - Config: `~/.local/share/rustclaw/mcp.json` (global) + `rustclaw.json["mcp"]`
->   (projeto, sobrescreve por nome). Formato padrão `mcpServers` (Claude/Cursor).
-> - Permissões: MCP tools caem no fallback `Ask` (default) — zero mudança no
->   engine; `/permissions set mcp_<server>_<tool> allow` já funciona.
+> - Cada feature tem checklist + Definition of Done (`cargo test` + `cargo clippy`
+>   + `cargo fmt --check` verdes).
+> - Refactors são **incrementais**: um bloco coeso por vez, mantendo os 271 testes
+>   verdes a cada passo.
+> - Nenhuma mudança de comportamento visível ao usuário (só estrutura interna).
 
 ---
 
 ## Visão geral das features
 
-| ID | Feature | Fase | Status |
+| ID | Feature | Tier | Status |
 |----|---------|------|--------|
-| F1.1 | `McpServerConfig` + parse do formato `mcpServers` | 1 | ✅ |
-| F1.2 | Load/merge global (`mcp.json`) + projeto (`rustclaw.json`) | 1 | ✅ |
-| F1.3 | `/mcp list` placeholder (servers configurados) | 1 | ✅ |
-| F2.1 | Dependência `rmcp` + módulo `harness/mcp/` | 2 | ✅ |
-| F2.2 | `McpClient`: spawn stdio + handshake + `tools/list` | 2 | ✅ |
-| F2.3 | `McpTool`: impl `Tool` → `tools/call` | 2 | ✅ |
-| F2.4 | `McpManager::connect_all` (paralelo, falha isolada) | 2 | ✅ |
-| F2.5 | Registro das MCP tools no `ToolRegistry` do runtime | 2 | ✅ |
-| F3.1 | Allowlist por agente (readonly p/ plan/explore) | 3 | ✅ |
-| F3.2 | `/mcp list\|status\|restart` | 3 | ✅ |
-| F3.3 | TUI: help + status de servers | 3 | ✅ |
-| F4.1 | Reconnect com backoff ao morrer o subprocesso | 4 | ✅ |
-| F4.2 | Health check periódico (`ping`) | 4 | ✅ |
-| F4.3 | Transporte streamable HTTP + `Authorization` | 4 | ✅ |
-| F4.4 | Env expansion (`${VAR}`) em `env`/`args` | 4 | ✅ |
-| F4.5 | Docs (`docs/FEATURES.md` §MCP) | 4 | ✅ |
-| V | Verificação final + commit | 4 | ✅ |
+| D1 | Consolidar camadas de config (3 → 1) | 1 | ✅ |
+| D2 | `default_temperature` conhecer `chat-free` | 1 | ✅ |
+| D3 | Dedup do `maybe_compact` (runtime + processor) | 1 | ✅ |
+| D4 | Quebrar `app.rs` (3745 linhas) | 2 | ⬜ |
+| D5 | `cwd` vs `project_root` no runtime | 1 | ✅ |
+| D6 | Unificar defaults de `HarnessConfig`/`Config` | 1 | ✅ |
+| D7 | Limpar warnings de clippy pré-existentes | 3 | ✅ |
+| D8 | Comentário `TODO F3 spec` obsoleto | 3 | ✅ |
+| D9 | Sincronizar README com o estado atual | 3 | ✅ |
+| D10 | Atualizar SUGGESTIONS.md (MCP já feito) | 3 | ✅ |
 
 **Legenda:** ⬜ pendente · 🟡 em progresso · ✅ feito · ❌ cancelado
 
 ---
 
-## F1 — Config + parsing (sem cliente ainda)
+## Tier 1 — Pagar juros (reduzir complexidade de manutenção)
 
-**Objetivo:** ler e validar a config de MCP servers, sem conectar nada.
+### Feature D1: Consolidar camadas de config (3 → 1)
 
-### Feature F1.1: `McpServerConfig` + parse
+**Onde:** `src/config.rs`, `src/harness/runtime.rs` (`HarnessConfig`, `from_legacy`,
+`from_legacy_in`), `src/harness/project/config_file.rs`.
 
-- [x] Criar `src/harness/mcp/mod.rs` (vazio por ora) e `src/harness/mcp/config.rs`
-- [x] `McpServerConfig { command: String, args: Vec<String>, env: HashMap<String,String>, enabled: bool (default true), timeout_secs: u64 (default 60) }`
-      com `serde::{Deserialize, Serialize}` + `#[serde(default)]`
-- [x] `McpConfig { servers: HashMap<String, McpServerConfig> }` com parse do
-      envelope `{"mcpServers": {...}}` (formato Claude/Cursor)
-- [x] Rejeitar entrada sem `command` (F4 adiciona `url` como alternativa)
-- [x] Testes: parse do formato padrão; `enabled=false`; entrada inválida (sem command)
+**Problema:** três representações do mesmo conceito:
+- `Config` (resolvido, `api_key: Option<String>`)
+- `HarnessConfig` (runtime, `api_key: String`)
+- `GlobalSettings` + `ProjectConfig` (persistência)
 
-### Feature F1.2: Load/merge global + projeto
+`from_legacy`/`from_legacy_in` existem só para traduzir `Config → HarnessConfig`.
 
-- [x] `McpConfig::load_global()` lê `~/.local/share/rustclaw/mcp.json`
-      (via `dirs::data_local_dir()` — no macOS é `~/Library/Application Support/rustclaw/`)
-- [x] `McpConfig::load_project(root)` lê `rustclaw.json["mcp"]["mcpServers"]`
-- [x] `McpConfig::merge(global, project)`: projeto sobrescreve server de mesmo nome
-- [x] Arquivo inexistente → config vazia (não é erro); JSON inválido → erro com path
-- [x] Testes: merge com override por nome; arquivo ausente; JSON inválido
+- [x] Definir um único `RuntimeConfig` resolvido (com `api_key: String`, já que o
+      token é obrigatório no runtime)
+- [x] Eliminar `HarnessConfig` e `from_legacy`/`from_legacy_in`
+- [x] `Config::resolve` passa a produzir o `RuntimeConfig` diretamente
+- [x] Atualizar todos os call sites (`main.rs`, `runtime.rs`, testes, smoke test)
+- [x] Manter `GlobalSettings`/`ProjectConfig` como camada de persistência (não mudar)
+- [x] Testes: `config.rs` já cobre a resolução — manter todos verdes
 
-### Feature F1.3: `/mcp list` placeholder
+### Feature D2: `default_temperature` conhecer `chat-free`
 
-- [x] Em `src/harness/ui/commands/mod.rs`: comando `/mcp list` mostra servers
-      configurados (nome, command, enabled) — sem status de conexão ainda
-- [x] `/mcp` sem args → usage
-- [x] Adicionar `mcp` à palette do TUI (`src/harness/ui/tui/palette.rs`)
+**Onde:** `src/harness/agent/mod.rs` (linhas 34-42), `src/harness/agent/builtin.rs`.
 
-### Definition of done F1
+**Problema:** o `match` em `default_temperature` tem `build/plan/explore/general` e
+cai em `_ => 0.0`. O `chat-free` funciona só porque carrega `temperature: Some(0.8)`
+explícito. Dois lugares precisam ser mantidos em sincronia manualmente
+(`default_temperature` + `find_builtin`) a cada agente novo.
 
-- [x] `cargo test` verde (incl. testes novos de config)
-- [x] `cargo check` verde
-- [x] `/mcp list` mostra servers de um `mcp.json` de exemplo
+- [x] Mover a temperatura para dentro de cada `builtin::*()` (que já setam
+      `temperature: Some(...)`)
+- [x] `default_temperature` vira apenas o fallback para agentes custom/desconhecidos
+- [x] Remover o `match` por nome (ou reduzir a `_ => 0.0`)
+- [x] Testes: `test_default_temperature_per_mode` e `test_turn_temperature_override_wins`
+      continuam verdes; adicionar `chat-free` ao caso de teste
 
----
+### Feature D3: Dedup do `maybe_compact`
 
-## F2 — Cliente stdio + tools no registry (MVP utilizável)
+**Onde:** `src/harness/runtime.rs` (linhas 385-446), `src/harness/session/processor.rs`
+(linhas 644-681), `src/harness/session/compaction.rs`.
 
-**Objetivo:** conectar nos servers configurados e expor as tools deles ao modelo.
+**Problema:** o mesmo algoritmo de compaction (com constantes e o cálculo
+`before - new.len() + 1`) existe **duas vezes**, quase idêntico, com constantes
+potencialmente divergentes (`COMPACTION_KEEP_RECENT: 6` no processor vs
+`KEEP_RECENT: 6` no runtime).
 
-### Feature F2.1: Dependência + módulo
+- [x] Extrair um único `compaction::compact_if_needed(session, provider, config, events)`
+      chamado pelos dois
+- [x] Unificar as constantes (`KEEP_RECENT`, `MIN_MESSAGES`) num único lugar
+- [x] Manter o cálculo `summarized = before - new.len() + 1` num único ponto
+- [x] Manter a persistência imediata pós-compaction (não perder histórico em abort)
+- [x] Testes: `compaction.rs` já cobre o núcleo; adicionar teste do wrapper que
+      persiste + emite eventos
 
-- [x] `Cargo.toml`: `rmcp` com features mínimas (`client`, `transport-child-process`);
-      medir impacto no `cargo build` (se explodir, reavaliar)
-- [x] Declarar `pub mod mcp;` em `src/harness/mod.rs`
+### Feature D5: `cwd` vs `project_root` no runtime
 
-### Feature F2.2: `McpClient` (stdio)
+**Onde:** `src/harness/runtime.rs` (9 ocorrências de `current_dir()` + 1 no
+`TaskRunner::runtime_current_cwd`).
 
-- [x] `src/harness/mcp/client.rs`: wrapper sobre `rmcp`
-- [x] `McpClient::connect(name, cfg) -> Result<Self>`: spawn do subprocesso
-      (`tokio::process::Command`, `kill_on_drop(true)`), handshake `initialize`,
-      `tools/list` — tudo com timeout de conexão de 10s
-- [x] `McpClient::call_tool(name, args) -> Result<String>`: `tools/call` com
-      timeout `timeout_secs` do config; serializa content (text/image/resource)
-      em texto único
-- [x] `McpClient::tools() -> Vec<McpToolSpec>` (nome, descrição, inputSchema,
-      `readOnlyHint` das annotations)
-- [x] Testes com um server fake (script shell que fala JSON-RPC no stdio) ou
-      mock do transporte
+**Problema:** vários métodos chamam `std::env::current_dir()` internamente em vez de
+usar o `project_root` que o runtime já guarda. Isso cria inconsistência potencial
+(ex.: `TaskRunner` usa `current_dir()` em vez do cwd da sessão pai) e dificulta
+testar com cwd diferente.
 
-### Feature F2.3: `McpTool` (impl `Tool`)
+- [x] Varrer e substituir `current_dir()` por `self.project_root` nos métodos do runtime
+- [x] `TaskRunner` usa o cwd da sessão pai (não `current_dir()` global)
+- [x] `create_session`/`load_session`/`list_sessions`/`delete_session`/`set_session_title`
+      usam `self.project_root`
+- [x] Testes: adicionar teste que cria runtime com `project_root` explícito e verifica
+      que as operações de sessão usam esse root (não o cwd do processo)
 
-- [x] `src/harness/mcp/tool.rs`: `McpTool { server: String, spec: McpToolSpec, client: Arc<McpClient> }`
-- [x] `name()` → `mcp_<server>_<tool>` (sanitizar: lowercase, `[a-z0-9_]`)
-- [x] `description()` → descrição do server truncada em 200 chars
-- [x] `parameters()` → `inputSchema` do server (pass-through)
-- [x] `execute()` → `client.call_tool`, respeitando `ctx.abort`
-- [x] Colisão de nome com builtin → sufixo `_2` + warn no log
-- [x] Testes: nome sanitizado; execute delega e serializa; abort cancela
+### Feature D6: Unificar defaults de `HarnessConfig`/`Config`
 
-### Feature F2.4: `McpManager::connect_all`
+**Onde:** `src/harness/runtime.rs` (linhas 36-49), `src/config.rs` (linhas 106-118).
 
-- [x] `src/harness/mcp/mod.rs`: `McpManager { clients: HashMap<String, Arc<McpClient>>, tools: Vec<Arc<McpTool>> }`
-- [x] `connect_all(config) -> Self`: spawns em paralelo (`JoinSet`), um por server
-      `enabled`; falha de um server → log warn + server marcado `failed`, **não**
-      derruba os outros nem o startup
-- [x] Cap de 50 tools por server (excesso → warn + trunca)
-- [x] `status()` → snapshot nome → `Connected | Failed(String) | Disabled`
+**Problema:** `HarnessConfig::default()` tem `max_iterations: 100`,
+`max_context_tokens: 100_000`, `turn_timeout_secs: 1800`; `Config::defaults()` tem
+`50`, `100_000`, `600`. Dois conjuntos de números mágicos para a mesma coisa — um
+turno pode rodar com limites diferentes do que o `/settings` mostra.
 
-### Feature F2.5: Registro no runtime
-
-- [x] `SessionRuntime` ganha `mcp: Option<Arc<McpManager>>>`
-- [x] Em `runtime.rs` (perto de `build_default_registry`): após montar o registry,
-      registrar cada `McpTool` do manager
-- [x] Config carregada no boot do runtime (global + projeto, merge F1.2)
-- [x] Sem servers configurados → `mcp: None`, zero overhead
-
-### Definition of done F2
-
-- [x] `cargo test` verde (incl. testes de client/tool/manager)
-- [x] `cargo check` + `cargo clippy --bin rustclaw` limpos
-- [x] Config com `npx -y @modelcontextprotocol/server-filesystem` (ou server fake
-      local) → tools `mcp_filesystem_*` aparecem no registry e executam
-- [x] Server que trava no handshake → `failed` em 10s, startup não bloqueia
+- [x] Unificar os defaults num único lugar (resolvido junto com D1)
+- [x] O runtime sempre usa os valores resolvidos (nunca os defaults "de fábrica")
+- [x] Testes: verificar que `/settings` e o runtime concordam nos limites
 
 ---
 
-## F3 — Permissões, agentes e UX
+## Tier 2 — Quebrar arquivos grandes
 
-**Objetivo:** MCP tools se comportam como cidadãs de primeira classe.
+### Feature D4: Quebrar `app.rs` (3745 linhas)
 
-### Feature F3.1: Allowlist por agente
+**Onde:** `src/harness/ui/tui/app.rs`.
 
-- [x] `build`/`general`: MCP tools entram automaticamente (allowlist vazia = tudo)
-- [x] `plan`/`explore`: MCP tools com `readOnlyHint: true` entram na allowlist
-      readonly; mutáveis ficam fora
-- [x] Implementar via hook no registry: `specs(allowlist)` aceita tools `mcp_*`
-      readonly quando o agente é readonly
-- [x] Testes: plan mode vê `mcp_x_read` mas não `mcp_x_write`
+**Problema:** um único arquivo com ~3700 linhas de estado + lógica de eventos +
+editor de input + subagentes + testes. É o maior arquivo do projeto e o mais difícil
+de navegar/refatorar.
 
-### Feature F3.2: `/mcp list|status|restart`
-
-- [x] `/mcp list` → servers + tools expostas (contagem)
-- [x] `/mcp status` → estado de conexão por server (do `McpManager::status()`)
-- [x] `/mcp restart <name>` → derruba e reconecta um server, re-registra tools
-- [x] Permissões: confirmar que `/permissions set mcp_<server>_<tool> allow`
-      persiste e é respeitado (fallback `Ask` já funciona)
-
-### Feature F3.3: TUI
-
-- [x] Linha de MCP no `/help` (comandos `/mcp`)
-- [x] Render de tool lines `mcp_*` como qualquer tool (já deve funcionar via
-      `ToolStart`/`ToolEnd` — validar)
-- [x] Modal de permissão `Ask` para MCP tool mostra server + tool + args
-
-### Definition of done F3
-
-- [x] `cargo test` verde
-- [x] `cargo check` + `cargo clippy --bin rustclaw` limpos
-- [x] Plan mode usa tools readonly de MCP; mutáveis pedem `Ask` no modal
-- [x] `/mcp status` reflete servers conectados/falhos
+- [ ] Extrair o **editor de input** (já há testes isolados disso) para módulo próprio
+- [ ] Extrair o **gerenciamento de subagentes** (painel/accordion) para módulo próprio
+- [ ] Extrair helpers de render/estado coesos (ex.: `last_code_block`, soft-wrap)
+- [ ] Fazer **incremental**: um bloco coeso por vez, mantendo os testes verdes
+- [ ] Não reduzir linhas por reduzir — separar responsabilidades
+- [ ] Testes: todos os testes de `app.rs` (editor, wrap, subagentes) continuam verdes
 
 ---
 
-## F4 — Robustez + transporte HTTP
+## Tier 3 — Higiene e documentação
 
-**Objetivo:** operação confiável no dia a dia + servers remotos.
+### Feature D7: Limpar warnings de clippy pré-existentes
 
-### Feature F4.1: Reconnect
+**Onde:** `src/harness/ui/tui/app.rs` (linhas ~2505, 2507) — funções usadas só em testes.
 
-- [x] `call_tool` detecta subprocesso morto (erro de transporte) → tenta respawn
-      1x com backoff (1s) antes de falhar
-- [x] Server marcado `failed` após 2 falhas consecutivas de respawn
-- [x] Teste: matar o processo do server → próxima chamada reconecta
+- [x] Marcar funções usadas só em testes com `#[cfg(test)]` ou `#[allow(dead_code)]`
+      com justificativa
+- [x] `cargo clippy` 100% limpo (sem warnings)
 
-### Feature F4.2: Health check
+### Feature D8: Comentário `TODO F3 spec` obsoleto
 
-- [x] Task de fundo no `McpManager`: `ping` a cada 60s por server
-- [x] Ping falho → marca `failed` (visível no `/mcp status`); próxima chamada
-      dispara reconnect (F4.1)
-- [x] Task cancelada no `Drop` do manager
+**Onde:** `src/harness/permission/mod.rs` (linha 78).
 
-### Feature F4.3: Transporte streamable HTTP
+**Problema:** o TODO.md agora é sobre dívida técnica; o comentário "matching the
+TODO F3 spec" está desatualizado (F3 era do plano MCP, já concluído).
 
-- [x] `McpServerConfig` aceita `url: String` como alternativa a `command`
-      (exatamente um dos dois obrigatório)
-- [x] Header `Authorization: Bearer <token>` opcional (campo `headers` no config)
-- [x] `McpClient::connect` escolhe transporte por `command` vs `url`
-- [x] Testes: parse de config com `url`; validação command-xor-url
+- [x] Atualizar ou remover o comentário obsoleto
 
-### Feature F4.4: Env expansion
+### Feature D9: Sincronizar README com o estado atual
 
-- [x] `${VAR}` expandido em `env` e `args` a partir do ambiente do processo
-- [x] Var indefinida → erro de config com nome da var
-- [x] Testes: expansão; var ausente
+**Onde:** `README.md`.
 
-### Feature F4.5: Docs
+**Problema:** o README ainda lista só `build, plan, explore, general` (linhas 12 e
+130), não menciona `chat-free`. Também não lista `git_status/git_diff/git_log` nas
+tools de coding nem o `remember`/`/memory`.
 
-- [x] `docs/FEATURES.md`: seção MCP (config, formato `mcpServers`, naming
-      `mcp_<server>_<tool>`, permissões, `/mcp`)
-- [x] `AGENTS.md`: mencionar `src/harness/mcp/` na estrutura
+- [x] Adicionar `chat-free` à lista de agents (linha 12 e 130)
+- [x] Listar `git_status/git_diff/git_log` nas tools de coding
+- [x] Mencionar `remember` tool e comandos `/memory`
+- [x] Revisar a seção de atalhos/comandos para refletir o estado atual
 
-### Definition of done F4
+### Feature D10: Atualizar SUGGESTIONS.md (MCP já feito)
 
-- [x] `cargo test` verde
-- [x] `cargo check` + `cargo clippy --bin rustclaw` limpos
-- [x] Matar o processo do server → próxima chamada reconecta
-- [x] Server remoto via HTTP funciona (ou teste de integração com mock)
+**Onde:** `SUGGESTIONS.md`.
+
+**Problema:** o item 6 (MCP client) está **feito**, mas ainda listado como pendente
+no Tier 2.
+
+- [x] Riscar/mover o item 6 (MCP) para a seção "já implementado" (como foi feito com
+      `/undo` e git tools no topo do arquivo)
+- [x] Revisar o roadmap para refletir a realidade
 
 ---
 
-## V — Verificação final + commit
-
-### Feature: Build e lint
-
-- [x] `cargo fmt`
-- [x] `cargo check`
-- [x] `cargo test` (todos os testes)
-- [x] `cargo clippy --bin rustclaw` (sem novos warnings)
-
-### Feature: Smoke test manual (se possível)
-
-- [x] `cargo run` com um `mcp.json` apontando para um server real (ex.: filesystem)
-- [x] Pedir ao modelo algo que use uma tool MCP → confirmar execução + permissão
-- [x] `/mcp status` mostra o server conectado
-
-### Feature: Commit
-
-- [x] `git add -A`
-- [x] Commit com mensagem descritiva, ex:
-      `feat: MCP client support (stdio) with config, registry and /mcp commands`
-- [x] Corpo do commit listando as fases (F1–F4)
-
----
-
-## Ordem de execução
+## Ordem de execução recomendada
 
 ```text
-F1 config + /mcp list (PR 1) → F2 cliente stdio + registry (PR 2, MVP)
- → F3 agentes + UX (PR 3) → F4 robustez + HTTP (PR 4) → V verificação + commit
+D3 (dedup compaction) → D2 (temperatura) → D1+D6 (config) → D5 (cwd)
+→ D7–D10 (higiene/docs) → D4 (app.rs, por último e incremental)
 ```
 
-Cada fase: `cargo test` + `cargo check` (+ `cargo clippy` no final).
-Sugestão: F1+F2 juntas entregam o MVP utilizável.
+Cada feature: `cargo test` + `cargo clippy` + `cargo fmt --check` verdes.
 
 ---
 
@@ -268,12 +203,11 @@ Sugestão: F1+F2 juntas entregam o MVP utilizável.
 
 | Risco | Mitigação |
 |-------|-----------|
-| Server trava no handshake | Timeout de conexão 10s; server fica `failed` e não bloqueia o startup (F2.4) |
-| `tools/list` gigante incha o system prompt | Descrições truncadas (200 chars) + cap de 50 tools/server (F2.3/F2.4) |
-| Nome colide com builtin | Prefixo `mcp_` obrigatório; conflito interno → sufixo `_2` (F2.3) |
-| Subprocesso vaza ao sair | `kill_on_drop` + `Drop` no manager; abort da sessão cancela calls em voo (F2.2) |
-| `rmcp` puxa deps pesadas | Features mínimas (`client`, `transport-child-process`); medir `cargo build` (F2.1) |
-| Server morre no meio da sessão | Reconnect com backoff (F4.1) + health check (F4.2) |
+| Refactor de config quebra resolução | `config.rs` já tem testes de resolução (catalog→global→projeto); manter todos verdes |
+| Dedup do compaction muda comportamento | `compaction.rs` já cobre o núcleo; adicionar teste do wrapper (persist + eventos) |
+| Quebrar `app.rs` introduz regressão de UI | Extração incremental, um bloco por vez, testes de editor/wrap/subagentes verdes |
+| `current_dir()` vs `project_root` diverge | Teste com `project_root` explícito ≠ cwd do processo |
+| Documentação fica desatualizada de novo | Sincronizar README/SUGGESTIONS na mesma PR das mudanças |
 
 ---
 
@@ -281,18 +215,16 @@ Sugestão: F1+F2 juntas entregam o MVP utilizável.
 
 | Path | Mudança |
 |------|---------|
-| `Cargo.toml` | Dependência `rmcp` (features mínimas) |
-| `src/harness/mod.rs` | `pub mod mcp;` |
-| `src/harness/mcp/mod.rs` | `McpManager` (connect_all, status, restart, health) |
-| `src/harness/mcp/config.rs` | `McpConfig`/`McpServerConfig` + load/merge global+projeto |
-| `src/harness/mcp/client.rs` | `McpClient` (spawn, handshake, list/call, timeout, reconnect) |
-| `src/harness/mcp/tool.rs` | `McpTool` impl `Tool` |
-| `src/harness/runtime.rs` | Campo `mcp` + registro das MCP tools no registry |
-| `src/harness/agent/builtin.rs` | Allowlist readonly p/ plan/explore (tools `mcp_*` com `readOnlyHint`) |
-| `src/harness/ui/commands/mod.rs` | `/mcp list\|status\|restart` |
-| `src/harness/ui/tui/palette.rs` | Entrada `mcp` na palette |
-| `docs/FEATURES.md` | Seção MCP |
-| `AGENTS.md` | `src/harness/mcp/` na estrutura |
+| `src/config.rs` | Consolidar `Config`/`HarnessConfig` num `RuntimeConfig` (D1, D6) |
+| `src/harness/runtime.rs` | Eliminar `from_legacy*`; usar `project_root`; dedup compaction (D1, D3, D5, D6) |
+| `src/harness/session/processor.rs` | Usar `compaction::compact_if_needed` (D3) |
+| `src/harness/session/compaction.rs` | Novo wrapper `compact_if_needed` + constantes unificadas (D3) |
+| `src/harness/agent/mod.rs` | `default_temperature` sem `match` por nome (D2) |
+| `src/harness/agent/builtin.rs` | Temperaturas explícitas por agente (D2) |
+| `src/harness/ui/tui/app.rs` | Extrair editor/subagentes/helpers (D4); limpar clippy (D7) |
+| `src/harness/permission/mod.rs` | Comentário obsoleto (D8) |
+| `README.md` | Sincronizar agents/tools/memory (D9) |
+| `SUGGESTIONS.md` | Mover MCP para "já implementado" (D10) |
 
 ---
 
@@ -300,5 +232,4 @@ Sugestão: F1+F2 juntas entregam o MVP utilizável.
 
 | Data | Nota |
 |------|------|
-| 2026-09-04 | TODO.md substituído: plano de suporte a MCP convertido em features F1–F4 + V com checklists detalhados. |
-| 2026-09-04 | **F1–F4 + V concluídas** (256 testes, clippy/fmt limpos): config `mcpServers` (global+projeto, merge, `${VAR}` expansion), `McpClient` stdio + streamable HTTP (rmcp 3.2), `McpTool` (`mcp_<server>_<tool>`, `readOnlyHint`), `McpManager` (connect_all paralelo, falha isolada, reconnect 1x, health check 60s), registro no runtime (`init_mcp`), allowlist readonly p/ plan/explore (marcador `mcp_readonly`), `/mcp list\|status\|restart` + palette, docs (FEATURES.md §16, AGENTS.md). |
+| 2026-09-04 | TODO.md substituído: plano de MCP (F1–F4, concluído) removido; novo plano de dívida técnica D1–D10 com checklists e tiers. |

@@ -1,6 +1,7 @@
 //! opencode-go provider: routes by model.
 //! - MiniMax models use the Anthropic-style `/messages` endpoint.
 //! - Others use the OpenAI-style `/chat/completions` endpoint.
+//!
 //! Auth uses `X-API-Key` (with Bearer fallback header).
 
 use super::{

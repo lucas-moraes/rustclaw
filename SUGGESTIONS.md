@@ -4,7 +4,9 @@
 > **Removidos desta lista (já implementados):** `/undo` (reverte último turno,
 > com testes), git tools nativas (`git_status`/`git_diff`/`git_log` em
 > `tool/git.rs`), permissões persistentes por projeto (`always allow` grava em
-> `rustclaw.json` via `set_persist` + `apply_project_config`).
+> `rustclaw.json` via `set_persist` + `apply_project_config`), **MCP client**
+> (servers MCP como tools dinâmicas `mcp_<server>_<tool>`, stdio + streamable
+> HTTP, `/mcp list|status|restart` — ver `docs/FEATURES.md` §MCP).
 
 ---
 
@@ -49,12 +51,6 @@ Arquivo `.agents/hooks.json` ou seção em `rustclaw.json`:
 - bloquear `bash` que bata em produção
 
 Encaixa no `ToolContext` + processor loop.
-
-### 6. MCP client (Model Context Protocol)
-Conectar servers MCP como tools dinâmicas (GitHub, DB, browser, Sentry…).
-Registry vira: builtins + MCP tools discovered.
-
-**Por quê:** é o padrão de extensibilidade que OpenCode/Claude Code estão usando; skills cobrem prompt, MCP cobre *ações*.
 
 ### 7. Memória com retrieval decente
 Hoje `render_memory` é lexical + recência. Evoluir para:
@@ -114,9 +110,8 @@ Gravar eventos (`HarnessEvent`) como JSONL e `/replay` para debug do harness em 
 2. /export md                            (meio dia)
 3. plan→build handoff                    (1 dia)
 4. hooks de projeto                      (2–3 dias)
-5. MCP client                            (1 semana+)
-6. memory FTS/embeddings                 (2–4 dias)
-7. custom agents + background jobs       (depois)
+5. memory FTS/embeddings                 (2–4 dias)
+6. custom agents + background jobs       (depois)
 ```
 
 ### O que **não** priorizar agora

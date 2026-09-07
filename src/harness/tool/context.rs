@@ -65,8 +65,11 @@ pub trait SubagentRunner: Send + Sync {
 #[derive(Clone, Debug)]
 pub struct TaskOutcome {
     pub final_text: String,
-    /// Child session id (persisted with `parent_id` set).
+    /// Child session id (persisted with `parent_id` set). Read by tests.
+    #[allow(dead_code)]
     pub session_id: String,
+    /// Number of iterations the child turn used. Read by tests.
+    #[allow(dead_code)]
     pub iterations: usize,
 }
 

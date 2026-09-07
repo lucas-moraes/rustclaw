@@ -11,6 +11,8 @@ pub struct ToolRegistry {
 }
 
 impl ToolRegistry {
+    /// Empty registry. Convenience over `Default`; kept for API completeness.
+    #[allow(dead_code)]
     pub fn new() -> Self {
         Self::default()
     }
@@ -33,10 +35,14 @@ impl ToolRegistry {
         self.tools.get(name).cloned()
     }
 
+    /// Whether a tool is registered. Only used by tests.
+    #[cfg(test)]
     pub fn contains(&self, name: &str) -> bool {
         self.tools.contains_key(name)
     }
 
+    /// All registered tool names. Public API; kept for completeness.
+    #[allow(dead_code)]
     pub fn names(&self) -> Vec<String> {
         self.tools.keys().cloned().collect()
     }

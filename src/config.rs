@@ -89,9 +89,14 @@ impl GlobalSettings {
 }
 
 /// Resolved runtime configuration (provider/model/limits/token).
+///
+/// This is the single resolved config used by the runtime (replaces the old
+/// `Config` + `HarnessConfig` pair). The API key is a plain `String` because
+/// the runtime requires a token; an absent key is represented as an empty
+/// string and surfaced by `is_configured()`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Config {
-    pub api_key: Option<String>,
+pub struct RuntimeConfig {
+    pub api_key: String,
     pub base_url: String,
     pub model: String,
     pub provider: String,
@@ -99,21 +104,30 @@ pub struct Config {
     pub max_context_tokens: usize,
     /// Wall-clock limit per turn, in seconds.
     pub turn_timeout_secs: usize,
+    /// Agent used when starting a fresh session.
+    pub default_agent: String,
 }
 
-impl Config {
+impl Default for RuntimeConfig {
+    fn default() -> Self {
+        Self::defaults()
+    }
+}
+
+impl RuntimeConfig {
     /// Catalog-derived defaults.
     pub fn defaults() -> Self {
         let p = crate::harness::provider::catalog::find_provider("opencode-go")
             .expect("opencode-go must exist in the catalog");
         Self {
-            api_key: None,
+            api_key: String::new(),
             base_url: p.base_url.to_string(),
             model: p.default_model.to_string(),
             provider: p.name.to_string(),
             max_iterations: 50,
             max_context_tokens: 100_000,
             turn_timeout_secs: 600,
+            default_agent: "build".to_string(),
         }
     }
 
@@ -130,7 +144,7 @@ impl Config {
     pub fn resolve(project_root: &Path, settings: &GlobalSettings, auth: &AuthStore) -> Self {
         let fallback = crate::harness::provider::catalog::find_provider("opencode-go")
             .expect("opencode-go must exist in the catalog");
-        let mut cfg = Config::defaults();
+        let mut cfg = RuntimeConfig::defaults();
 
         // 1. Provider/model: catalog <- global settings <- project config.
         if !settings.provider.is_empty() {
@@ -176,16 +190,16 @@ impl Config {
         }
 
         // 4. Token from the global auth store for the resolved provider.
-        cfg.api_key = auth.get_key(&cfg.provider).filter(|k| !k.trim().is_empty());
+        cfg.api_key = auth
+            .get_key(&cfg.provider)
+            .filter(|k| !k.trim().is_empty())
+            .unwrap_or_default();
         cfg
     }
 
     /// True when the harness has enough to talk to the API.
     pub fn is_configured(&self) -> bool {
-        self.api_key
-            .as_ref()
-            .map(|k| k.trim().len() >= 10)
-            .unwrap_or(false)
+        self.api_key.trim().len() >= 10
     }
 }
 
@@ -200,13 +214,14 @@ mod tests {
     #[test]
     fn test_empty_settings_fall_back_to_catalog() {
         let d = dir();
-        let cfg = Config::resolve(d.path(), &GlobalSettings::default(), &AuthStore::default());
+        let cfg =
+            RuntimeConfig::resolve(d.path(), &GlobalSettings::default(), &AuthStore::default());
         assert_eq!(cfg.provider, "opencode-go");
         assert_eq!(cfg.model, "deepseek-v4-flash");
         assert_eq!(cfg.base_url, "https://opencode.ai/zen/go/v1");
         assert_eq!(cfg.max_iterations, 50);
         assert_eq!(cfg.max_context_tokens, 100_000);
-        assert_eq!(cfg.api_key, None);
+        assert_eq!(cfg.api_key, "");
         assert!(!cfg.is_configured());
     }
 
@@ -220,7 +235,7 @@ mod tests {
             max_context_tokens: 42_000,
             ..Default::default()
         };
-        let cfg = Config::resolve(d.path(), &s, &AuthStore::default());
+        let cfg = RuntimeConfig::resolve(d.path(), &s, &AuthStore::default());
         assert_eq!(cfg.provider, "deepinfra");
         assert_eq!(cfg.model, "zai-org/GLM-5.3");
         assert_eq!(cfg.base_url, "https://api.deepinfra.com/v1/openai");
@@ -241,7 +256,7 @@ mod tests {
             model: "zai-org/GLM-5.3".into(),
             ..Default::default()
         };
-        let cfg = Config::resolve(d.path(), &s, &AuthStore::default());
+        let cfg = RuntimeConfig::resolve(d.path(), &s, &AuthStore::default());
         assert_eq!(cfg.provider, "openrouter");
         assert_eq!(cfg.model, "z-ai/glm-4.6");
         assert_eq!(cfg.base_url, "https://openrouter.ai/api/v1");
@@ -259,5 +274,31 @@ mod tests {
         s.save_to(&p).unwrap();
         let back = GlobalSettings::load_from(&p).unwrap();
         assert_eq!(back, s);
+    }
+
+    #[test]
+    fn test_unified_defaults_are_single_source_of_truth() {
+        // D6: the runtime and `/settings` must agree on the same limits. The
+        // defaults live in exactly one place (`RuntimeConfig::defaults`) and
+        // the runtime is always built from a resolved `RuntimeConfig`.
+        let d = dir();
+        let cfg =
+            RuntimeConfig::resolve(d.path(), &GlobalSettings::default(), &AuthStore::default());
+        assert_eq!(cfg.max_iterations, 50);
+        assert_eq!(cfg.max_context_tokens, 100_000);
+        assert_eq!(cfg.turn_timeout_secs, 600);
+        assert_eq!(cfg.default_agent, "build");
+    }
+
+    #[test]
+    fn test_is_configured_uses_string_key() {
+        let d = dir();
+        let mut cfg =
+            RuntimeConfig::resolve(d.path(), &GlobalSettings::default(), &AuthStore::default());
+        assert!(!cfg.is_configured());
+        cfg.api_key = "sk-short".to_string();
+        assert!(!cfg.is_configured());
+        cfg.api_key = "sk-1234567890".to_string();
+        assert!(cfg.is_configured());
     }
 }

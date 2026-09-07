@@ -1,7 +1,8 @@
 //! Prompt input box with placeholder, cursor and opencode-style soft-wrap.
 
 use crate::harness::ui::tui::anim;
-use crate::harness::ui::tui::app::{visual_row_col, wrap_visual, App};
+use crate::harness::ui::tui::app::App;
+use crate::harness::ui::tui::input::{compact_window, visual_row_col, wrap_visual};
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -61,7 +62,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
 
     // Opencode-style compaction: keep the top rows, a dim "hidden" marker in
     // the middle and the cursor region at the bottom (cursor stays visible).
-    let compaction = crate::harness::ui::tui::app::compact_window(rows.len(), crow, max_rows);
+    let compaction = compact_window(rows.len(), crow, max_rows);
     let display_row = |r: usize| -> Option<u16> {
         match compaction {
             None => Some(r as u16),

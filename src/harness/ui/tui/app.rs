@@ -9,6 +9,7 @@ use crate::harness::tool::context::AbortSignal;
 use crate::harness::ui::commands::CommandOutcome;
 use crate::harness::ui::tui::anim::{Particle, SplashState};
 use crate::harness::ui::tui::askers::{PermissionRequest, QuestionRequest};
+use crate::harness::ui::tui::input::{row_char_idx, visual_row_col, wrap_visual};
 use crate::harness::ui::tui::palette::{AutoComplete, PaletteState};
 use crate::harness::ui::tui::selection::{
     self, CellPos, PendingClick, TextSelection, DRAG_THRESHOLD,
@@ -20,123 +21,6 @@ use tokio::sync::mpsc;
 
 fn preview(s: &str, max: usize) -> String {
     crate::harness::session::preview(s, max)
-}
-
-/// One soft-wrapped visual row: the logical char indices it displays plus the
-/// smallest char index whose cursor position falls on this row.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct VisualRow {
-    pub idxs: Vec<usize>,
-    pub start: usize,
-}
-
-/// Word-wrapped visual rows of the prompt input (indices only).
-pub fn wrap_input_rows(input: &str, width: usize) -> Vec<Vec<usize>> {
-    wrap_visual(input, width)
-        .into_iter()
-        .map(|r| r.idxs)
-        .collect()
-}
-
-/// Word-wrapped visual rows with logical start positions.
-pub fn wrap_visual(input: &str, width: usize) -> Vec<VisualRow> {
-    let width = width.max(4);
-    let mut rows: Vec<VisualRow> = vec![VisualRow {
-        idxs: Vec::new(),
-        start: 0,
-    }];
-    let mut row_len = 0usize;
-    // Index into the current row where the last word break (space) sits.
-    let mut break_at: Option<usize> = None;
-
-    for (i, c) in input.chars().enumerate() {
-        if c == '\n' {
-            rows.push(VisualRow {
-                idxs: Vec::new(),
-                start: i + 1,
-            });
-            row_len = 0;
-            break_at = None;
-            continue;
-        }
-        if row_len + 1 > width {
-            if let Some(b) = break_at.filter(|b| *b + 1 < rows.last().unwrap().idxs.len()) {
-                // Move the trailing word (after the break space) to a new row.
-                let cut: Vec<usize> = rows.last_mut().unwrap().idxs.drain(b + 1..).collect();
-                rows.push(VisualRow {
-                    start: cut[0],
-                    idxs: cut,
-                });
-            } else {
-                rows.push(VisualRow {
-                    idxs: Vec::new(),
-                    start: i,
-                });
-            }
-            row_len = rows.last().unwrap().idxs.len();
-            break_at = None;
-        }
-        rows.last_mut().unwrap().idxs.push(i);
-        row_len += 1;
-        if c == ' ' {
-            break_at = Some(rows.last().unwrap().idxs.len() - 1);
-        }
-    }
-    rows
-}
-
-/// Maps a logical cursor (char index) to its visual (row, col) in `rows`.
-pub fn visual_row_col(rows: &[VisualRow], cursor: usize) -> (usize, usize) {
-    if rows.is_empty() {
-        return (0, 0);
-    }
-    // The cursor belongs to the last row whose start <= cursor.
-    let mut r = 0;
-    for (i, row) in rows.iter().enumerate() {
-        if row.start <= cursor {
-            r = i;
-        } else {
-            break;
-        }
-    }
-    let col = rows[r].idxs.iter().filter(|i| **i < cursor).count();
-    (r, col)
-}
-
-/// Compacts the wrapped visual rows into a display window (opencode-style):
-/// keeps the first 2 rows from the top, collapses the middle into a hidden
-/// marker (rendered dim by the caller) and keeps the cursor row plus whatever
-/// fits below it visible at the bottom. `Some((head, from, to))` describes the
-/// visible ranges: rows `0..head` at the top, marker between, rows
-/// `from..to` at the bottom (cursor row always inside `from..to`). `None`
-/// when everything fits (no compaction).
-pub fn compact_window(total: usize, crow: usize, max: usize) -> Option<(usize, usize, usize)> {
-    if total <= max || max < 4 {
-        return None;
-    }
-    let upper = 2usize.min(max.saturating_sub(2));
-    if crow < upper {
-        // Cursor in the top region: the head window already shows it.
-        return None;
-    }
-    let bottom_keep = max.saturating_sub(upper + 1).max(1);
-    let to = (crow + bottom_keep).min(total);
-    let from = to.saturating_sub(bottom_keep).max(upper);
-    Some((upper, from, to))
-}
-
-/// Char index for a (row, col) target, clamped; col == row length puts the
-/// cursor just after the row's last char (before a `\n` or at end of input).
-fn row_char_idx(row: &VisualRow, col: usize, input: &str) -> usize {
-    let total = input.chars().count();
-    if row.idxs.is_empty() {
-        return row.start.min(total);
-    }
-    if col >= row.idxs.len() {
-        (row.idxs[row.idxs.len() - 1] + 1).min(total)
-    } else {
-        row.idxs[col]
-    }
 }
 
 /// Modes cycled by the prompt mode selector (like opencode's primary agents).
@@ -626,7 +510,7 @@ impl App {
             _keep_dir.path(),
             provider,
             crate::harness::tool::registry::ToolRegistry::builder().build(),
-            crate::harness::runtime::HarnessConfig::default(),
+            crate::config::RuntimeConfig::default(),
             &_keep_dir.path().join("test.db"),
             Arc::new(crate::harness::permission::PermissionEngine::default()),
             Arc::new(AllowAsker),
@@ -1171,6 +1055,8 @@ impl App {
     }
 
     /// Visual cursor position after soft-wrapping: (row, col).
+    /// Public helper; kept for API completeness (not currently consumed).
+    #[allow(dead_code)]
     pub fn visual_cursor(&self, width: usize) -> (usize, usize) {
         let width = if width == 0 {
             self.input_inner_width.max(20) as usize
@@ -1227,9 +1113,13 @@ impl App {
             self.input_cursor += 1;
         }
     }
+    /// Move cursor to start of input. Public helper; kept for API completeness.
+    #[allow(dead_code)]
     pub fn cursor_home(&mut self) {
         self.input_cursor = 0;
     }
+    /// Move cursor to end of input. Public helper; kept for API completeness.
+    #[allow(dead_code)]
     pub fn cursor_end(&mut self) {
         self.input_cursor = self.input.chars().count();
     }
@@ -2502,10 +2392,9 @@ fn remove_from_user_store(picker: &ModelPickerState, item: &str) -> anyhow::Resu
         let mut store = UserProviders::load();
         let removed = if store.find(item).is_some_and(|p| p.removed) {
             false // already hidden
-        } else if store.remove(item) {
-            true // user-defined provider deleted outright
-        } else if store.hide_builtin(item) {
-            true // builtin hidden via tombstone
+        } else if store.remove(item) || store.hide_builtin(item) {
+            // user-defined provider deleted outright, or builtin hidden via tombstone
+            true
         } else {
             false
         };
@@ -3364,69 +3253,6 @@ async fn submit_input(
 mod input_tests {
     use super::*;
 
-    fn row_text(input: &str, r: &VisualRow) -> String {
-        let chars: Vec<char> = input.chars().collect();
-        r.idxs.iter().map(|i| chars[*i]).collect()
-    }
-
-    #[test]
-    fn test_soft_wrap_row_counts() {
-        let long = "aaaa ".repeat(10);
-        let w = 10usize;
-        let rows = wrap_input_rows(&long, w);
-        assert!(rows.iter().all(|r| r.len() <= w));
-        assert!(rows.len() > 1);
-        let flat: Vec<usize> = rows.iter().flatten().copied().collect();
-        assert_eq!(flat, (0..50).collect::<Vec<_>>());
-    }
-
-    #[test]
-    fn test_word_wrap_moves_whole_words() {
-        let input = "ola mundo ola";
-        let rows = wrap_visual(input, 6);
-        let texts: Vec<String> = rows.iter().map(|r| row_text(input, r)).collect();
-        assert!(texts.iter().all(|t| !t.ends_with("mun")));
-        assert!(texts.iter().any(|t| t.contains("mundo")));
-    }
-
-    #[test]
-    fn test_cursor_mapping_round_trip() {
-        let inputs = ["abc def", "top\n\nbottom", "one two three\nfour five"];
-        for input in inputs {
-            for w in [4usize, 6, 20] {
-                let rows = wrap_visual(input, w);
-                let last = input.chars().count();
-                for cursor in 0..=last {
-                    let (r, c) = visual_row_col(&rows, cursor);
-                    assert!(r < rows.len(), "row out of bounds");
-                    let idx = row_char_idx(&rows[r], c, input);
-                    let (r2, c2) = visual_row_col(&rows, idx);
-                    assert_eq!(
-                        (r, c),
-                        (r2, c2),
-                        "cursor {} -> ({},{}); idx {} -> ({},{})",
-                        cursor,
-                        r,
-                        c,
-                        idx,
-                        r2,
-                        c2
-                    );
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn test_newlines_create_empty_rows() {
-        let input = "top\n\nbottom";
-        let rows = wrap_visual(input, 20);
-        assert_eq!(rows.len(), 3);
-        assert!(rows[1].idxs.is_empty());
-        assert_eq!(visual_row_col(&rows, 4), (1, 0));
-        assert_eq!(visual_row_col(&rows, 5), (2, 0));
-    }
-
     #[test]
     fn test_visual_up_down_move_between_rows() {
         let mut app = App::inline_for_tests("one two three\nfour five");
@@ -3502,48 +3328,6 @@ mod input_tests {
         app.cursor_visual_up();
         assert_eq!(app.history_pos, None);
         assert_eq!(app.input, before);
-    }
-
-    #[test]
-    fn test_compact_window_small_no_hidden() {
-        assert_eq!(compact_window(3, 1, 6), None);
-        assert_eq!(compact_window(6, 5, 6), None);
-    }
-
-    #[test]
-    fn test_compact_window_cursor_middle() {
-        // 20 rows, cursor in the middle, window of 4.
-        let (head, from, to) = compact_window(20, 10, 4).unwrap();
-        assert_eq!(head, 2);
-        // Cursor row (10) is inside the visible bottom region.
-        assert!(from <= 10 && 10 < to);
-        // Window math: head (2) + marker (1) + bottom rows ≤ max.
-        assert_eq!(head + 1 + (to - from), 4);
-    }
-
-    #[test]
-    fn test_compact_window_cursor_at_end() {
-        let (head, from, to) = compact_window(20, 19, 6).unwrap();
-        assert_eq!(head, 2);
-        assert!(from <= 19 && 19 < to);
-        assert_eq!(to, 20);
-    }
-
-    #[test]
-    fn test_compact_window_cursor_always_visible_property() {
-        for total in [4usize, 8, 15, 50] {
-            for crow in 0..total {
-                for max in [4usize, 6, 10] {
-                    match compact_window(total, crow, max) {
-                        None => assert!(crow < max, "cursor would be cut off"),
-                        Some((_head, from, to)) => {
-                            assert!(from <= crow && crow < to);
-                            assert!(from >= 2, "marker must hide the middle, not the head");
-                        }
-                    }
-                }
-            }
-        }
     }
 
     #[test]

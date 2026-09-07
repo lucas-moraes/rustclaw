@@ -6,11 +6,20 @@
 //! with the older messages collapsed into a single summary message. The result
 //! is returned as `Option<Vec<Message>>`; `None` means no compaction was needed.
 
+use crate::harness::event::{EventSender, HarnessEvent};
 use crate::harness::provider::{LlmRequest, Provider};
-use crate::harness::session::{Message, Part, Role};
-use anyhow::Result;
+use crate::harness::session::store::SessionStore;
+use crate::harness::session::{Message, Part, Role, Session};
+use anyhow::{Context, Result};
 use std::sync::Arc;
 use std::time::Duration;
+
+/// How many recent messages to keep after compaction.
+const KEEP_RECENT: usize = 6;
+/// Minimum message count before compaction is worth attempting.
+const MIN_MESSAGES: usize = 10;
+/// Max time to wait for the LLM summary before falling back to a placeholder.
+const SUMMARY_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Tunables for context-window compaction.
 #[derive(Clone, Debug)]
@@ -70,6 +79,72 @@ pub async fn should_compact_and_execute(
     new_messages.push(summary_message);
     new_messages.extend_from_slice(recent);
     Ok(Some(new_messages))
+}
+
+/// Runs compaction on a session in place: decides whether the message list
+/// exceeds the budget, summarizes older messages, persists the result, and
+/// emits `CompactionStarted`/`CompactionFinished` events.
+///
+/// This is the single entry point used by both the runtime (session open,
+/// `/compact` force) and the processor (per-iteration overflow check), so the
+/// algorithm and its constants live in exactly one place.
+///
+/// - `force = true` treats the token budget as zero (any session with enough
+///   messages is summarized) and lowers the minimum to 2 (summary + keep).
+/// - `events` is optional: when `None`, no events are emitted.
+///
+/// Returns the number of messages summarized away (`0` when nothing changed).
+pub async fn compact_if_needed(
+    session: &mut Session,
+    provider: Arc<dyn Provider>,
+    store: &SessionStore,
+    max_context_tokens: usize,
+    force: bool,
+    events: Option<&EventSender>,
+) -> Result<usize> {
+    if let Some(tx) = events {
+        let _ = tx.send(HarnessEvent::CompactionStarted {
+            session_id: session.id.clone(),
+            parent_session_id: None,
+        });
+    }
+
+    let config = CompactionConfig {
+        max_context_tokens: if force { 0 } else { max_context_tokens },
+        keep_recent_messages: KEEP_RECENT,
+        // Force still needs at least 2 messages (summary target + keep).
+        min_messages_to_compact: if force { 2 } else { MIN_MESSAGES },
+        summary_timeout: SUMMARY_TIMEOUT,
+    };
+
+    let before = session.messages.len();
+    let summarized = match should_compact_and_execute(&session.messages, provider, &config).await? {
+        Some(new_messages) => {
+            // The summary message adds one to the new list, so the number of
+            // messages summarized away is before - new.len() + 1.
+            let n = before.saturating_sub(new_messages.len()) + 1;
+            session.messages = new_messages;
+            session.updated_at = chrono::Utc::now();
+            // Persist immediately so orphaned pre-summary messages are dropped
+            // from SQLite even if the turn aborts later.
+            store
+                .save_session(session)
+                .context("failed to persist compacted session")?;
+            n
+        }
+        None => 0,
+    };
+
+    if let Some(tx) = events {
+        if summarized > 0 {
+            let _ = tx.send(HarnessEvent::CompactionFinished {
+                session_id: session.id.clone(),
+                summarized_messages: summarized,
+                parent_session_id: None,
+            });
+        }
+    }
+    Ok(summarized)
 }
 
 /// Requests an LLM summary of the dropped messages, falling back to a plain
@@ -346,5 +421,83 @@ mod tests {
         .expect("expected compaction even on summary timeout");
         assert_eq!(out.len(), 7);
         assert!(out[0].text_content().contains("(summary unavailable)"));
+    }
+
+    #[tokio::test]
+    async fn test_compact_if_needed_persists_and_emits_events() {
+        use crate::harness::event::event_channel;
+        use crate::harness::session::store::SessionStore;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = SessionStore::open(&dir.path().join("test.db")).unwrap();
+        let mut session = store
+            .create_session("build", &dir.path().to_path_buf())
+            .unwrap();
+        // 12 messages exceed the tiny budget (1 token) and the min (10).
+        session.messages = msgs(12);
+
+        let provider = Arc::new(MockProvider::ok("this is the summary"));
+        let (tx, mut rx) = event_channel();
+
+        let summarized = compact_if_needed(
+            &mut session,
+            provider,
+            &store,
+            1, // max_context_tokens: tiny so compaction triggers
+            false,
+            Some(&tx),
+        )
+        .await
+        .unwrap();
+
+        // 12 -> summary + 6 recent = 7; summarized = 12 - 7 + 1 = 6.
+        assert_eq!(summarized, 6);
+        assert_eq!(session.messages.len(), 7);
+        assert!(session.messages[0]
+            .text_content()
+            .contains("[Context compacted]"));
+
+        // Persisted: reloading from the store reflects the compacted list.
+        let reloaded = store
+            .load_session(&session.id, &dir.path())
+            .unwrap()
+            .unwrap();
+        assert_eq!(reloaded.messages.len(), 7);
+
+        // Events: CompactionStarted then CompactionFinished(6).
+        let mut started = false;
+        let mut finished = 0usize;
+        while let Ok(ev) = rx.try_recv() {
+            match ev {
+                HarnessEvent::CompactionStarted { .. } => started = true,
+                HarnessEvent::CompactionFinished {
+                    summarized_messages,
+                    ..
+                } => finished = summarized_messages,
+                _ => {}
+            }
+        }
+        assert!(started, "expected CompactionStarted");
+        assert_eq!(finished, 6, "expected CompactionFinished with 6 summarized");
+    }
+
+    #[tokio::test]
+    async fn test_compact_if_needed_noop_returns_zero() {
+        use crate::harness::session::store::SessionStore;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = SessionStore::open(&dir.path().join("test.db")).unwrap();
+        let mut session = store
+            .create_session("build", &dir.path().to_path_buf())
+            .unwrap();
+        // 3 messages: below the min (10) -> no compaction.
+        session.messages = msgs(3);
+
+        let provider = Arc::new(MockProvider::ok("summary"));
+        let summarized = compact_if_needed(&mut session, provider, &store, 1, false, None)
+            .await
+            .unwrap();
+        assert_eq!(summarized, 0);
+        assert_eq!(session.messages.len(), 3);
     }
 }

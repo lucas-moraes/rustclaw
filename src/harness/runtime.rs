@@ -19,57 +19,6 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-/// Harness runtime configuration (derived from the legacy config or defaults).
-#[derive(Clone, Debug)]
-pub struct HarnessConfig {
-    pub model: String,
-    pub provider: String,
-    pub base_url: String,
-    pub api_key: String,
-    pub max_iterations: usize,
-    pub max_context_tokens: usize,
-    /// Wall-clock limit per turn, in seconds.
-    pub turn_timeout_secs: u64,
-    pub default_agent: String,
-}
-
-impl Default for HarnessConfig {
-    fn default() -> Self {
-        Self {
-            model: String::new(),
-            provider: String::new(),
-            base_url: String::new(),
-            api_key: String::new(),
-            max_iterations: 100,
-            max_context_tokens: 100_000,
-            turn_timeout_secs: 1800,
-            default_agent: "build".to_string(),
-        }
-    }
-}
-
-impl HarnessConfig {
-    /// True when the harness has a usable provider token.
-    pub fn is_configured(&self) -> bool {
-        self.api_key.trim().len() >= 10
-    }
-
-    /// Builds from the legacy config (provider/model/tokens already resolved by
-    /// `config::Config::load`).
-    pub fn from_legacy(cfg: &crate::config::Config) -> Self {
-        Self {
-            model: cfg.model.clone(),
-            provider: cfg.provider.clone(),
-            base_url: cfg.base_url.clone(),
-            api_key: cfg.api_key.clone().unwrap_or_default(),
-            max_iterations: cfg.max_iterations,
-            max_context_tokens: cfg.max_context_tokens,
-            turn_timeout_secs: cfg.turn_timeout_secs as u64,
-            default_agent: "build".to_string(),
-        }
-    }
-}
-
 /// Result of a prompt call.
 pub struct PromptResult {
     pub final_text: String,
@@ -86,7 +35,7 @@ pub struct SessionRuntime {
     pub permission: Arc<PermissionEngine>,
     pub asker: Arc<dyn PermissionAsker>,
     pub user_asker: Arc<dyn UserAsker>,
-    pub config: HarnessConfig,
+    pub config: crate::config::RuntimeConfig,
     /// Discovered skills catalog (this session's available "memory").
     pub skills: Arc<SkillCatalog>,
     /// Auto-discovered project profiler (stack/commands).
@@ -102,11 +51,13 @@ pub struct SessionRuntime {
 }
 
 impl SessionRuntime {
-    /// Builds a runtime.
+    /// Builds a runtime. Convenience wrapper over [`new_in`] that resolves the
+    /// cwd from the environment; the UI entry points use `new_in` directly.
+    #[allow(dead_code)]
     pub fn new(
         provider: Arc<dyn Provider>,
         registry: ToolRegistry,
-        config: HarnessConfig,
+        config: crate::config::RuntimeConfig,
         db_path: &std::path::Path,
         permission: Arc<PermissionEngine>,
         asker: Arc<dyn PermissionAsker>,
@@ -125,7 +76,7 @@ impl SessionRuntime {
         project_root: &std::path::Path,
         provider: Arc<dyn Provider>,
         registry: ToolRegistry,
-        config: HarnessConfig,
+        config: crate::config::RuntimeConfig,
         db_path: &std::path::Path,
         permission: Arc<PermissionEngine>,
         asker: Arc<dyn PermissionAsker>,
@@ -168,9 +119,11 @@ impl SessionRuntime {
         })
     }
 
-    /// Builds a runtime directly from the legacy config + registry.
-    pub fn from_legacy(
-        cfg: &crate::config::Config,
+    /// Builds a runtime directly from a resolved [`RuntimeConfig`], building
+    /// the provider from its provider/base_url/api_key. Only used by tests.
+    #[cfg(test)]
+    pub fn from_config(
+        cfg: &crate::config::RuntimeConfig,
         registry: ToolRegistry,
         db_path: &std::path::Path,
         permission: Arc<PermissionEngine>,
@@ -178,33 +131,33 @@ impl SessionRuntime {
         user_asker: Arc<dyn UserAsker>,
     ) -> Result<Self> {
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        Self::from_legacy_in(&cwd, cfg, registry, db_path, permission, asker, user_asker)
+        Self::from_config_in(&cwd, cfg, registry, db_path, permission, asker, user_asker)
     }
 
-    /// `from_legacy` with an explicit project root (see `new_in`).
+    /// `from_config` with an explicit project root (see `new_in`).
     #[allow(clippy::too_many_arguments)]
-    pub fn from_legacy_in(
+    pub fn from_config_in(
         project_root: &std::path::Path,
-        cfg: &crate::config::Config,
+        cfg: &crate::config::RuntimeConfig,
         registry: ToolRegistry,
         db_path: &std::path::Path,
         permission: Arc<PermissionEngine>,
         asker: Arc<dyn PermissionAsker>,
         user_asker: Arc<dyn UserAsker>,
     ) -> Result<Self> {
-        // `Config::load` already resolved provider/model/base_url and picked
-        // the token from the auth store; `from_legacy` just adapts it.
+        // `RuntimeConfig` already resolved provider/model/base_url and picked
+        // the token from the auth store; we just build the provider from it.
         let http = HttpConfig {
             client: crate::harness::provider::build_http_client(),
             base_url: cfg.base_url.clone(),
-            api_key: cfg.api_key.clone().unwrap_or_default(),
+            api_key: cfg.api_key.clone(),
         };
         let provider = build_provider_from(&cfg.provider, http)?;
         Self::new_in(
             project_root,
             provider,
             registry,
-            HarnessConfig::from_legacy(cfg),
+            cfg.clone(),
             db_path,
             permission,
             asker,
@@ -218,12 +171,14 @@ impl SessionRuntime {
     /// back to the current key) and persists the selection in the project's
     /// `rustclaw.json`. Applies from the next turn on.
     pub fn switch_model(&mut self, provider: &str, model: &str) -> Result<()> {
-        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let auth = crate::harness::auth::AuthStore::load();
-        self.switch_model_with_auth(&cwd, &auth, provider, model)
+        let root = self.project_root.clone();
+        self.switch_model_with_auth(&root, &auth, provider, model)
     }
 
     /// Like [`switch_model`] but persists to an explicit project root (testable).
+    /// Kept as a public convenience; the UI uses `switch_model` directly.
+    #[allow(dead_code)]
     pub fn switch_model_at(
         &mut self,
         project_root: &std::path::Path,
@@ -323,7 +278,9 @@ impl SessionRuntime {
     }
 
     /// Effective sampling temperature for an agent (spec override wins,
-    /// else the calibrated default for the mode).
+    /// else the calibrated default for the mode). Public convenience; the
+    /// processor reads the temperature via `resolve_agent` directly.
+    #[allow(dead_code)]
     pub fn turn_temperature(&self, agent_name: &str) -> f32 {
         self.resolve_agent(agent_name).turn_temperature()
     }
@@ -346,12 +303,12 @@ impl SessionRuntime {
         }
         if let Some(n) = turn_timeout_secs {
             anyhow::ensure!(n >= 30, "turn_timeout_secs must be at least 30");
-            self.config.turn_timeout_secs = n;
+            self.config.turn_timeout_secs = n as usize;
         }
         let mut s = crate::config::GlobalSettings::load();
         s.max_iterations = self.config.max_iterations;
         s.max_context_tokens = self.config.max_context_tokens;
-        s.turn_timeout_secs = self.config.turn_timeout_secs as usize;
+        s.turn_timeout_secs = self.config.turn_timeout_secs;
         s.provider = self.config.provider.clone();
         s.model = self.config.model.clone();
         s.save().context("failed to persist config.json")?;
@@ -359,21 +316,18 @@ impl SessionRuntime {
     }
 
     pub async fn create_session(&self, agent_name: &str) -> Result<Session> {
-        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        self.store.create_session(agent_name, &cwd)
+        self.store.create_session(agent_name, &self.project_root)
     }
 
     pub fn load_session(&self, id: &str) -> Result<Option<Session>> {
-        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        self.store.load_session(id, &cwd)
+        self.store.load_session(id, &self.project_root)
     }
 
     /// Loads the most recently used session of the current project, if any.
     /// `list_sessions` orders by `updated_at DESC`, so the first entry is the
     /// latest. Returns `None` when the project has no sessions yet.
     pub fn load_last_session(&self) -> Result<Option<Session>> {
-        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        self.load_last_session_at(&cwd)
+        self.load_last_session_at(&self.project_root)
     }
 
     /// Compacts `session` when it exceeds the configured context budget.
@@ -388,61 +342,15 @@ impl SessionRuntime {
         force: bool,
         events: Option<&EventSender>,
     ) -> Result<usize> {
-        use crate::harness::session::compaction::{self, CompactionConfig};
-
-        const KEEP_RECENT: usize = 6;
-        const MIN_MESSAGES: usize = 10;
-
-        if let Some(tx) = events {
-            let _ = tx.send(HarnessEvent::CompactionStarted {
-                session_id: session.id.clone(),
-                parent_session_id: None,
-            });
-        }
-
-        let config = CompactionConfig {
-            max_context_tokens: if force {
-                0
-            } else {
-                self.config.max_context_tokens
-            },
-            keep_recent_messages: KEEP_RECENT,
-            // Force still needs at least 2 messages (summary target + keep).
-            min_messages_to_compact: if force { 2 } else { MIN_MESSAGES },
-            summary_timeout: std::time::Duration::from_secs(120),
-        };
-
-        let before = session.messages.len();
-        let summarized = match compaction::should_compact_and_execute(
-            &session.messages,
+        crate::harness::session::compaction::compact_if_needed(
+            session,
             self.provider.clone(),
-            &config,
+            &self.store,
+            self.config.max_context_tokens,
+            force,
+            events,
         )
-        .await?
-        {
-            Some(new_messages) => {
-                // Summary adds one message, so dropped = before - new + 1.
-                let n = before.saturating_sub(new_messages.len()) + 1;
-                session.messages = new_messages;
-                session.updated_at = chrono::Utc::now();
-                self.store
-                    .save_session(session)
-                    .context("failed to persist compacted session")?;
-                n
-            }
-            None => 0,
-        };
-
-        if let Some(tx) = events {
-            if summarized > 0 {
-                let _ = tx.send(HarnessEvent::CompactionFinished {
-                    session_id: session.id.clone(),
-                    summarized_messages: summarized,
-                    parent_session_id: None,
-                });
-            }
-        }
-        Ok(summarized)
+        .await
     }
 
     /// Like [`load_last_session`] but scoped to an explicit project root
@@ -461,21 +369,18 @@ impl SessionRuntime {
     }
 
     pub fn list_sessions(&self) -> Result<Vec<crate::harness::session::store::SessionSummary>> {
-        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        self.store.list_sessions(&cwd)
+        self.store.list_sessions(&self.project_root)
     }
 
     pub fn delete_session(&self, id: &str) -> Result<()> {
-        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         // Garbage-collect child (subagent) sessions of the deleted parent.
-        let _ = self.store.delete_children_of(id, &cwd);
-        self.store.delete_session(id, &cwd)
+        let _ = self.store.delete_children_of(id, &self.project_root);
+        self.store.delete_session(id, &self.project_root)
     }
 
     /// Sets a user-defined title for a session.
     pub fn set_session_title(&self, id: &str, title: &str) -> Result<()> {
-        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        self.store.set_session_title(id, &cwd, title)
+        self.store.set_session_title(id, &self.project_root, title)
     }
 
     /// Runs one user turn against `session`. `abort` lets the caller cancel the
@@ -555,7 +460,7 @@ impl SessionRuntime {
                     .unwrap_or_else(|| self.config.model.clone()),
                 max_iterations: self.config.max_iterations,
                 max_context_tokens: self.config.max_context_tokens,
-                turn_timeout_secs: self.config.turn_timeout_secs,
+                turn_timeout_secs: self.config.turn_timeout_secs as u64,
             },
         };
 
@@ -808,7 +713,7 @@ impl SubagentRunner for TaskRunner {
 
 impl TaskRunner {
     fn runtime_current_cwd(&self) -> PathBuf {
-        std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+        self.runtime.project_root.clone()
     }
 }
 
@@ -820,7 +725,7 @@ mod smoke_tests {
     #[tokio::test]
     #[ignore = "requires a live token in the auth store (~/.local/share/rustclaw/auth.json)"]
     async fn smoke_native_tool_calling() {
-        let config = crate::config::Config::load();
+        let config = crate::config::RuntimeConfig::load();
         assert!(
             config.is_configured(),
             "run the TUI once with /models + /auth to store a token before this smoke test"
@@ -830,7 +735,7 @@ mod smoke_tests {
         let _ = std::fs::remove_file(&db);
         let permission = Arc::new(crate::harness::permission::PermissionEngine::default());
         let asker = Arc::new(crate::harness::ui::cli::CliAsker::new(permission.clone()));
-        let runtime = SessionRuntime::from_legacy(
+        let runtime = SessionRuntime::from_config(
             &config,
             registry,
             &db,
@@ -995,7 +900,7 @@ mod model_switch_tests {
             dir,
             provider,
             ToolRegistry::builder().build(),
-            HarnessConfig {
+            crate::config::RuntimeConfig {
                 model: "deepseek-ai/DeepSeek-V4-Flash-0731".to_string(),
                 provider: "deepinfra".to_string(),
                 base_url: "https://api.deepinfra.com/v1/openai".to_string(),
@@ -1104,6 +1009,41 @@ mod model_switch_tests {
     }
 
     #[tokio::test]
+    async fn test_session_ops_use_project_root_not_process_cwd() {
+        // The runtime's session operations must be scoped to its `project_root`,
+        // not to the process's current working directory. We build a runtime
+        // rooted at a tempdir and verify sessions land there.
+        let dir = tempfile::tempdir().unwrap();
+        let rt = test_runtime(dir.path()).unwrap();
+        assert_eq!(rt.project_root, dir.path());
+
+        // create_session uses project_root.
+        let s = rt.create_session("build").await.unwrap();
+        assert_eq!(s.cwd, dir.path());
+
+        // list_sessions / load_last_session see the session created above.
+        let listed = rt.list_sessions().unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, s.id);
+
+        let last = rt.load_last_session().unwrap().unwrap();
+        assert_eq!(last.id, s.id);
+
+        // load_session finds it by id.
+        let loaded = rt.load_session(&s.id).unwrap().unwrap();
+        assert_eq!(loaded.id, s.id);
+
+        // set_session_title + delete_session also operate on project_root.
+        rt.set_session_title(&s.id, "título").unwrap();
+        assert_eq!(
+            rt.load_session(&s.id).unwrap().unwrap().title.as_deref(),
+            Some("título")
+        );
+        rt.delete_session(&s.id).unwrap();
+        assert!(rt.load_session(&s.id).unwrap().is_none());
+    }
+
+    #[tokio::test]
     async fn test_onboarding_becomes_configured_after_token() {
         // Simulate a fresh unconfigured runtime (no token).
         let dir = tempfile::tempdir().unwrap();
@@ -1118,7 +1058,7 @@ mod model_switch_tests {
             dir.path(),
             provider,
             ToolRegistry::builder().build(),
-            HarnessConfig {
+            crate::config::RuntimeConfig {
                 model: String::new(),
                 provider: String::new(),
                 base_url: "https://api.deepinfra.com/v1/openai".to_string(),

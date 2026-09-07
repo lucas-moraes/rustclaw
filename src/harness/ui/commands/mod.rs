@@ -604,7 +604,7 @@ pub async fn handle(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::harness::runtime::HarnessConfig;
+    use crate::config::RuntimeConfig;
     use crate::harness::session::{Message, Part, Role};
     use crate::harness::tool::context::{PermissionAskInput, PermissionAsker, UserAsker};
     use crate::harness::tool::registry::ToolRegistry;
@@ -637,7 +637,7 @@ mod tests {
             dir,
             provider,
             ToolRegistry::builder().build(),
-            HarnessConfig {
+            RuntimeConfig {
                 model: "deepseek-ai/DeepSeek-V4-Flash-0731".to_string(),
                 provider: "deepinfra".to_string(),
                 base_url: "https://api.deepinfra.com/v1/openai".to_string(),

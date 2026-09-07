@@ -10,8 +10,15 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
+/// Callback invoked when a tool is marked "always allow", so the decision can
+/// be persisted (e.g. to the project's `rustclaw.json`).
+type PersistFn = Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
+
 /// Request shown to the user when a tool needs approval.
+// Fields are part of the event-bus data API (carried in `HarnessEvent::PermissionAsk`);
+// not all are read by the current UI, but they are intentionally public.
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub struct PermissionRequest {
     pub id: String,
     pub session_id: String,
@@ -48,6 +55,8 @@ pub struct PermissionConfig {
 
 impl PermissionConfig {
     /// Parses a project config file (JSON subset, opencode-like `permission` object).
+    /// Public parsing helper; kept for API completeness.
+    #[allow(dead_code)]
     pub fn from_json(value: &serde_json::Value) -> Option<Self> {
         serde_json::from_value(value.get("permission")?.clone()).ok()
     }
@@ -65,7 +74,7 @@ pub struct PermissionEngine {
     always_allow: std::sync::Mutex<std::collections::HashSet<String>>,
     /// Optional callback invoked when a tool is marked "always allow", so the
     /// decision can be persisted (e.g. to the project's `rustclaw.json`).
-    persist: std::sync::Mutex<Option<Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>>>,
+    persist: std::sync::Mutex<Option<PersistFn>>,
 }
 
 impl Default for PermissionEngine {
@@ -75,7 +84,8 @@ impl Default for PermissionEngine {
 }
 
 impl PermissionConfig {
-    /// Sensible defaults matching the TODO F3 spec.
+    /// Sensible default permission rules: read-only tools are allowed, mutating
+    /// tools fall back to Ask (human-in-the-loop).
     pub fn with_defaults() -> Self {
         let mut tools = HashMap::new();
         for t in [
@@ -127,7 +137,7 @@ impl PermissionEngine {
 
     /// Installs a callback invoked whenever a tool is marked "always allow",
     /// so the decision can be persisted across sessions.
-    pub fn set_persist(&self, f: Option<Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>>) {
+    pub fn set_persist(&self, f: Option<PersistFn>) {
         *self.persist.lock().unwrap() = f;
     }
 

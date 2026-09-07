@@ -197,7 +197,7 @@ mod tests {
             )
             .unwrap(),
             crate::harness::tool::registry::ToolRegistry::builder().build(),
-            crate::harness::runtime::HarnessConfig::default(),
+            crate::config::RuntimeConfig::default(),
             &db,
             Arc::new(crate::harness::permission::PermissionEngine::default()),
             Arc::new(AllowAsker),

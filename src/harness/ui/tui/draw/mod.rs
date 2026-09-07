@@ -67,7 +67,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // The input box grows with soft-wrapped visual rows (border + 1 text row
     // + up to 9 extra wrapped/newline rows), cap at 12 total.
     let est_inner = content.width.saturating_sub(2) as usize;
-    let vis_rows = crate::harness::ui::tui::app::wrap_input_rows(&app.input, est_inner).len();
+    let vis_rows = crate::harness::ui::tui::input::wrap_input_rows(&app.input, est_inner).len();
     let input_h: u16 = 3 + (vis_rows_extra(vis_rows)).min(9);
 
     let rows = Layout::vertical([

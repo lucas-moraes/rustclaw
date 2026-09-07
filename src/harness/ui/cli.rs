@@ -199,14 +199,14 @@ fn flush_stdout() {
 }
 
 /// Runs the interactive harness CLI.
-pub async fn run(config: crate::config::Config, cwd: std::path::PathBuf) -> Result<()> {
+pub async fn run(config: crate::config::RuntimeConfig, cwd: std::path::PathBuf) -> Result<()> {
     let db_path = data_db_path();
     let permission = Arc::new(PermissionEngine::default());
     let asker = Arc::new(CliAsker::new(permission.clone()));
     let user_asker = Arc::new(CliUserAsker);
 
     let registry = crate::harness::runtime::build_default_registry();
-    let mut runtime = SessionRuntime::from_legacy_in(
+    let mut runtime = SessionRuntime::from_config_in(
         &cwd,
         &config,
         registry,

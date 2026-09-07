@@ -18,7 +18,7 @@ async fn main() -> anyhow::Result<()> {
 
     // File-based config only (auth.json + config.json + rustclaw.json).
     // A missing API key is tolerated: the TUI handles onboarding.
-    let config = config::Config::load();
+    let config = config::RuntimeConfig::load();
 
     let cwd = std::env::current_dir()?;
 

@@ -82,6 +82,10 @@ pub enum ProviderEvent {
         id: String,
         name: String,
     },
+    /// Streaming delta of tool-call arguments. Part of the provider event API;
+    /// currently no adapter emits it (they send the full args in `ToolCallEnd`),
+    /// but it is intentionally kept for streaming adapters.
+    #[allow(dead_code)]
     ToolCallDelta {
         id: String,
         args_delta: String,
@@ -93,6 +97,9 @@ pub enum ProviderEvent {
         arguments: String,
     },
     End {
+        /// Stop reason reported by the provider; informational, not consumed
+        /// by the processor yet.
+        #[allow(dead_code)]
         stop_reason: Option<String>,
         usage: Option<Usage>,
     },
@@ -118,7 +125,11 @@ pub struct LlmRequest {
 
 pub struct LlmResponse {
     pub parts: Vec<Part>,
+    /// Token usage; informational, not consumed by the processor yet.
+    #[allow(dead_code)]
     pub usage: Option<Usage>,
+    /// Stop reason; informational, not consumed by the processor yet.
+    #[allow(dead_code)]
     pub stop_reason: Option<String>,
 }
 

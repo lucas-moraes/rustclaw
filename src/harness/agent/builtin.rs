@@ -41,7 +41,7 @@ the ast_search tool over reading the whole file — it extracts exactly the bloc
 without loading the full source into context."
             .into(),
         model: None,
-        temperature: None,
+        temperature: Some(0.0),
         permission_overrides: HashMap::new(),
     }
 }
@@ -59,7 +59,7 @@ Do not attempt to write files or execute commands - you have read-only tools. \
 Return the plan as your final answer with clear, ordered steps."
             .into(),
         model: None,
-        temperature: None,
+        temperature: Some(0.2),
         permission_overrides: HashMap::new(),
     }
 }
@@ -78,7 +78,7 @@ files, prefer the ast_search tool — it extracts exactly the blocks you need wi
 reading whole files."
             .into(),
         model: None,
-        temperature: None,
+        temperature: Some(0.5),
         permission_overrides: HashMap::new(),
     }
 }
@@ -103,7 +103,7 @@ pub fn general() -> AgentSpec {
 read/glob/grep when needed. Keep answers direct and useful."
             .into(),
         model: None,
-        temperature: None,
+        temperature: Some(0.7),
         permission_overrides: HashMap::new(),
     }
 }

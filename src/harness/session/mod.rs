@@ -127,6 +127,8 @@ impl Message {
         Self::new(Role::User, vec![Part::text(text)])
     }
 
+    /// Builds a System-role message. Only used by tests.
+    #[cfg(test)]
     pub fn system(text: impl Into<String>) -> Self {
         Self::new(Role::System, vec![Part::text(text)])
     }
@@ -222,7 +224,9 @@ impl Session {
         self.updated_at = Utc::now();
     }
 
-    /// Last message in the session, if any.
+    /// Last message in the session, if any. Public convenience; kept for API
+    /// completeness (not currently consumed by the UI/processor).
+    #[allow(dead_code)]
     pub fn last_message(&self) -> Option<&Message> {
         self.messages.last()
     }

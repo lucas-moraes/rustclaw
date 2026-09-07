@@ -35,7 +35,7 @@ pub fn ui_mode_from_env() -> &'static str {
 }
 
 /// Runs the interactive TUI.
-pub async fn run(config: crate::config::Config, cwd: std::path::PathBuf) -> Result<()> {
+pub async fn run(config: crate::config::RuntimeConfig, cwd: std::path::PathBuf) -> Result<()> {
     let db_path = data_db_path();
     let permission = Arc::new(PermissionEngine::default());
 
@@ -44,7 +44,7 @@ pub async fn run(config: crate::config::Config, cwd: std::path::PathBuf) -> Resu
 
     let registry = crate::harness::runtime::build_default_registry();
     let user_asker: Arc<dyn UserAsker> = user_asker;
-    let mut runtime = SessionRuntime::from_legacy_in(
+    let mut runtime = SessionRuntime::from_config_in(
         &cwd,
         &config,
         registry,

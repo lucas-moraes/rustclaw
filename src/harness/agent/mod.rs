@@ -22,23 +22,18 @@ pub struct AgentSpec {
 }
 
 impl AgentSpec {
+    /// Whether the agent's allowlist admits the given tool (empty = all).
+    /// Only used by tests.
+    #[cfg(test)]
     pub fn allows_tool(&self, name: &str) -> bool {
         self.tools.is_empty() || self.tools.iter().any(|t| t == name)
     }
 
-    /// Calibrated sampling temperature per operating mode.
-    /// `build` = 0.0 (deterministic for code/tool JSON), `plan` = 0.2
-    /// (analytic/structured), `explore` = 0.5 (investigative), `general`
-    /// = 0.7. Custom/unknown agents fall back to 0.0 unless the spec
-    /// sets an explicit `temperature` override.
+    /// Fallback sampling temperature for agents that carry no explicit
+    /// `temperature` override (custom/unknown agents). Builtins set their own
+    /// calibrated temperature in `builtin::*()`; this is only the safety net.
     pub fn default_temperature(&self) -> f32 {
-        match self.name.as_str() {
-            "build" => 0.0,
-            "plan" => 0.2,
-            "explore" => 0.5,
-            "general" => 0.7,
-            _ => 0.0,
-        }
+        0.0
     }
 
     /// Effective turn temperature: an explicit spec override wins;
@@ -143,6 +138,8 @@ fn load_agents_md(cwd: &std::path::Path) -> Option<String> {
 }
 
 /// Validates tool names in a spec against the registry (helper for tests/CLI).
+/// Only used by tests.
+#[cfg(test)]
 pub fn unknown_tools(spec: &AgentSpec, available: &[String]) -> Vec<String> {
     spec.tools
         .iter()
@@ -151,7 +148,8 @@ pub fn unknown_tools(spec: &AgentSpec, available: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// Union of builtin agent names.
+/// Union of builtin agent names. Only used by tests.
+#[cfg(test)]
 pub fn builtin_names() -> Vec<String> {
     vec![
         builtin::BUILD.to_string(),
@@ -322,23 +320,24 @@ mod tests {
 
     #[test]
     fn test_default_temperature_per_mode() {
+        // Builtins carry an explicit temperature override; `turn_temperature`
+        // is the effective value used at runtime.
         let cases = [
             ("build", 0.0),
             ("plan", 0.2),
             ("explore", 0.5),
             ("general", 0.7),
+            ("chat-free", 0.8),
         ];
         for (name, expected) in cases {
             let spec = find_builtin(name).unwrap();
             assert!(
-                (spec.default_temperature() - expected).abs() < 1e-6,
+                (spec.turn_temperature() - expected).abs() < 1e-6,
                 "mode: {}",
                 name
             );
-            // Builtins carry no explicit override → same effective value.
-            assert!((spec.turn_temperature() - expected).abs() < 1e-6);
         }
-        // Custom/unknown agent falls back to 0.0.
+        // Custom/unknown agent falls back to 0.0 (no explicit override).
         let custom = AgentSpec {
             name: "my-custom".into(),
             description: String::new(),
@@ -357,8 +356,11 @@ mod tests {
         let mut custom = find_builtin("explore").unwrap();
         custom.temperature = Some(1.0);
         assert!((custom.turn_temperature() - 1.0).abs() < 1e-6);
-        // override wins even over the calibrated default
-        assert!((custom.default_temperature() - 0.5).abs() < 1e-6);
+        // The explicit override wins over the builtin's own temperature.
+        assert!((find_builtin("explore").unwrap().turn_temperature() - 0.5).abs() < 1e-6);
+        // `default_temperature` is only the fallback for agents without an
+        // override; it is not the per-mode calibration anymore.
+        assert_eq!(custom.default_temperature(), 0.0);
     }
 
     #[test]

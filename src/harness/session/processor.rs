@@ -7,7 +7,6 @@
 use crate::harness::agent::AgentSpec;
 use crate::harness::event::{EventSender, HarnessEvent};
 use crate::harness::provider::{LlmRequest, Provider, ProviderEvent, ToolSpec, Usage};
-use crate::harness::session::compaction::{self, CompactionConfig};
 use crate::harness::session::{Message, Part, Role, Session, ToolPart};
 use crate::harness::tool::registry::ToolRegistry;
 use futures_util::StreamExt;
@@ -53,6 +52,8 @@ pub struct TurnOutcome {
     pub final_text: String,
     pub iterations: usize,
     /// How many times the turn auto-continued after hitting the limit.
+    /// Informational; not consumed by callers yet.
+    #[allow(dead_code)]
     pub continuations: usize,
     pub usage: Usage,
     pub aborted: bool,
@@ -63,8 +64,6 @@ const DOOM_LOOP_STOP: usize = 5;
 /// How many times a turn may auto-continue after hitting max_iterations
 /// (effective iteration budget = (N + 1) × max_iterations).
 const DEFAULT_MAX_CONTINUATIONS: usize = 3;
-const COMPACTION_KEEP_RECENT: usize = 6;
-const COMPACTION_MIN_MESSAGES: usize = 10;
 /// Safety net: if the provider stream stalls (no event for this long), abort
 /// the turn instead of hanging forever. Generous so long reasoning streams
 /// aren't interrupted; the client `read_timeout` normally fires first.
@@ -642,41 +641,15 @@ impl SessionProcessor {
     }
 
     async fn maybe_compact(&self, session: &mut Session) -> anyhow::Result<()> {
-        let _ = self.events.send(HarnessEvent::CompactionStarted {
-            session_id: session.id.clone(),
-            parent_session_id: None,
-        });
-
-        let config = CompactionConfig {
-            max_context_tokens: self.config.max_context_tokens,
-            keep_recent_messages: COMPACTION_KEEP_RECENT,
-            min_messages_to_compact: COMPACTION_MIN_MESSAGES,
-            summary_timeout: std::time::Duration::from_secs(120),
-        };
-        let before = session.messages.len();
-        if let Some(new_messages) = compaction::should_compact_and_execute(
-            &session.messages,
+        crate::harness::session::compaction::compact_if_needed(
+            session,
             self.provider.clone(),
-            &config,
+            &self.store,
+            self.config.max_context_tokens,
+            false,
+            Some(&self.events),
         )
-        .await?
-        {
-            // The summary message adds one to the new list, so the number of
-            // messages summarized away is before - new.len() + 1.
-            let summarized = before.saturating_sub(new_messages.len()) + 1;
-            session.messages = new_messages;
-            session.updated_at = chrono::Utc::now();
-            // Persist immediately so orphaned pre-summary messages are dropped
-            // from SQLite even if the turn aborts later.
-            if let Err(e) = self.store.save_session(session) {
-                tracing::warn!("failed to persist compacted session: {e}");
-            }
-            let _ = self.events.send(HarnessEvent::CompactionFinished {
-                session_id: session.id.clone(),
-                summarized_messages: summarized,
-                parent_session_id: None,
-            });
-        }
+        .await?;
         Ok(())
     }
 }

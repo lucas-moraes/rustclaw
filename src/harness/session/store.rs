@@ -19,8 +19,14 @@ pub struct SessionStore {
 pub struct SessionSummary {
     pub id: String,
     pub agent: String,
+    /// Working directory of the session; informational, not rendered by the UI.
+    #[allow(dead_code)]
     pub cwd: PathBuf,
+    /// Creation timestamp; informational, not rendered by the UI.
+    #[allow(dead_code)]
     pub created_at: String,
+    /// Last-update timestamp; informational, not rendered by the UI.
+    #[allow(dead_code)]
     pub updated_at: String,
     pub message_count: usize,
     pub preview: String,
@@ -692,6 +698,8 @@ impl SessionStore {
 
     /// Deletes specific message ids of a session (used when syncing after
     /// compaction drops older messages that are no longer contiguous by ord).
+    /// Public store API; not currently invoked by the processor.
+    #[allow(dead_code)]
     pub fn delete_messages_by_ids(&self, id: &str, cwd: &Path, msg_ids: &[String]) -> Result<()> {
         if msg_ids.is_empty() {
             return Ok(());
@@ -711,6 +719,8 @@ impl SessionStore {
         Ok(())
     }
 
+    /// Helper for `delete_messages_by_ids`; kept alongside it.
+    #[allow(dead_code)]
     fn message_ids(
         &self,
         session_id: &str,

@@ -9,6 +9,9 @@ use super::theme::Theme;
 pub const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 /// Claw-ish alternate spinner.
+// Kept as part of the animation API (alternate spinner style); not currently
+// wired into the UI, but intentionally public for future use.
+#[allow(dead_code)]
 pub const CLAW_SPIN: &[&str] = &["ᕙ", "ᕗ", "ᕕ", "ᕙ", "ᕗ", "ᕕ"];
 
 /// Streaming / cursor blink glyphs.
@@ -19,12 +22,15 @@ pub fn spinner_frame(tick: u64) -> &'static str {
     SPINNER[(tick as usize / 2) % SPINNER.len()]
 }
 
+/// Alternate claw spinner frame. Part of the animation API; not currently
+/// wired into the UI but intentionally public.
+#[allow(dead_code)]
 pub fn claw_frame(tick: u64) -> &'static str {
     CLAW_SPIN[(tick as usize / 3) % CLAW_SPIN.len()]
 }
 
 pub fn cursor_glyph(tick: u64) -> &'static str {
-    if (tick / 6) % 2 == 0 {
+    if (tick / 6).is_multiple_of(2) {
         CURSOR_ON
     } else {
         CURSOR_OFF
@@ -115,13 +121,15 @@ pub fn step_particles(
             tick.wrapping_add(particles.len() as u64),
         ));
         // Spawn at most a few per frame.
-        if particles.len() % 3 == 0 {
+        if particles.len().is_multiple_of(3) {
             break;
         }
     }
 }
 
-/// Aurora gradient line shifting with tick.
+/// Aurora gradient line shifting with tick. Part of the animation API; not
+/// currently wired into the UI but intentionally public.
+#[allow(dead_code)]
 pub fn aurora_line(width: u16, tick: u64, theme: &Theme) -> Line<'static> {
     if width == 0 {
         return Line::from("");
@@ -139,14 +147,14 @@ pub fn aurora_line(width: u16, tick: u64, theme: &Theme) -> Line<'static> {
         let idx = (i / 3 + phase) % colors.len();
         let next = (idx + 1) % colors.len();
         // Alternate glyphs for shimmer.
-        let ch = if (i + phase) % 7 == 0 {
+        let ch = if (i + phase).is_multiple_of(7) {
             '✦'
-        } else if (i + phase) % 5 == 0 {
+        } else if (i + phase).is_multiple_of(5) {
             '·'
         } else {
             '─'
         };
-        let c = if (i + phase) % 2 == 0 {
+        let c = if (i + phase).is_multiple_of(2) {
             colors[idx]
         } else {
             colors[next]
@@ -215,7 +223,7 @@ pub fn splash_subtitle(frame: u64, theme_name: &str) -> String {
 
 /// Pulse alpha-like border color oscillation.
 pub fn pulse_border(tick: u64, theme: &Theme) -> Color {
-    if (tick / 8) % 2 == 0 {
+    if (tick / 8).is_multiple_of(2) {
         theme.border_focus
     } else {
         theme.accent2

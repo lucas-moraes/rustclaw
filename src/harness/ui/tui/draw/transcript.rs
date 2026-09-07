@@ -288,6 +288,9 @@ fn render_line(
     }
 }
 
+// Rendering helper that composes a chat bubble from many visual parameters;
+// grouping them into a struct would add noise for a single call site.
+#[allow(clippy::too_many_arguments)]
 fn bubble(
     title: &str,
     glyph: &str,

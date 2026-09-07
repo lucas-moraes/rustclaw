@@ -160,6 +160,7 @@ impl UserProviders {
     /// the entry without models, the entry itself is dropped:
     /// - a builtin override keeps serving the builtin defaults again;
     /// - a fully user-defined provider with no models left is deleted.
+    ///
     /// Returns `true` when the model (or the emptied entry) was removed.
     pub fn remove_model(&mut self, name: &str, model: &str) -> bool {
         let Some(idx) = self
