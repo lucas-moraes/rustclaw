@@ -10,7 +10,8 @@ Coding agent harness em Rust, no estilo OpenCode / Claude Code. Loop de agente c
 - 🧠 **Skills (memória da sessão)** — escolha skills por sessão, injetadas no prompt por turno (checkbox)
 - 🔐 **Permissions HITL** — allow / ask / deny por tool e path (y/n/always no CLI)
 - 🎭 **Agents** — `build`, `plan`, `explore`, `general` + subagente via tool `task`
-- 🛠️ **Tools de coding** — bash, read, write, edit, glob, grep, todo, question, task
+- 🛠️ **Tools de coding** — bash, read, write, edit, glob, grep, ast_search, todo, question, task
+- 🔍 **Busca sintática (Tree-Sitter)** — `ast_search` extrai structs, enums, traits, funções e impls de arquivos `.rs` via AST, sem regex ou falsos positivos
 - 🔌 **MCP (Model Context Protocol)** — conecta a servidores MCP externos (stdio ou streamable HTTP) e expõe as tools deles como tools nativas (`mcp_<server>_<tool>`)
 - 🌐 **Web Research Gratuito** — busca no DuckDuckGo (`web_search`) e conversão de documentações HTML para Markdown limpo (`fetch_webpage`) sem dependência de API keys pagas
 - 📋 **Exportação Rápida de Código** — copie (`Ctrl+Y`) ou salve em arquivo (`Ctrl+S`) os blocos de código gerados pelo agente instantaneamente através da TUI
@@ -193,7 +194,7 @@ src/
     ├── skill/       # Skills = memória da sessão (loader + inject)
     ├── session/     # Session/Message/Part + store SQLite + processor + compaction
     ├── provider/    # OpenAI, Anthropic, opencode-go adapters (streaming + native tools)
-    ├── tool/        # Trait Tool + registry + bash/read/write/edit/glob/grep/todo/question/task
+    ├── tool/        # Trait Tool + registry + bash/read/write/edit/glob/grep/ast_search/todo/question/task
     ├── mcp/         # MCP client (config mcpServers, stdio/HTTP, McpManager, McpTool)
     ├── permission/  # allow/ask/deny
     ├── agent/       # AgentSpec + builtin (build/plan/explore/general)

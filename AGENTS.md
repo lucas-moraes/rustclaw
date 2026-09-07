@@ -106,7 +106,7 @@ src/
     │   ├── mod.rs       # Trait Tool (JSON Schema) + ToolResult + ToolSpec
     │   ├── registry.rs  # ToolRegistry (builder)
     │   ├── context.rs   # ToolContext (cwd, abort, permission, askers, todos)
-    │   ├── bash.rs read.rs write.rs edit.rs glob.rs grep.rs
+    │   ├── bash.rs read.rs write.rs edit.rs glob.rs grep.rs ast_search.rs
     │   ├── todo.rs question.rs task.rs
     │   └── truncate.rs
     ├── permission/mod.rs # allow/ask/deny engine
@@ -164,6 +164,18 @@ impl Tool for MyTool {
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolResult, String>;
 }
 ```
+
+### ast_search (Tree-Sitter)
+- `tool/ast_search.rs` usa `tree-sitter` 0.22 + `tree-sitter-rust` 0.21 para
+  busca sintática em `.rs` (structs/enums/traits/functions/impls) sem regex.
+- API da crate: `tree_sitter_rust::language()` (função, NÃO a constante
+  `LANGUAGE`); `Parser::set_language(&Language)` recebe referência.
+- Nó `impl_item` NÃO tem campo `name` — o nome é montado dos fields `trait`
+  e `type` ("Trait for Type"). `child_by_field_name("name")` vale para
+  function/struct/enum/trait items.
+- `read_only() = true`; registrado em `build_default_registry`, na allowlist
+  `READONLY_TOOLS` (explore/plan) e na lista `Allow` do `PermissionEngine`.
+- Nós >3000 chars são truncados para o cabeçalho (protege a janela de contexto).
 
 ### Provider
 - `provider::Provider` tem `stream(LlmRequest)` e `complete(LlmRequest)`
