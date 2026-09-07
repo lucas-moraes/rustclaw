@@ -2,6 +2,7 @@
 
 pub mod builtin;
 
+use crate::harness::tool::ToolSpec;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -62,6 +63,7 @@ pub fn build_system_prompt(
     injected_context: &str,
     extra_instructions: Option<&str>,
     project_context: &str,
+    available_tools: &[ToolSpec],
 ) -> String {
     let mut prompt = String::new();
     prompt.push_str(&agent.system_prompt);
@@ -93,6 +95,20 @@ Paths in tool calls are resolved relative to it.\n",
             prompt.push_str("\n# Additional context\n");
             prompt.push_str(extra);
             prompt.push('\n');
+        }
+    }
+
+    // List the tools the agent can actually invoke, so the model knows what
+    // it may trigger. This is derived from the registry filtered by the
+    // agent's allowlist (empty = all registered tools).
+    if !available_tools.is_empty() {
+        prompt.push_str("\n# Available tools\n");
+        prompt.push_str(
+            "You can invoke any of the following tools natively. Each is described \
+with its JSON Schema in the request; use them to accomplish the task.\n",
+        );
+        for spec in available_tools {
+            prompt.push_str(&format!("- `{}`: {}\n", spec.name, spec.description));
         }
     }
 
@@ -214,6 +230,7 @@ mod tests {
             "injected ctx",
             None,
             "# Project context\n- Stack: rust",
+            &[],
         );
         assert!(prompt.contains("/proj"));
         assert!(prompt.contains("injected ctx"));
@@ -221,6 +238,34 @@ mod tests {
         assert!(prompt.contains("user's language"));
         assert!(prompt.contains("Project context"));
         assert!(prompt.contains("Stack: rust"));
+    }
+
+    #[test]
+    fn test_system_prompt_lists_available_tools() {
+        let build = builtin::build();
+        let tools = vec![
+            ToolSpec {
+                name: "read".into(),
+                description: "Reads a file".into(),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+            ToolSpec {
+                name: "ast_search".into(),
+                description: "Syntactic search over .rs files".into(),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+        ];
+        let prompt = build_system_prompt(&build, &PathBuf::from("/proj"), "", None, "", &tools);
+        assert!(prompt.contains("# Available tools"));
+        assert!(prompt.contains("`read`: Reads a file"));
+        assert!(prompt.contains("`ast_search`: Syntactic search over .rs files"));
+    }
+
+    #[test]
+    fn test_system_prompt_omits_tools_section_when_empty() {
+        let build = builtin::build();
+        let prompt = build_system_prompt(&build, &PathBuf::from("/proj"), "", None, "", &[]);
+        assert!(!prompt.contains("# Available tools"));
     }
 
     #[test]
@@ -238,6 +283,7 @@ mod tests {
             "",
             None,
             "# Project context\n- Stack: rust\n- Build: cargo build",
+            &[],
         );
         // Manual AGENTS.md is the primary source of project instructions...
         assert!(prompt.contains("# Project instructions (AGENTS.md)"));

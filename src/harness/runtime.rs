@@ -513,8 +513,15 @@ impl SessionRuntime {
         };
         let skills_block = inject::render_enabled(&self.skills, &session.skills, &enabled);
         let project_context = self.project_context_for(&session.cwd, user_text)?;
-        let system_prompt =
-            build_system_prompt(&agent, &session.cwd, &skills_block, None, &project_context);
+        let available_tools = self.registry.specs(&agent.tools);
+        let system_prompt = build_system_prompt(
+            &agent,
+            &session.cwd,
+            &skills_block,
+            None,
+            &project_context,
+            &available_tools,
+        );
 
         // 3. Build tool context.
         let ctx = ToolContext {
