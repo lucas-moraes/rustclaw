@@ -5,7 +5,6 @@
 //! the terminal is short.
 
 use crate::harness::provider::format_tokens;
-use crate::harness::session::TodoStatus;
 use crate::harness::ui::tui::anim;
 use crate::harness::ui::tui::app::{App, MODES};
 use crate::harness::ui::tui::theme::Theme;
@@ -103,13 +102,6 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
     if !app.session.skills.is_empty() {
         lines.push(section("Skills", t.accent));
         lines.extend(skills_block(app, t, w));
-        lines.push(blank());
-    }
-
-    // ── Todos (if any) ──────────────────────────────────────────────────
-    if !app.session.todos.is_empty() {
-        lines.push(section("Todos", t.accent));
-        lines.extend(todos_block(app, t, w));
         lines.push(blank());
     }
 
@@ -398,58 +390,6 @@ fn skills_block(app: &App, t: &Theme, w: usize) -> Vec<Line<'static>> {
                 ),
             ]));
         }
-    }
-    lines
-}
-
-fn todos_block(app: &App, t: &Theme, w: usize) -> Vec<Line<'static>> {
-    let mut lines = Vec::new();
-    // Show in-progress first, then pending, then a short completed count.
-    let mut items = app.session.todos.clone();
-    items.sort_by_key(|td| match td.status {
-        TodoStatus::InProgress => 0,
-        TodoStatus::Pending => 1,
-        TodoStatus::Completed => 2,
-        TodoStatus::Cancelled => 3,
-    });
-    let mut shown = 0usize;
-    let mut hidden_done = 0usize;
-    for td in &items {
-        if shown >= 5 {
-            if matches!(td.status, TodoStatus::Completed | TodoStatus::Cancelled) {
-                hidden_done += 1;
-            }
-            continue;
-        }
-        let (mark, fg) = match td.status {
-            TodoStatus::InProgress => ("▸", t.warn),
-            TodoStatus::Pending => ("○", t.text_dim),
-            TodoStatus::Completed => ("✓", t.success),
-            TodoStatus::Cancelled => ("✗", t.error),
-        };
-        lines.push(Line::from(vec![
-            Span::styled(format!("  {mark} "), Style::default().fg(fg)),
-            Span::styled(
-                truncate(&td.content, w.saturating_sub(4)),
-                Style::default().fg(t.text_bright),
-            ),
-        ]));
-        shown += 1;
-    }
-    let remaining = items.len().saturating_sub(shown);
-    if remaining > 0 {
-        lines.push(Line::from(Span::styled(
-            format!(
-                "  +{} more{}",
-                remaining,
-                if hidden_done > 0 {
-                    format!(" ({hidden_done} done)")
-                } else {
-                    String::new()
-                }
-            ),
-            Style::default().fg(t.text_dim),
-        )));
     }
     lines
 }

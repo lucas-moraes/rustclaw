@@ -1,13 +1,13 @@
 {
   "provider": "deepinfra",
-  "model": "zai-org/GLM-5.3-Flash",
+  "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
   "base_url": "https://api.deepinfra.com/v1/openai",
   "permission": {
     "tools": {
       "remember": "allow",
       "edit": "allow",
-      "bash": "allow",
-      "write": "allow"
+      "write": "allow",
+      "bash": "allow"
     },
     "default": null
   }

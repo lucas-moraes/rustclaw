@@ -2488,6 +2488,42 @@ fn persist_custom_model(provider: &str, model: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Removes the selected provider (non-builtin) or user-added model from
+/// `providers.json`. Returns `Err(reason)` when the item cannot be removed
+/// (builtin entry) and `Ok(false)` when nothing has to change.
+fn remove_from_user_store(picker: &ModelPickerState, item: &str) -> anyhow::Result<bool> {
+    use crate::harness::provider::user_store::UserProviders;
+    if !picker.stage_models {
+        if item == "add provider…" {
+            return Ok(false);
+        }
+        crate::harness::provider::catalog::find_provider(item)
+            .ok_or_else(|| anyhow::anyhow!("provider `{}` not found", item))?;
+        let mut store = UserProviders::load();
+        let removed = if store.find(item).is_some_and(|p| p.removed) {
+            false // already hidden
+        } else if store.remove(item) {
+            true // user-defined provider deleted outright
+        } else if store.hide_builtin(item) {
+            true // builtin hidden via tombstone
+        } else {
+            false
+        };
+        store.save()?;
+        return Ok(removed);
+    }
+    let mut store = UserProviders::load();
+    if !store.remove_model(&picker.provider, item) {
+        return Err(anyhow::anyhow!(
+            "model `{}` is builtin for `{}` — only user-added models can be removed",
+            item,
+            picker.provider
+        ));
+    }
+    store.save()?;
+    Ok(true)
+}
+
 /// Handles a key while the `/models` picker is open.
 fn handle_model_picker_key(app: &mut App, key: KeyEvent) -> Result<bool> {
     use crossterm::event::{KeyCode, KeyModifiers};
@@ -2528,6 +2564,7 @@ fn handle_model_picker_key(app: &mut App, key: KeyEvent) -> Result<bool> {
                         } else {
                             vec![default_model.clone()]
                         },
+                        removed: false,
                     });
                     match store.save() {
                         Ok(()) => {
@@ -2605,6 +2642,20 @@ fn handle_model_picker_key(app: &mut App, key: KeyEvent) -> Result<bool> {
                 picker.selected = 0;
             } else {
                 app.model_picker = None;
+            }
+        }
+        KeyCode::Char('x') => {
+            let Some(item) = picker.items().get(picker.selected).cloned() else {
+                return Ok(false);
+            };
+            match remove_from_user_store(picker, &item) {
+                Ok(true) => {
+                    let len = picker.items().len();
+                    picker.selected = picker.selected.min(len.saturating_sub(1));
+                    app.add_system(&format!("removed `{item}` from the provider list"));
+                }
+                Ok(false) => {}
+                Err(reason) => app.add_system(&format!("[error] {}", reason)),
             }
         }
         KeyCode::Enter => {
@@ -2704,6 +2755,7 @@ async fn handle_resume_picker_key(app: &mut App, key: KeyEvent) -> Result<bool> 
                     app.add_system("session selected");
                 }
                 app.session = loaded;
+                app.rebuild_transcript_from_session();
                 app.reset_usage();
                 app.sync_prompt_toggles();
             } else {

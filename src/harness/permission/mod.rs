@@ -82,6 +82,7 @@ impl PermissionConfig {
             "read",
             "glob",
             "grep",
+            "ast_search",
             "todo_read",
             "todo_write",
             "web_search",

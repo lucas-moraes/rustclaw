@@ -33,7 +33,7 @@ pub fn draw_picker(frame: &mut Frame, app: &App, picker: &ModelPickerState, area
     frame.render_widget(block, parea);
 
     let mut lines: Vec<Line> = vec![Line::from(Span::styled(
-        "  Enter select · Esc back/cancel · ↑↓ navigate",
+        "  Enter select · X remove · Esc back/cancel · ↑↓ navigate",
         Style::default().fg(t.text_dim),
     ))];
 

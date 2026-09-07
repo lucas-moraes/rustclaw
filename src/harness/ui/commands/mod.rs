@@ -327,6 +327,7 @@ pub async fn handle(
                             } else {
                                 vec![default_model.to_string()]
                             },
+                            removed: false,
                         });
                         match store.save() {
                             Ok(()) => out.push(format!(

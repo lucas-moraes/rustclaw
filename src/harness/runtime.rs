@@ -710,6 +710,7 @@ impl SessionRuntime {
 /// Builds the default registry with all core harness coding tools.
 pub fn build_default_registry() -> ToolRegistry {
     use crate::harness::tool::{
+        ast_search::AstSearchTool,
         bash::BashTool,
         edit::EditTool,
         fetch_webpage::FetchWebpageTool,
@@ -731,6 +732,7 @@ pub fn build_default_registry() -> ToolRegistry {
         .register(Arc::new(EditTool))
         .register(Arc::new(GlobTool))
         .register(Arc::new(GrepTool))
+        .register(Arc::new(AstSearchTool))
         .register(Arc::new(TodoReadTool))
         .register(Arc::new(TodoWriteTool))
         .register(Arc::new(QuestionTool))

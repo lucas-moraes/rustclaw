@@ -17,6 +17,15 @@ pub struct UserProvider {
     pub default_model: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub models: Vec<String>,
+    /// Tombstone for hidden builtin providers: the builtin is filtered out
+    /// of the catalog while this flag is set (serde default keeps old files).
+    #[serde(default, skip_serializing_if = "is_true")]
+    pub removed: bool,
+}
+
+/// `skip_serializing_if` helper: omit the field when false.
+fn is_true(v: &bool) -> bool {
+    *v
 }
 
 /// The persisted collection of user-defined providers.
@@ -73,8 +82,12 @@ impl UserProviders {
 
     /// Adds or replaces a provider by name. Returns `true` when it replaced
     /// an existing entry.
-    pub fn upsert(&mut self, provider: UserProvider) -> bool {
+    pub fn upsert(&mut self, mut provider: UserProvider) -> bool {
         if let Some(existing) = self.providers.iter_mut().find(|p| p.name == provider.name) {
+            // Re-adding a provider un-hides a hidden builtin tombstone.
+            if !provider.removed {
+                provider.removed = false;
+            }
             *existing = provider;
             true
         } else {
@@ -86,7 +99,8 @@ impl UserProviders {
     /// Removes a provider by name. Returns `true` when it was present.
     pub fn remove(&mut self, name: &str) -> bool {
         let before = self.providers.len();
-        self.providers.retain(|p| p.name != name);
+        let lower = name.to_lowercase();
+        self.providers.retain(|p| !p.name.to_lowercase().eq(&lower));
         self.providers.len() != before
     }
 
@@ -137,17 +151,68 @@ impl UserProviders {
             base_url,
             default_model,
             models,
+            removed: false,
         });
         true
     }
 
+    /// Removes a model from a provider's user entry. When the removal leaves
+    /// the entry without models, the entry itself is dropped:
+    /// - a builtin override keeps serving the builtin defaults again;
+    /// - a fully user-defined provider with no models left is deleted.
+    /// Returns `true` when the model (or the emptied entry) was removed.
+    pub fn remove_model(&mut self, name: &str, model: &str) -> bool {
+        let Some(idx) = self
+            .providers
+            .iter()
+            .position(|p| p.name.eq_ignore_ascii_case(name))
+        else {
+            return false;
+        };
+        let entry = &mut self.providers[idx];
+        if !entry.models.iter().any(|m| m == model) {
+            return false;
+        }
+        entry.models.retain(|m| m != model);
+        if entry.default_model == model {
+            entry.default_model = entry.models.last().cloned().unwrap_or_default();
+        }
+        if entry.models.is_empty() && !entry.removed {
+            self.providers.remove(idx);
+        }
+        true
+    }
+
     /// Looks up a provider by name (case-insensitive).
-    #[allow(dead_code)] // public store API, exercised in tests
     pub fn find(&self, name: &str) -> Option<&UserProvider> {
         let lower = name.to_lowercase();
         self.providers
             .iter()
             .find(|p| p.name.to_lowercase() == lower)
+    }
+
+    /// Hides a builtin provider from the catalog via a tombstone entry
+    /// (seeded with the builtin's base_url so re-adding is simple).
+    /// Returns `true` when a change was made (`false` = already hidden).
+    pub fn hide_builtin(&mut self, name: &str) -> bool {
+        if let Some(p) = self.find(name) {
+            if p.removed {
+                return false;
+            }
+        }
+        let seed = crate::harness::provider::catalog::find_provider(name);
+        let (base_url, default_model) = match &seed {
+            Some(info) if !info.user_defined => (info.base_url.clone(), info.default_model.clone()),
+            _ => (String::new(), String::new()),
+        };
+        self.upsert(UserProvider {
+            name: name.to_string(),
+            base_url,
+            default_model,
+            models: Vec::new(),
+            removed: true,
+        });
+        true
     }
 }
 
@@ -169,6 +234,7 @@ mod tests {
             base_url: "https://api.my.com/v1".into(),
             default_model: "model-a".into(),
             models: vec!["model-a".into(), "model-b".into()],
+            removed: false,
         });
         store.save_to(&p).unwrap();
         let back = UserProviders::load_from(&p).unwrap();
@@ -187,12 +253,14 @@ mod tests {
             base_url: "a".into(),
             default_model: String::new(),
             models: vec![],
+            removed: false,
         });
         let replaced = store.upsert(UserProvider {
             name: "x".into(),
             base_url: "b".into(),
             default_model: String::new(),
             models: vec![],
+            removed: false,
         });
         assert!(replaced);
         assert_eq!(store.providers.len(), 1);
@@ -207,6 +275,7 @@ mod tests {
             base_url: "a".into(),
             default_model: String::new(),
             models: vec!["m1".into()],
+            removed: false,
         });
         assert!(store.add_model("x", "m2"));
         assert!(!store.add_model("x", "m2")); // duplicate no-op
@@ -217,7 +286,53 @@ mod tests {
     }
 
     #[test]
-    fn test_missing_file_is_empty() {
+    fn test_remove_model_drops_entry_when_empty() {
+        let mut store = UserProviders::default();
+        store.upsert(UserProvider {
+            name: "x".into(),
+            base_url: "a".into(),
+            default_model: "m1".into(),
+            models: vec!["m1".into(), "m2".into()],
+            removed: false,
+        });
+        assert!(store.remove_model("X", "m1")); // case-insensitive
+        assert_eq!(store.find("x").unwrap().default_model, "m2");
+        assert!(store.remove_model("x", "m2"));
+        assert!(store.find("x").is_none()); // leftover entry dropped
+        assert!(!store.remove_model("x", "m1"));
+    }
+
+    #[test]
+    fn test_hide_builtin_tombstone() {
+        let mut store = UserProviders::default();
+        // Uses the real builtin catalog (a name that surely exists).
+        assert!(store.hide_builtin("moonshot"));
+        assert_eq!(store.find("moonshot").unwrap().removed, true);
+        assert!(!store.hide_builtin("MOONSHOT")); // already hidden → no-op
+                                                  // remove_model must not resurrect a tombstone.
+        assert!(!store.remove_model("moonshot", "whatever"));
+        assert_eq!(store.find("moonshot").unwrap().removed, true);
+        // Catalog no longer lists the hidden builtin (direct merge check).
+        assert!(!crate::harness::provider::catalog::merge(&store.providers)
+            .iter()
+            .any(|p| p.name.eq_ignore_ascii_case("moonshot")));
+        // Re-adding via upsert clears the tombstone.
+        store.upsert(UserProvider {
+            name: "moonshot".into(),
+            base_url: "https://api.moonshot.ai/v1".into(),
+            default_model: String::new(),
+            models: vec!["m".into()],
+            removed: false,
+        });
+        assert_eq!(store.find("moonshot").unwrap().removed, false);
+        crate::harness::provider::catalog::merge(&store.providers)
+            .iter()
+            .find(|p| p.name.eq_ignore_ascii_case("moonshot"))
+            .expect("re-added provider must be visible again");
+    }
+
+    #[test]
+    fn test_remove_missing_file_is_empty() {
         let d = dir();
         let store = UserProviders::load_from(&d.path().join("nope.json")).unwrap();
         assert!(store.providers.is_empty());

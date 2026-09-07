@@ -133,12 +133,29 @@ fn user_info(p: &UserProvider) -> ProviderInfo {
 }
 
 /// All providers (builtins + user-defined), in picker order. A user provider
-/// with the same name as a builtin replaces it in place.
+/// with the same name as a builtin replaces it in place; a tombstone entry
+/// (`removed`) hides the builtin from the list.
 pub fn all_providers() -> Vec<ProviderInfo> {
-    let user = UserProviders::load();
-    let mut out: Vec<ProviderInfo> = BUILTINS.iter().map(builtin_info).collect();
-    for up in &user.providers {
-        if let Some(slot) = out.iter_mut().find(|p| p.name == up.name) {
+    merge(&UserProviders::load().providers)
+}
+
+/// Merges builtins with user entries (tombstones hide builtins, user
+/// providers replace same-name builtins, unknown names are appended).
+pub(crate) fn merge(user: &[UserProvider]) -> Vec<ProviderInfo> {
+    let hidden = |name: &str| {
+        user.iter()
+            .any(|u| u.name.eq_ignore_ascii_case(name) && u.removed)
+    };
+    let mut out: Vec<ProviderInfo> = BUILTINS
+        .iter()
+        .map(builtin_info)
+        .filter(|p| !hidden(&p.name))
+        .collect();
+    for up in user.iter().filter(|up| !up.removed) {
+        if let Some(slot) = out
+            .iter_mut()
+            .find(|p| p.name.eq_ignore_ascii_case(&up.name))
+        {
             *slot = user_info(up);
         } else {
             out.push(user_info(up));
@@ -238,6 +255,7 @@ mod tests {
             base_url: "https://custom.x.ai/v1".into(),
             default_model: "custom-model".into(),
             models: vec!["custom-model".into()],
+            removed: false,
         });
         store.save_to(&path).unwrap();
 
