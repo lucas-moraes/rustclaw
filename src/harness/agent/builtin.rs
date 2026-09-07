@@ -7,6 +7,7 @@ pub const BUILD: &str = "build";
 pub const PLAN: &str = "plan";
 pub const EXPLORE: &str = "explore";
 pub const GENERAL: &str = "general";
+pub const CHAT_FREE: &str = "chat-free";
 
 const READONLY_TOOLS: &[&str] = &[
     "read",
@@ -103,6 +104,35 @@ read/glob/grep when needed. Keep answers direct and useful."
             .into(),
         model: None,
         temperature: None,
+        permission_overrides: HashMap::new(),
+    }
+}
+
+/// Free-form chat agent: a Gemini/ChatGPT-style conversational assistant,
+/// not limited to software development. Light read-only tools for when the
+/// user asks about the project or wants current web info.
+pub fn chat_free() -> AgentSpec {
+    AgentSpec {
+        name: CHAT_FREE.into(),
+        description: "Free-form conversational assistant (Gemini/ChatGPT style).".into(),
+        tools: vec![
+            "read".into(),
+            "glob".into(),
+            "grep".into(),
+            "ast_search".into(),
+            "web_search".into(),
+            "fetch_webpage".into(),
+        ],
+        system_prompt: "You are a friendly, knowledgeable AI assistant. You can talk about \
+anything — science, culture, philosophy, everyday life, creative writing, ideas, or the \
+user's project. Be warm, clear and helpful, and match the user's language. \
+You are not limited to software development. \
+You can search the web (web_search) and read web pages (fetch_webpage) to give current, \
+accurate answers, and you can inspect the project with read/glob/grep/ast_search when the \
+user asks about it. Keep answers natural and conversational, not overly technical."
+            .into(),
+        model: None,
+        temperature: Some(0.8),
         permission_overrides: HashMap::new(),
     }
 }

@@ -171,13 +171,14 @@ impl Theme {
     }
 
     /// Accent color per agent mode: build=blue, plan=yellow, explore=orange,
-    /// general=purple. `None` for agents outside the MODES cycle.
+    /// general=purple, chat-free=teal. `None` for agents outside the MODES cycle.
     pub fn mode_accent(agent: &str) -> Option<Color> {
         match agent {
             "build" => Some(Color::Rgb(70, 150, 255)),
             "plan" => Some(Color::Rgb(255, 210, 70)),
             "explore" => Some(Color::Rgb(255, 150, 60)),
             "general" => Some(Color::Rgb(185, 120, 255)),
+            "chat-free" => Some(Color::Rgb(60, 200, 180)),
             _ => None,
         }
     }
@@ -230,6 +231,10 @@ mod tests {
         assert_eq!(
             Theme::mode_accent("general"),
             Some(Color::Rgb(185, 120, 255))
+        );
+        assert_eq!(
+            Theme::mode_accent("chat-free"),
+            Some(Color::Rgb(60, 200, 180))
         );
         assert_eq!(Theme::mode_accent("custom"), None);
     }

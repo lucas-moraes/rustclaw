@@ -162,7 +162,7 @@ pub fn all_items() -> Vec<PaletteItem> {
         item(
             "agent",
             "/agent",
-            "Switch agent (build/plan/explore/general)",
+            "Switch agent (build/plan/explore/general/chat-free)",
             PaletteKind::Command,
             "/agent ",
         ),
@@ -270,6 +270,13 @@ pub fn all_items() -> Vec<PaletteItem> {
             "General-purpose agent",
             PaletteKind::Agent,
             "/agent general",
+        ),
+        item(
+            "agent-chat-free",
+            "agent · chat-free",
+            "Free-form conversational assistant (Gemini/ChatGPT style)",
+            PaletteKind::Agent,
+            "/agent chat-free",
         ),
         item(
             "action-help",

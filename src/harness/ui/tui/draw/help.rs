@@ -128,6 +128,7 @@ fn agents(t: &crate::harness::ui::tui::theme::Theme) -> Vec<Line<'static>> {
         kv("plan", "design approach before coding", t),
         kv("explore", "read-only codebase exploration", t),
         kv("general", "multi-purpose assistant", t),
+        kv("chat-free", "free-form conversational assistant", t),
     ]
 }
 

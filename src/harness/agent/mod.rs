@@ -158,6 +158,7 @@ pub fn builtin_names() -> Vec<String> {
         builtin::PLAN.to_string(),
         builtin::EXPLORE.to_string(),
         builtin::GENERAL.to_string(),
+        builtin::CHAT_FREE.to_string(),
     ]
 }
 
@@ -169,6 +170,7 @@ pub fn find_builtin(name: &str) -> Option<AgentSpec> {
         "plan" => builtin::plan(),
         "explore" => builtin::explore(),
         "general" => builtin::general(),
+        "chat-free" | "chat_free" | "chatfree" => builtin::chat_free(),
         _ => return None,
     };
     Some(agent)
@@ -202,7 +204,7 @@ mod tests {
     #[test]
     fn test_only_build_can_mutate_files() {
         let mutating = ["write", "edit", "bash", "remember"];
-        for name in ["plan", "explore", "general"] {
+        for name in ["plan", "explore", "general", "chat-free"] {
             let spec = crate::harness::agent::find_builtin(name).unwrap();
             for m in mutating {
                 assert!(!spec.allows_tool(m), "{name} must not allow {m}");
@@ -219,6 +221,27 @@ mod tests {
     fn test_build_has_all_tools() {
         let build = builtin::build();
         assert!(build.tools.is_empty()); // all tools
+    }
+
+    #[test]
+    fn test_chat_free_agent() {
+        let chat = builtin::chat_free();
+        assert_eq!(chat.name, "chat-free");
+        // Conversational: higher temperature.
+        assert_eq!(chat.turn_temperature(), 0.8);
+        // Light read-only tools, no mutating ones.
+        assert!(chat.allows_tool("web_search"));
+        assert!(chat.allows_tool("fetch_webpage"));
+        assert!(chat.allows_tool("read"));
+        assert!(!chat.allows_tool("write"));
+        assert!(!chat.allows_tool("edit"));
+        assert!(!chat.allows_tool("bash"));
+        assert!(!chat.allows_tool("task"));
+        // Prompt is conversational, not coding-focused.
+        assert!(chat.system_prompt.contains("friendly"));
+        assert!(chat
+            .system_prompt
+            .contains("not limited to software development"));
     }
 
     #[test]

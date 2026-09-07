@@ -141,7 +141,7 @@ fn row_char_idx(row: &VisualRow, col: usize, input: &str) -> usize {
 
 /// Modes cycled by the prompt mode selector (like opencode's primary agents).
 /// `general` stays available via `/agent general` and the palette.
-pub const MODES: &[&str] = &["build", "plan", "explore", "general"];
+pub const MODES: &[&str] = &["build", "plan", "explore", "general", "chat-free"];
 
 /// Kind of a transcript line, used to pick colors.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -781,8 +781,8 @@ impl App {
         }
     }
 
-    /// Cycles the active agent mode (build → plan → explore → general → build),
-    /// mirroring opencode's primary-agent selector.
+    /// Cycles the active agent mode (build → plan → explore → general →
+    /// chat-free → build), mirroring opencode's primary-agent selector.
     pub fn cycle_mode(&mut self) {
         let current = MODES
             .iter()

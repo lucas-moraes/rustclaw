@@ -189,7 +189,7 @@ pub async fn handle(
         "/agent" => {
             if arg.is_empty() {
                 out.push(format!("current agent: {}", session.agent));
-                out.push("available: build, plan, explore, general".to_string());
+                out.push("available: build, plan, explore, general, chat-free".to_string());
             } else {
                 let spec = runtime.resolve_agent(arg);
                 session.agent = spec.name.clone();
