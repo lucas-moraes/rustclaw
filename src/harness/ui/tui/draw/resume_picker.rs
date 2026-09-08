@@ -1,7 +1,7 @@
 //! `/sessions` manager overlay: select, delete or rename a saved session.
 //! by title (no id).
 
-use crate::harness::ui::tui::app::{App, ResumePickerState};
+use crate::harness::ui::tui::app::App;
 use crate::harness::ui::tui::draw::centered_rect_fixed;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -9,7 +9,10 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 
-pub fn draw(frame: &mut Frame, app: &App, picker: &ResumePickerState, area: Rect) {
+pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
+    let Some(picker) = app.resume_picker.as_mut() else {
+        return;
+    };
     let t = &app.theme;
     let n = picker.sessions.len() as u16;
     let h = (6 + n).min(area.height.saturating_sub(2)).min(40);
@@ -49,8 +52,18 @@ pub fn draw(frame: &mut Frame, app: &App, picker: &ResumePickerState, area: Rect
             Style::default().fg(t.text_dim),
         )));
     } else {
-        let visible = inner.height.saturating_sub(3) as usize;
-        for (i, s) in picker.sessions.iter().enumerate().take(visible) {
+        let mut visible = inner.height.saturating_sub(3) as usize;
+        let has_above = picker.scroll_offset > 0;
+        let has_below = picker.scroll_offset + visible < picker.sessions.len();
+        // Reserve a line for the scroll indicator when scrolling is possible.
+        if has_above || has_below {
+            visible = visible.saturating_sub(1);
+        }
+        picker.ensure_selected_visible(visible);
+        let start = picker.scroll_offset.min(picker.sessions.len());
+        let end = (start + visible).min(picker.sessions.len());
+        for i in start..end {
+            let s = &picker.sessions[i];
             let sel = i == picker.selected;
             let bg = if sel { t.bg } else { t.surface };
             let arrow = if sel { "▸" } else { " " };
@@ -73,6 +86,21 @@ pub fn draw(frame: &mut Frame, app: &App, picker: &ResumePickerState, area: Rect
                     Style::default().fg(t.text_dim).bg(bg),
                 ),
             ]));
+        }
+        // Scroll indicator when there are more sessions above/below.
+        if has_above || has_below {
+            let mut spans = vec![Span::styled("  ", Style::default())];
+            if has_above {
+                spans.push(Span::styled("↑ ", Style::default().fg(t.accent)));
+            }
+            if has_below {
+                spans.push(Span::styled("↓ ", Style::default().fg(t.accent)));
+            }
+            spans.push(Span::styled(
+                "scroll · ↑↓/j k · PgUp/PgDn".to_string(),
+                Style::default().fg(t.text_dim),
+            ));
+            lines.push(Line::from(spans));
         }
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(

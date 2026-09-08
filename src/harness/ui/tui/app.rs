@@ -313,6 +313,8 @@ pub struct ResumePickerState {
     /// When `Some`, an inline rename input is being edited for the selected
     /// session (pre-filled with the current title).
     pub rename_input: Option<String>,
+    /// First visible row index in the scrollable list.
+    pub scroll_offset: usize,
 }
 
 impl ResumePickerState {
@@ -322,6 +324,7 @@ impl ResumePickerState {
             sessions,
             selected: 0,
             rename_input: None,
+            scroll_offset: 0,
         })
     }
 
@@ -331,6 +334,20 @@ impl ResumePickerState {
         }
         let len = self.sessions.len() as i32;
         self.selected = ((self.selected as i32 + delta).rem_euclid(len)) as usize;
+    }
+
+    /// Keeps the selected row within the visible window, scrolling as needed.
+    pub fn ensure_selected_visible(&mut self, visible: usize) {
+        if visible == 0 || self.sessions.is_empty() {
+            return;
+        }
+        if self.selected < self.scroll_offset {
+            self.scroll_offset = self.selected;
+        } else if self.selected >= self.scroll_offset + visible {
+            self.scroll_offset = self.selected + 1 - visible;
+        }
+        let max_offset = self.sessions.len().saturating_sub(visible);
+        self.scroll_offset = self.scroll_offset.min(max_offset);
     }
 
     /// Human title for a session (no id).
@@ -3082,5 +3099,69 @@ mod code_block_tests {
             "text\n```python\nprint(1)\nprint(2)\n```\nmore",
         )]);
         assert_eq!(app.last_code_block().unwrap(), "print(1)\nprint(2)");
+    }
+}
+
+#[cfg(test)]
+mod resume_picker_tests {
+    use super::ResumePickerState;
+    use crate::harness::session::store::SessionSummary;
+
+    fn picker(n: usize) -> ResumePickerState {
+        let sessions = (0..n)
+            .map(|i| SessionSummary {
+                id: format!("s{i}"),
+                agent: "build".to_string(),
+                cwd: std::path::PathBuf::new(),
+                created_at: String::new(),
+                updated_at: String::new(),
+                message_count: 0,
+                preview: String::new(),
+                title: Some(format!("session {i}")),
+                parent_id: None,
+            })
+            .collect();
+        ResumePickerState {
+            sessions,
+            selected: 0,
+            rename_input: None,
+            scroll_offset: 0,
+        }
+    }
+
+    #[test]
+    fn test_scroll_follows_selection_down() {
+        let mut p = picker(50);
+        p.selected = 30;
+        p.ensure_selected_visible(10);
+        assert_eq!(p.scroll_offset, 21); // 30 + 1 - 10
+    }
+
+    #[test]
+    fn test_scroll_follows_selection_up() {
+        let mut p = picker(50);
+        p.selected = 30;
+        p.scroll_offset = 30;
+        p.ensure_selected_visible(10);
+        assert_eq!(p.scroll_offset, 30); // selected < offset? no; selected >= offset+10? 30>=40? no
+        p.selected = 5;
+        p.ensure_selected_visible(10);
+        assert_eq!(p.scroll_offset, 5);
+    }
+
+    #[test]
+    fn test_scroll_clamps_to_max_offset() {
+        let mut p = picker(50);
+        p.selected = 49;
+        p.ensure_selected_visible(10);
+        assert_eq!(p.scroll_offset, 40); // max_offset = 50-10 = 40
+    }
+
+    #[test]
+    fn test_scroll_noop_when_fits() {
+        let mut p = picker(5);
+        p.selected = 3;
+        p.ensure_selected_visible(10);
+        assert_eq!(p.scroll_offset, 0);
     }
 }

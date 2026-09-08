@@ -113,8 +113,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         model_picker::draw_picker(frame, app, picker, area);
     } else if let Some(auth) = &app.auth_prompt {
         model_picker::draw_auth(frame, app, auth, area);
-    } else if let Some(picker) = &app.resume_picker {
-        resume_picker::draw(frame, app, picker, area);
+    } else if app.resume_picker.is_some() {
+        resume_picker::draw(frame, app, area);
     } else if app.skill_picker.is_some() {
         skill_picker::draw(frame, app, area);
     }
