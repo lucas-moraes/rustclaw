@@ -4,6 +4,7 @@
 //! labels when the panel is tight, and low-priority sections drop out when
 //! the terminal is short.
 
+use crate::harness::provider::catalog::format_cost;
 use crate::harness::provider::format_tokens;
 use crate::harness::ui::tui::anim;
 use crate::harness::ui::tui::app::{App, MODES};
@@ -97,6 +98,13 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
     lines.push(section("Context", t.accent));
     lines.extend(context_block(app, t, w));
     lines.push(blank());
+
+    // ── Cost (estimated session spend) ────────────────────────────────────
+    if app.session_usage.total() > 0 {
+        lines.push(section("Cost", t.accent));
+        lines.extend(cost_block(app, t, w));
+        lines.push(blank());
+    }
 
     // ── Skills (if any) ─────────────────────────────────────────────────
     if !app.session.skills.is_empty() {
@@ -340,6 +348,31 @@ fn context_block(app: &App, t: &Theme, w: usize) -> Vec<Line<'static>> {
         )));
     }
 
+    lines
+}
+
+fn cost_block(app: &App, t: &Theme, w: usize) -> Vec<Line<'static>> {
+    let usd = app.session_cost();
+    let last = app.last_cost();
+    let mut lines = Vec::new();
+    // Session total (bold).
+    lines.push(Line::from(vec![
+        Span::styled("  session ".to_string(), Style::default().fg(t.text_dim)),
+        Span::styled(
+            truncate(&format_cost(usd), w.saturating_sub(10)),
+            Style::default().fg(t.accent2).add_modifier(Modifier::BOLD),
+        ),
+    ]));
+    // Last turn (dim), only when there was usage.
+    if app.last_usage.total() > 0 {
+        lines.push(Line::from(vec![
+            Span::styled("  last    ".to_string(), Style::default().fg(t.text_dim)),
+            Span::styled(
+                truncate(&format_cost(last), w.saturating_sub(10)),
+                Style::default().fg(t.text_bright),
+            ),
+        ]));
+    }
     lines
 }
 

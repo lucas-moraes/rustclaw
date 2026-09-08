@@ -194,6 +194,85 @@ pub fn provider_names() -> Vec<String> {
     all_providers().into_iter().map(|p| p.name).collect()
 }
 
+// ─── Estimated pricing (USD per 1M tokens) ─────────────────────────────────
+
+/// Estimated USD per 1M tokens for the given `provider`+`model`, as
+/// `(input, output)`. Resolution order: exact model match → provider default
+/// → generic default. Used only for rough cost estimates in the sidebar.
+pub fn price_per_million(provider: &str, model: &str) -> (f64, f64) {
+    // Generic fallback for providers/models we have no data for.
+    const GENERIC: (f64, f64) = (1.0, 3.0);
+
+    let provider = provider.to_lowercase();
+    let model_l = model.to_lowercase();
+
+    // (provider, model-substring, input_$/1M, output_$/1M)
+    const OVERRIDES: &[(&str, &str, f64, f64)] = &[
+        ("deepinfra", "deepseek-v4-flash", 0.25, 1.00),
+        ("deepinfra", "deepseek-v4", 1.25, 2.50),
+        ("deepinfra", "qwen3-coder", 0.30, 0.90),
+        ("deepinfra", "glm-5", 0.50, 1.50),
+        ("deepinfra", "llama-4", 0.25, 0.75),
+        ("deepinfra", "devstral", 0.20, 0.80),
+        ("xai", "grok-build", 0.30, 0.90),
+        ("xai", "grok-4", 3.00, 15.00),
+        ("opencode-go", "deepseek-v4-flash", 0.25, 1.00),
+        ("opencode-go", "grok-code", 3.00, 15.00),
+        ("opencode-go", "qwen3-coder", 0.30, 0.90),
+        ("opencode-go", "claude-sonnet", 3.00, 15.00),
+        ("opencode-go", "gpt-5-nano", 0.50, 2.00),
+        ("openrouter", "claude-sonnet", 3.00, 15.00),
+        ("openrouter", "gpt-5-codex", 2.50, 10.00),
+        ("openrouter", "gemini-3-pro", 2.00, 12.00),
+        ("openrouter", "deepseek-v4-flash", 0.25, 1.00),
+        ("moonshot", "kimi-k2", 1.00, 8.00),
+        ("moonshot", "moonshot-v1", 0.15, 0.30),
+        ("huggingface", "deepseek-v4", 1.25, 2.50),
+        ("huggingface", "llama-4", 0.25, 0.75),
+        ("villamarket", "minimax-m2", 2.00, 8.00),
+        ("anthropic", "claude-opus-4", 15.00, 75.00),
+        ("anthropic", "claude-sonnet", 3.00, 15.00),
+        ("anthropic", "claude-3-7", 3.00, 15.00),
+    ];
+
+    for &(p, sub, i, o) in OVERRIDES {
+        if provider == p && model_l.contains(sub) {
+            return (i, o);
+        }
+    }
+
+    let pdef = match provider.as_str() {
+        "deepinfra" => (0.25, 1.00),
+        "xai" => (3.00, 15.00),
+        "opencode-go" => (1.00, 3.00),
+        "openrouter" => (1.00, 3.00),
+        "moonshot" => (1.00, 8.00),
+        "huggingface" => (1.00, 3.00),
+        "villamarket" => (2.00, 8.00),
+        "anthropic" => (3.00, 15.00),
+        _ => GENERIC,
+    };
+    pdef
+}
+
+/// Estimated cost in USD for the given token usage on `provider`/`model`.
+pub fn estimate_cost(provider: &str, model: &str, input_tokens: u64, output_tokens: u64) -> f64 {
+    let (pi, po) = price_per_million(provider, model);
+    (input_tokens as f64 / 1_000_000.0) * pi + (output_tokens as f64 / 1_000_000.0) * po
+}
+
+/// Compact USD formatting for the sidebar / cost display.
+pub fn format_cost(usd: f64) -> String {
+    if usd <= 0.0 {
+        return "$0".to_string();
+    }
+    if usd < 0.01 {
+        format!("${:.4}", usd)
+    } else {
+        format!("${:.2}", usd)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -278,5 +357,35 @@ mod tests {
         assert!(xai.user_defined);
         assert_eq!(xai.base_url, "https://custom.x.ai/v1");
         assert_eq!(xai.default_model, "custom-model");
+    }
+
+    #[test]
+    fn test_price_per_million_known_model() {
+        // exact model override wins
+        let (i, o) = price_per_million("deepinfra", "deepseek-ai/DeepSeek-V4-Flash-0731");
+        assert_eq!(i, 0.25);
+        assert_eq!(o, 1.00);
+        // provider default when model unknown
+        let (i, o) = price_per_million("anthropic", "some-future-model");
+        assert_eq!(i, 3.00);
+        assert_eq!(o, 15.00);
+        // case-insensitive
+        let (i, _o) = price_per_million("XAI", "GROK-4.5");
+        assert_eq!(i, 3.00);
+    }
+
+    #[test]
+    fn test_estimate_cost_and_format() {
+        // 1M input @ deepseek-v4-flash ($0.25) + 1M output ($1.00) = $1.25
+        let c = estimate_cost(
+            "deepinfra",
+            "deepseek-ai/DeepSeek-V4-Flash-0731",
+            1_000_000,
+            1_000_000,
+        );
+        assert!((c - 1.25).abs() < 1e-9);
+        assert_eq!(format_cost(0.0042), "$0.0042");
+        assert_eq!(format_cost(1.25), "$1.25");
+        assert_eq!(format_cost(0.0), "$0");
     }
 }

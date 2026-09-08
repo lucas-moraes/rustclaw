@@ -459,6 +459,7 @@ impl SessionRuntime {
             task_runner: Some(Arc::new(TaskRunner {
                 runtime: Arc::new(self.clone_shareable()),
                 parent_session_id: session.id.clone(),
+                allow_write: session.agent == crate::harness::agent::builtin::BUILD,
             })),
             events: events.clone(),
             project_memory: Some(self.project_memory.clone()),
@@ -682,6 +683,21 @@ pub struct TaskRunner {
     pub runtime: Arc<SessionRuntime>,
     /// Session that spawned the task (used to tag child events).
     pub parent_session_id: String,
+    /// Whether the root agent may write files. When false, subagents are
+    /// demoted to a non-writing agent so they can never edit files.
+    pub allow_write: bool,
+}
+
+/// Resolves the effective subagent agent given whether the parent allows file
+/// writes. When writes are not allowed, a requested `build` subagent is
+/// demoted to `general` (same toolset minus write/edit) so subagents can
+/// never edit files when the root agent isn't `build`.
+fn resolve_subagent_agent(allow_write: bool, requested: &str) -> &str {
+    if !allow_write && requested == crate::harness::agent::builtin::BUILD {
+        crate::harness::agent::builtin::GENERAL
+    } else {
+        requested
+    }
 }
 
 #[async_trait::async_trait]
@@ -694,6 +710,8 @@ impl SubagentRunner for TaskRunner {
     ) -> Result<TaskOutcome, String> {
         // Resolve agent to allow "explore" by default.
         let agent = if agent.is_empty() { "explore" } else { &agent };
+        // Demote `build` subagents when the root agent can't write files.
+        let agent = resolve_subagent_agent(self.allow_write, agent);
         let mut child = self
             .runtime
             .store
@@ -1110,5 +1128,25 @@ mod model_switch_tests {
             rt.config.is_configured(),
             "prompt must enable after token save"
         );
+    }
+}
+
+#[cfg(test)]
+mod write_guard_tests {
+    use super::resolve_subagent_agent;
+
+    #[test]
+    fn test_build_subagent_allowed_when_write_enabled() {
+        assert_eq!(resolve_subagent_agent(true, "build"), "build");
+        assert_eq!(resolve_subagent_agent(true, "explore"), "explore");
+    }
+
+    #[test]
+    fn test_build_subagent_demoted_when_write_disabled() {
+        assert_eq!(resolve_subagent_agent(false, "build"), "general");
+        // non-build agents are untouched
+        assert_eq!(resolve_subagent_agent(false, "explore"), "explore");
+        assert_eq!(resolve_subagent_agent(false, "plan"), "plan");
+        assert_eq!(resolve_subagent_agent(false, "general"), "general");
     }
 }

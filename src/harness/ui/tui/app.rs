@@ -1111,6 +1111,26 @@ impl App {
         self.runtime.config.max_context_tokens
     }
 
+    /// Estimated USD cost of the whole session at the current provider/model.
+    pub fn session_cost(&self) -> f64 {
+        crate::harness::provider::catalog::estimate_cost(
+            &self.runtime.config.provider,
+            &self.runtime.config.model,
+            self.session_usage.input_tokens,
+            self.session_usage.output_tokens,
+        )
+    }
+
+    /// Estimated USD cost of the last turn at the current provider/model.
+    pub fn last_cost(&self) -> f64 {
+        crate::harness::provider::catalog::estimate_cost(
+            &self.runtime.config.provider,
+            &self.runtime.config.model,
+            self.last_usage.input_tokens,
+            self.last_usage.output_tokens,
+        )
+    }
+
     /// Multi-line usage report for `/usage` and turn summaries.
     pub fn usage_report(&self) -> Vec<String> {
         let ctx = self.context_tokens();

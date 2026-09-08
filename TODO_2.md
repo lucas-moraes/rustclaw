@@ -31,7 +31,7 @@
 | E6 | Budget de output tokens por turno | 2 | ⬜ |
 | E7 | Testes de integração do loop completo (MockProvider) | 2 | ⬜ |
 | E8 | Painel "thinking" (reasoning) no TUI | 3 | ⬜ |
-| E9 | Comando `/cost` (estimativa $ por provider/model) | 3 | ⬜ |
+| E9 | Custo estimado na sidebar (estimativa $ por provider/model) | 3 | ✅ |
 | E10 | Remover `expect()`/`unwrap()` de produção | 3 | ✅ |
 
 **Legenda:** ⬜ pendente · 🟡 em progresso · ✅ feito · ❌ cancelado
@@ -200,19 +200,22 @@ melhoraria a percepção de progresso em agentes com reasoning.
 - [ ] Testes: render do reasoning colapsado/expandido
 - [ ] `cargo test` + `cargo clippy` + `cargo fmt --check` verdes
 
-### Feature E9: Comando `/cost` (estimativa $ por provider/model)
+### Feature E9: Custo estimado na sidebar (estimativa $ por provider/model)
 
-**Onde:** `src/harness/ui/commands/mod.rs`, `src/harness/provider/catalog.rs`,
-`src/harness/session/mod.rs` (`Usage`).
+**Onde:** `src/harness/ui/tui/draw/sidebar.rs`, `src/harness/provider/catalog.rs`,
+`src/harness/ui/tui/app.rs` (`session_usage`/`last_usage`).
 
 **Problema:** o `Usage` já acumula tokens por sessão, mas não há estimativa de custo.
 Uma tabela $/1M por provider/model permitiria mostrar o gasto estimado.
 
-- [ ] Adicionar tabela de preço $/1M (input/output) por provider/model no catálogo
-- [ ] Comando `/cost` que soma `Usage` da sessão × preço do modelo atual
-- [ ] Mostrar breakdown por turno/sessão
-- [ ] Testes: cálculo de custo com fixture de preço
-- [ ] `cargo test` + `cargo clippy` + `cargo fmt --check` verdes
+**Decisão (2026-09-07):** implementado como **exibição na sidebar** (seção "Cost"
+abaixo de CONTEXT), em vez de comando `/cost`.
+
+- [x] Adicionar tabela de preço $/1M (input/output) por provider/model no catálogo
+- [x] Seção "Cost" na sidebar abaixo de CONTEXT: total da sessão (bold) + último turno
+- [x] Cálculo via `catalog::estimate_cost(provider, model, in, out)` × `session_usage`
+- [x] Testes: `test_price_per_million_known_model`, `test_estimate_cost_and_format`
+- [x] `cargo test` + `cargo clippy` + `cargo fmt --check` verdes
 
 ### Feature E10: Remover `expect()`/`unwrap()` de produção
 
@@ -287,3 +290,4 @@ Cada feature: `cargo test` + `cargo clippy` + `cargo fmt --check` verdes.
 | 2026-09-07 | **E2 concluído** — `bash.rs` reescrito com detecção por **tokens** (tokenize com quotes/escapes) em vez de substring. Bloqueia `rm` destrutivo (`-rf`/`-r` + caminho absoluto/`/`, incl. `--no-preserve-root`), comandos de sistema (`shutdown`/`reboot`/`mkfs`/`dd if=`), redirecionamento destrutivo (`> /dev/sd*`, `> /etc/...`). `sudo`/`su` → escalam para `Ask` (não bloqueiam). 5 testes novos. |
 | 2026-09-07 | **E3 concluído** — subscriber `tracing` em `main.rs` (`RUSTCLAW_LOG=json` → JSON, senão pretty; nível configurável). Helpers `persist()`/`emit()` no processor logam `warn!` em falha de `save_message`/`events.send` (substituindo `let _ =`). `tracing::info!`/`debug!` nos pontos-chave do loop (início de turno, tool call, retry, compaction, auto-continue, doom-loop). Deps: `tracing-subscriber` + `rand`. |
 | 2026-09-07 | **E10 concluído** — removidos `expect()`/`unwrap()`/`panic!` de produção. `config.rs` (`expect("opencode-go must exist in the catalog")` → `anyhow!` com contexto), `runtime.rs` (`.expect("runtime")`/`.expect("prompt")` → `?`), `provider/mod.rs` + `web_search.rs` + `ui/tui/input.rs` (unwrap → `?`/`unwrap_or_else`), e ~36 `Mutex::lock().unwrap()` → `unwrap_or_else(|e| e.into_inner())` em `permission/mod.rs`, `project/memory.rs`, `runtime.rs`, `session/store.rs`, `tool/task.rs`. Varredura de `src/` confirma que só restam `unwrap()`/`expect()` em `#[cfg(test)]`. `cargo test` (288) + `cargo clippy` + `cargo fmt --check` verdes. |
+| 2026-09-07 | **E9 concluído** — custo estimado exibido na **sidebar** (seção "Cost" abaixo de CONTEXT), conforme decisão do usuário (sem comando `/cost`). Tabela de preços $/1M (input/output) por provider/model + fallback por provider em `catalog.rs` (`price_per_million`, `estimate_cost`, `format_cost`). Método `App::session_cost()` calcula via `session_usage` × preço do modelo atual. `sidebar.rs::cost_block` mostra total da sessão (bold) + último turno (dim, quando há uso). 2 testes novos (290 no total). `cargo test` + `cargo clippy` + `cargo fmt --check` verdes. |
