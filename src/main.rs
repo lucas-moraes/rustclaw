@@ -73,15 +73,28 @@ fn init_tracing() {
 
     let filter = EnvFilter::try_new(level).unwrap_or_else(|_| EnvFilter::new("info"));
 
+    // Always write logs to a file: stderr writes corrupt the TUI alt-screen.
+    let log_path = dirs::data_local_dir()
+        .map(|d| d.join("rustclaw").join("log.txt"))
+        .unwrap_or_else(|| std::path::PathBuf::from("rustclaw.log"));
+    let _ = std::fs::create_dir_all(log_path.parent().unwrap_or(std::path::Path::new(".")));
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .expect("failed to open rustclaw log file");
+
     if env == "json" {
         let _ = tracing_subscriber::fmt()
             .with_env_filter(filter)
             .json()
+            .with_writer(std::sync::Mutex::new(file))
             .try_init();
     } else {
         let _ = tracing_subscriber::fmt()
             .with_env_filter(filter)
             .pretty()
+            .with_writer(std::sync::Mutex::new(file))
             .try_init();
     }
 }
