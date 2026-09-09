@@ -1,335 +1,211 @@
-# RustClaw — Dívida Técnica & Features (3ª rodada: quebrar `app.rs`)
+# TODO — Rodada C: Prompt Caching (C1–C6)
 
-> **Problema:** o `app.rs` (3.167 linhas) concentra 7 responsabilidades sem relação
-> entre si: estado (48 campos `pub`), eventos, skills, contabilidade de custo,
-> event loop, dispatch de teclas e undo/revert. É o maior arquivo do projeto e o
-> mais difícil de navegar/refatorar. As rodadas anteriores (D1–D10, E1–E10) pagaram
-> os juros de config, retry, segurança e observabilidade; esta rodada **A1–A10**
-> quebra o monólito da UI em módulos coesos.
->
-> **Escopo:** 3 tiers. Tier 1 = setup + cortes seguros (state, usage, undo).
-> Tier 2 = cortes grandes (events, skills, pickers, keys, runner). Tier 3 = testes,
-> docs e verificação final.
->
-> **Decisões-chave:**
-> - Cada feature tem checklist + Definition of Done (`cargo test` + `cargo clippy`
->   + `cargo fmt --check` verdes).
-> - Refactors são **incrementais**: um bloco coeso por vez, mantendo os 296 testes
->   verdes a cada passo.
-> - Nenhuma mudança de comportamento visível ao usuário (só estrutura interna).
-> - `git mv` para preservar history/blame; mover blocos inteiros sem reformatar.
-> - `mod.rs` re-exporta tudo com `pub use` — os 9 imports de `draw/` não mudam.
+> **Data:** 2026-09-09 · **Base:** `main` pós-commit `47ec851` (split app.rs)
+> **Objetivo:** cachear o prefixo do prompt (system + tools + histórico) para
+> cortar 50–90% do custo de input em sessões longas, e exibir/contabilizar
+> tokens de cache no `/usage` e na sidebar.
+> **Complementa:** `ASSESSMENT.md` §1.5 (Prioridade 1).
 
 ---
 
-## Visão geral das features
+## 📋 Diagnóstico (estado atual)
 
-| ID | Feature | Tier | Status |
-|----|---------|------|--------|
-| A0 | Setup: `git mv app.rs → app/mod.rs` + criar este TODO | 1 | ✅ |
-| A1 | Extrair `app/state.rs` (App + Modal + 4 picker states) | 1 | ✅ |
-| A2 | Extrair `app/usage.rs` (contabilidade de custo) | 1 | ✅ |
-| A3 | Extrair `app/undo.rs` (undo/revert + helpers) | 1 | ✅ |
-| A4 | Extrair `app/skills.rs` (toggles + pickers + comando) | 2 | ✅ |
-| A5 | Extrair `app/events.rs` (apply_event + transcript rebuild) | 2 | ✅ |
-| A6 | Extrair `app/keys.rs` (handle_key + handle_modal_key) | 2 | ✅ |
-| A7 | Extrair `app/pickers.rs` (key handlers dos modais) | 2 | ✅ |
-| A8 | Extrair `app/runner.rs` (run_tui + submit_input + TerminalGuard) | 2 | ✅ |
-| A9 | Extrair `app/tests.rs` (input_tests + code_block_tests) | 3 | ✅ |
-| A10 | Sync docs (AGENTS.md, ARCHITECTURE.md) + verificação final + commit | 3 | ✅ |
+| Problema | Onde | Efeito |
+|---|---|---|
+| `Usage` sem campos de cache | `provider/mod.rs:20` | tokens de cache invisíveis |
+| OpenAI streaming sem `stream_options` | `provider/openai.rs` (body do stream) | **usage nunca chega** no streaming OpenAI (a API só envia `usage` com `include_usage: true`) |
+| `cached_tokens` não parseado | `openai.rs:167,294` | economia OpenAI invisível |
+| `cache_read/creation_input_tokens` não parseados | `anthropic.rs:155,171` | economia Anthropic invisível |
+| Sem `cache_control` no body | `anthropic.rs` | Anthropic não cacheia nada |
+| **System prompt muda a cada turno** | `runtime.rs:575 project_context_for` — memory facts re-ranqueados por query + summary regenerado quando `needs_regen` | **invalida todo o cache de prefixo** (Anthropic exige match byte-a-byte; OpenAI ≥1024 tokens idênticos) |
+| MiniMax via adapter Anthropic | `opencode_go.rs:28` | `cache_control` pode ser rejeitado → precisa gating |
+| `estimate_cost` não cache-aware | `catalog.rs:259` | custo exibido errado com cache ativo |
 
-**Legenda:** ⬜ pendente · 🟡 em progresso · ✅ feito · ❌ cancelado
+**Semântica por provider (não uniformizar!):**
+- **Anthropic:** `input_tokens` **EXCLUI** cache; campos separados
+  `cache_creation_input_tokens` (write) e `cache_read_input_tokens` (read).
+  Preço: write = 1.25× input, read = 0.1× input.
+- **OpenAI:** `prompt_tokens` **INCLUI** o que foi cacheado;
+  `prompt_tokens_details.cached_tokens` é o subconjunto lido do cache.
+  Preço: cached = 0.5× input (default; alguns modelos 0.25×/0.1×).
+  Caching é **automático** (não há flag de request) — só exige prefixo estável.
 
 ---
 
-## Estrutura alvo
+## C1 — `Usage` com cache + parsing por provider
+
+**Arquivos:** `provider/mod.rs`, `provider/anthropic.rs`, `provider/openai.rs`,
+`session/processor.rs`
+
+- [ ] `Usage` ganha `cache_read_tokens: u64` e `cache_write_tokens: u64`
+      (default 0 em todos os construtores); `add_assign` soma os 4 campos;
+      novo helper `cache_total() -> u64`.
+- [ ] `anthropic.rs`: parsear `cache_read_input_tokens` → read e
+      `cache_creation_input_tokens` → write em **ambos** os caminhos
+      (não-streaming `parse_response` ~L155 e streaming state ~L171/191/309).
+      **Não** somar ao `input_tokens` (semântica Anthropic).
+- [ ] `openai.rs`: parsear `usage.prompt_tokens_details.cached_tokens` →
+      `cache_read_tokens` (write = 0) nos dois caminhos. `prompt_tokens`
+      continua como está (já inclui cached — não somar de novo).
+- [ ] `openai.rs` streaming: adicionar `"stream_options": {"include_usage": true}`
+      ao body quando `stream: true`. Defensivo: se a resposta for 400 e o body
+      mencionar `stream_options`, retry 1× sem o campo (alguns proxies
+      OpenAI-compat não o suportam).
+- [ ] `processor.rs`: acumular `cache_read_tokens`/`cache_write_tokens` nos
+      mesmos pontos que somam input/output (~L280, L328, L335) e incluir no
+      log `turn end` (~L501).
+- [ ] Testes: fixture Anthropic com os 3 campos de usage (não-stream + SSE);
+      fixture OpenAI com `prompt_tokens_details`; teste de `add_assign` com cache.
+
+**Aceitação:** `cargo test provider` passa; streaming OpenAI agora reporta usage.
+
+---
+
+## C2 — Estabilidade do prefixo (pré-requisito do cache)
+
+**Arquivos:** `runtime.rs`, `project/memory.rs`, `agent/mod.rs`,
+`ui/tui/app/events.rs`, `ui/cli.rs`, `session/compaction.rs`
+
+O cache só funciona se o prefixo for **byte-estável entre turnos**. Hoje duas
+coisas quebram isso no system prompt: o summary estrutural (regenera quando o
+profiler detecta mudança — ou seja, a cada turno com edits) e o bloco de memory
+(re-ranqueado por query a cada turno).
+
+- [ ] **Congelar o summary por sessão:** `project_context_for` separa em
+      (a) summary estrutural — computado **1× na primeira chamada da sessão**
+      (cache em `SessionRuntime`, `HashMap<session_id, String>`; ao resumir uma
+      sessão, recomputa e congela dali em diante) e (b) memory block (por turno).
+      Regenerar o summary apenas após **compaction** (o contexto foi reescrito
+      de qualquer forma). Trade-off aceito: summary pode ficar stale durante
+      edits — o agente tem glob/grep/read para informação fresca.
+- [ ] **Mover o bloco de memory para o prefixo da user message** (persistida),
+      com marcadores:
+      ```
+      <project-memory>
+      …facts ranqueados por query…
+      </project-memory>
+      ```
+      como `Part::Text` separado **antes** do texto do usuário. O ranqueamento
+      continua usando `user_text`. O system prompt fica 100% estável
+      (agent + cwd + skills + tools + summary congelado).
+- [ ] Helper `is_memory_block(text: &str) -> bool` em `project/memory.rs`.
+- [ ] **Strip no UI:** transcript rebuild (`app/events.rs`) e CLI (`ui/cli.rs`)
+      pulam parts que começam com `<project-memory>`. (Compaction deixa como
+      está — o bloco é resumido junto com a mensagem.)
+- [ ] Nota: toggles de skills (`/skills`) e mudanças no tool set MCP
+      invalidam o cache — legítimo (ação do usuário), documentar apenas.
+- [ ] Testes: system prompt byte-idêntico em 2 turnos consecutivos; user message
+      contém o bloco marcado; strip no transcript.
+
+**Aceitação:** dois turnos seguidos produzem `system_prompt` idêntico
+(`assert_eq!` no teste).
+
+---
+
+## C3 — Anthropic `cache_control` (3 breakpoints, gated)
+
+**Arquivos:** `provider/anthropic.rs`, `provider/opencode_go.rs`,
+`provider/catalog.rs` (construção do provider)
+
+- [ ] `AnthropicProvider` ganha `prompt_cache: bool`.
+      - `true` no provider Anthropic builtin (catalog).
+      - `false` quando construído via `opencode_go.rs` (MiniMax `/messages`
+        pode rejeitar `cache_control`); overridável via `providers.json`
+        (`"prompt_cache": true`).
+- [ ] `build_request_body` com flag ligada:
+      1. `system` vira array de blocks: `[{"type":"text","text":…,
+         "cache_control":{"type":"ephemeral"}}]` (breakpoint 1);
+      2. último item de `tools` recebe `cache_control` (breakpoint 2);
+      3. último content block da última message recebe `cache_control`
+         (breakpoint 3 — cobre todo o histórico anterior).
+      Limite da API: 4 breakpoints; usamos 3.
+- [ ] Com flag desligada: body exatamente como hoje (system como string) —
+      zero risco para MiniMax/opencode-go.
+- [ ] Testes: snapshot do body com flag on (system array + 3 marcações) e
+      off (idêntico ao atual); contagem de breakpoints ≤ 4.
+
+**Aceitação:** `cargo test anthropic` passa; MiniMax inalterado.
+
+---
+
+## C4 — Custo cache-aware + exibição
+
+**Arquivos:** `provider/catalog.rs`, `ui/tui/app/usage.rs`,
+`ui/tui/draw/sidebar.rs`, `ui/tui/draw/status.rs`
+
+- [ ] `catalog.rs`: `estimate_cost` vira cache-aware — nova assinatura
+      `estimate_cost_cached(provider, model, &Usage) -> f64`:
+      - Anthropic: `input + 1.25×write + 0.1×read` como input billable;
+      - OpenAI: `(input − read) + 0.5×read` como input billable;
+      - outros: comportamento atual (cache = 0).
+      Manter `estimate_cost` antigo como wrapper (callers: `usage.rs` ×2).
+- [ ] `usage.rs`: `record_usage`/`usage_report` usam a versão cached;
+      `/usage` ganha linhas "cache read: X tok (Y% do input)" e
+      "cache write: W tok".
+- [ ] Sidebar/status: indicador compacto de cache (ex.: `↻12.3k` ao lado dos
+      tokens de input da sessão) quando `cache_read_tokens > 0`.
+- [ ] Testes: `estimate_cost_cached` para Anthropic (write 1.25×, read 0.1×)
+      e OpenAI (read 0.5×, sem double-count).
+
+**Aceitação:** `/usage` reflete economia real; custo da sidebar bate com a
+conta manual.
+
+---
+
+## C5 — Config, providers.json e docs
+
+**Arquivos:** `config.rs`, `provider/user_store.rs`, `provider/catalog.rs`,
+`docs/FEATURES.md`, `README.md`, `AGENTS.md`
+
+- [ ] `config.json`: kill-switch global `"prompt_caching": true` (default ON).
+      Quando OFF: `prompt_cache=false` em todos os providers (útil para proxies
+      que engasgam com `cache_control` mesmo em endpoint Anthropic-compat).
+- [ ] `providers.json`: campo opcional `"prompt_cache": bool` por provider
+      (merge no catalog; builtin Anthropic default true, resto false).
+- [ ] Precedência: `config.json.prompt_caching` (global) →
+      `providers.json.prompt_cache` (por provider).
+- [ ] Docs: `docs/FEATURES.md` §Prompt caching (semântica por provider,
+      breakpoints, estabilidade de prefixo, como medir no `/usage`); bullet no
+      README; nota no AGENTS.md §Provider.
+
+---
+
+## C6 — Verificação final
+
+- [ ] `cargo test` (todos os novos testes C1–C4)
+- [ ] `cargo clippy -- -D warnings`
+- [ ] `cargo fmt --check`
+- [ ] Smoke manual (opcional, requer key real): sessão de 2+ turnos com
+      Anthropic → turn 2+ deve reportar `cache_read_input_tokens > 0`;
+      com OpenAI → `cached_tokens > 0` (prefixo ≥1024 tokens — nosso system
+      prompt com AGENTS.md + skills + tools excede com folga).
+- [ ] Atualizar este arquivo marcando ✅ por item.
+
+---
+
+## 🔗 Ordem & dependências
 
 ```
-tui/app/
-├── mod.rs        (~120 ln)  — pub use re-exports, MODES, doc do módulo
-├── state.rs      (~380 ln)  — App struct + Modal + 4 picker states + tests
-├── events.rs     (~290 ln)  — apply_event, transcript rebuild, streaming
-├── skills.rs     (~200 ln)  — toggles, pickers, handle_skills_command
-├── usage.rs      (~90 ln)   — record_usage, session_cost, usage_report
-├── undo.rs       (~120 ln)  — undo_last_turn, revert_to_prompt, mark_for
-├── keys.rs       (~530 ln)  — handle_key, handle_modal_key, paste_clipboard
-├── pickers.rs    (~460 ln)  — 3 picker key handlers + settings/persist helpers
-├── runner.rs     (~570 ln)  — run_tui, submit_input, TerminalGuard
-└── tests.rs      (~290 ln)  — input_tests, code_block_tests
+C1 (Usage/parsing)  ──┐
+C2 (prefixo estável) ──┼──► C3 (cache_control) ──► C4 (custo/exibição) ──► C5 (config/docs) ──► C6
 ```
 
-**Total:** ~3.150 linhas distribuídas em 10 arquivos, máximo ~570 ln por arquivo.
-
----
-
-## Tier 1 — Setup + cortes seguros
-
-### Feature A0: Setup do módulo `app/`
-
-**Onde:** `src/harness/ui/tui/app.rs` → `src/harness/ui/tui/app/mod.rs`
-
-**Problema:** o arquivo é um monólito; precisa virar um diretório de módulos antes
-de qualquer extração.
-
-- [x] `git mv src/harness/ui/tui/app.rs src/harness/ui/tui/app/mod.rs`
-      (preserva blame/history)
-- [x] Criar este `TODO.md` (3ª rodada, convenção A1–A10)
-- [x] `cargo test` baseline verde (296 testes) antes de qualquer corte
-- [x] Confirmar que `tui/mod.rs` (`pub mod app;`) continua compilando com o diretório
-
-**DoD:** `cargo test` + `cargo clippy` + `cargo fmt --check` verdes; blame preservado.
-
----
-
-### Feature A1: Extrair `app/state.rs`
-
-**Onde:** linhas 32–373 de `app.rs` (struct `App` + `Modal` + 4 picker states + impls)
-
-**Problema:** o estado da UI (48 campos `pub`) e os 5 tipos de overlay/modal vivem
-juntos com toda a lógica. Os `draw/` importam `app::App`, `app::Modal`,
-`app::ModelPickerState`, `app::AuthPromptState` — precisam continuar funcionando.
-
-- [x] Mover `pub struct App` (linhas 32–102) para `state.rs`
-- [x] Mover `pub enum Modal` (105) para `state.rs`
-- [x] Mover `SkillPickerState` + impl (123–186) para `state.rs`
-- [x] Mover `ModelPickerState` + `AddProviderForm` + impls (188–283) para `state.rs`
-- [x] Mover `AuthPromptState` + impl (285–308) para `state.rs`
-- [x] Mover `ResumePickerState` + impl (310–373) para `state.rs`
-- [x] Mover `resume_picker_tests` (3105–3167) para `state.rs`
-- [x] `mod.rs` re-exporta: `pub use state::{App, Modal, SkillPickerState, ...}`
-- [x] Atualizar os 9 imports de `draw/` se necessário (idealmente zero mudança via re-export)
-- [x] `App::new`/`inline_for_tests` continuam em `state.rs` (ou ficam no `mod.rs`)
-
-**DoD:** `cargo test` verde; `draw/` compila sem mudança de call site.
-
----
-
-### Feature A2: Extrair `app/usage.rs`
-
-**Onde:** linhas 1111–1180 de `app.rs` (impl App: contabilidade de custo)
-
-**Problema:** a contabilidade de tokens/custo é um concern isolado, sem dependências
-externas — o corte mais seguro para validar o padrão de extração.
-
-- [x] Mover `record_usage` (1111) para `usage.rs`
-- [x] Mover `reset_usage` (1117) para `usage.rs`
-- [x] Mover `context_tokens` (1123) para `usage.rs`
-- [x] Mover `max_context_tokens` (1127) para `usage.rs`
-- [x] Mover `session_cost` (1132) para `usage.rs`
-- [x] Mover `last_cost` (1142) para `usage.rs`
-- [x] Mover `usage_report` (1152) para `usage.rs`
-- [x] `impl App` parcial em `usage.rs` (Rust permite múltiplos `impl App` em módulos)
-- [x] `mod.rs` re-exporta o que for necessário
-
-**DoD:** `cargo test` verde; `sidebar.rs` (`app.session_cost()`) continua funcionando.
-
----
-
-### Feature A3: Extrair `app/undo.rs`
-
-**Onde:** linhas 2507–2600 de `app.rs` (undo/revert + helpers)
-
-**Problema:** `undo_last_turn`/`revert_to_prompt` falam direto com `SessionStore`
-da UI — um acoplamento que deve ser documentado como dívida para um futuro service
-layer, mas que hoje pode ser isolado num módulo próprio.
-
-- [x] Mover `user_prompt_text` (2507) para `undo.rs`
-- [x] Mover `mark_for` (2522) para `undo.rs`
-- [x] Mover `undo_last_turn` (2532) para `undo.rs`
-- [x] Mover `revert_to_prompt` (2563) para `undo.rs`
-- [x] Adicionar comentário `// TODO(service-layer): UI não deveria falar com SessionStore`
-      documentando a dívida
-- [x] `mod.rs` re-exporta as funções usadas por `keys.rs`/`runner.rs`
-
-**DoD:** `cargo test` verde; comportamento de `/undo` inalterado.
-
----
-
-## Tier 2 — Cortes grandes
-
-### Feature A4: Extrair `app/skills.rs`
-
-**Onde:** linhas 930–1110 de `app.rs` (toggles + pickers + comando)
-
-**Problema:** a lógica de skills (toggles por turno, picker, comando `/skills`) é um
-concern coeso de ~200 linhas misturado com o resto.
-
-- [x] Mover `sync_prompt_toggles` (930) para `skills.rs`
-- [x] Mover `toggle_prompt_skill` (944) para `skills.rs`
-- [x] Mover `cycle_focus` (953) para `skills.rs`
-- [x] Mover `enabled_skill_ids` (958) para `skills.rs`
-- [x] Mover `apply_skill_picker` (976) para `skills.rs`
-- [x] Mover `open_skill_picker` (987) para `skills.rs`
-- [x] Mover `handle_skills_command` (998–1110, 111 ln) para `skills.rs`
-- [x] `mod.rs` re-exporta o que `keys.rs`/`runner.rs` precisam
-
-**DoD:** `cargo test` verde; `/skills` inalterado.
-
----
-
-### Feature A5: Extrair `app/events.rs`
-
-**Onde:** linhas 604–872 de `app.rs` (apply_event + transcript rebuild + streaming)
-
-**Problema:** o processamento de eventos do harness (`apply_event`, 135 ln) e a
-reconstrução do transcript são lógica de estado pura, separável do loop.
-
-- [x] Mover `finish_tool_batch` (604) para `events.rs`
-- [x] Mover `apply_event` (617–751, 135 ln) para `events.rs`
-- [x] Mover `flush_streaming` (752) para `events.rs`
-- [x] Mover `add_user_prompt` (760) para `events.rs`
-- [x] Mover `add_system` (764) para `events.rs`
-- [x] Mover `cancel_running_turn` (771) para `events.rs`
-- [x] Mover `scroll_by`/`clamp_scroll`/`clear_transcript` (788–818) para `events.rs`
-- [x] Mover `rebuild_transcript_from_session` (819–872, 54 ln) para `events.rs`
-- [x] `mod.rs` re-exporta o que `runner.rs`/`keys.rs` precisam
-
-**DoD:** `cargo test` verde; streaming/transcript inalterados.
-
----
-
-### Feature A6: Extrair `app/keys.rs`
-
-**Onde:** linhas 1527–2313 de `app.rs` (handle_key + handle_modal_key + paste_clipboard)
-
-**Problema:** `handle_key` tem **787 linhas** — a maior função do projeto. Precisa
-sair do monólito; o corte é delicado porque chama `submit_input` (runner).
-
-- [x] Mover `handle_key` (1527–2313, 787 ln) para `keys.rs`
-- [x] Mover `handle_modal_key` (2314–2506, 190 ln) para `keys.rs`
-- [x] Mover `paste_clipboard` (1847) para `keys.rs`
-- [x] Resolver dependência com `submit_input`: `keys.rs` importa de `runner.rs`
-      (uma direção só, sem ciclo)
-- [x] `mod.rs` re-exporta `handle_key` para `runner.rs`
-- [x] Verificar que todos os `use` de `crossterm::event` estão no escopo do módulo
-
-**DoD:** `cargo test` verde; navegação por teclado inalterada.
-
----
-
-### Feature A7: Extrair `app/pickers.rs`
-
-**Onde:** linhas 1854–2313 de `app.rs` (key handlers dos modais + settings/persist)
-
-**Problema:** os handlers de teclado dos 3 pickers (skill/model/auth) + helpers de
-persistência de provider/model formam um concern coeso de ~460 linhas.
-
-- [x] Mover `handle_skill_picker_key` (1854) para `pickers.rs`
-- [x] Mover `handle_settings_command` (1878) para `pickers.rs`
-- [x] Mover `persist_custom_model` (1942) para `pickers.rs`
-- [x] Mover `remove_from_user_store` (1957) para `pickers.rs`
-- [x] Mover `handle_model_picker_key` (1990–2252, 263 ln) para `pickers.rs`
-- [x] Mover `handle_auth_prompt_key` (2253–2313) para `pickers.rs`
-- [x] `mod.rs` re-exporta o que `keys.rs` precisa
-
-**DoD:** `cargo test` verde; `/models`, `/auth`, `/settings` inalterados.
-
----
-
-### Feature A8: Extrair `app/runner.rs`
-
-**Onde:** linhas 1181–1510 + 2601–2824 de `app.rs` (run_tui + submit_input + TerminalGuard)
-
-**Problema:** o event loop (`run_tui`, 330 ln) e o `submit_input` (223 ln) são o
-"motor" da TUI; `TerminalGuard` é o lifecycle do terminal. Único ponto de entrada
-externo: `tui/mod.rs` chama `app::run_tui`.
-
-- [x] Mover `run_tui` (1181–1510, 330 ln) para `runner.rs`
-- [x] Mover `TerminalGuard` + impl Drop (1511–1526) para `runner.rs`
-- [x] Mover `submit_input` (2601–2824, 223 ln) para `runner.rs`
-- [x] `tui/mod.rs` passa a chamar `app::runner::run_tui` (ou re-export via `mod.rs`)
-- [x] `mod.rs` re-exporta `run_tui` para `tui/mod.rs`
-- [x] Resolver dependência: `runner.rs` chama `keys::handle_key` (direção única)
-
-**DoD:** `cargo test` verde; TUI inicia e roda normalmente.
-
----
-
-## Tier 3 — Testes, docs e verificação
-
-### Feature A9: Extrair `app/tests.rs`
-
-**Onde:** linhas 2825–3167 de `app.rs` (input_tests + code_block_tests)
-
-**Problema:** os testes de input/soft-wrap e code-block estão no fim do monólito;
-devem viver num módulo de testes dedicado.
-
-- [x] Mover `input_tests` (2825–3050, 225 ln) para `tests.rs`
-- [x] Mover `code_block_tests` (3051–3104, 54 ln) para `tests.rs`
-- [x] `#[cfg(test)] mod tests` com `use super::*` — `mod.rs` re-exporta os itens testados
-- [x] `resume_picker_tests` já foi movido em A1 (não duplicar)
-- [x] Confirmar que todos os itens testados estão acessíveis via re-export
-
-**DoD:** `cargo test` verde; 296+ testes passando.
-
----
-
-### Feature A10: Sync docs + verificação final + commit
-
-**Onde:** `AGENTS.md`, `docs/ARCHITECTURE.md`, `src/harness/ui/tui/mod.rs`
-
-**Problema:** a árvore de arquivos em `AGENTS.md` e `docs/ARCHITECTURE.md` ainda
-lista `app.rs` como arquivo único; precisa refletir o novo diretório `app/`.
-
-- [x] Atualizar a árvore em `AGENTS.md` (seção `ui/tui/`)
-- [x] Atualizar `docs/ARCHITECTURE.md` se mencionar `app.rs`
-- [x] `cargo test` — 296+ testes verdes
-- [x] `cargo clippy` — sem warnings
-- [x] `cargo fmt --check` — ok
-- [x] Smoke test manual da TUI (`cargo run`) — navegação, modais, `/undo`, `/skills`
-- [x] Commit com mensagem descritiva (ex.: `refactor: split app.rs into app/ modules`)
-
-**DoD:** docs sincronizadas; build/test/clippy/fmt verdes; TUI funcional; commit feito.
-
----
-
-## Ordem de execução recomendada
-
-```text
-A0 (setup) → A1 (state) → A2 (usage) → A3 (undo) → A4 (skills)
-→ A5 (events) → A7 (pickers) → A6 (keys) → A8 (runner) → A9 (tests) → A10 (docs+commit)
-```
-
-**A2 e A3 são os cortes mais seguros** (menos dependências) — bons para validar o
-padrão antes dos cortes grandes (A6/A7/A8).
-
----
-
-## Riscos e mitigações
+C1 e C2 são independentes entre si e podem ir em paralelo; **C2 é pré-requisito
+de C3** (sem prefixo estável, `cache_control` não hita nunca). C4 depende de C1
+(campos) e C3 (para validar economia). Estimativa total: **3–4 dias**.
+
+## ⚠️ Riscos / trade-offs
 
 | Risco | Mitigação |
-|-------|-----------|
-| Quebrar os 9 imports de `draw/` (`app::App`, `app::Modal`, etc.) | `mod.rs` re-exporta tudo com `pub use` — zero mudança nos call sites |
-| `handle_key` tem dependência circular com `submit_input` (runner) | `keys.rs` importa de `runner.rs` (uma direção só) |
-| Testes usam `use super::*` | `mod.rs` re-exporta itens testados; testes movidos junto com o código |
-| Blame do git perdido | `git mv` + mover blocos inteiros sem reformatar |
-| `impl App` espalhado em vários módulos | Rust permite múltiplos `impl App`; cada módulo declara `impl App` parcial |
-| Regressão de UI | Extração incremental, um bloco por vez, testes verdes a cada passo |
+|---|---|
+| MiniMax/proxy rejeita `cache_control` | flag `prompt_cache` default OFF fora do Anthropic builtin; kill-switch global |
+| Proxy OpenAI-compat rejeita `stream_options` | retry 1× sem o campo em 400 |
+| Bloco de memory na user message cresce o histórico (~500 tok/turn) | tokens de cache custam 0.1×/0.5×; compaction já existe; bloco é stripped no UI |
+| Summary congelado fica stale durante edits | agente tem glob/grep/read; regenera pós-compaction |
+| Compaction reescreve histórico → cache miss | legítimo e único (1 miss por compaction) |
 
----
+## 🚫 Fora de escopo
 
-## Arquivos principais a tocar
-
-| Path | Mudança |
-|------|---------|
-| `src/harness/ui/tui/app.rs` | `git mv` → `app/mod.rs` (A0); remover blocos extraídos (A1–A9) |
-| `src/harness/ui/tui/app/state.rs` | Novo — App + Modal + picker states (A1) |
-| `src/harness/ui/tui/app/usage.rs` | Novo — contabilidade de custo (A2) |
-| `src/harness/ui/tui/app/undo.rs` | Novo — undo/revert (A3) |
-| `src/harness/ui/tui/app/skills.rs` | Novo — toggles/pickers/comando (A4) |
-| `src/harness/ui/tui/app/events.rs` | Novo — apply_event/transcript (A5) |
-| `src/harness/ui/tui/app/keys.rs` | Novo — handle_key/modal_key (A6) |
-| `src/harness/ui/tui/app/pickers.rs` | Novo — key handlers dos modais (A7) |
-| `src/harness/ui/tui/app/runner.rs` | Novo — run_tui/submit_input/TerminalGuard (A8) |
-| `src/harness/ui/tui/app/tests.rs` | Novo — input/code_block tests (A9) |
-| `src/harness/ui/tui/mod.rs` | Chamar `app::runner::run_tui` (A8) |
-| `AGENTS.md`, `docs/ARCHITECTURE.md` | Atualizar árvore de arquivos (A10) |
-
----
-
-## Notas de progresso
-
-| Data | Nota |
-|------|------|
-| 2026-09-08 | TODO.md substituído: rodadas D1–D10 e E1–E10 concluídas; novo plano A1–A10 para quebrar `app.rs` (3.167 ln) em 10 módulos. |
-| 2026-09-08 | A0–A10 concluídos: `app.rs` (3167 ln) → `app/` com 10 módulos; 296 testes + clippy + fmt verdes. `submit_input` ficou em `keys.rs` (evita ciclo keys↔runner). |
+- Gemini context caching (API diferente — rodada futura)
+- Painel de diagnóstico de cache no TUI (o `/usage` já cobre)
+- Ajuste fino de breakpoints >3 (Anthropic cobra write; 3 é o sweet spot)
