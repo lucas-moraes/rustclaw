@@ -105,8 +105,13 @@ entram no system prompt sob `# Session skills`. Persistidas em
 ### `harness/ui` — superfícies
 
 `ui/tui/` (default): TUI ratatui + crossterm com:
-- `app.rs` — estado (`App`, transcript `LineKind`/`TranscriptLine`), loop principal, `apply_event`
-- `draw.rs` — widgets (header/transcript/status/input, modals, help overlay)
+- `app/` — estado e loop, fatiado em módulos coesos:
+  - `state.rs` — `App`, `Modal`, picker states
+  - `events.rs` — `apply_event`, rebuild do transcript
+  - `skills.rs` / `usage.rs` / `undo.rs` — concerns isolados
+  - `keys.rs` / `pickers.rs` — dispatch de teclado e modais
+  - `runner.rs` — `run_tui`, `TerminalGuard`
+- `draw/` — widgets (header/transcript/status/input, modals, help overlay)
 - `askers.rs` — `TuiAsker`/`TuiUserAsker` via canais oneshot (sem bloquear stdin)
 - `input.rs` — key bindings
 

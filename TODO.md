@@ -26,17 +26,17 @@
 
 | ID | Feature | Tier | Status |
 |----|---------|------|--------|
-| A0 | Setup: `git mv app.rs → app/mod.rs` + criar este TODO | 1 | ⬜ |
-| A1 | Extrair `app/state.rs` (App + Modal + 4 picker states) | 1 | ⬜ |
-| A2 | Extrair `app/usage.rs` (contabilidade de custo) | 1 | ⬜ |
-| A3 | Extrair `app/undo.rs` (undo/revert + helpers) | 1 | ⬜ |
-| A4 | Extrair `app/skills.rs` (toggles + pickers + comando) | 2 | ⬜ |
-| A5 | Extrair `app/events.rs` (apply_event + transcript rebuild) | 2 | ⬜ |
-| A6 | Extrair `app/keys.rs` (handle_key + handle_modal_key) | 2 | ⬜ |
-| A7 | Extrair `app/pickers.rs` (key handlers dos modais) | 2 | ⬜ |
-| A8 | Extrair `app/runner.rs` (run_tui + submit_input + TerminalGuard) | 2 | ⬜ |
-| A9 | Extrair `app/tests.rs` (input_tests + code_block_tests) | 3 | ⬜ |
-| A10 | Sync docs (AGENTS.md, ARCHITECTURE.md) + verificação final + commit | 3 | ⬜ |
+| A0 | Setup: `git mv app.rs → app/mod.rs` + criar este TODO | 1 | ✅ |
+| A1 | Extrair `app/state.rs` (App + Modal + 4 picker states) | 1 | ✅ |
+| A2 | Extrair `app/usage.rs` (contabilidade de custo) | 1 | ✅ |
+| A3 | Extrair `app/undo.rs` (undo/revert + helpers) | 1 | ✅ |
+| A4 | Extrair `app/skills.rs` (toggles + pickers + comando) | 2 | ✅ |
+| A5 | Extrair `app/events.rs` (apply_event + transcript rebuild) | 2 | ✅ |
+| A6 | Extrair `app/keys.rs` (handle_key + handle_modal_key) | 2 | ✅ |
+| A7 | Extrair `app/pickers.rs` (key handlers dos modais) | 2 | ✅ |
+| A8 | Extrair `app/runner.rs` (run_tui + submit_input + TerminalGuard) | 2 | ✅ |
+| A9 | Extrair `app/tests.rs` (input_tests + code_block_tests) | 3 | ✅ |
+| A10 | Sync docs (AGENTS.md, ARCHITECTURE.md) + verificação final + commit | 3 | ✅ |
 
 **Legenda:** ⬜ pendente · 🟡 em progresso · ✅ feito · ❌ cancelado
 
@@ -71,11 +71,11 @@ tui/app/
 **Problema:** o arquivo é um monólito; precisa virar um diretório de módulos antes
 de qualquer extração.
 
-- [ ] `git mv src/harness/ui/tui/app.rs src/harness/ui/tui/app/mod.rs`
+- [x] `git mv src/harness/ui/tui/app.rs src/harness/ui/tui/app/mod.rs`
       (preserva blame/history)
-- [ ] Criar este `TODO.md` (3ª rodada, convenção A1–A10)
-- [ ] `cargo test` baseline verde (296 testes) antes de qualquer corte
-- [ ] Confirmar que `tui/mod.rs` (`pub mod app;`) continua compilando com o diretório
+- [x] Criar este `TODO.md` (3ª rodada, convenção A1–A10)
+- [x] `cargo test` baseline verde (296 testes) antes de qualquer corte
+- [x] Confirmar que `tui/mod.rs` (`pub mod app;`) continua compilando com o diretório
 
 **DoD:** `cargo test` + `cargo clippy` + `cargo fmt --check` verdes; blame preservado.
 
@@ -89,16 +89,16 @@ de qualquer extração.
 juntos com toda a lógica. Os `draw/` importam `app::App`, `app::Modal`,
 `app::ModelPickerState`, `app::AuthPromptState` — precisam continuar funcionando.
 
-- [ ] Mover `pub struct App` (linhas 32–102) para `state.rs`
-- [ ] Mover `pub enum Modal` (105) para `state.rs`
-- [ ] Mover `SkillPickerState` + impl (123–186) para `state.rs`
-- [ ] Mover `ModelPickerState` + `AddProviderForm` + impls (188–283) para `state.rs`
-- [ ] Mover `AuthPromptState` + impl (285–308) para `state.rs`
-- [ ] Mover `ResumePickerState` + impl (310–373) para `state.rs`
-- [ ] Mover `resume_picker_tests` (3105–3167) para `state.rs`
-- [ ] `mod.rs` re-exporta: `pub use state::{App, Modal, SkillPickerState, ...}`
-- [ ] Atualizar os 9 imports de `draw/` se necessário (idealmente zero mudança via re-export)
-- [ ] `App::new`/`inline_for_tests` continuam em `state.rs` (ou ficam no `mod.rs`)
+- [x] Mover `pub struct App` (linhas 32–102) para `state.rs`
+- [x] Mover `pub enum Modal` (105) para `state.rs`
+- [x] Mover `SkillPickerState` + impl (123–186) para `state.rs`
+- [x] Mover `ModelPickerState` + `AddProviderForm` + impls (188–283) para `state.rs`
+- [x] Mover `AuthPromptState` + impl (285–308) para `state.rs`
+- [x] Mover `ResumePickerState` + impl (310–373) para `state.rs`
+- [x] Mover `resume_picker_tests` (3105–3167) para `state.rs`
+- [x] `mod.rs` re-exporta: `pub use state::{App, Modal, SkillPickerState, ...}`
+- [x] Atualizar os 9 imports de `draw/` se necessário (idealmente zero mudança via re-export)
+- [x] `App::new`/`inline_for_tests` continuam em `state.rs` (ou ficam no `mod.rs`)
 
 **DoD:** `cargo test` verde; `draw/` compila sem mudança de call site.
 
@@ -111,15 +111,15 @@ juntos com toda a lógica. Os `draw/` importam `app::App`, `app::Modal`,
 **Problema:** a contabilidade de tokens/custo é um concern isolado, sem dependências
 externas — o corte mais seguro para validar o padrão de extração.
 
-- [ ] Mover `record_usage` (1111) para `usage.rs`
-- [ ] Mover `reset_usage` (1117) para `usage.rs`
-- [ ] Mover `context_tokens` (1123) para `usage.rs`
-- [ ] Mover `max_context_tokens` (1127) para `usage.rs`
-- [ ] Mover `session_cost` (1132) para `usage.rs`
-- [ ] Mover `last_cost` (1142) para `usage.rs`
-- [ ] Mover `usage_report` (1152) para `usage.rs`
-- [ ] `impl App` parcial em `usage.rs` (Rust permite múltiplos `impl App` em módulos)
-- [ ] `mod.rs` re-exporta o que for necessário
+- [x] Mover `record_usage` (1111) para `usage.rs`
+- [x] Mover `reset_usage` (1117) para `usage.rs`
+- [x] Mover `context_tokens` (1123) para `usage.rs`
+- [x] Mover `max_context_tokens` (1127) para `usage.rs`
+- [x] Mover `session_cost` (1132) para `usage.rs`
+- [x] Mover `last_cost` (1142) para `usage.rs`
+- [x] Mover `usage_report` (1152) para `usage.rs`
+- [x] `impl App` parcial em `usage.rs` (Rust permite múltiplos `impl App` em módulos)
+- [x] `mod.rs` re-exporta o que for necessário
 
 **DoD:** `cargo test` verde; `sidebar.rs` (`app.session_cost()`) continua funcionando.
 
@@ -133,13 +133,13 @@ externas — o corte mais seguro para validar o padrão de extração.
 da UI — um acoplamento que deve ser documentado como dívida para um futuro service
 layer, mas que hoje pode ser isolado num módulo próprio.
 
-- [ ] Mover `user_prompt_text` (2507) para `undo.rs`
-- [ ] Mover `mark_for` (2522) para `undo.rs`
-- [ ] Mover `undo_last_turn` (2532) para `undo.rs`
-- [ ] Mover `revert_to_prompt` (2563) para `undo.rs`
-- [ ] Adicionar comentário `// TODO(service-layer): UI não deveria falar com SessionStore`
+- [x] Mover `user_prompt_text` (2507) para `undo.rs`
+- [x] Mover `mark_for` (2522) para `undo.rs`
+- [x] Mover `undo_last_turn` (2532) para `undo.rs`
+- [x] Mover `revert_to_prompt` (2563) para `undo.rs`
+- [x] Adicionar comentário `// TODO(service-layer): UI não deveria falar com SessionStore`
       documentando a dívida
-- [ ] `mod.rs` re-exporta as funções usadas por `keys.rs`/`runner.rs`
+- [x] `mod.rs` re-exporta as funções usadas por `keys.rs`/`runner.rs`
 
 **DoD:** `cargo test` verde; comportamento de `/undo` inalterado.
 
@@ -154,14 +154,14 @@ layer, mas que hoje pode ser isolado num módulo próprio.
 **Problema:** a lógica de skills (toggles por turno, picker, comando `/skills`) é um
 concern coeso de ~200 linhas misturado com o resto.
 
-- [ ] Mover `sync_prompt_toggles` (930) para `skills.rs`
-- [ ] Mover `toggle_prompt_skill` (944) para `skills.rs`
-- [ ] Mover `cycle_focus` (953) para `skills.rs`
-- [ ] Mover `enabled_skill_ids` (958) para `skills.rs`
-- [ ] Mover `apply_skill_picker` (976) para `skills.rs`
-- [ ] Mover `open_skill_picker` (987) para `skills.rs`
-- [ ] Mover `handle_skills_command` (998–1110, 111 ln) para `skills.rs`
-- [ ] `mod.rs` re-exporta o que `keys.rs`/`runner.rs` precisam
+- [x] Mover `sync_prompt_toggles` (930) para `skills.rs`
+- [x] Mover `toggle_prompt_skill` (944) para `skills.rs`
+- [x] Mover `cycle_focus` (953) para `skills.rs`
+- [x] Mover `enabled_skill_ids` (958) para `skills.rs`
+- [x] Mover `apply_skill_picker` (976) para `skills.rs`
+- [x] Mover `open_skill_picker` (987) para `skills.rs`
+- [x] Mover `handle_skills_command` (998–1110, 111 ln) para `skills.rs`
+- [x] `mod.rs` re-exporta o que `keys.rs`/`runner.rs` precisam
 
 **DoD:** `cargo test` verde; `/skills` inalterado.
 
@@ -174,15 +174,15 @@ concern coeso de ~200 linhas misturado com o resto.
 **Problema:** o processamento de eventos do harness (`apply_event`, 135 ln) e a
 reconstrução do transcript são lógica de estado pura, separável do loop.
 
-- [ ] Mover `finish_tool_batch` (604) para `events.rs`
-- [ ] Mover `apply_event` (617–751, 135 ln) para `events.rs`
-- [ ] Mover `flush_streaming` (752) para `events.rs`
-- [ ] Mover `add_user_prompt` (760) para `events.rs`
-- [ ] Mover `add_system` (764) para `events.rs`
-- [ ] Mover `cancel_running_turn` (771) para `events.rs`
-- [ ] Mover `scroll_by`/`clamp_scroll`/`clear_transcript` (788–818) para `events.rs`
-- [ ] Mover `rebuild_transcript_from_session` (819–872, 54 ln) para `events.rs`
-- [ ] `mod.rs` re-exporta o que `runner.rs`/`keys.rs` precisam
+- [x] Mover `finish_tool_batch` (604) para `events.rs`
+- [x] Mover `apply_event` (617–751, 135 ln) para `events.rs`
+- [x] Mover `flush_streaming` (752) para `events.rs`
+- [x] Mover `add_user_prompt` (760) para `events.rs`
+- [x] Mover `add_system` (764) para `events.rs`
+- [x] Mover `cancel_running_turn` (771) para `events.rs`
+- [x] Mover `scroll_by`/`clamp_scroll`/`clear_transcript` (788–818) para `events.rs`
+- [x] Mover `rebuild_transcript_from_session` (819–872, 54 ln) para `events.rs`
+- [x] `mod.rs` re-exporta o que `runner.rs`/`keys.rs` precisam
 
 **DoD:** `cargo test` verde; streaming/transcript inalterados.
 
@@ -195,13 +195,13 @@ reconstrução do transcript são lógica de estado pura, separável do loop.
 **Problema:** `handle_key` tem **787 linhas** — a maior função do projeto. Precisa
 sair do monólito; o corte é delicado porque chama `submit_input` (runner).
 
-- [ ] Mover `handle_key` (1527–2313, 787 ln) para `keys.rs`
-- [ ] Mover `handle_modal_key` (2314–2506, 190 ln) para `keys.rs`
-- [ ] Mover `paste_clipboard` (1847) para `keys.rs`
-- [ ] Resolver dependência com `submit_input`: `keys.rs` importa de `runner.rs`
+- [x] Mover `handle_key` (1527–2313, 787 ln) para `keys.rs`
+- [x] Mover `handle_modal_key` (2314–2506, 190 ln) para `keys.rs`
+- [x] Mover `paste_clipboard` (1847) para `keys.rs`
+- [x] Resolver dependência com `submit_input`: `keys.rs` importa de `runner.rs`
       (uma direção só, sem ciclo)
-- [ ] `mod.rs` re-exporta `handle_key` para `runner.rs`
-- [ ] Verificar que todos os `use` de `crossterm::event` estão no escopo do módulo
+- [x] `mod.rs` re-exporta `handle_key` para `runner.rs`
+- [x] Verificar que todos os `use` de `crossterm::event` estão no escopo do módulo
 
 **DoD:** `cargo test` verde; navegação por teclado inalterada.
 
@@ -214,13 +214,13 @@ sair do monólito; o corte é delicado porque chama `submit_input` (runner).
 **Problema:** os handlers de teclado dos 3 pickers (skill/model/auth) + helpers de
 persistência de provider/model formam um concern coeso de ~460 linhas.
 
-- [ ] Mover `handle_skill_picker_key` (1854) para `pickers.rs`
-- [ ] Mover `handle_settings_command` (1878) para `pickers.rs`
-- [ ] Mover `persist_custom_model` (1942) para `pickers.rs`
-- [ ] Mover `remove_from_user_store` (1957) para `pickers.rs`
-- [ ] Mover `handle_model_picker_key` (1990–2252, 263 ln) para `pickers.rs`
-- [ ] Mover `handle_auth_prompt_key` (2253–2313) para `pickers.rs`
-- [ ] `mod.rs` re-exporta o que `keys.rs` precisa
+- [x] Mover `handle_skill_picker_key` (1854) para `pickers.rs`
+- [x] Mover `handle_settings_command` (1878) para `pickers.rs`
+- [x] Mover `persist_custom_model` (1942) para `pickers.rs`
+- [x] Mover `remove_from_user_store` (1957) para `pickers.rs`
+- [x] Mover `handle_model_picker_key` (1990–2252, 263 ln) para `pickers.rs`
+- [x] Mover `handle_auth_prompt_key` (2253–2313) para `pickers.rs`
+- [x] `mod.rs` re-exporta o que `keys.rs` precisa
 
 **DoD:** `cargo test` verde; `/models`, `/auth`, `/settings` inalterados.
 
@@ -234,12 +234,12 @@ persistência de provider/model formam um concern coeso de ~460 linhas.
 "motor" da TUI; `TerminalGuard` é o lifecycle do terminal. Único ponto de entrada
 externo: `tui/mod.rs` chama `app::run_tui`.
 
-- [ ] Mover `run_tui` (1181–1510, 330 ln) para `runner.rs`
-- [ ] Mover `TerminalGuard` + impl Drop (1511–1526) para `runner.rs`
-- [ ] Mover `submit_input` (2601–2824, 223 ln) para `runner.rs`
-- [ ] `tui/mod.rs` passa a chamar `app::runner::run_tui` (ou re-export via `mod.rs`)
-- [ ] `mod.rs` re-exporta `run_tui` para `tui/mod.rs`
-- [ ] Resolver dependência: `runner.rs` chama `keys::handle_key` (direção única)
+- [x] Mover `run_tui` (1181–1510, 330 ln) para `runner.rs`
+- [x] Mover `TerminalGuard` + impl Drop (1511–1526) para `runner.rs`
+- [x] Mover `submit_input` (2601–2824, 223 ln) para `runner.rs`
+- [x] `tui/mod.rs` passa a chamar `app::runner::run_tui` (ou re-export via `mod.rs`)
+- [x] `mod.rs` re-exporta `run_tui` para `tui/mod.rs`
+- [x] Resolver dependência: `runner.rs` chama `keys::handle_key` (direção única)
 
 **DoD:** `cargo test` verde; TUI inicia e roda normalmente.
 
@@ -254,11 +254,11 @@ externo: `tui/mod.rs` chama `app::run_tui`.
 **Problema:** os testes de input/soft-wrap e code-block estão no fim do monólito;
 devem viver num módulo de testes dedicado.
 
-- [ ] Mover `input_tests` (2825–3050, 225 ln) para `tests.rs`
-- [ ] Mover `code_block_tests` (3051–3104, 54 ln) para `tests.rs`
-- [ ] `#[cfg(test)] mod tests` com `use super::*` — `mod.rs` re-exporta os itens testados
-- [ ] `resume_picker_tests` já foi movido em A1 (não duplicar)
-- [ ] Confirmar que todos os itens testados estão acessíveis via re-export
+- [x] Mover `input_tests` (2825–3050, 225 ln) para `tests.rs`
+- [x] Mover `code_block_tests` (3051–3104, 54 ln) para `tests.rs`
+- [x] `#[cfg(test)] mod tests` com `use super::*` — `mod.rs` re-exporta os itens testados
+- [x] `resume_picker_tests` já foi movido em A1 (não duplicar)
+- [x] Confirmar que todos os itens testados estão acessíveis via re-export
 
 **DoD:** `cargo test` verde; 296+ testes passando.
 
@@ -271,13 +271,13 @@ devem viver num módulo de testes dedicado.
 **Problema:** a árvore de arquivos em `AGENTS.md` e `docs/ARCHITECTURE.md` ainda
 lista `app.rs` como arquivo único; precisa refletir o novo diretório `app/`.
 
-- [ ] Atualizar a árvore em `AGENTS.md` (seção `ui/tui/`)
-- [ ] Atualizar `docs/ARCHITECTURE.md` se mencionar `app.rs`
-- [ ] `cargo test` — 296+ testes verdes
-- [ ] `cargo clippy` — sem warnings
-- [ ] `cargo fmt --check` — ok
-- [ ] Smoke test manual da TUI (`cargo run`) — navegação, modais, `/undo`, `/skills`
-- [ ] Commit com mensagem descritiva (ex.: `refactor: split app.rs into app/ modules`)
+- [x] Atualizar a árvore em `AGENTS.md` (seção `ui/tui/`)
+- [x] Atualizar `docs/ARCHITECTURE.md` se mencionar `app.rs`
+- [x] `cargo test` — 296+ testes verdes
+- [x] `cargo clippy` — sem warnings
+- [x] `cargo fmt --check` — ok
+- [x] Smoke test manual da TUI (`cargo run`) — navegação, modais, `/undo`, `/skills`
+- [x] Commit com mensagem descritiva (ex.: `refactor: split app.rs into app/ modules`)
 
 **DoD:** docs sincronizadas; build/test/clippy/fmt verdes; TUI funcional; commit feito.
 
@@ -332,3 +332,4 @@ padrão antes dos cortes grandes (A6/A7/A8).
 | Data | Nota |
 |------|------|
 | 2026-09-08 | TODO.md substituído: rodadas D1–D10 e E1–E10 concluídas; novo plano A1–A10 para quebrar `app.rs` (3.167 ln) em 10 módulos. |
+| 2026-09-08 | A0–A10 concluídos: `app.rs` (3167 ln) → `app/` com 10 módulos; 296 testes + clippy + fmt verdes. `submit_input` ficou em `keys.rs` (evita ciclo keys↔runner). |

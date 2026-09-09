@@ -124,12 +124,22 @@ src/
         ├── cli.rs       # streaming CLI (fallback / RUSTCLAW_UI=cli)
         └── tui/         # TUI ratatui + crossterm
             ├── mod.rs   # entry + TTY selection + askers wiring
-            ├── app.rs   # App state, apply_event, loop principal, modals
+            ├── app/     # App state + loop (split modules)
+            │   ├── mod.rs    # re-exports + MODES
+            │   ├── state.rs  # App + Modal + picker states
+            │   ├── events.rs # apply_event + transcript rebuild
+            │   ├── skills.rs # toggles/pickers/comando /skills
+            │   ├── usage.rs  # contabilidade de custo
+            │   ├── undo.rs   # undo/revert helpers
+            │   ├── keys.rs   # handle_key + submit_input
+            │   ├── pickers.rs# key handlers dos modais
+            │   ├── runner.rs # run_tui + TerminalGuard
+            │   └── tests.rs  # input/code_block tests
             ├── editor.rs# prompt input editor (cursor/editing/history)
             ├── subagent.rs # live subagent panels (task tool)
             ├── codeblock.rs # last-code-block copy/save helpers
             ├── transcript.rs # LineKind/TranscriptLine/ToolBatch types
-            ├── draw.rs  # widgets (header/transcript/status/input/help/modal)
+            ├── draw/    # widgets (header/transcript/status/input/help/modal)
             ├── input.rs # key bindings
             └── askers.rs# TuiAsker/TuiUserAsker (channels oneshot)
 ```
