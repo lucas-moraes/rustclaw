@@ -1,19 +1,24 @@
-# RustClaw — Dívida Técnica (refactor)
+# RustClaw — Dívida Técnica & Features (3ª rodada: quebrar `app.rs`)
 
-> **Problema:** o RustClaw cresceu rápido (MCP, skills, memória, subagentes, TUI)
-> e acumulou dívidas de manutenção: camadas de config sobrepostas, duplicação de
-> lógica, arquivos grandes e documentação desatualizada. Antes de adicionar novas
-> features (checkpoints, export, plan→build), vale pagar os "juros".
+> **Problema:** o `app.rs` (3.167 linhas) concentra 7 responsabilidades sem relação
+> entre si: estado (48 campos `pub`), eventos, skills, contabilidade de custo,
+> event loop, dispatch de teclas e undo/revert. É o maior arquivo do projeto e o
+> mais difícil de navegar/refatorar. As rodadas anteriores (D1–D10, E1–E10) pagaram
+> os juros de config, retry, segurança e observabilidade; esta rodada **A1–A10**
+> quebra o monólito da UI em módulos coesos.
 >
-> **Escopo:** 3 tiers de prioridade. Tier 1 = pagar juros (config, temperatura,
-> dedup, cwd). Tier 2 = quebrar arquivos grandes. Tier 3 = higiene/docs.
+> **Escopo:** 3 tiers. Tier 1 = setup + cortes seguros (state, usage, undo).
+> Tier 2 = cortes grandes (events, skills, pickers, keys, runner). Tier 3 = testes,
+> docs e verificação final.
 >
 > **Decisões-chave:**
 > - Cada feature tem checklist + Definition of Done (`cargo test` + `cargo clippy`
 >   + `cargo fmt --check` verdes).
-> - Refactors são **incrementais**: um bloco coeso por vez, mantendo os 271 testes
+> - Refactors são **incrementais**: um bloco coeso por vez, mantendo os 296 testes
 >   verdes a cada passo.
 > - Nenhuma mudança de comportamento visível ao usuário (só estrutura interna).
+> - `git mv` para preservar history/blame; mover blocos inteiros sem reformatar.
+> - `mod.rs` re-exporta tudo com `pub use` — os 9 imports de `draw/` não mudam.
 
 ---
 
@@ -21,181 +26,272 @@
 
 | ID | Feature | Tier | Status |
 |----|---------|------|--------|
-| D1 | Consolidar camadas de config (3 → 1) | 1 | ✅ |
-| D2 | `default_temperature` conhecer `chat-free` | 1 | ✅ |
-| D3 | Dedup do `maybe_compact` (runtime + processor) | 1 | ✅ |
-| D4 | Quebrar `app.rs` (3745 linhas) | 2 | ✅ |
-| D5 | `cwd` vs `project_root` no runtime | 1 | ✅ |
-| D6 | Unificar defaults de `HarnessConfig`/`Config` | 1 | ✅ |
-| D7 | Limpar warnings de clippy pré-existentes | 3 | ✅ |
-| D8 | Comentário `TODO F3 spec` obsoleto | 3 | ✅ |
-| D9 | Sincronizar README com o estado atual | 3 | ✅ |
-| D10 | Atualizar SUGGESTIONS.md (MCP já feito) | 3 | ✅ |
+| A0 | Setup: `git mv app.rs → app/mod.rs` + criar este TODO | 1 | ⬜ |
+| A1 | Extrair `app/state.rs` (App + Modal + 4 picker states) | 1 | ⬜ |
+| A2 | Extrair `app/usage.rs` (contabilidade de custo) | 1 | ⬜ |
+| A3 | Extrair `app/undo.rs` (undo/revert + helpers) | 1 | ⬜ |
+| A4 | Extrair `app/skills.rs` (toggles + pickers + comando) | 2 | ⬜ |
+| A5 | Extrair `app/events.rs` (apply_event + transcript rebuild) | 2 | ⬜ |
+| A6 | Extrair `app/keys.rs` (handle_key + handle_modal_key) | 2 | ⬜ |
+| A7 | Extrair `app/pickers.rs` (key handlers dos modais) | 2 | ⬜ |
+| A8 | Extrair `app/runner.rs` (run_tui + submit_input + TerminalGuard) | 2 | ⬜ |
+| A9 | Extrair `app/tests.rs` (input_tests + code_block_tests) | 3 | ⬜ |
+| A10 | Sync docs (AGENTS.md, ARCHITECTURE.md) + verificação final + commit | 3 | ⬜ |
 
 **Legenda:** ⬜ pendente · 🟡 em progresso · ✅ feito · ❌ cancelado
 
 ---
 
-## Tier 1 — Pagar juros (reduzir complexidade de manutenção)
+## Estrutura alvo
 
-### Feature D1: Consolidar camadas de config (3 → 1)
+```
+tui/app/
+├── mod.rs        (~120 ln)  — pub use re-exports, MODES, doc do módulo
+├── state.rs      (~380 ln)  — App struct + Modal + 4 picker states + tests
+├── events.rs     (~290 ln)  — apply_event, transcript rebuild, streaming
+├── skills.rs     (~200 ln)  — toggles, pickers, handle_skills_command
+├── usage.rs      (~90 ln)   — record_usage, session_cost, usage_report
+├── undo.rs       (~120 ln)  — undo_last_turn, revert_to_prompt, mark_for
+├── keys.rs       (~530 ln)  — handle_key, handle_modal_key, paste_clipboard
+├── pickers.rs    (~460 ln)  — 3 picker key handlers + settings/persist helpers
+├── runner.rs     (~570 ln)  — run_tui, submit_input, TerminalGuard
+└── tests.rs      (~290 ln)  — input_tests, code_block_tests
+```
 
-**Onde:** `src/config.rs`, `src/harness/runtime.rs` (`HarnessConfig`, `from_legacy`,
-`from_legacy_in`), `src/harness/project/config_file.rs`.
-
-**Problema:** três representações do mesmo conceito:
-- `Config` (resolvido, `api_key: Option<String>`)
-- `HarnessConfig` (runtime, `api_key: String`)
-- `GlobalSettings` + `ProjectConfig` (persistência)
-
-`from_legacy`/`from_legacy_in` existem só para traduzir `Config → HarnessConfig`.
-
-- [x] Definir um único `RuntimeConfig` resolvido (com `api_key: String`, já que o
-      token é obrigatório no runtime)
-- [x] Eliminar `HarnessConfig` e `from_legacy`/`from_legacy_in`
-- [x] `Config::resolve` passa a produzir o `RuntimeConfig` diretamente
-- [x] Atualizar todos os call sites (`main.rs`, `runtime.rs`, testes, smoke test)
-- [x] Manter `GlobalSettings`/`ProjectConfig` como camada de persistência (não mudar)
-- [x] Testes: `config.rs` já cobre a resolução — manter todos verdes
-
-### Feature D2: `default_temperature` conhecer `chat-free`
-
-**Onde:** `src/harness/agent/mod.rs` (linhas 34-42), `src/harness/agent/builtin.rs`.
-
-**Problema:** o `match` em `default_temperature` tem `build/plan/explore/general` e
-cai em `_ => 0.0`. O `chat-free` funciona só porque carrega `temperature: Some(0.8)`
-explícito. Dois lugares precisam ser mantidos em sincronia manualmente
-(`default_temperature` + `find_builtin`) a cada agente novo.
-
-- [x] Mover a temperatura para dentro de cada `builtin::*()` (que já setam
-      `temperature: Some(...)`)
-- [x] `default_temperature` vira apenas o fallback para agentes custom/desconhecidos
-- [x] Remover o `match` por nome (ou reduzir a `_ => 0.0`)
-- [x] Testes: `test_default_temperature_per_mode` e `test_turn_temperature_override_wins`
-      continuam verdes; adicionar `chat-free` ao caso de teste
-
-### Feature D3: Dedup do `maybe_compact`
-
-**Onde:** `src/harness/runtime.rs` (linhas 385-446), `src/harness/session/processor.rs`
-(linhas 644-681), `src/harness/session/compaction.rs`.
-
-**Problema:** o mesmo algoritmo de compaction (com constantes e o cálculo
-`before - new.len() + 1`) existe **duas vezes**, quase idêntico, com constantes
-potencialmente divergentes (`COMPACTION_KEEP_RECENT: 6` no processor vs
-`KEEP_RECENT: 6` no runtime).
-
-- [x] Extrair um único `compaction::compact_if_needed(session, provider, config, events)`
-      chamado pelos dois
-- [x] Unificar as constantes (`KEEP_RECENT`, `MIN_MESSAGES`) num único lugar
-- [x] Manter o cálculo `summarized = before - new.len() + 1` num único ponto
-- [x] Manter a persistência imediata pós-compaction (não perder histórico em abort)
-- [x] Testes: `compaction.rs` já cobre o núcleo; adicionar teste do wrapper que
-      persiste + emite eventos
-
-### Feature D5: `cwd` vs `project_root` no runtime
-
-**Onde:** `src/harness/runtime.rs` (9 ocorrências de `current_dir()` + 1 no
-`TaskRunner::runtime_current_cwd`).
-
-**Problema:** vários métodos chamam `std::env::current_dir()` internamente em vez de
-usar o `project_root` que o runtime já guarda. Isso cria inconsistência potencial
-(ex.: `TaskRunner` usa `current_dir()` em vez do cwd da sessão pai) e dificulta
-testar com cwd diferente.
-
-- [x] Varrer e substituir `current_dir()` por `self.project_root` nos métodos do runtime
-- [x] `TaskRunner` usa o cwd da sessão pai (não `current_dir()` global)
-- [x] `create_session`/`load_session`/`list_sessions`/`delete_session`/`set_session_title`
-      usam `self.project_root`
-- [x] Testes: adicionar teste que cria runtime com `project_root` explícito e verifica
-      que as operações de sessão usam esse root (não o cwd do processo)
-
-### Feature D6: Unificar defaults de `HarnessConfig`/`Config`
-
-**Onde:** `src/harness/runtime.rs` (linhas 36-49), `src/config.rs` (linhas 106-118).
-
-**Problema:** `HarnessConfig::default()` tem `max_iterations: 100`,
-`max_context_tokens: 100_000`, `turn_timeout_secs: 1800`; `Config::defaults()` tem
-`50`, `100_000`, `600`. Dois conjuntos de números mágicos para a mesma coisa — um
-turno pode rodar com limites diferentes do que o `/settings` mostra.
-
-- [x] Unificar os defaults num único lugar (resolvido junto com D1)
-- [x] O runtime sempre usa os valores resolvidos (nunca os defaults "de fábrica")
-- [x] Testes: verificar que `/settings` e o runtime concordam nos limites
+**Total:** ~3.150 linhas distribuídas em 10 arquivos, máximo ~570 ln por arquivo.
 
 ---
 
-## Tier 2 — Quebrar arquivos grandes
+## Tier 1 — Setup + cortes seguros
 
-### Feature D4: Quebrar `app.rs` (3745 linhas)
+### Feature A0: Setup do módulo `app/`
 
-**Onde:** `src/harness/ui/tui/app.rs`.
+**Onde:** `src/harness/ui/tui/app.rs` → `src/harness/ui/tui/app/mod.rs`
 
-**Problema:** um único arquivo com ~3700 linhas de estado + lógica de eventos +
-editor de input + subagentes + testes. É o maior arquivo do projeto e o mais difícil
-de navegar/refatorar.
+**Problema:** o arquivo é um monólito; precisa virar um diretório de módulos antes
+de qualquer extração.
 
-- [x] Extrair o **editor de input** (já há testes isolados disso) para módulo próprio
-- [x] Extrair o **gerenciamento de subagentes** (painel/accordion) para módulo próprio
-- [x] Extrair helpers de render/estado coesos (ex.: `last_code_block`, soft-wrap)
-- [x] Fazer **incremental**: um bloco coeso por vez, mantendo os testes verdes
-- [x] Não reduzir linhas por reduzir — separar responsabilidades
-- [x] Testes: todos os testes de `app.rs` (editor, wrap, subagentes) continuam verdes
+- [ ] `git mv src/harness/ui/tui/app.rs src/harness/ui/tui/app/mod.rs`
+      (preserva blame/history)
+- [ ] Criar este `TODO.md` (3ª rodada, convenção A1–A10)
+- [ ] `cargo test` baseline verde (296 testes) antes de qualquer corte
+- [ ] Confirmar que `tui/mod.rs` (`pub mod app;`) continua compilando com o diretório
+
+**DoD:** `cargo test` + `cargo clippy` + `cargo fmt --check` verdes; blame preservado.
 
 ---
 
-## Tier 3 — Higiene e documentação
+### Feature A1: Extrair `app/state.rs`
 
-### Feature D7: Limpar warnings de clippy pré-existentes
+**Onde:** linhas 32–373 de `app.rs` (struct `App` + `Modal` + 4 picker states + impls)
 
-**Onde:** `src/harness/ui/tui/app.rs` (linhas ~2505, 2507) — funções usadas só em testes.
+**Problema:** o estado da UI (48 campos `pub`) e os 5 tipos de overlay/modal vivem
+juntos com toda a lógica. Os `draw/` importam `app::App`, `app::Modal`,
+`app::ModelPickerState`, `app::AuthPromptState` — precisam continuar funcionando.
 
-- [x] Marcar funções usadas só em testes com `#[cfg(test)]` ou `#[allow(dead_code)]`
-      com justificativa
-- [x] `cargo clippy` 100% limpo (sem warnings)
+- [ ] Mover `pub struct App` (linhas 32–102) para `state.rs`
+- [ ] Mover `pub enum Modal` (105) para `state.rs`
+- [ ] Mover `SkillPickerState` + impl (123–186) para `state.rs`
+- [ ] Mover `ModelPickerState` + `AddProviderForm` + impls (188–283) para `state.rs`
+- [ ] Mover `AuthPromptState` + impl (285–308) para `state.rs`
+- [ ] Mover `ResumePickerState` + impl (310–373) para `state.rs`
+- [ ] Mover `resume_picker_tests` (3105–3167) para `state.rs`
+- [ ] `mod.rs` re-exporta: `pub use state::{App, Modal, SkillPickerState, ...}`
+- [ ] Atualizar os 9 imports de `draw/` se necessário (idealmente zero mudança via re-export)
+- [ ] `App::new`/`inline_for_tests` continuam em `state.rs` (ou ficam no `mod.rs`)
 
-### Feature D8: Comentário `TODO F3 spec` obsoleto
+**DoD:** `cargo test` verde; `draw/` compila sem mudança de call site.
 
-**Onde:** `src/harness/permission/mod.rs` (linha 78).
+---
 
-**Problema:** o TODO.md agora é sobre dívida técnica; o comentário "matching the
-TODO F3 spec" está desatualizado (F3 era do plano MCP, já concluído).
+### Feature A2: Extrair `app/usage.rs`
 
-- [x] Atualizar ou remover o comentário obsoleto
+**Onde:** linhas 1111–1180 de `app.rs` (impl App: contabilidade de custo)
 
-### Feature D9: Sincronizar README com o estado atual
+**Problema:** a contabilidade de tokens/custo é um concern isolado, sem dependências
+externas — o corte mais seguro para validar o padrão de extração.
 
-**Onde:** `README.md`.
+- [ ] Mover `record_usage` (1111) para `usage.rs`
+- [ ] Mover `reset_usage` (1117) para `usage.rs`
+- [ ] Mover `context_tokens` (1123) para `usage.rs`
+- [ ] Mover `max_context_tokens` (1127) para `usage.rs`
+- [ ] Mover `session_cost` (1132) para `usage.rs`
+- [ ] Mover `last_cost` (1142) para `usage.rs`
+- [ ] Mover `usage_report` (1152) para `usage.rs`
+- [ ] `impl App` parcial em `usage.rs` (Rust permite múltiplos `impl App` em módulos)
+- [ ] `mod.rs` re-exporta o que for necessário
 
-**Problema:** o README ainda lista só `build, plan, explore, general` (linhas 12 e
-130), não menciona `chat-free`. Também não lista `git_status/git_diff/git_log` nas
-tools de coding nem o `remember`/`/memory`.
+**DoD:** `cargo test` verde; `sidebar.rs` (`app.session_cost()`) continua funcionando.
 
-- [x] Adicionar `chat-free` à lista de agents (linha 12 e 130)
-- [x] Listar `git_status/git_diff/git_log` nas tools de coding
-- [x] Mencionar `remember` tool e comandos `/memory`
-- [x] Revisar a seção de atalhos/comandos para refletir o estado atual
+---
 
-### Feature D10: Atualizar SUGGESTIONS.md (MCP já feito)
+### Feature A3: Extrair `app/undo.rs`
 
-**Onde:** `SUGGESTIONS.md`.
+**Onde:** linhas 2507–2600 de `app.rs` (undo/revert + helpers)
 
-**Problema:** o item 6 (MCP client) está **feito**, mas ainda listado como pendente
-no Tier 2.
+**Problema:** `undo_last_turn`/`revert_to_prompt` falam direto com `SessionStore`
+da UI — um acoplamento que deve ser documentado como dívida para um futuro service
+layer, mas que hoje pode ser isolado num módulo próprio.
 
-- [x] Riscar/mover o item 6 (MCP) para a seção "já implementado" (como foi feito com
-      `/undo` e git tools no topo do arquivo)
-- [x] Revisar o roadmap para refletir a realidade
+- [ ] Mover `user_prompt_text` (2507) para `undo.rs`
+- [ ] Mover `mark_for` (2522) para `undo.rs`
+- [ ] Mover `undo_last_turn` (2532) para `undo.rs`
+- [ ] Mover `revert_to_prompt` (2563) para `undo.rs`
+- [ ] Adicionar comentário `// TODO(service-layer): UI não deveria falar com SessionStore`
+      documentando a dívida
+- [ ] `mod.rs` re-exporta as funções usadas por `keys.rs`/`runner.rs`
+
+**DoD:** `cargo test` verde; comportamento de `/undo` inalterado.
+
+---
+
+## Tier 2 — Cortes grandes
+
+### Feature A4: Extrair `app/skills.rs`
+
+**Onde:** linhas 930–1110 de `app.rs` (toggles + pickers + comando)
+
+**Problema:** a lógica de skills (toggles por turno, picker, comando `/skills`) é um
+concern coeso de ~200 linhas misturado com o resto.
+
+- [ ] Mover `sync_prompt_toggles` (930) para `skills.rs`
+- [ ] Mover `toggle_prompt_skill` (944) para `skills.rs`
+- [ ] Mover `cycle_focus` (953) para `skills.rs`
+- [ ] Mover `enabled_skill_ids` (958) para `skills.rs`
+- [ ] Mover `apply_skill_picker` (976) para `skills.rs`
+- [ ] Mover `open_skill_picker` (987) para `skills.rs`
+- [ ] Mover `handle_skills_command` (998–1110, 111 ln) para `skills.rs`
+- [ ] `mod.rs` re-exporta o que `keys.rs`/`runner.rs` precisam
+
+**DoD:** `cargo test` verde; `/skills` inalterado.
+
+---
+
+### Feature A5: Extrair `app/events.rs`
+
+**Onde:** linhas 604–872 de `app.rs` (apply_event + transcript rebuild + streaming)
+
+**Problema:** o processamento de eventos do harness (`apply_event`, 135 ln) e a
+reconstrução do transcript são lógica de estado pura, separável do loop.
+
+- [ ] Mover `finish_tool_batch` (604) para `events.rs`
+- [ ] Mover `apply_event` (617–751, 135 ln) para `events.rs`
+- [ ] Mover `flush_streaming` (752) para `events.rs`
+- [ ] Mover `add_user_prompt` (760) para `events.rs`
+- [ ] Mover `add_system` (764) para `events.rs`
+- [ ] Mover `cancel_running_turn` (771) para `events.rs`
+- [ ] Mover `scroll_by`/`clamp_scroll`/`clear_transcript` (788–818) para `events.rs`
+- [ ] Mover `rebuild_transcript_from_session` (819–872, 54 ln) para `events.rs`
+- [ ] `mod.rs` re-exporta o que `runner.rs`/`keys.rs` precisam
+
+**DoD:** `cargo test` verde; streaming/transcript inalterados.
+
+---
+
+### Feature A6: Extrair `app/keys.rs`
+
+**Onde:** linhas 1527–2313 de `app.rs` (handle_key + handle_modal_key + paste_clipboard)
+
+**Problema:** `handle_key` tem **787 linhas** — a maior função do projeto. Precisa
+sair do monólito; o corte é delicado porque chama `submit_input` (runner).
+
+- [ ] Mover `handle_key` (1527–2313, 787 ln) para `keys.rs`
+- [ ] Mover `handle_modal_key` (2314–2506, 190 ln) para `keys.rs`
+- [ ] Mover `paste_clipboard` (1847) para `keys.rs`
+- [ ] Resolver dependência com `submit_input`: `keys.rs` importa de `runner.rs`
+      (uma direção só, sem ciclo)
+- [ ] `mod.rs` re-exporta `handle_key` para `runner.rs`
+- [ ] Verificar que todos os `use` de `crossterm::event` estão no escopo do módulo
+
+**DoD:** `cargo test` verde; navegação por teclado inalterada.
+
+---
+
+### Feature A7: Extrair `app/pickers.rs`
+
+**Onde:** linhas 1854–2313 de `app.rs` (key handlers dos modais + settings/persist)
+
+**Problema:** os handlers de teclado dos 3 pickers (skill/model/auth) + helpers de
+persistência de provider/model formam um concern coeso de ~460 linhas.
+
+- [ ] Mover `handle_skill_picker_key` (1854) para `pickers.rs`
+- [ ] Mover `handle_settings_command` (1878) para `pickers.rs`
+- [ ] Mover `persist_custom_model` (1942) para `pickers.rs`
+- [ ] Mover `remove_from_user_store` (1957) para `pickers.rs`
+- [ ] Mover `handle_model_picker_key` (1990–2252, 263 ln) para `pickers.rs`
+- [ ] Mover `handle_auth_prompt_key` (2253–2313) para `pickers.rs`
+- [ ] `mod.rs` re-exporta o que `keys.rs` precisa
+
+**DoD:** `cargo test` verde; `/models`, `/auth`, `/settings` inalterados.
+
+---
+
+### Feature A8: Extrair `app/runner.rs`
+
+**Onde:** linhas 1181–1510 + 2601–2824 de `app.rs` (run_tui + submit_input + TerminalGuard)
+
+**Problema:** o event loop (`run_tui`, 330 ln) e o `submit_input` (223 ln) são o
+"motor" da TUI; `TerminalGuard` é o lifecycle do terminal. Único ponto de entrada
+externo: `tui/mod.rs` chama `app::run_tui`.
+
+- [ ] Mover `run_tui` (1181–1510, 330 ln) para `runner.rs`
+- [ ] Mover `TerminalGuard` + impl Drop (1511–1526) para `runner.rs`
+- [ ] Mover `submit_input` (2601–2824, 223 ln) para `runner.rs`
+- [ ] `tui/mod.rs` passa a chamar `app::runner::run_tui` (ou re-export via `mod.rs`)
+- [ ] `mod.rs` re-exporta `run_tui` para `tui/mod.rs`
+- [ ] Resolver dependência: `runner.rs` chama `keys::handle_key` (direção única)
+
+**DoD:** `cargo test` verde; TUI inicia e roda normalmente.
+
+---
+
+## Tier 3 — Testes, docs e verificação
+
+### Feature A9: Extrair `app/tests.rs`
+
+**Onde:** linhas 2825–3167 de `app.rs` (input_tests + code_block_tests)
+
+**Problema:** os testes de input/soft-wrap e code-block estão no fim do monólito;
+devem viver num módulo de testes dedicado.
+
+- [ ] Mover `input_tests` (2825–3050, 225 ln) para `tests.rs`
+- [ ] Mover `code_block_tests` (3051–3104, 54 ln) para `tests.rs`
+- [ ] `#[cfg(test)] mod tests` com `use super::*` — `mod.rs` re-exporta os itens testados
+- [ ] `resume_picker_tests` já foi movido em A1 (não duplicar)
+- [ ] Confirmar que todos os itens testados estão acessíveis via re-export
+
+**DoD:** `cargo test` verde; 296+ testes passando.
+
+---
+
+### Feature A10: Sync docs + verificação final + commit
+
+**Onde:** `AGENTS.md`, `docs/ARCHITECTURE.md`, `src/harness/ui/tui/mod.rs`
+
+**Problema:** a árvore de arquivos em `AGENTS.md` e `docs/ARCHITECTURE.md` ainda
+lista `app.rs` como arquivo único; precisa refletir o novo diretório `app/`.
+
+- [ ] Atualizar a árvore em `AGENTS.md` (seção `ui/tui/`)
+- [ ] Atualizar `docs/ARCHITECTURE.md` se mencionar `app.rs`
+- [ ] `cargo test` — 296+ testes verdes
+- [ ] `cargo clippy` — sem warnings
+- [ ] `cargo fmt --check` — ok
+- [ ] Smoke test manual da TUI (`cargo run`) — navegação, modais, `/undo`, `/skills`
+- [ ] Commit com mensagem descritiva (ex.: `refactor: split app.rs into app/ modules`)
+
+**DoD:** docs sincronizadas; build/test/clippy/fmt verdes; TUI funcional; commit feito.
 
 ---
 
 ## Ordem de execução recomendada
 
 ```text
-D3 (dedup compaction) → D2 (temperatura) → D1+D6 (config) → D5 (cwd)
-→ D7–D10 (higiene/docs) → D4 (app.rs, por último e incremental)
+A0 (setup) → A1 (state) → A2 (usage) → A3 (undo) → A4 (skills)
+→ A5 (events) → A7 (pickers) → A6 (keys) → A8 (runner) → A9 (tests) → A10 (docs+commit)
 ```
 
-Cada feature: `cargo test` + `cargo clippy` + `cargo fmt --check` verdes.
+**A2 e A3 são os cortes mais seguros** (menos dependências) — bons para validar o
+padrão antes dos cortes grandes (A6/A7/A8).
 
 ---
 
@@ -203,11 +299,12 @@ Cada feature: `cargo test` + `cargo clippy` + `cargo fmt --check` verdes.
 
 | Risco | Mitigação |
 |-------|-----------|
-| Refactor de config quebra resolução | `config.rs` já tem testes de resolução (catalog→global→projeto); manter todos verdes |
-| Dedup do compaction muda comportamento | `compaction.rs` já cobre o núcleo; adicionar teste do wrapper (persist + eventos) |
-| Quebrar `app.rs` introduz regressão de UI | Extração incremental, um bloco por vez, testes de editor/wrap/subagentes verdes |
-| `current_dir()` vs `project_root` diverge | Teste com `project_root` explícito ≠ cwd do processo |
-| Documentação fica desatualizada de novo | Sincronizar README/SUGGESTIONS na mesma PR das mudanças |
+| Quebrar os 9 imports de `draw/` (`app::App`, `app::Modal`, etc.) | `mod.rs` re-exporta tudo com `pub use` — zero mudança nos call sites |
+| `handle_key` tem dependência circular com `submit_input` (runner) | `keys.rs` importa de `runner.rs` (uma direção só) |
+| Testes usam `use super::*` | `mod.rs` re-exporta itens testados; testes movidos junto com o código |
+| Blame do git perdido | `git mv` + mover blocos inteiros sem reformatar |
+| `impl App` espalhado em vários módulos | Rust permite múltiplos `impl App`; cada módulo declara `impl App` parcial |
+| Regressão de UI | Extração incremental, um bloco por vez, testes verdes a cada passo |
 
 ---
 
@@ -215,16 +312,18 @@ Cada feature: `cargo test` + `cargo clippy` + `cargo fmt --check` verdes.
 
 | Path | Mudança |
 |------|---------|
-| `src/config.rs` | Consolidar `Config`/`HarnessConfig` num `RuntimeConfig` (D1, D6) |
-| `src/harness/runtime.rs` | Eliminar `from_legacy*`; usar `project_root`; dedup compaction (D1, D3, D5, D6) |
-| `src/harness/session/processor.rs` | Usar `compaction::compact_if_needed` (D3) |
-| `src/harness/session/compaction.rs` | Novo wrapper `compact_if_needed` + constantes unificadas (D3) |
-| `src/harness/agent/mod.rs` | `default_temperature` sem `match` por nome (D2) |
-| `src/harness/agent/builtin.rs` | Temperaturas explícitas por agente (D2) |
-| `src/harness/ui/tui/app.rs` | Extrair editor/subagentes/helpers (D4); limpar clippy (D7) |
-| `src/harness/permission/mod.rs` | Comentário obsoleto (D8) |
-| `README.md` | Sincronizar agents/tools/memory (D9) |
-| `SUGGESTIONS.md` | Mover MCP para "já implementado" (D10) |
+| `src/harness/ui/tui/app.rs` | `git mv` → `app/mod.rs` (A0); remover blocos extraídos (A1–A9) |
+| `src/harness/ui/tui/app/state.rs` | Novo — App + Modal + picker states (A1) |
+| `src/harness/ui/tui/app/usage.rs` | Novo — contabilidade de custo (A2) |
+| `src/harness/ui/tui/app/undo.rs` | Novo — undo/revert (A3) |
+| `src/harness/ui/tui/app/skills.rs` | Novo — toggles/pickers/comando (A4) |
+| `src/harness/ui/tui/app/events.rs` | Novo — apply_event/transcript (A5) |
+| `src/harness/ui/tui/app/keys.rs` | Novo — handle_key/modal_key (A6) |
+| `src/harness/ui/tui/app/pickers.rs` | Novo — key handlers dos modais (A7) |
+| `src/harness/ui/tui/app/runner.rs` | Novo — run_tui/submit_input/TerminalGuard (A8) |
+| `src/harness/ui/tui/app/tests.rs` | Novo — input/code_block tests (A9) |
+| `src/harness/ui/tui/mod.rs` | Chamar `app::runner::run_tui` (A8) |
+| `AGENTS.md`, `docs/ARCHITECTURE.md` | Atualizar árvore de arquivos (A10) |
 
 ---
 
@@ -232,4 +331,4 @@ Cada feature: `cargo test` + `cargo clippy` + `cargo fmt --check` verdes.
 
 | Data | Nota |
 |------|------|
-| 2026-09-04 | TODO.md substituído: plano de MCP (F1–F4, concluído) removido; novo plano de dívida técnica D1–D10 com checklists e tiers. |
+| 2026-09-08 | TODO.md substituído: rodadas D1–D10 e E1–E10 concluídas; novo plano A1–A10 para quebrar `app.rs` (3.167 ln) em 10 módulos. |
