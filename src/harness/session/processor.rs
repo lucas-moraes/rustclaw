@@ -279,6 +279,8 @@ impl SessionProcessor {
                             if let Some(u) = u {
                                 usage.input_tokens += u.input_tokens;
                                 usage.output_tokens += u.output_tokens;
+                                usage.cache_read_tokens += u.cache_read_tokens;
+                                usage.cache_write_tokens += u.cache_write_tokens;
                             }
                         }
                     }
@@ -327,6 +329,8 @@ impl SessionProcessor {
                     });
                     total_usage.input_tokens += usage.input_tokens;
                     total_usage.output_tokens += usage.output_tokens;
+                    total_usage.cache_read_tokens += usage.cache_read_tokens;
+                    total_usage.cache_write_tokens += usage.cache_write_tokens;
                     iterations = 0;
                     turn_deadline = tokio::time::Instant::now() + Duration::from_secs(turn_secs);
                     continue 'turn;
@@ -334,6 +338,8 @@ impl SessionProcessor {
 
                 total_usage.input_tokens += usage.input_tokens;
                 total_usage.output_tokens += usage.output_tokens;
+                total_usage.cache_read_tokens += usage.cache_read_tokens;
+                total_usage.cache_write_tokens += usage.cache_write_tokens;
 
                 // Build assistant message.
                 let mut parts = Vec::new();
@@ -498,13 +504,15 @@ impl SessionProcessor {
         }
 
         tracing::info!(
-            "turn end: session={} iterations={} continuations={} aborted={} input_tokens={} output_tokens={}",
+            "turn end: session={} iterations={} continuations={} aborted={} input_tokens={} output_tokens={} cache_read_tokens={} cache_write_tokens={}",
             session.id,
             total_iterations,
             continuations,
             aborted,
             total_usage.input_tokens,
-            total_usage.output_tokens
+            total_usage.output_tokens,
+            total_usage.cache_read_tokens,
+            total_usage.cache_write_tokens
         );
 
         Ok(TurnOutcome {

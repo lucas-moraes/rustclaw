@@ -20,6 +20,17 @@ pub use crate::harness::tool::ToolSpec;
 pub struct Usage {
     pub input_tokens: u64,
     pub output_tokens: u64,
+    /// Tokens served from the provider prompt cache (read hit).
+    ///
+    /// Semantics differ per provider and are normalized here:
+    /// - Anthropic: `cache_read_input_tokens` — **excluded** from
+    ///   `input_tokens` (the API reports them as separate fields).
+    /// - OpenAI: `prompt_tokens_details.cached_tokens` — **included** in
+    ///   `prompt_tokens` (i.e. in `input_tokens`); do not double count.
+    pub cache_read_tokens: u64,
+    /// Tokens written to the provider prompt cache (Anthropic
+    /// `cache_creation_input_tokens`; OpenAI does not report writes).
+    pub cache_write_tokens: u64,
 }
 
 impl Usage {
@@ -27,9 +38,16 @@ impl Usage {
         self.input_tokens.saturating_add(self.output_tokens)
     }
 
+    /// Total tokens served from / written to the prompt cache.
+    pub fn cache_total(self) -> u64 {
+        self.cache_read_tokens.saturating_add(self.cache_write_tokens)
+    }
+
     pub fn add_assign(&mut self, other: Usage) {
         self.input_tokens = self.input_tokens.saturating_add(other.input_tokens);
         self.output_tokens = self.output_tokens.saturating_add(other.output_tokens);
+        self.cache_read_tokens = self.cache_read_tokens.saturating_add(other.cache_read_tokens);
+        self.cache_write_tokens = self.cache_write_tokens.saturating_add(other.cache_write_tokens);
     }
 }
 
@@ -55,14 +73,21 @@ mod usage_tests {
         let mut a = Usage {
             input_tokens: 10,
             output_tokens: 5,
+            cache_read_tokens: 4,
+            cache_write_tokens: 2,
         };
         a.add_assign(Usage {
             input_tokens: 3,
             output_tokens: 7,
+            cache_read_tokens: 6,
+            cache_write_tokens: 1,
         });
         assert_eq!(a.input_tokens, 13);
         assert_eq!(a.output_tokens, 12);
+        assert_eq!(a.cache_read_tokens, 10);
+        assert_eq!(a.cache_write_tokens, 3);
         assert_eq!(a.total(), 25);
+        assert_eq!(a.cache_total(), 13);
     }
 
     #[test]

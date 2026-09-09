@@ -155,6 +155,10 @@ pub fn parse_response(json: &Value) -> anyhow::Result<(Vec<Part>, Option<Usage>,
     let usage = json.get("usage").map(|u| Usage {
         input_tokens: u["input_tokens"].as_u64().unwrap_or(0),
         output_tokens: u["output_tokens"].as_u64().unwrap_or(0),
+        // Anthropic reports cache tokens as separate fields, EXCLUDED from
+        // `input_tokens` — keep that semantics (do not add them up).
+        cache_read_tokens: u["cache_read_input_tokens"].as_u64().unwrap_or(0),
+        cache_write_tokens: u["cache_creation_input_tokens"].as_u64().unwrap_or(0),
     });
     let stop_reason = json["stop_reason"].as_str().map(|s| s.to_string());
     Ok((parts, usage, stop_reason))
@@ -170,6 +174,8 @@ struct AnthropicStreamState {
     blocks: BTreeMap<u64, (String, String, String, String)>,
     input_tokens: u64,
     output_tokens: u64,
+    cache_read_tokens: u64,
+    cache_write_tokens: u64,
     stop_reason: Option<String>,
     /// message_stop/[DONE] received (data complete).
     finished: bool,
@@ -188,9 +194,11 @@ impl AnthropicStreamState {
         };
         match json["type"].as_str() {
             Some("message_start") => {
-                self.input_tokens = json["message"]["usage"]["input_tokens"]
-                    .as_u64()
-                    .unwrap_or(0);
+                let usage = &json["message"]["usage"];
+                self.input_tokens = usage["input_tokens"].as_u64().unwrap_or(0);
+                self.cache_read_tokens = usage["cache_read_input_tokens"].as_u64().unwrap_or(0);
+                self.cache_write_tokens =
+                    usage["cache_creation_input_tokens"].as_u64().unwrap_or(0);
             }
             Some("content_block_start") => {
                 let index = json["index"].as_u64().unwrap_or(0);
@@ -268,6 +276,8 @@ fn response_to_events(response: reqwest::Response) -> ProviderStream {
         blocks: BTreeMap::new(),
         input_tokens: 0,
         output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
         stop_reason: None,
         finished: false,
         end_emitted: false,
@@ -308,6 +318,8 @@ fn response_to_events(response: reqwest::Response) -> ProviderStream {
                 usage: Some(Usage {
                     input_tokens: st.input_tokens,
                     output_tokens: st.output_tokens,
+                    cache_read_tokens: st.cache_read_tokens,
+                    cache_write_tokens: st.cache_write_tokens,
                 }),
             });
         }
@@ -461,6 +473,55 @@ mod tests {
         assert_eq!(parts.len(), 2);
         assert_eq!(usage.unwrap().input_tokens, 5);
         assert_eq!(stop.as_deref(), Some("tool_use"));
+    }
+
+    #[test]
+    fn test_parse_response_cache_usage() {
+        // Anthropic reports cache tokens as separate fields, excluded from
+        // input_tokens.
+        let json = json!({
+            "content": [{"type": "text", "text": "ok"}],
+            "usage": {
+                "input_tokens": 120,
+                "output_tokens": 30,
+                "cache_creation_input_tokens": 800,
+                "cache_read_input_tokens": 4000
+            }
+        });
+        let (_, usage, _) = parse_response(&json).unwrap();
+        let u = usage.unwrap();
+        assert_eq!(u.input_tokens, 120);
+        assert_eq!(u.output_tokens, 30);
+        assert_eq!(u.cache_write_tokens, 800);
+        assert_eq!(u.cache_read_tokens, 4000);
+        assert_eq!(u.cache_total(), 4800);
+    }
+
+    #[test]
+    fn test_stream_state_parses_cache_usage_from_message_start() {
+        let mut st = AnthropicStreamState {
+            bytes: Box::pin(futures_util::stream::empty()),
+            parser: SseParser::new(),
+            pending: VecDeque::new(),
+            blocks: BTreeMap::new(),
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            stop_reason: None,
+            finished: false,
+            end_emitted: false,
+        };
+        st.handle_event(
+            r#"{"type":"message_start","message":{"usage":{
+                "input_tokens":50,
+                "cache_creation_input_tokens":100,
+                "cache_read_input_tokens":200
+            }}}"#,
+        );
+        assert_eq!(st.input_tokens, 50);
+        assert_eq!(st.cache_write_tokens, 100);
+        assert_eq!(st.cache_read_tokens, 200);
     }
 
     #[test]

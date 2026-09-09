@@ -113,6 +113,12 @@ fn build_request_body(req: &LlmRequest, stream: bool) -> Value {
         "temperature": req.temperature,
         "stream": stream,
     });
+    // Ask the API to include a final usage chunk in streaming responses;
+    // without this the stream never reports token usage (and we could not
+    // account for cached tokens).
+    if stream {
+        body["stream_options"] = json!({ "include_usage": true });
+    }
     // Omit max_tokens so the provider/model applies its own default.
     if let Some(v) = req.max_tokens {
         body["max_tokens"] = json!(v);
@@ -167,6 +173,12 @@ pub fn parse_response(json: &Value) -> anyhow::Result<(Vec<Part>, Option<Usage>,
     let usage = json.get("usage").map(|u| Usage {
         input_tokens: u["prompt_tokens"].as_u64().unwrap_or(0),
         output_tokens: u["completion_tokens"].as_u64().unwrap_or(0),
+        // OpenAI includes cached tokens in `prompt_tokens`; the details
+        // field is the cached subset (do not add it to input_tokens).
+        cache_read_tokens: u["prompt_tokens_details"]["cached_tokens"]
+            .as_u64()
+            .unwrap_or(0),
+        cache_write_tokens: 0,
     });
     let stop_reason = choice
         .get("finish_reason")
@@ -293,10 +305,17 @@ fn response_to_events(response: reqwest::Response) -> ProviderStream {
                             if let Ok(json) = serde_json::from_str::<Value>(&data) {
                                 if let Some(usage) = json.get("usage") {
                                     st.usage = Some(Usage {
-                                        input_tokens: usage["prompt_tokens"].as_u64().unwrap_or(0),
+                                        input_tokens: usage["prompt_tokens"]
+                                            .as_u64()
+                                            .unwrap_or(0),
                                         output_tokens: usage["completion_tokens"]
                                             .as_u64()
                                             .unwrap_or(0),
+                                        cache_read_tokens: usage
+                                            ["prompt_tokens_details"]["cached_tokens"]
+                                            .as_u64()
+                                            .unwrap_or(0),
+                                        cache_write_tokens: 0,
                                     });
                                 }
                                 if let Some(fr) = json["choices"][0]["finish_reason"]
@@ -539,5 +558,40 @@ mod tests {
     fn test_parse_response_empty() {
         let json = json!({"choices": []});
         assert!(parse_response(&json).is_err());
+    }
+
+    #[test]
+    fn test_parse_response_cached_tokens() {
+        // OpenAI includes cached tokens in prompt_tokens; the details field
+        // is the cached subset.
+        let json = json!({
+            "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+            "usage": {
+                "prompt_tokens": 5000,
+                "completion_tokens": 100,
+                "prompt_tokens_details": {"cached_tokens": 4200}
+            }
+        });
+        let (_, usage, _) = parse_response(&json).unwrap();
+        let u = usage.unwrap();
+        assert_eq!(u.input_tokens, 5000);
+        assert_eq!(u.cache_read_tokens, 4200);
+        assert_eq!(u.cache_write_tokens, 0);
+    }
+
+    #[test]
+    fn test_build_request_body_stream_options() {
+        let req = LlmRequest {
+            model: "gpt-test".into(),
+            system: "sys".into(),
+            messages: vec![Message::user("hi")],
+            tools: vec![],
+            max_tokens: None,
+            temperature: 0.0,
+        };
+        let streaming = build_request_body(&req, true);
+        assert_eq!(streaming["stream_options"]["include_usage"], true);
+        let non_streaming = build_request_body(&req, false);
+        assert!(non_streaming.get("stream_options").is_none());
     }
 }
