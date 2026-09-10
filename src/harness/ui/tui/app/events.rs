@@ -143,16 +143,40 @@ impl App {
             }
             HarnessEvent::RunStarted { .. } => {
                 self.running = true;
+                if self.turn_started_at.is_none() {
+                    self.turn_started_at = Some(std::time::Instant::now());
+                }
                 self.status_msg = Some("running…".to_string());
             }
             HarnessEvent::RunFinished { .. } => {
                 self.running = false;
+                self.turn_started_at = None;
                 self.status_msg = None;
                 self.active_tools.clear();
                 self.flush_streaming();
             }
             HarnessEvent::UserMessage { .. } => {}
+            HarnessEvent::JobFinished {
+                job_id, exit_code, ..
+            } => {
+                self.flush_streaming();
+                self.push(
+                    LineKind::System,
+                    format!(
+                        "[background job {} finished · exit {}] — /jobs {} for output",
+                        job_id,
+                        exit_code
+                            .map(|c| c.to_string())
+                            .unwrap_or_else(|| "signal".into()),
+                        job_id
+                    ),
+                );
+            }
             HarnessEvent::PermissionAsk { .. } | HarnessEvent::PermissionResolved { .. } => {}
+            HarnessEvent::BudgetWarn { message, .. } => {
+                self.flush_streaming();
+                self.push(LineKind::System, format!("[budget] {}", message));
+            }
         }
     }
 
@@ -236,10 +260,17 @@ impl App {
         for msg in &messages {
             match msg.role.as_str() {
                 "user" => {
+                    for part in &msg.parts {
+                        if let crate::harness::session::Part::Image { path } = part {
+                            self.push(LineKind::System, format!("[image: {}]", path));
+                        }
+                    }
                     let text = msg
                         .parts
                         .iter()
                         .find_map(|p| p.as_text().map(str::to_string))
+                        // Skip the injected `<project-memory>` prefix part.
+                        .filter(|t| !crate::harness::project::memory::is_memory_block(t))
                         .unwrap_or_default();
                     if !text.trim().is_empty() {
                         self.push(LineKind::User, text);
@@ -267,7 +298,12 @@ impl App {
                                 };
                                 self.push(kind, format!("  {} {}", mark_for(kind), label));
                             }
-                            crate::harness::session::Part::Reasoning { .. } => {}
+                            crate::harness::session::Part::Reasoning { text } => {
+                                if !text.trim().is_empty() {
+                                    self.push(LineKind::Reasoning, text.clone());
+                                }
+                            }
+                            crate::harness::session::Part::Image { .. } => {}
                         }
                     }
                 }

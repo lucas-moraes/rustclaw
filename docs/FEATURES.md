@@ -324,3 +324,21 @@ como tools nativas (`src/harness/mcp/`).
 
 - Reconnect: falha de transporte → 1 respawn + retry automático.
 - Health check: probe a cada 60s marca servers mortos no `/mcp status`.
+
+## Prompt caching
+
+- **Anthropic-style** (`anthropic`, e MiniMax via opencode-go quando ativado):
+  o body ganha até 3 breakpoints `cache_control: {"type": "ephemeral"}` —
+  system prompt (bp1), último item de `tools` (bp2) e último content block da
+  última message (bp3). Limite da API: 4 breakpoints.
+- **OpenAI-compatible**: caching automático do provider; o RustClaw apenas
+  contabiliza `cached_tokens` no usage.
+- **Custo cache-aware** (`/usage`): Anthropic cobra write 1.25× e read 0.1× do
+  input (input_tokens exclui cache); OpenAI cobra cached a 0.5× (prompt_tokens
+  inclui cached). O custo exibido no `/usage` e na sidebar usa esses fatores.
+- **Kill-switch**: `"prompt_caching": false` no `config.json` global desliga os
+  breakpoints em todos os providers. Override por provider: `"prompt_cache":
+  true|false` no `providers.json` (default: `true` só para `anthropic`;
+  MiniMax/opencode-go fica `false` pois pode rejeitar `cache_control`).
+- **Onde ver**: `/usage` mostra a linha `cache · read (N% of in) · write`;
+  a status bar e a sidebar mostram `↻<tokens>` quando há cache reads.

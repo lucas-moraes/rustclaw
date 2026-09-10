@@ -225,6 +225,11 @@ mod tests {
             task_runner: None,
             events: crate::harness::event::event_channel().0,
             project_memory: None,
+            hooks: Default::default(),
+            checkpoints: std::sync::Arc::new(
+                crate::harness::tool::checkpoint::FileCheckpoints::new(),
+            ),
+            jobs: std::sync::Arc::new(crate::harness::tool::jobs::JobRegistry::new()),
         }
     }
 
@@ -251,13 +256,10 @@ mod tests {
 
         // Build (empty allowlist) keeps full access.
         let ctx_build = test_context();
-        assert!(
-            ctx_build
-                .check_permission("edit", &serde_json::json!({"path": "/tmp/x"}))
-                .await
-                .is_err()
-                == false
-        );
+        assert!(ctx_build
+            .check_permission("edit", &serde_json::json!({"path": "/tmp/x"}))
+            .await
+            .is_ok());
     }
 
     mod tests_helper {

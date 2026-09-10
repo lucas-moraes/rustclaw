@@ -80,8 +80,10 @@ crítico sobre o projeto no banco SQLite para uso em sessões futuras."
 
         let now = chrono::Utc::now().format("%Y-%m-%d %H:%M").to_string();
         let line = format!("- [{}] {}", now, fact);
-        store
-            .append_fact(ctx.cwd.path(), &line, &kind, &confidence)
+        let cwd = ctx.cwd.path().to_path_buf();
+        tokio::task::spawn_blocking(move || store.append_fact(&cwd, &line, &kind, &confidence))
+            .await
+            .map_err(|e| format!("join error: {e}"))?
             .map_err(|e| format!("failed to persist project memory: {}", e))?;
 
         Ok(ToolResult::simple(
@@ -112,6 +114,9 @@ mod tests {
             task_runner: None,
             events: crate::harness::event::event_channel().0,
             project_memory: Some(store),
+            checkpoints: Arc::new(crate::harness::tool::checkpoint::FileCheckpoints::new()),
+            jobs: std::sync::Arc::new(crate::harness::tool::jobs::JobRegistry::new()),
+            hooks: Default::default(),
         }
     }
 

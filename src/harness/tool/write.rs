@@ -42,8 +42,15 @@ Parent directories are created automatically. Use `edit` to modify existing file
 
         let path = ctx.cwd.resolve(raw_path);
 
+        // Serialize concurrent writes to the same file and hold the lock across
+        // read → snapshot → write so the snapshot reflects the pre-write state.
+        let lock = ctx.checkpoints.lock(&path);
+        let _guard = lock.lock().await;
+
         // Capture prior content (for the diff) before overwriting.
         let before = tokio::fs::read_to_string(&path).await.unwrap_or_default();
+
+        ctx.checkpoints.snapshot(&path);
 
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(&parent)
@@ -52,9 +59,16 @@ Parent directories are created automatically. Use `edit` to modify existing file
         }
 
         let bytes = content.as_bytes();
-        tokio::fs::write(&path, bytes)
-            .await
-            .map_err(|e| format!("failed to write {}: {}", path.display(), e))?;
+        // Atomic write (temp file + rename) so a failure never leaves the file
+        // truncated, and the write lands on the canonical path.
+        tokio::task::spawn_blocking({
+            let path = path.clone();
+            let bytes = bytes.to_vec();
+            move || super::checkpoint::atomic_write(&path, &bytes)
+        })
+        .await
+        .map_err(|e| format!("write task failed: {}", e))?
+        .map_err(|e| format!("failed to write {}: {}", path.display(), e))?;
 
         let lines = content.lines().count();
         let diff = super::diff::unified_diff(&before, content);

@@ -26,8 +26,8 @@ pub use crate::harness::ui::tui::transcript::{
 pub use runner::run_tui;
 #[allow(unused_imports)]
 pub use state::{
-    AddProviderForm, App, AuthPromptState, Modal, ModelPickerState, ResumePickerState,
-    SkillPickerState,
+    search_lines, AddProviderForm, App, AuthPromptState, Modal, ModelPickerState,
+    ResumePickerState, SearchState, SkillPickerState,
 };
 pub use undo::copy_to_clipboard;
 

@@ -62,6 +62,10 @@ pub(crate) async fn handle_key(
         return handle_resume_picker_key(app, key).await;
     }
 
+    if app.search.is_some() {
+        return handle_search_key(app, key);
+    }
+
     if app.modal.is_some() {
         return handle_modal_key(app, key);
     }
@@ -95,13 +99,40 @@ pub(crate) async fn handle_key(
                 app.copy_selection_to_clipboard();
                 return Ok(false);
             }
+            // Respond to any pending permission/question modal so the awaiting
+            // tool doesn't hang or get a stale reply after we quit.
+            if let Some(modal) = app.modal.take() {
+                match modal {
+                    Modal::Permission(req) => {
+                        let _ = req.reply.send(false);
+                        app.push(LineKind::System, "[permission] denied".to_string());
+                    }
+                    Modal::Question { req, .. } => {
+                        let _ = req.reply.send(None);
+                        app.push(LineKind::System, "[question] no answer".to_string());
+                    }
+                    Modal::UserPrompt { .. } => {}
+                }
+            }
+            // Drain any queued asks too, so no oneshot is left dangling.
+            while let Some(modal) = app.modal_queue.pop_front() {
+                match modal {
+                    Modal::Permission(req) => {
+                        let _ = req.reply.send(false);
+                    }
+                    Modal::Question { req, .. } => {
+                        let _ = req.reply.send(None);
+                    }
+                    Modal::UserPrompt { .. } => {}
+                }
+            }
             if app.running {
                 app.abort.abort();
             }
             return Ok(true);
         }
         KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.palette = Some(PaletteState::open(""));
+            app.palette = Some(PaletteState::open_with("", &app.custom_agent_items()));
             app.autocomplete = None;
             return Ok(false);
         }
@@ -111,6 +142,10 @@ pub(crate) async fn handle_key(
         }
         KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.clear_transcript();
+            return Ok(false);
+        }
+        KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.open_search();
             return Ok(false);
         }
         // Opencode-style line editing (prompt editor).
@@ -146,6 +181,19 @@ pub(crate) async fn handle_key(
             // Copy the last code block to the clipboard.
             app.copy_last_code_block();
             return Ok(false);
+        }
+        KeyCode::Char('x') => {
+            // Toggle collapsible thinking (reasoning) blocks — only when the
+            // prompt is empty so typing is never swallowed.
+            if app.input.is_empty() {
+                app.thinking_expanded = !app.thinking_expanded;
+                app.status_msg = Some(if app.thinking_expanded {
+                    "thinking blocks expanded (x to collapse)".to_string()
+                } else {
+                    "thinking blocks collapsed (x to expand)".to_string()
+                });
+                return Ok(false);
+            }
         }
         _ => {}
     }
@@ -355,6 +403,7 @@ pub(crate) fn handle_modal_key(app: &mut App, key: KeyEvent) -> Result<bool> {
                     if app.running {
                         app.cancel_running_turn();
                     }
+                    app.close_modal();
                     return Ok(false);
                 }
                 _ => {
@@ -367,6 +416,7 @@ pub(crate) fn handle_modal_key(app: &mut App, key: KeyEvent) -> Result<bool> {
                 LineKind::System,
                 format!("[permission] {}", if reply { "allowed" } else { "denied" }),
             );
+            app.close_modal();
         }
         Some(Modal::Question {
             req,
@@ -387,6 +437,7 @@ pub(crate) fn handle_modal_key(app: &mut App, key: KeyEvent) -> Result<bool> {
                     ),
                     None => app.push(LineKind::System, "[question] no answer".to_string()),
                 }
+                app.close_modal();
             };
             let insert_char = |draft: &mut String, cursor: &mut usize, c: char| {
                 let mut chars: Vec<char> = draft.chars().collect();
@@ -521,10 +572,68 @@ pub(crate) fn handle_modal_key(app: &mut App, key: KeyEvent) -> Result<bool> {
                 }
             }
             if !continue_modal {
-                app.modal = None;
+                app.close_modal();
             }
         }
         None => {}
+    }
+    Ok(false)
+}
+
+pub(crate) fn handle_search_key(app: &mut App, key: KeyEvent) -> Result<bool> {
+    use crossterm::event::{KeyCode, KeyModifiers};
+
+    let Some(mut st) = app.search.take() else {
+        return Ok(false);
+    };
+    match key.code {
+        KeyCode::Esc => {
+            app.search = None;
+        }
+        KeyCode::Enter => {
+            if let Some(idx) = st.current() {
+                app.jump_to_line(idx);
+            }
+            app.search = None;
+        }
+        KeyCode::Up => {
+            st.move_sel(-1);
+            app.search = Some(st);
+        }
+        KeyCode::Down => {
+            st.move_sel(1);
+            app.search = Some(st);
+        }
+        KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            st.move_sel(1);
+            if let Some(idx) = st.current() {
+                app.jump_to_line(idx);
+            }
+            app.search = Some(st);
+        }
+        KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            st.move_sel(-1);
+            if let Some(idx) = st.current() {
+                app.jump_to_line(idx);
+            }
+            app.search = Some(st);
+        }
+        KeyCode::Backspace => {
+            st.backspace();
+            st.refresh(&app.lines);
+            app.search = Some(st);
+        }
+        KeyCode::Char(c)
+            if !key.modifiers.contains(KeyModifiers::CONTROL)
+                && !key.modifiers.contains(KeyModifiers::ALT) =>
+        {
+            st.push_char(c);
+            st.refresh(&app.lines);
+            app.search = Some(st);
+        }
+        _ => {
+            app.search = Some(st);
+        }
     }
     Ok(false)
 }
@@ -733,6 +842,7 @@ pub(crate) async fn submit_input(
 
     app.add_user_prompt(&text);
     app.running = true;
+    app.turn_started_at = Some(std::time::Instant::now());
     app.abort = AbortSignal::new();
     app.last_iterations = 0;
 

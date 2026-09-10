@@ -194,6 +194,7 @@ mod tests {
                     base_url: "http://localhost:9".to_string(),
                     api_key: "x".to_string(),
                 },
+                false,
             )
             .unwrap(),
             crate::harness::tool::registry::ToolRegistry::builder().build(),

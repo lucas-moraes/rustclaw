@@ -9,23 +9,33 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
+/// Formats a running duration compactly: `42s`, `3m12s`, `1h04m`.
+pub fn format_elapsed(d: std::time::Duration) -> String {
+    let secs = d.as_secs();
+    if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3600 {
+        format!("{}m{:02}s", secs / 60, secs % 60)
+    } else {
+        format!("{}h{:02}m", secs / 3600, (secs % 3600) / 60)
+    }
+}
+
 pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
     let t = &app.theme;
 
     let (icon, state, state_fg) = if app.modal.is_some() {
-        ("?", "waiting input", t.warn)
+        ("?", "waiting input".to_string(), t.warn)
     } else if app.running {
-        (
-            anim::spinner_frame(app.tick),
-            if let Some(msg) = &app.status_msg {
-                msg.as_str()
-            } else {
-                "streaming"
-            },
-            t.accent2,
-        )
+        let elapsed = app.turn_started_at.map(|s| s.elapsed()).unwrap_or_default();
+        let state = if let Some(msg) = &app.status_msg {
+            format!("{} · {}", msg, format_elapsed(elapsed))
+        } else {
+            format!("streaming · {}", format_elapsed(elapsed))
+        };
+        (anim::spinner_frame(app.tick), state, t.accent2)
     } else {
-        ("●", "idle", t.success)
+        ("●", "idle".to_string(), t.success)
     };
 
     let ctx = app.context_tokens() as u64;
@@ -44,7 +54,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             format!(" {} ", icon),
             Style::default().fg(state_fg).add_modifier(Modifier::BOLD),
         ),
-        Span::styled(state.to_string(), Style::default().fg(state_fg)),
+        Span::styled(state, Style::default().fg(state_fg)),
         Span::styled("  ·  ", Style::default().fg(t.border)),
         Span::styled("ctx ", Style::default().fg(t.text_dim)),
         Span::styled(
@@ -71,6 +81,15 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         ),
     ];
+
+    // Compact prompt-cache indicator (only when the provider reports reads).
+    if app.session_usage.cache_read_tokens > 0 {
+        spans.push(Span::styled(" ↻", Style::default().fg(t.text_dim)));
+        spans.push(Span::styled(
+            format_tokens(app.session_usage.cache_read_tokens),
+            Style::default().fg(t.text_dim),
+        ));
+    }
 
     if app.last_iterations > 0 {
         spans.push(Span::styled("  ·  ", Style::default().fg(t.border)));
@@ -117,4 +136,18 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
         Paragraph::new(Line::from(line_spans)).style(Style::default().bg(t.status_bg).fg(t.text)),
         area,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_elapsed;
+    use std::time::Duration;
+
+    #[test]
+    fn test_format_elapsed_compact_units() {
+        assert_eq!(format_elapsed(Duration::from_secs(42)), "42s");
+        assert_eq!(format_elapsed(Duration::from_secs(192)), "3m12s");
+        assert_eq!(format_elapsed(Duration::from_secs(3840)), "1h04m");
+        assert_eq!(format_elapsed(Duration::from_secs(0)), "0s");
+    }
 }

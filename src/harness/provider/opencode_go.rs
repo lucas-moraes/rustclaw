@@ -11,6 +11,8 @@ use super::{
 
 pub struct OpenCodeGoProvider {
     pub http: HttpConfig,
+    /// Passed through to the Anthropic-style route (MiniMax). Default false.
+    pub prompt_cache: bool,
 }
 
 impl OpenCodeGoProvider {
@@ -29,6 +31,7 @@ impl OpenCodeGoProvider {
         AnthropicProvider {
             http: self.http.clone(),
             auth: AuthStyle::ApiKey,
+            prompt_cache: self.prompt_cache,
         }
     }
 }
@@ -57,17 +60,26 @@ impl Provider for OpenCodeGoProvider {
 }
 
 /// Factory: builds the provider for a configured provider name.
+///
+/// `prompt_cache` controls Anthropic-style `cache_control` breakpoints; the
+/// per-provider default is `true` for `anthropic`, `false` otherwise (see
+/// `default_prompt_cache`).
 pub fn build_provider(
     provider: &str,
     http: HttpConfig,
+    prompt_cache: bool,
 ) -> anyhow::Result<std::sync::Arc<dyn Provider>> {
     let provider = provider.to_lowercase();
     let provider = provider.as_str();
     match provider {
-        "opencode-go" | "opencode" => Ok(std::sync::Arc::new(OpenCodeGoProvider { http })),
+        "opencode-go" | "opencode" => Ok(std::sync::Arc::new(OpenCodeGoProvider {
+            http,
+            prompt_cache,
+        })),
         "anthropic" => Ok(std::sync::Arc::new(AnthropicProvider {
             http,
             auth: AuthStyle::Bearer,
+            prompt_cache,
         })),
         // openrouter, moonshot, villamarket, huggingface, custom => OpenAI-compatible
         _ => Ok(std::sync::Arc::new(OpenAiProvider {
@@ -75,6 +87,12 @@ pub fn build_provider(
             auth: AuthStyle::Bearer,
         })),
     }
+}
+
+/// Per-provider default for prompt caching: Anthropic-style endpoints support
+/// `cache_control`; MiniMax (via opencode-go) may reject it.
+pub fn default_prompt_cache(provider: &str) -> bool {
+    provider.eq_ignore_ascii_case("anthropic")
 }
 
 #[cfg(test)]
@@ -94,11 +112,19 @@ mod tests {
             base_url: "https://example.com/v1".into(),
             api_key: "key".into(),
         };
-        let p = build_provider("opencode-go", http.clone()).unwrap();
+        let p = build_provider("opencode-go", http.clone(), false).unwrap();
         assert_eq!(p.name(), "opencode-go");
-        let p = build_provider("openrouter", http.clone()).unwrap();
+        let p = build_provider("openrouter", http.clone(), false).unwrap();
         assert_eq!(p.name(), "openai-compatible");
-        let p = build_provider("anthropic", http).unwrap();
+        let p = build_provider("anthropic", http, true).unwrap();
         assert_eq!(p.name(), "anthropic-compatible");
+    }
+
+    #[test]
+    fn test_default_prompt_cache() {
+        assert!(default_prompt_cache("anthropic"));
+        assert!(default_prompt_cache("Anthropic"));
+        assert!(!default_prompt_cache("opencode-go"));
+        assert!(!default_prompt_cache("deepinfra"));
     }
 }

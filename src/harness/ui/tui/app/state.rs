@@ -40,6 +40,8 @@ pub struct App {
     pub running: bool,
     pub abort: AbortSignal,
     pub last_iterations: usize,
+    /// When the current turn started (elapsed-time indicator in the status bar).
+    pub turn_started_at: Option<std::time::Instant>,
     /// Tokens from the last completed turn.
     pub last_usage: Usage,
     /// Cumulative tokens for the current UI session.
@@ -48,6 +50,10 @@ pub struct App {
     pub show_help: bool,
     pub help_section: usize,
     pub modal: Option<Modal>,
+    /// Pending permission/question modals waiting to be shown once the current
+    /// one closes. Prevents concurrent asks (parallel tools) from overwriting
+    /// each other and silently dropping the oneshot sender.
+    pub modal_queue: std::collections::VecDeque<Modal>,
     pub theme: Theme,
     pub theme_id: usize,
     pub tick: u64,
@@ -92,6 +98,10 @@ pub struct App {
     pub subagent_panels: Vec<(String, SubagentPanel)>,
     pub permission_rx: mpsc::UnboundedReceiver<PermissionRequest>,
     pub question_rx: mpsc::UnboundedReceiver<QuestionRequest>,
+    /// Open Ctrl+F transcript search modal.
+    pub search: Option<SearchState>,
+    /// Whether collapsible thinking (reasoning) blocks are expanded.
+    pub thinking_expanded: bool,
 }
 
 /// A modal dialog waiting for user input.
@@ -110,6 +120,68 @@ pub enum Modal {
     UserPrompt {
         line_idx: usize,
     },
+}
+
+/// Case-insensitive substring search over transcript lines.
+/// Returns the indices of the lines whose text contains `query`.
+pub fn search_lines(lines: &[TranscriptLine], query: &str) -> Vec<usize> {
+    let q = query.trim().to_lowercase();
+    if q.is_empty() {
+        return Vec::new();
+    }
+    lines
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| l.text.to_lowercase().contains(&q))
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// State of the Ctrl+F transcript search modal.
+pub struct SearchState {
+    /// Query being typed.
+    pub input: String,
+    /// Indices into `App::lines` matching the current query.
+    pub matches: Vec<usize>,
+    /// Highlighted entry in the match list.
+    pub selected: usize,
+}
+
+impl SearchState {
+    pub fn new() -> Self {
+        Self {
+            input: String::new(),
+            matches: Vec::new(),
+            selected: 0,
+        }
+    }
+
+    pub fn push_char(&mut self, c: char) {
+        self.input.push(c);
+    }
+
+    pub fn backspace(&mut self) {
+        self.input.pop();
+    }
+
+    /// Recomputes matches against `lines` for the current query.
+    pub fn refresh(&mut self, lines: &[TranscriptLine]) {
+        self.matches = search_lines(lines, &self.input);
+        self.selected = self.selected.min(self.matches.len().saturating_sub(1));
+    }
+
+    pub fn move_sel(&mut self, delta: i32) {
+        if self.matches.is_empty() {
+            return;
+        }
+        let len = self.matches.len() as i32;
+        self.selected = ((self.selected as i32 + delta).rem_euclid(len)) as usize;
+    }
+
+    /// Line index of the highlighted match, if any.
+    pub fn current(&self) -> Option<usize> {
+        self.matches.get(self.selected).copied()
+    }
 }
 
 /// State of the session-memory skill picker overlay.
@@ -395,7 +467,8 @@ impl App {
             api_key: String::new(),
         };
         let provider =
-            crate::harness::provider::opencode_go::build_provider("deepinfra", http).unwrap();
+            crate::harness::provider::opencode_go::build_provider("deepinfra", http, false)
+                .unwrap();
         let runtime = SessionRuntime::new_in(
             _keep_dir.path(),
             provider,
@@ -439,6 +512,7 @@ impl App {
             scroll: 0,
             stick_bottom: true,
             running: false,
+            turn_started_at: None,
             abort: AbortSignal::new(),
             last_iterations: 0,
             last_usage: Usage::default(),
@@ -447,6 +521,7 @@ impl App {
             show_help: false,
             help_section: 0,
             modal: None,
+            modal_queue: std::collections::VecDeque::new(),
             theme,
             theme_id,
             tick: 0,
@@ -474,6 +549,8 @@ impl App {
             subagent_panels: Vec::new(),
             permission_rx,
             question_rx,
+            search: None,
+            thinking_expanded: false,
         }
     }
 
@@ -496,6 +573,7 @@ impl App {
             || self.model_picker.is_some()
             || self.auth_prompt.is_some()
             || self.resume_picker.is_some()
+            || self.search.is_some()
             || self.selection.as_ref().map(|s| s.dragging).unwrap_or(false)
     }
 
@@ -585,11 +663,39 @@ impl App {
         self.autocomplete = AutoComplete::from_input(&self.input);
     }
 
+    /// Custom agents (name, description) for the palette, sorted by name.
+    pub fn custom_agent_items(&self) -> Vec<(String, String)> {
+        let mut v: Vec<(String, String)> = self
+            .runtime
+            .custom_agents
+            .iter()
+            .map(|(name, spec)| (name.clone(), spec.description.clone()))
+            .collect();
+        v.sort();
+        v
+    }
+
     pub(crate) fn push(&mut self, kind: LineKind, text: impl Into<String>) {
         self.lines.push(TranscriptLine {
             kind,
             text: text.into(),
         });
+    }
+
+    /// Enqueues a modal to be shown. If none is currently open, shows it
+    /// immediately; otherwise it waits in the queue so concurrent asks are
+    /// never dropped.
+    pub(crate) fn enqueue_modal(&mut self, modal: Modal) {
+        if self.modal.is_none() {
+            self.modal = Some(modal);
+        } else {
+            self.modal_queue.push_back(modal);
+        }
+    }
+
+    /// Closes the current modal and opens the next queued one, if any.
+    pub(crate) fn close_modal(&mut self) {
+        self.modal = self.modal_queue.pop_front();
     }
 
     pub fn clear_selection(&mut self) {
@@ -646,6 +752,27 @@ impl App {
     /// `lines` index under a rendered cell, if any.
     pub fn line_idx_at_cell(&self, pos: CellPos) -> Option<usize> {
         self.transcript_row_map.get(pos.row).copied()
+    }
+
+    /// Opens the Ctrl+F transcript search modal.
+    pub fn open_search(&mut self) {
+        self.search = Some(SearchState::new());
+    }
+
+    /// Jumps the transcript viewport so the given `lines` index is visible.
+    /// Uses the per-row mapping built during the last draw pass.
+    pub fn jump_to_line(&mut self, line_idx: usize) {
+        let Some(row) = self.transcript_row_map.iter().position(|&r| r == line_idx) else {
+            return;
+        };
+        let view_h = self.transcript_area.height as usize;
+        if view_h == 0 {
+            return;
+        }
+        self.stick_bottom = false;
+        // Center the match in the viewport when possible.
+        let half = view_h / 2;
+        self.scroll = row.saturating_sub(half);
     }
 }
 

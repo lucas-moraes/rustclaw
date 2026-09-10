@@ -74,9 +74,25 @@ pub fn error_retry_kind(err: &Error) -> RetryKind {
         if let Some(pe) = cause.downcast_ref::<ProviderError>() {
             return pe.kind;
         }
+        // reqwest network errors: timeouts and connection failures are
+        // transient; everything else (DNS, body decode, request build) is not.
+        if let Some(re) = cause.downcast_ref::<reqwest::Error>() {
+            if re.is_timeout() || re.is_connect() {
+                return RetryKind::Retryable;
+            }
+            return RetryKind::Permanent;
+        }
+        // io::ErrorKind::TimedOut (reqwest wraps these as timeouts).
+        if let Some(io) = cause.downcast_ref::<std::io::Error>() {
+            if io.kind() == std::io::ErrorKind::TimedOut {
+                return RetryKind::Retryable;
+            }
+            return RetryKind::Permanent;
+        }
     }
-    // Default: treat unknown errors as retryable (network timeouts, etc.).
-    RetryKind::Retryable
+    // Default: unknown errors (local parse bugs, etc.) are NOT retried —
+    // retrying would mask the bug and burn quota.
+    RetryKind::Permanent
 }
 
 /// Extracts the `Retry-After` value (seconds) from an error chain, if present.
@@ -220,6 +236,48 @@ mod tests {
         let e2 = provider_error(RetryKind::Permanent, Some(400), None, "bad request");
         assert_eq!(error_retry_kind(&e2), RetryKind::Permanent);
         assert_eq!(error_retry_after(&e2), None);
+    }
+
+    #[tokio::test]
+    async fn test_unknown_error_is_not_retried() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let policy = RetryPolicy {
+            max_attempts: 3,
+            base_delay_ms: 1,
+            max_delay_ms: 5,
+            jitter: false,
+        };
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls2 = calls.clone();
+        let result = retry_with_policy(
+            &policy,
+            move || {
+                let calls = calls2.clone();
+                async move {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Err::<(), _>(anyhow::anyhow!("local parse bug"))
+                }
+            },
+            || false,
+        )
+        .await;
+        assert!(result.is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "unknown errors: 0 retries");
+    }
+
+    #[test]
+    fn test_reqwest_timeout_is_retryable() {
+        // reqwest treats an io::ErrorKind::TimedOut source as a timeout
+        // (see reqwest::Error::is_timeout); classification must be Retryable.
+        let io = std::io::Error::new(std::io::ErrorKind::TimedOut, "simulated timeout");
+        let e = anyhow::Error::new(io);
+        assert_eq!(error_retry_kind(&e), RetryKind::Retryable);
+        // A plain io error (not a timeout) is permanent.
+        let io2 = std::io::Error::new(std::io::ErrorKind::Other, "disk error");
+        assert_eq!(
+            error_retry_kind(&anyhow::Error::new(io2)),
+            RetryKind::Permanent
+        );
     }
 
     #[tokio::test]

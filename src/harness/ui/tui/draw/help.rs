@@ -83,6 +83,7 @@ fn keys(t: &crate::harness::ui::tui::theme::Theme) -> Vec<Line<'static>> {
         ),
         kv("Up/Down", "prompt history", t),
         kv("PgUp/PgDn", "scroll transcript", t),
+        kv("x", "expand/collapse thinking blocks", t),
         kv("Drag", "select transcript text (auto-copy)", t),
         kv("Ctrl+C", "copy selection · quit if none", t),
         kv("Ctrl+P", "command palette", t),
@@ -126,6 +127,13 @@ fn commands(t: &crate::harness::ui::tui::theme::Theme) -> Vec<Line<'static>> {
         ),
         kv("/undo", "revert to before last prompt", t),
         kv("/mcp", "MCP servers: list · status · restart", t),
+        kv(
+            "/export [md|json] [path]",
+            "dump session transcript to file",
+            t,
+        ),
+        kv("/diff [path]", "changes since the pre-agent snapshot", t),
+        kv("/restore <path>", "revert file to its snapshot", t),
         kv("/exit", "quit", t),
     ]
 }

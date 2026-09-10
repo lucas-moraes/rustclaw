@@ -18,6 +18,7 @@ Coding agent harness em Rust, no estilo OpenCode / Claude Code. Loop de agente c
 - 🎨 **TUI Cyberclaw (ratatui + crossterm)** — tema colorido (4 temas trocáveis), splash animado, transcript em bubbles, status bar com tokens/contexto, command palette, permission/question modals, diff colorido. CLI streaming como fallback (`RUSTCLAW_UI=cli` ou non-TTY).
 - 🔁 **Compaction** — resume de contexto em overflow
 - 🐛 **Doom-loop detection** — para quando o agente repete a mesma tool call
+- ⚡ **Prompt caching** — breakpoints `cache_control` no Anthropic (system/tools/última message), custo cache-aware no `/usage` (write 1.25×/read 0.1×; OpenAI cached 0.5×), kill-switch `prompt_caching` no config.json — ver `docs/FEATURES.md`
 
 ## Supported Providers
 

@@ -38,7 +38,9 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
 
     let mut rows: Vec<Line<'static>> = Vec::new();
     let mut row_map: Vec<usize> = Vec::new();
-    for (li, line) in app.lines.iter().enumerate() {
+    let collapsed =
+        crate::harness::ui::tui::transcript::collapse_thinking(&app.lines, app.thinking_expanded);
+    for (li, line) in collapsed.iter().enumerate() {
         let base = rows.len();
         rows.extend(render_line(line, &theme, width, tick, false));
         // Breathing room between messages.
@@ -193,19 +195,36 @@ fn render_line(
             lines
         }
         LineKind::Reasoning => {
+            let collapsed = line
+                .text
+                .contains(crate::harness::ui::tui::transcript::THINKING_COLLAPSED_MARKER);
             let mut out = vec![Line::from(vec![
                 Span::styled("  ╭ ", Style::default().fg(t.border)),
                 Span::styled(
-                    "💭 reasoning",
+                    if collapsed {
+                        "💭 thinking (collapsed)"
+                    } else {
+                        "💭 reasoning"
+                    },
                     Style::default().fg(t.text_dim).add_modifier(Modifier::DIM),
                 ),
             ])];
-            let body_w = width.saturating_sub(6).max(8);
-            for w in markdown::wrap_plain(&line.text, body_w) {
+            if collapsed {
                 out.push(Line::from(vec![
                     Span::styled("  │ ".to_string(), Style::default().fg(t.border)),
-                    Span::styled(w, Style::default().fg(t.text_dim)),
+                    Span::styled(
+                        line.text.clone(),
+                        Style::default().fg(t.text_dim).add_modifier(Modifier::DIM),
+                    ),
                 ]));
+            } else {
+                let body_w = width.saturating_sub(6).max(8);
+                for w in markdown::wrap_plain(&line.text, body_w) {
+                    out.push(Line::from(vec![
+                        Span::styled("  │ ".to_string(), Style::default().fg(t.border)),
+                        Span::styled(w, Style::default().fg(t.text_dim)),
+                    ]));
+                }
             }
             out.push(Line::from(Span::styled(
                 "  ╰────",
@@ -336,6 +355,17 @@ fn bubble(
         }
     }
 
+    // Drop empty/blank body rows entirely (dense rendering); blank markdown
+    // lines otherwise inflate the bubble with unreadable space.
+    body_lines.retain(|bl| {
+        !bl.spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<String>()
+            .trim()
+            .is_empty()
+    });
+
     // Rounded header: ╭─ ◆ you ────────────
     let label = format!(" {glyph} {title} ");
     let label_w = label.chars().count();
@@ -370,7 +400,7 @@ fn bubble(
     out
 }
 
-fn draw_scrollbar(
+pub(crate) fn draw_scrollbar(
     frame: &mut Frame,
     area: Rect,
     start: usize,
@@ -408,5 +438,71 @@ fn draw_scrollbar(
                 height: 1,
             },
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn plain_lines<'a>(lines: &[Line<'a>]) -> Vec<String> {
+        lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn test_bubble_drops_trailing_blank_lines() {
+        let t = Theme::cyberclaw();
+        let text = "Ops, eu consertar:\n\n\n\n\n";
+        let out = bubble(
+            "claw",
+            "✦",
+            text,
+            t.accent,
+            t.assistant_fg,
+            &t,
+            60,
+            false,
+            0,
+        );
+        let plain = plain_lines(&out);
+        // top + 1 body + footer only; no blank rows.
+        assert_eq!(out.len(), 3, "got {:?}", plain);
+        assert!(plain.iter().all(|p| !p.trim().is_empty()));
+    }
+
+    #[test]
+    fn test_bubble_drops_inner_blank_paragraph_lines() {
+        let t = Theme::cyberclaw();
+        let text = "Parágrafo um.\n\n\nParágrafo dois.\n\n\nParágrafo três.";
+        let out = bubble(
+            "claw",
+            "✦",
+            text,
+            t.accent,
+            t.assistant_fg,
+            &t,
+            80,
+            false,
+            0,
+        );
+        let plain = plain_lines(&out);
+        // top + 3 body + footer; blank separators removed entirely.
+        assert_eq!(out.len(), 5, "got {:?}", plain);
+        assert!(plain.iter().all(|p| !p.trim().is_empty()));
+    }
+
+    #[test]
+    fn test_bubble_user_multi_line_no_blanks() {
+        let t = Theme::cyberclaw();
+        let text = "linha 1\n   \n\nlinha 2";
+        let out = bubble("you", "◆", text, t.user_fg, t.user_fg, &t, 60, false, 0);
+        let plain = plain_lines(&out);
+        assert_eq!(out.len(), 4, "got {:?}", plain); // top + 2 body + footer
+        assert!(plain
+            .iter()
+            .all(|p| !p.trim().is_empty() || p.starts_with('╰')));
     }
 }

@@ -5,32 +5,33 @@ edition = "2021"
 
 [dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "stream"] }
 bytes = "1"
 futures-util = "0.3"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
-rand = "0.8"
+rand = "0.9"
 anyhow = "1.0"
 regex = "1"
 async-trait = "0.1"
 glob = "0.3"
-rusqlite = { version = "0.32", features = ["chrono", "bundled"] }
+rusqlite = { version = "0.37", features = ["chrono", "bundled"] }
+base64 = "0.22"
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
-rustyline = "14"
-dirs = "5"
-ratatui = "0.29"
-crossterm = "0.28"
+rustyline = "17"
+dirs = "6"
+ratatui = "0.30"
+crossterm = "0.29"
 sha2 = "0.10"
 arboard = "3"
 htmd = "0.1"
 urlencoding = "2.1"
-tree-sitter = "0.22"
-tree-sitter-rust = "0.21"
+tree-sitter = "0.25"
+tree-sitter-rust = "0.24"
 rmcp = { version = "3.2.0", features = ["client", "transport-child-process", "transport-streamable-http-client", "transport-streamable-http-client-reqwest"] }
 
 [dev-dependencies]
@@ -40,7 +41,9 @@ tempfile = "3"
 opt-level = "z"
 lto = true
 codegen-units = 1
-panic = "abort"
+# unwind (not abort) so a panicking tool can be isolated via catch_unwind
+# (F3.3) without taking down the whole interactive harness.
+panic = "unwind"
 strip = true
 
 [profile.release.package."*"]

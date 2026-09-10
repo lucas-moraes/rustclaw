@@ -233,6 +233,11 @@ mod tests {
             task_runner: None,
             events: crate::harness::event::event_channel().0,
             project_memory: None,
+            hooks: Default::default(),
+            checkpoints: std::sync::Arc::new(
+                crate::harness::tool::checkpoint::FileCheckpoints::new(),
+            ),
+            jobs: std::sync::Arc::new(crate::harness::tool::jobs::JobRegistry::new()),
         }
     }
 

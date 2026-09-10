@@ -19,6 +19,22 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+/// Effective prompt-caching flag for a provider:
+/// global kill-switch (`config.json prompt_caching`) AND the per-provider
+/// override from `providers.json` (when present) OR the provider default
+/// (`true` for anthropic, `false` otherwise).
+pub fn effective_prompt_cache(provider: &str) -> bool {
+    let global = crate::config::GlobalSettings::load().prompt_caching;
+    if !global {
+        return false;
+    }
+    let store = crate::harness::provider::user_store::UserProviders::load();
+    store
+        .find(provider)
+        .and_then(|p| p.prompt_cache)
+        .unwrap_or_else(|| crate::harness::provider::opencode_go::default_prompt_cache(provider))
+}
+
 /// Result of a prompt call.
 pub struct PromptResult {
     pub final_text: String,
@@ -42,12 +58,27 @@ pub struct SessionRuntime {
     pub project: Arc<std::sync::Mutex<ProjectProfiler>>,
     /// SQLite-backed project memory cache.
     pub project_memory: Arc<ProjectMemoryStore>,
-    /// Project root (cwd) used to persist `rustclaw.json` selections.
+    /// Project root (cwd); used to scope sessions and permission rules.
     pub project_root: std::path::PathBuf,
     /// Custom agents injected by the CLI (overrides builtins).
     pub custom_agents: std::collections::HashMap<String, AgentSpec>,
     /// MCP manager (None when no servers are configured).
     pub mcp: Option<Arc<crate::harness::mcp::McpManager>>,
+    /// Frozen per-session structural summaries (session_id → summary).
+    ///
+    /// The system prompt must stay byte-stable across turns so provider
+    /// prompt caches (Anthropic `cache_control` / OpenAI automatic) keep
+    /// hitting; the structural summary is therefore computed once per
+    /// session (and re-frozen after compaction rewrites the context).
+    pub summary_cache: Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>,
+    /// File checkpoints (pre-agent snapshots) powering `/diff` and `/restore`.
+    pub checkpoints: Arc<crate::harness::tool::checkpoint::FileCheckpoints>,
+    /// Background bash jobs (`bash --background`); shared across sessions.
+    pub jobs: Arc<crate::harness::tool::jobs::JobRegistry>,
+    /// Daily USD budget tracker (per-day cost, persisted to usage-*.json).
+    pub budget: Arc<tokio::sync::Mutex<crate::harness::budget::BudgetTracker>>,
+    /// Event recording (`/record`): shared tee target for the UI event loops.
+    pub event_recorder: Arc<crate::harness::ui::commands::replay::EventRecorder>,
 }
 
 impl SessionRuntime {
@@ -85,6 +116,13 @@ impl SessionRuntime {
         let cwd = project_root.to_path_buf();
         let store = Arc::new(SessionStore::open(db_path).context("failed to open session store")?);
         let skills = Arc::new(crate::harness::skill::loader::load_catalog(&cwd));
+        let custom_agents = crate::harness::agent::custom::load_custom_agents(&cwd);
+        if !custom_agents.is_empty() {
+            tracing::info!(
+                "loaded {} custom agent(s) from .agents/agents",
+                custom_agents.len()
+            );
+        }
         let project_memory = Arc::new(
             ProjectMemoryStore::open(db_path).context("failed to open project memory store")?,
         );
@@ -94,7 +132,11 @@ impl SessionRuntime {
         let proj = crate::harness::project::config_file::ProjectConfig::load(&cwd);
         permission.apply_project_config(&proj.permission);
         let persist_root = cwd.clone();
+        // Serialize load+save of rustclaw.json so concurrent "always allow"
+        // decisions don't lose updates (read-modify-write race).
+        let persist_lock = Arc::new(std::sync::Mutex::new(()));
         permission.set_persist(Some(Arc::new(move |tool: &str| {
+            let _guard = persist_lock.lock().unwrap_or_else(|e| e.into_inner());
             let mut p = crate::harness::project::config_file::ProjectConfig::load(&persist_root);
             p.permission
                 .tools
@@ -114,8 +156,15 @@ impl SessionRuntime {
             project: Arc::new(std::sync::Mutex::new(ProjectProfiler::new(&cwd))),
             project_memory,
             project_root: cwd,
-            custom_agents: std::collections::HashMap::new(),
+            custom_agents,
             mcp: None,
+            summary_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            checkpoints: Arc::new(crate::harness::tool::checkpoint::FileCheckpoints::new()),
+            jobs: Arc::new(crate::harness::tool::jobs::JobRegistry::new()),
+            event_recorder: Arc::new(crate::harness::ui::commands::replay::EventRecorder::new()),
+            budget: Arc::new(tokio::sync::Mutex::new(
+                crate::harness::budget::BudgetTracker::default(),
+            )),
         })
     }
 
@@ -152,7 +201,8 @@ impl SessionRuntime {
             base_url: cfg.base_url.clone(),
             api_key: cfg.api_key.clone(),
         };
-        let provider = build_provider_from(&cfg.provider, http)?;
+        let provider =
+            build_provider_from(&cfg.provider, http, effective_prompt_cache(&cfg.provider))?;
         Self::new_in(
             project_root,
             provider,
@@ -168,8 +218,8 @@ impl SessionRuntime {
     /// Switches provider/model at runtime (opencode-style `/models`).
     ///
     /// Rebuilds the provider with the API key from the auth store (falling
-    /// back to the current key) and persists the selection in the project's
-    /// `rustclaw.json`. Applies from the next turn on.
+    /// back to the current key) and persists the selection in the global
+    /// `config.json`. Applies from the next turn on.
     pub fn switch_model(&mut self, provider: &str, model: &str) -> Result<()> {
         let auth = crate::harness::auth::AuthStore::load();
         let root = self.project_root.clone();
@@ -190,9 +240,13 @@ impl SessionRuntime {
     }
 
     /// Model switch with an explicit auth store (hermetic tests).
+    ///
+    /// The selection is persisted globally (config.json), not per-project.
+    /// `project_root` is unused for persistence and kept only to preserve the
+    /// testable signature.
     pub fn switch_model_with_auth(
         &mut self,
-        project_root: &std::path::Path,
+        _project_root: &std::path::Path,
         auth: &crate::harness::auth::AuthStore,
         provider: &str,
         model: &str,
@@ -214,18 +268,20 @@ impl SessionRuntime {
             api_key: api_key.clone(),
         };
         self.config.api_key = api_key;
-        self.provider = build_provider_from(provider, http)?;
+        self.provider = build_provider_from(provider, http, effective_prompt_cache(provider))?;
         self.config.provider = provider.to_string();
         self.config.model = model.to_string();
         self.config.base_url = base_url.clone();
 
-        // Persist the project-scoped selection.
-        let mut proj = crate::harness::project::config_file::ProjectConfig::load(project_root);
-        proj.provider = provider.to_string();
-        proj.model = model.to_string();
-        proj.base_url = base_url;
-        proj.save(project_root)
-            .context("failed to persist rustclaw.json")?;
+        // Persist the selection globally (config.json), not in the project's
+        // rustclaw.json. base_url follows the provider catalog default.
+        let mut settings = crate::config::GlobalSettings::load();
+        settings.provider = provider.to_string();
+        settings.model = model.to_string();
+        settings.base_url = base_url;
+        settings
+            .save()
+            .context("failed to persist global config.json")?;
         Ok(())
     }
 
@@ -333,7 +389,12 @@ impl SessionRuntime {
     }
 
     pub async fn create_session(&self, agent_name: &str) -> Result<Session> {
-        self.store.create_session(agent_name, &self.project_root)
+        let store = self.store.clone();
+        let agent = agent_name.to_string();
+        let root = self.project_root.clone();
+        tokio::task::spawn_blocking(move || store.create_session(&agent, &root))
+            .await
+            .map_err(|e| anyhow::anyhow!("join error: {e}"))?
     }
 
     pub fn load_session(&self, id: &str) -> Result<Option<Session>> {
@@ -359,7 +420,7 @@ impl SessionRuntime {
         force: bool,
         events: Option<&EventSender>,
     ) -> Result<usize> {
-        crate::harness::session::compaction::compact_if_needed(
+        let summarized = crate::harness::session::compaction::compact_if_needed(
             session,
             self.provider.clone(),
             &self.store,
@@ -367,7 +428,16 @@ impl SessionRuntime {
             force,
             events,
         )
-        .await
+        .await?;
+        // Compaction rewrote the conversation context: drop the frozen
+        // structural summary so the next turn recomputes (and re-freezes) it.
+        if summarized > 0 {
+            self.summary_cache
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&session.id);
+        }
+        Ok(summarized)
     }
 
     /// Like [`load_last_session`] but scoped to an explicit project root
@@ -413,19 +483,58 @@ impl SessionRuntime {
         abort: crate::harness::tool::context::AbortSignal,
         enabled_skills: Option<&[String]>,
     ) -> Result<PromptResult> {
+        self.prompt_with_parts(
+            session,
+            events,
+            vec![crate::harness::session::Part::text(user_text)],
+            abort,
+            enabled_skills,
+        )
+        .await
+    }
+
+    /// Like `prompt`, but the user message is built from explicit parts
+    /// (used by `/image <path>` to attach a `Part::Image`).
+    pub async fn prompt_with_parts(
+        &self,
+        session: &mut Session,
+        events: &EventSender,
+        mut user_parts: Vec<crate::harness::session::Part>,
+        abort: crate::harness::tool::context::AbortSignal,
+        enabled_skills: Option<&[String]>,
+    ) -> Result<PromptResult> {
+        let user_text = user_parts
+            .iter()
+            .filter_map(|p| p.as_text())
+            .collect::<Vec<_>>()
+            .join("\n");
         let _ = events.send(HarnessEvent::RunStarted {
             session_id: session.id.clone(),
         });
 
-        // 1. Append + persist user message.
-        let user_msg = crate::harness::session::Message::user(user_text.to_string());
+        // 1. Append + persist user message. The per-turn project memory block
+        //    is injected as a leading part (kept out of the system prompt so
+        //    the prompt prefix stays byte-stable for provider prompt caches).
+        let memory_block = self.memory_block_for(&session.cwd, &user_text).await?;
+        if !memory_block.is_empty() {
+            user_parts.insert(0, crate::harness::session::Part::text(memory_block));
+        }
+        let user_msg =
+            crate::harness::session::Message::new(crate::harness::session::Role::User, user_parts);
         let _ = events.send(HarnessEvent::UserMessage {
             session_id: session.id.clone(),
             message_id: user_msg.id.clone(),
         });
         session.push_message(user_msg.clone());
-        self.store
-            .save_message(&session.id, &session.cwd, &user_msg)?;
+        {
+            let store = self.store.clone();
+            let sid = session.id.clone();
+            let cwd = session.cwd.clone();
+            let msg = user_msg.clone();
+            tokio::task::spawn_blocking(move || store.save_message(&sid, &cwd, &msg))
+                .await
+                .map_err(|e| anyhow::anyhow!("join error: {e}"))??;
+        }
 
         // 2. Resolve agent + build system prompt (with enabled skills).
         let agent = self.resolve_agent(&session.agent);
@@ -434,7 +543,7 @@ impl SessionRuntime {
             None => inject::enabled_for_turn(&session.skills, None),
         };
         let skills_block = inject::render_enabled(&self.skills, &session.skills, &enabled);
-        let project_context = self.project_context_for(&session.cwd, user_text)?;
+        let project_context = self.frozen_summary_for(&session.id, &session.cwd).await?;
         let available_tools = self.registry.specs(&agent.tools);
         let system_prompt = build_system_prompt(
             &agent,
@@ -462,7 +571,10 @@ impl SessionRuntime {
                 allow_write: session.agent == crate::harness::agent::builtin::BUILD,
             })),
             events: events.clone(),
+            jobs: self.jobs.clone(),
             project_memory: Some(self.project_memory.clone()),
+            hooks: crate::harness::hooks::HooksConfig::load_for_cwd(&session.cwd),
+            checkpoints: self.checkpoints.clone(),
         };
 
         // 4. Run the processor turn.
@@ -505,16 +617,55 @@ impl SessionRuntime {
                 .map(|m| m.id == user_msg.id)
                 .unwrap_or(false);
             if only_user_pending {
-                let _ = self
-                    .store
-                    .delete_messages_from(&session.id, &session.cwd, &user_msg.id);
+                let store = self.store.clone();
+                let sid = session.id.clone();
+                let cwd = session.cwd.clone();
+                let msg_id = user_msg.id.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    store.delete_messages_from(&sid, &cwd, &msg_id)
+                })
+                .await;
                 session.messages.pop();
             }
         }
 
         // 5. Sync todos back and persist session.
         session.todos = ctx.todos.read().await.clone();
-        self.store.save_session(session)?;
+        {
+            let store = self.store.clone();
+            let snapshot = session.clone();
+            tokio::task::spawn_blocking(move || store.save_session(&snapshot))
+                .await
+                .map_err(|e| anyhow::anyhow!("join error: {e}"))??;
+        }
+
+        // Daily budget: accumulate the turn cost and warn at 80%/100%.
+        // Never breaks the turn; warn is emitted as a system event.
+        if usage.input_tokens + usage.output_tokens > 0 {
+            let cost = crate::harness::budget::turn_cost(
+                &self.config.provider,
+                &self.config.model,
+                &usage,
+            );
+            let limit = self.config.daily_budget_usd;
+            // `record` does disk I/O (persist); run it on a blocking thread so
+            // the async executor isn't stalled, and treat a poisoned lock by
+            // recovering its inner value rather than silently disabling tracking.
+            let budget = self.budget.clone();
+            let (warn, spent) = tokio::task::spawn_blocking(move || {
+                let mut t = budget.blocking_lock();
+                let w = t.record(cost, limit);
+                (w, t.spent_today())
+            })
+            .await
+            .unwrap_or((None, 0.0));
+            if let Some(w) = warn {
+                let _ = events.send(HarnessEvent::BudgetWarn {
+                    session_id: session.id.clone(),
+                    message: w.message(spent, limit),
+                });
+            }
+        }
 
         let _ = events.send(HarnessEvent::RunFinished {
             session_id: session.id.clone(),
@@ -566,74 +717,149 @@ impl SessionRuntime {
             project_root: self.project_root.clone(),
             custom_agents: self.custom_agents.clone(),
             mcp: self.mcp.clone(),
+            summary_cache: self.summary_cache.clone(),
+            checkpoints: self.checkpoints.clone(),
+            jobs: self.jobs.clone(),
+            budget: self.budget.clone(),
+            event_recorder: self.event_recorder.clone(),
         }
     }
 
-    /// Builds the `# Project context` block for a session's working directory,
-    /// recomputing (and persisting) the structural summary when stale, and
-    /// appending the top curated memory facts (ranked by relevance to `query`).
-    fn project_context_for(&self, cwd: &std::path::Path, query: &str) -> Result<String> {
-        let profiler = ProjectProfiler {
-            inner: ProjectProfiler::analyze(cwd),
-        };
-        let needs_regen = self.project_memory.needs_regen(cwd, &profiler.inner)?;
-        let summary = if needs_regen {
-            let rendered = profiler.render_summary();
-            self.project_memory
-                .upsert_summary(&profiler.inner, &rendered)
-                .ok();
-            rendered
-        } else {
-            self.project_memory
-                .load(cwd)?
-                .map(|r| {
-                    if r.summary.trim().is_empty() {
-                        profiler.render_summary()
-                    } else {
-                        r.summary
+    /// Returns the frozen structural summary for a session, computing (and
+    /// persisting) it on first use. The summary is cached per session so the
+    /// system prompt stays byte-stable across turns — a prerequisite for
+    /// provider prompt caches (Anthropic `cache_control`, OpenAI automatic),
+    /// which require an identical prefix. Compaction invalidates the entry
+    /// (the context is rewritten anyway).
+    fn frozen_summary_for<'a>(
+        &'a self,
+        session_id: &'a str,
+        cwd: &'a std::path::Path,
+    ) -> impl std::future::Future<Output = Result<String>> + Send + 'a {
+        let cached = self
+            .summary_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(session_id)
+            .cloned();
+        async move {
+            if let Some(cached) = cached {
+                return Ok(cached);
+            }
+            let cwd = cwd.to_path_buf();
+            let memory = self.project_memory.clone();
+            let (needs_regen, loaded, profiler_inner) = tokio::task::spawn_blocking(move || {
+                let profiler = ProjectProfiler {
+                    inner: ProjectProfiler::analyze(&cwd),
+                };
+                let needs_regen = memory.needs_regen(&cwd, &profiler.inner).unwrap_or(true);
+                let loaded = if needs_regen {
+                    None
+                } else {
+                    memory.load(&cwd).ok().flatten()
+                };
+                (needs_regen, loaded, profiler.inner)
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("join error: {e}"))?;
+            let profiler = ProjectProfiler {
+                inner: profiler_inner,
+            };
+            let summary = if needs_regen {
+                let rendered = profiler.render_summary();
+                let memory = self.project_memory.clone();
+                let ctx = profiler.inner.clone();
+                let rendered_clone = rendered.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    memory.upsert_summary(&ctx, &rendered_clone)
+                })
+                .await;
+                rendered
+            } else {
+                loaded
+                    .map(|r| {
+                        if r.summary.trim().is_empty() {
+                            profiler.render_summary()
+                        } else {
+                            r.summary
+                        }
+                    })
+                    .unwrap_or_else(|| profiler.render_summary())
+            };
+            // Lock the shared profiler so the `remember` tool and prompt stay in sync.
+            if let Ok(mut p) = self.project.lock() {
+                p.inner = profiler.inner;
+            }
+            self.summary_cache
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(session_id.to_string(), summary.clone());
+            Ok(summary)
+        }
+    }
+
+    /// Builds the per-turn `<project-memory>` block (top curated facts,
+    /// ranked by relevance to the current query). Injected as a prefix of the
+    /// user message — NOT into the system prompt — so the prompt prefix
+    /// stays cacheable.
+    fn memory_block_for<'a>(
+        &'a self,
+        cwd: &'a std::path::Path,
+        query: &str,
+    ) -> impl std::future::Future<Output = Result<String>> + Send + 'a {
+        let cwd = cwd.to_path_buf();
+        let query = query.to_string();
+        async move {
+            let memory = self.project_memory.clone();
+            let cwd2 = cwd.clone();
+            let q2 = query.clone();
+            let (facts, ranks) = tokio::task::spawn_blocking(move || {
+                let facts = memory.active_facts(&cwd2).unwrap_or_default();
+                let ranks: std::collections::HashMap<i64, f64> = if q2.trim().is_empty() {
+                    std::collections::HashMap::new()
+                } else {
+                    memory
+                        .search_facts(&cwd2, &q2)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|(f, rank)| (f.id, rank))
+                        .collect()
+                };
+                (facts, ranks)
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("join error: {e}"))?;
+            let rendered = crate::harness::project::memory::render_memory_ranked(
+                &facts,
+                &query,
+                crate::harness::project::memory::MAX_MEMORY_CHARS,
+                &ranks,
+            );
+            // Bump usage for the facts that were actually injected.
+            if !rendered.is_empty() {
+                let memory = self.project_memory.clone();
+                let ids: Vec<i64> = facts
+                    .iter()
+                    .filter(|f| rendered.contains(&f.text))
+                    .map(|f| f.id)
+                    .collect();
+                let _ = tokio::task::spawn_blocking(move || {
+                    for id in ids {
+                        let _ = memory.bump_usage(&cwd, id);
                     }
                 })
-                .unwrap_or_else(|| profiler.render_summary())
-        };
-        // Lock the shared profiler so the `remember` tool and prompt stay in sync.
-        if let Ok(mut p) = self.project.lock() {
-            p.inner = profiler.inner;
-        }
-
-        // Append curated memory facts, ranked by relevance to the current turn.
-        // FTS5 full-text match boosts facts that share terms with the query.
-        let facts = self.project_memory.active_facts(cwd)?;
-        let ranks: std::collections::HashMap<i64, f64> = if query.trim().is_empty() {
-            std::collections::HashMap::new()
-        } else {
-            self.project_memory
-                .search_facts(cwd, query)
-                .unwrap_or_default()
-                .into_iter()
-                .map(|(f, rank)| (f.id, rank))
-                .collect()
-        };
-        let memory_block = crate::harness::project::memory::render_memory_ranked(
-            &facts,
-            query,
-            crate::harness::project::memory::MAX_MEMORY_CHARS,
-            &ranks,
-        );
-        // Bump usage for the facts that were actually injected.
-        if !memory_block.is_empty() {
-            for fact in &facts {
-                if memory_block.contains(&fact.text) {
-                    let _ = self.project_memory.bump_usage(cwd, fact.id);
-                }
+                .await;
             }
+            if rendered.trim().is_empty() {
+                return Ok(String::new());
+            }
+            Ok(format!(
+                "{}\n{}\n{}",
+                crate::harness::project::memory::MEMORY_BLOCK_START,
+                rendered.trim_end(),
+                crate::harness::project::memory::MEMORY_BLOCK_END
+            ))
         }
-
-        let mut out = summary;
-        if !memory_block.trim().is_empty() {
-            out.push_str("\n\n# Project memory\n");
-            out.push_str(&memory_block);
-        }
-        Ok(out)
     }
 }
 
@@ -642,6 +868,7 @@ pub fn build_default_registry() -> ToolRegistry {
     use crate::harness::tool::{
         ast_search::AstSearchTool,
         bash::BashTool,
+        diagnostics::DiagnosticsTool,
         edit::EditTool,
         fetch_webpage::FetchWebpageTool,
         git::{GitDiffTool, GitLogTool, GitStatusTool},
@@ -663,6 +890,7 @@ pub fn build_default_registry() -> ToolRegistry {
         .register(Arc::new(GlobTool))
         .register(Arc::new(GrepTool))
         .register(Arc::new(AstSearchTool))
+        .register(Arc::new(DiagnosticsTool))
         .register(Arc::new(TodoReadTool))
         .register(Arc::new(TodoWriteTool))
         .register(Arc::new(QuestionTool))
@@ -932,7 +1160,7 @@ mod model_switch_tests {
             base_url: "https://api.deepinfra.com/v1/openai".to_string(),
             api_key: "sk-initial-test-key-123456".to_string(),
         };
-        let provider = build_provider_from("deepinfra", http)?;
+        let provider = build_provider_from("deepinfra", http, false)?;
         let db = dir.join("test.db");
         SessionRuntime::new_in(
             dir,
@@ -953,7 +1181,34 @@ mod model_switch_tests {
     }
 
     #[tokio::test]
-    async fn test_switch_model_updates_config_and_project_file() {
+    async fn test_concurrent_permission_persists_no_lost_update() {
+        let dir = tempfile::tempdir().unwrap();
+        let rt = test_runtime(dir.path()).unwrap();
+        let persist = rt.permission.persist_callback();
+        let persist = persist.expect("persist callback should be set");
+
+        // Two concurrent "always allow" decisions for different tools.
+        let (p1, p2) = (persist.clone(), persist.clone());
+        let (r1, r2) = tokio::join!(
+            tokio::task::spawn_blocking(move || p1("tool_a")),
+            tokio::task::spawn_blocking(move || p2("tool_b")),
+        );
+        r1.unwrap().unwrap();
+        r2.unwrap().unwrap();
+
+        let proj = crate::harness::project::config_file::ProjectConfig::load(dir.path());
+        assert_eq!(
+            proj.permission.tools.get("tool_a"),
+            Some(&crate::harness::permission::Rule::Allow)
+        );
+        assert_eq!(
+            proj.permission.tools.get("tool_b"),
+            Some(&crate::harness::permission::Rule::Allow)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_switch_model_updates_config_and_global_settings() {
         let dir = tempfile::tempdir().unwrap();
         let mut rt = test_runtime(dir.path()).unwrap();
 
@@ -967,11 +1222,18 @@ mod model_switch_tests {
         let name = rt.provider.name().to_string();
         assert!(!name.is_empty());
 
-        // Selection persisted into the project file.
+        // Selection persisted into the GLOBAL config.json, not the project file.
         let proj = crate::harness::project::config_file::ProjectConfig::load(dir.path());
-        assert_eq!(proj.provider, "moonshot");
-        assert_eq!(proj.model, "kimi-k2.5");
-        assert_eq!(proj.base_url, "https://api.moonshot.ai/v1");
+        assert!(
+            proj.is_empty(),
+            "project file must not carry model/provider"
+        );
+
+        let s = crate::config::GlobalSettings::load_from(&crate::config::GlobalSettings::path())
+            .unwrap();
+        assert_eq!(s.provider, "moonshot");
+        assert_eq!(s.model, "kimi-k2.5");
+        assert_eq!(s.base_url, "https://api.moonshot.ai/v1");
     }
 
     #[tokio::test]
@@ -1047,6 +1309,41 @@ mod model_switch_tests {
     }
 
     #[tokio::test]
+    async fn test_custom_agents_discovered_and_shadow_builtin() {
+        let dir = tempfile::tempdir().unwrap();
+        let agents_dir = dir.path().join(".agents").join("agents");
+        std::fs::create_dir_all(&agents_dir).unwrap();
+        std::fs::write(
+            agents_dir.join("reviewer.md"),
+            "---\ndescription: Code reviewer\ntools: [read, grep]\nmodel: gpt-5\n---\nYou review code carefully.",
+        )
+        .unwrap();
+        // Custom agent shadowing a builtin name.
+        std::fs::write(
+            agents_dir.join("build.md"),
+            "---\ndescription: custom build\n---\nCustom build prompt.",
+        )
+        .unwrap();
+
+        let rt = test_runtime(dir.path()).unwrap();
+        assert_eq!(rt.custom_agents.len(), 2);
+
+        let review = rt.resolve_agent("reviewer");
+        assert_eq!(review.name, "reviewer");
+        assert_eq!(review.description, "Code reviewer");
+        assert_eq!(review.tools, vec!["read", "grep"]);
+        assert_eq!(review.model.as_deref(), Some("gpt-5"));
+        assert_eq!(review.system_prompt, "You review code carefully.");
+
+        // Custom wins over the builtin of the same name.
+        let build = rt.resolve_agent("build");
+        assert_eq!(build.system_prompt, "Custom build prompt.");
+
+        // Builtins not shadowed remain available.
+        assert_eq!(rt.resolve_agent("plan").name, "plan");
+    }
+
+    #[tokio::test]
     async fn test_session_ops_use_project_root_not_process_cwd() {
         // The runtime's session operations must be scoped to its `project_root`,
         // not to the process's current working directory. We build a runtime
@@ -1090,7 +1387,7 @@ mod model_switch_tests {
             base_url: "https://api.deepinfra.com/v1/openai".to_string(),
             api_key: String::new(),
         };
-        let provider = build_provider_from("deepinfra", http).unwrap();
+        let provider = build_provider_from("deepinfra", http, false).unwrap();
         let db = dir.path().join("test.db");
         let mut rt = SessionRuntime::new_in(
             dir.path(),

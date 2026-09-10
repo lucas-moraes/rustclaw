@@ -30,7 +30,7 @@ pub struct McpToolSpec {
 pub struct McpClient {
     /// Server name (config key).
     pub server: String,
-    service: RunningService<RoleClient, ClientInfo>,
+    service: tokio::sync::Mutex<RunningService<RoleClient, ClientInfo>>,
     tools: Vec<McpToolSpec>,
 }
 
@@ -116,7 +116,7 @@ impl McpClient {
 
         Ok(Self {
             server: name.to_string(),
-            service,
+            service: tokio::sync::Mutex::new(service),
             tools,
         })
     }
@@ -150,9 +150,15 @@ impl McpClient {
     ) -> Result<RunningService<RoleClient, ClientInfo>> {
         let mut cmd = Command::new(&cfg.command);
         cmd.args(&cfg.args);
-        for (k, v) in &cfg.env {
-            cmd.env(k, v);
-        }
+        // Sanitize the inherited environment (strip secrets) and merge the
+        // server's explicit `env` config on top (user-provided, always wins).
+        let extra: std::collections::BTreeMap<String, String> = cfg
+            .env
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        cmd.env_clear();
+        cmd.envs(crate::harness::tool::env::sanitized_env(&extra));
         let transport = TokioChildProcess::new(cmd)
             .with_context(|| format!("mcp server `{name}`: failed to spawn `{}`", cfg.command))?;
 
@@ -169,13 +175,11 @@ impl McpClient {
 
     /// Lightweight health probe (uses `tools/list`, cached by rmcp).
     pub async fn ping(&self) -> Result<()> {
-        tokio::time::timeout(
-            std::time::Duration::from_secs(10),
-            self.service.list_all_tools(),
-        )
-        .await
-        .map_err(|_| anyhow::anyhow!("health check timed out"))?
-        .map_err(|e| anyhow::anyhow!("health check failed: {e}"))?;
+        let service = self.service.lock().await;
+        tokio::time::timeout(std::time::Duration::from_secs(10), service.list_all_tools())
+            .await
+            .map_err(|_| anyhow::anyhow!("health check timed out"))?
+            .map_err(|e| anyhow::anyhow!("health check failed: {e}"))?;
         Ok(())
     }
 
@@ -200,9 +204,10 @@ impl McpClient {
         if let Some(args) = arguments {
             params = params.with_arguments(args);
         }
+        let service = self.service.lock().await;
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(timeout_secs),
-            self.service.call_tool(params),
+            service.call_tool(params),
         )
         .await
         .map_err(|_| anyhow::anyhow!("mcp tool `{name}` timed out after {timeout_secs}s"))?
@@ -216,6 +221,14 @@ impl McpClient {
             );
         }
         Ok(content_to_text(&result.content))
+    }
+
+    /// Gracefully shuts down the MCP session (closes the transport and
+    /// terminates the server subprocess). Safe to call through an `Arc`;
+    /// subsequent calls are no-ops (the service is already closed).
+    pub async fn shutdown(&self) {
+        let mut service = self.service.lock().await;
+        let _ = service.close().await;
     }
 }
 

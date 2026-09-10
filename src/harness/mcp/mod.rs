@@ -135,10 +135,16 @@ impl McpManager {
         let res = McpClient::connect(name, &server).await;
         match res {
             Ok(client) => {
-                self.clients
+                // Terminate the previous client (closes transport + subprocess)
+                // before swapping in the fresh one.
+                let old = self
+                    .clients
                     .write()
                     .await
                     .insert(name.to_string(), Arc::new(client));
+                if let Some(old) = old {
+                    old.shutdown().await;
+                }
                 self.status
                     .write()
                     .await

@@ -131,7 +131,7 @@ pub fn draw_picker(frame: &mut Frame, app: &App, picker: &ModelPickerState, area
     }
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "  selection is saved to rustclaw.json (this project)",
+        "  selection is saved to config.json (global)",
         Style::default().fg(t.text_dim),
     )));
 

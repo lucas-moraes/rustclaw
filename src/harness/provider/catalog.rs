@@ -256,9 +256,35 @@ pub fn price_per_million(provider: &str, model: &str) -> (f64, f64) {
 }
 
 /// Estimated cost in USD for the given token usage on `provider`/`model`.
+/// Kept for tests and simple callers; prefer [`estimate_cost_cached`].
+#[allow(dead_code)]
 pub fn estimate_cost(provider: &str, model: &str, input_tokens: u64, output_tokens: u64) -> f64 {
     let (pi, po) = price_per_million(provider, model);
     (input_tokens as f64 / 1_000_000.0) * pi + (output_tokens as f64 / 1_000_000.0) * po
+}
+
+/// Cache-aware cost estimate in USD for the given `provider`/`model`.
+///
+/// - Anthropic: `input_tokens` EXCLUDES cache tokens, so billable input is
+///   `input + 1.25×cache_write + 0.1×cache_read`.
+/// - OpenAI-compatible: `prompt_tokens` INCLUDES cached tokens, so billable
+///   input is `(input − cache_read) + 0.5×cache_read` (writes don't exist).
+pub fn estimate_cost_cached(
+    provider: &str,
+    model: &str,
+    usage: &crate::harness::provider::Usage,
+) -> f64 {
+    let (pi, po) = price_per_million(provider, model);
+    let per_m = |t: f64| t / 1_000_000.0;
+    let input_billable = if provider.eq_ignore_ascii_case("anthropic") {
+        usage.input_tokens as f64
+            + 1.25 * usage.cache_write_tokens as f64
+            + 0.1 * usage.cache_read_tokens as f64
+    } else {
+        (usage.input_tokens.saturating_sub(usage.cache_read_tokens)) as f64
+            + 0.5 * usage.cache_read_tokens as f64
+    };
+    per_m(input_billable) * pi + per_m(usage.output_tokens as f64) * po
 }
 
 /// Compact USD formatting for the sidebar / cost display.
@@ -335,6 +361,7 @@ mod tests {
             default_model: "custom-model".into(),
             models: vec!["custom-model".into()],
             removed: false,
+            prompt_cache: None,
         });
         store.save_to(&path).unwrap();
 
@@ -387,5 +414,55 @@ mod tests {
         assert_eq!(format_cost(0.0042), "$0.0042");
         assert_eq!(format_cost(1.25), "$1.25");
         assert_eq!(format_cost(0.0), "$0");
+    }
+
+    #[test]
+    fn test_estimate_cost_cached_anthropic() {
+        use crate::harness::provider::Usage;
+        // Anthropic: input excludes cache. 1M input ($3) + 1M write (1.25×$3)
+        // + 1M read (0.1×$3) + 1M output ($15).
+        let usage = Usage {
+            input_tokens: 1_000_000,
+            output_tokens: 1_000_000,
+            cache_read_tokens: 1_000_000,
+            cache_write_tokens: 1_000_000,
+        };
+        let c = estimate_cost_cached("anthropic", "claude-sonnet-4-20250514", &usage);
+        let expected = (1.0 + 1.25 + 0.1) * 3.0 + 15.0;
+        assert!((c - expected).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_estimate_cost_cached_openai_style() {
+        use crate::harness::provider::Usage;
+        // OpenAI: prompt_tokens includes cached. 1M input of which 400k cached
+        // → billable = 600k×$0.25 + 400k×0.5×$0.25 + 1M output×$1.00.
+        let usage = Usage {
+            input_tokens: 1_000_000,
+            output_tokens: 1_000_000,
+            cache_read_tokens: 400_000,
+            cache_write_tokens: 0,
+        };
+        let c = estimate_cost_cached("deepinfra", "deepseek-ai/DeepSeek-V4-Flash-0731", &usage);
+        let expected = (0.6 + 0.5 * 0.4) * 0.25 + 1.0;
+        assert!((c - expected).abs() < 1e-9);
+        // No double-count: without cache it equals estimate_cost.
+        let plain = Usage {
+            input_tokens: 1_000_000,
+            output_tokens: 1_000_000,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+        };
+        assert!(
+            (estimate_cost_cached("deepinfra", "deepseek-ai/DeepSeek-V4-Flash-0731", &plain)
+                - estimate_cost(
+                    "deepinfra",
+                    "deepseek-ai/DeepSeek-V4-Flash-0731",
+                    1_000_000,
+                    1_000_000
+                ))
+            .abs()
+                < 1e-9
+        );
     }
 }

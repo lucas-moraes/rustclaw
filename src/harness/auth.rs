@@ -49,8 +49,19 @@ impl AuthStore {
         }
         let raw = std::fs::read_to_string(path)
             .with_context(|| format!("failed to read auth store {}", path.display()))?;
-        serde_json::from_str(&raw)
-            .with_context(|| format!("failed to parse auth store {}", path.display()))
+        match serde_json::from_str(&raw) {
+            Ok(store) => Ok(store),
+            Err(e) => {
+                // Preserve the corrupt file as a backup before any save()
+                // overwrites it, and surface a clear warning.
+                backup_corrupt(path, "auth store");
+                Err(anyhow::anyhow!(
+                    "failed to parse auth store {}: {e} (backed up to {}.bak)",
+                    path.display(),
+                    path.display()
+                ))
+            }
+        }
     }
 
     /// Persists the store with `0600` permissions (best effort).
@@ -89,6 +100,28 @@ impl AuthStore {
                 key: key.into(),
             },
         );
+    }
+}
+
+/// Backs up a corrupt JSON config/store file to `<path>.bak` so a later
+/// `save()` doesn't silently destroy the user's data. Emits a warning.
+/// Best-effort: failures to back up are logged, never propagated.
+pub(crate) fn backup_corrupt(path: &std::path::Path, what: &str) {
+    let bak = path.with_extension("json.bak");
+    match std::fs::rename(path, &bak) {
+        Ok(()) => {
+            tracing::warn!(
+                "{what} at {} is corrupt; backed up to {}",
+                path.display(),
+                bak.display()
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                "{what} at {} is corrupt and could not be backed up: {e}",
+                path.display()
+            );
+        }
     }
 }
 
@@ -137,5 +170,32 @@ mod tests {
         assert!(json.contains("\"deepinfra\""));
         assert!(json.contains("\"type\":\"api\"") || json.contains("\"type\": \"api\""));
         assert!(json.contains("\"key\": \"sk-1\"") || json.contains("\"key\":\"sk-1\""));
+    }
+
+    #[test]
+    fn test_corrupt_file_is_backed_up_and_not_overwritten() {
+        let (_d, p) = tmp();
+        std::fs::write(&p, "{ not valid json").unwrap();
+        // Load fails (parse error) and the corrupt file is preserved as .bak.
+        let err = AuthStore::load_from(&p).unwrap_err();
+        assert!(err.to_string().contains("backed up"), "err: {err}");
+        let bak = p.with_extension("json.bak");
+        assert!(bak.exists(), ".bak should exist");
+        assert!(!p.exists(), "original should be moved to .bak");
+        assert_eq!(
+            std::fs::read_to_string(&bak).unwrap(),
+            "{ not valid json",
+            "backup preserves the original bytes"
+        );
+        // A subsequent save writes a fresh store without touching the backup.
+        let mut s = AuthStore::default();
+        s.set_key("deepinfra", "sk-new");
+        s.save_to(&p).unwrap();
+        assert_eq!(s.get_key("deepinfra"), Some("sk-new".to_string()));
+        assert_eq!(
+            std::fs::read_to_string(&bak).unwrap(),
+            "{ not valid json",
+            "backup is untouched by save"
+        );
     }
 }

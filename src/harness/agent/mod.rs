@@ -1,6 +1,7 @@
 //! Agent specs: named tool/prompt/persona bundles (build, plan, explore, general).
 
 pub mod builtin;
+pub mod custom;
 
 use crate::harness::tool::ToolSpec;
 use serde::{Deserialize, Serialize};

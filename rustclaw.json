@@ -1,26 +1,23 @@
 {
-  "provider": "deepinfra",
-  "model": "zai-org/GLM-5.3",
-  "base_url": "https://api.deepinfra.com/v1/openai",
   "permission": {
     "tools": {
-      "fetch_webpage": "allow",
-      "grep": "allow",
-      "ast_search": "allow",
-      "remember": "allow",
-      "question": "allow",
-      "todo_write": "allow",
-      "git_status": "allow",
-      "task": "allow",
-      "glob": "allow",
       "web_search": "allow",
+      "ast_search": "allow",
+      "fetch_webpage": "allow",
       "read": "allow",
-      "git_log": "allow",
-      "write": "allow",
-      "todo_read": "allow",
-      "edit": "allow",
+      "todo_write": "allow",
       "bash": "allow",
-      "git_diff": "allow"
+      "git_diff": "allow",
+      "grep": "allow",
+      "todo_read": "allow",
+      "git_log": "allow",
+      "glob": "allow",
+      "edit": "allow",
+      "task": "allow",
+      "write": "allow",
+      "question": "allow",
+      "remember": "allow",
+      "git_status": "allow"
     },
     "default": null
   }

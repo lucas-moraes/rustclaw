@@ -1,5 +1,6 @@
 //! TUI main loop, input submission and terminal lifecycle.
 
+use crate::harness::event::HarnessEvent;
 use crate::harness::provider::format_tokens;
 use crate::harness::runtime::{PromptResult, SessionRuntime};
 use crate::harness::session::Session;
@@ -68,12 +69,18 @@ pub async fn run_tui(
 
     // Unconfigured boot → onboarding wizard: with no model selected yet, open
     // the /models picker first (the auth prompt follows automatically after
-    // the model choice, see apply_model_choice). When a model is already
-    // selected in the settings, skip setup and go straight to the token
-    // prompt for the resolved provider.
+    // the model choice, see apply_model_choice). When a model is selected but
+    // its provider has no stored token, the app still behaves as a first run:
+    // open the provider/model picker instead of an auth prompt for a provider
+    // the user may not want to keep.
     if !app.runtime.config.is_configured() {
         let settings = crate::config::GlobalSettings::load();
-        if settings.provider.is_empty() && settings.model.is_empty() {
+        let auth = crate::harness::auth::AuthStore::load();
+        let token_len = auth
+            .get_key(app.runtime.config.provider.trim())
+            .map(|k| k.trim().len())
+            .unwrap_or(0);
+        if settings.provider.is_empty() && settings.model.is_empty() || token_len < 10 {
             app.open_models_picker();
             app.add_system("RustClaw needs a provider/model and an API token — configure now");
         } else {
@@ -104,8 +111,38 @@ pub async fn run_tui(
             }
         }
 
+        // Drain events, coalescing consecutive TextDelta events to reduce
+        // the number of apply_event calls (and thus frame work) under burst.
+        let mut coalesced_delta = String::new();
         while let Ok(ev) = app.events_rx.try_recv() {
-            app.apply_event(ev);
+            app.runtime.event_recorder.record(&ev);
+            match ev {
+                HarnessEvent::TextDelta { delta, .. } => {
+                    coalesced_delta.push_str(&delta);
+                }
+                other => {
+                    // Flush any coalesced delta before the non-delta event.
+                    if !coalesced_delta.is_empty() {
+                        let combined = std::mem::take(&mut coalesced_delta);
+                        app.apply_event(HarnessEvent::TextDelta {
+                            delta: combined,
+                            session_id: String::new(),
+                            message_id: String::new(),
+                            parent_session_id: None,
+                        });
+                    }
+                    app.apply_event(other);
+                }
+            }
+        }
+        // Flush any remaining coalesced delta.
+        if !coalesced_delta.is_empty() {
+            app.apply_event(HarnessEvent::TextDelta {
+                delta: std::mem::take(&mut coalesced_delta),
+                session_id: String::new(),
+                message_id: String::new(),
+                parent_session_id: None,
+            });
         }
         while let Ok(req) = app.permission_rx.try_recv() {
             app.flush_streaming();
@@ -117,12 +154,12 @@ pub async fn run_tui(
                     preview(&req.input.args_summary, 120)
                 ),
             );
-            app.modal = Some(Modal::Permission(req));
+            app.enqueue_modal(Modal::Permission(req));
         }
         while let Ok(req) = app.question_rx.try_recv() {
             app.flush_streaming();
             app.push(LineKind::System, format!("[question] {}", req.question));
-            app.modal = Some(Modal::Question {
+            app.enqueue_modal(Modal::Question {
                 req,
                 draft: String::new(),
                 cursor: 0,
@@ -137,6 +174,7 @@ pub async fn run_tui(
                         app.session = updated;
                         app.record_usage(r.usage, r.iterations);
                         app.running = false;
+                        app.turn_started_at = None;
                         app.status_msg = None;
                         app.active_tools.clear();
                         app.flush_streaming();
@@ -167,6 +205,7 @@ pub async fn run_tui(
                     Ok(Err(e)) => {
                         app.push(LineKind::Error, format!("[error] {}", e));
                         app.running = false;
+                        app.turn_started_at = None;
                         app.status_msg = None;
                         app.active_tools.clear();
                         app.flush_streaming();
@@ -174,6 +213,7 @@ pub async fn run_tui(
                     Err(e) => {
                         app.push(LineKind::Error, format!("[error] task: {}", e));
                         app.running = false;
+                        app.turn_started_at = None;
                         app.active_tools.clear();
                     }
                 }
@@ -206,6 +246,13 @@ pub async fn run_tui(
                     }
                     let quit = handle_key(&mut app, key, &mut prompt_task).await?;
                     if quit {
+                        // Graceful shutdown: give the in-flight turn a moment to
+                        // persist its state before we drop the task handle.
+                        if let Some(handle) = prompt_task.take() {
+                            let _ =
+                                tokio::time::timeout(std::time::Duration::from_millis(500), handle)
+                                    .await;
+                        }
                         break;
                     }
                 }

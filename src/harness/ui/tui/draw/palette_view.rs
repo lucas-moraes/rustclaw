@@ -1,6 +1,8 @@
 //! Command palette and autocomplete overlays.
 
-use crate::harness::ui::tui::draw::{centered_rect, centered_rect_fixed};
+use crate::harness::ui::tui::draw::centered_rect;
+use crate::harness::ui::tui::draw::centered_rect_fixed;
+use crate::harness::ui::tui::draw::transcript::draw_scrollbar;
 use crate::harness::ui::tui::palette::{kind_label, AutoComplete, PaletteKind, PaletteState};
 use crate::harness::ui::tui::theme::Theme;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -10,7 +12,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
 pub fn draw_palette(frame: &mut Frame, pal: &PaletteState, t: &Theme, area: Rect) {
-    let parea = centered_rect(64, 55, area);
+    let parea = centered_rect(60, 55, area);
     frame.render_widget(Clear, parea);
 
     let block = Block::default()
@@ -71,7 +73,7 @@ pub fn draw_palette(frame: &mut Frame, pal: &PaletteState, t: &Theme, area: Rect
                 Style::default().fg(kind_color).bg(bg),
             ),
             Span::styled(
-                format!(" {:<22}", truncate(&item.label, 22)),
+                format!(" {:<24}", truncate(&item.label, 24)),
                 Style::default()
                     .fg(if selected { t.text_bright } else { t.text })
                     .bg(bg)
@@ -82,7 +84,7 @@ pub fn draw_palette(frame: &mut Frame, pal: &PaletteState, t: &Theme, area: Rect
                     }),
             ),
             Span::styled(
-                truncate(&item.description, 36),
+                truncate(&item.description, 56),
                 Style::default().fg(t.text_dim).bg(bg),
             ),
         ]));
@@ -94,6 +96,12 @@ pub fn draw_palette(frame: &mut Frame, pal: &PaletteState, t: &Theme, area: Rect
         )));
     }
     frame.render_widget(Paragraph::new(list_lines), rows[2]);
+
+    // Lateral scrollbar on the right edge of the list area.
+    let total = pal.filtered.len();
+    if total > max_show {
+        draw_scrollbar(frame, rows[2], start, max_show, total, t);
+    }
 
     frame.render_widget(
         Paragraph::new(Line::from(vec![

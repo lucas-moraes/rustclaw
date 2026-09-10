@@ -21,6 +21,10 @@ pub struct UserProvider {
     /// of the catalog while this flag is set (serde default keeps old files).
     #[serde(default, skip_serializing_if = "is_true")]
     pub removed: bool,
+    /// Per-provider prompt-caching override (parse-only; `None` = use the
+    /// provider default: `true` for anthropic, `false` otherwise).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_cache: Option<bool>,
 }
 
 /// `skip_serializing_if` helper: omit the field when false.
@@ -152,6 +156,7 @@ impl UserProviders {
             default_model,
             models,
             removed: false,
+            prompt_cache: None,
         });
         true
     }
@@ -212,6 +217,7 @@ impl UserProviders {
             default_model,
             models: Vec::new(),
             removed: true,
+            prompt_cache: None,
         });
         true
     }
@@ -236,6 +242,7 @@ mod tests {
             default_model: "model-a".into(),
             models: vec!["model-a".into(), "model-b".into()],
             removed: false,
+            prompt_cache: None,
         });
         store.save_to(&p).unwrap();
         let back = UserProviders::load_from(&p).unwrap();
@@ -255,6 +262,7 @@ mod tests {
             default_model: String::new(),
             models: vec![],
             removed: false,
+            prompt_cache: None,
         });
         let replaced = store.upsert(UserProvider {
             name: "x".into(),
@@ -262,6 +270,7 @@ mod tests {
             default_model: String::new(),
             models: vec![],
             removed: false,
+            prompt_cache: None,
         });
         assert!(replaced);
         assert_eq!(store.providers.len(), 1);
@@ -277,6 +286,7 @@ mod tests {
             default_model: String::new(),
             models: vec!["m1".into()],
             removed: false,
+            prompt_cache: None,
         });
         assert!(store.add_model("x", "m2"));
         assert!(!store.add_model("x", "m2")); // duplicate no-op
@@ -295,6 +305,7 @@ mod tests {
             default_model: "m1".into(),
             models: vec!["m1".into(), "m2".into()],
             removed: false,
+            prompt_cache: None,
         });
         assert!(store.remove_model("X", "m1")); // case-insensitive
         assert_eq!(store.find("x").unwrap().default_model, "m2");
@@ -308,11 +319,11 @@ mod tests {
         let mut store = UserProviders::default();
         // Uses the real builtin catalog (a name that surely exists).
         assert!(store.hide_builtin("moonshot"));
-        assert_eq!(store.find("moonshot").unwrap().removed, true);
+        assert!(store.find("moonshot").unwrap().removed);
         assert!(!store.hide_builtin("MOONSHOT")); // already hidden → no-op
                                                   // remove_model must not resurrect a tombstone.
         assert!(!store.remove_model("moonshot", "whatever"));
-        assert_eq!(store.find("moonshot").unwrap().removed, true);
+        assert!(store.find("moonshot").unwrap().removed);
         // Catalog no longer lists the hidden builtin (direct merge check).
         assert!(!crate::harness::provider::catalog::merge(&store.providers)
             .iter()
@@ -324,8 +335,9 @@ mod tests {
             default_model: String::new(),
             models: vec!["m".into()],
             removed: false,
+            prompt_cache: None,
         });
-        assert_eq!(store.find("moonshot").unwrap().removed, false);
+        assert!(!store.find("moonshot").unwrap().removed);
         crate::harness::provider::catalog::merge(&store.providers)
             .iter()
             .find(|p| p.name.eq_ignore_ascii_case("moonshot"))

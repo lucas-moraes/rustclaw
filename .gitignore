@@ -61,6 +61,7 @@ test_output/
 tmp/
 
 # opencode state
+.opencode/
 src/.opencode/
 
 TODO.md

@@ -8,6 +8,7 @@
 pub mod config_file;
 pub mod memory;
 pub mod profiler;
+pub mod scoring;
 pub mod table;
 
 pub use memory::ProjectMemoryStore;

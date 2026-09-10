@@ -22,6 +22,7 @@ pub fn draw(frame: &mut Frame, modal: &Modal, theme: &Theme, tick: u64, area: Re
             draw_question(frame, req, draft, *cursor, theme, tick, area)
         }
         Modal::UserPrompt { .. } => {
+            // Search has its own draw module (draw/search.rs).
             let fixed = centered_rect_fixed(48, 11, area);
             frame.render_widget(Clear, fixed);
             draw_user_prompt(frame, theme, fixed)

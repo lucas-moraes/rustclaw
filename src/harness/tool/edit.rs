@@ -56,10 +56,18 @@ Read the file first to get exact content including whitespace."
             return Err(format!("file not found: {}", path.display()));
         }
 
+        // Serialize concurrent edits to the same file (parallel tools) and
+        // hold the lock across read → snapshot → write so the snapshot always
+        // reflects the pre-modification state.
+        let lock = ctx.checkpoints.lock(&path);
+        let _guard = lock.lock().await;
+
         let bytes = tokio::fs::read(&path)
             .await
             .map_err(|e| format!("failed to read {}: {}", path.display(), e))?;
         let content = String::from_utf8_lossy(&bytes).to_string();
+
+        ctx.checkpoints.snapshot(&path);
 
         if !content.contains(old_string) {
             return Err(format!(
@@ -82,9 +90,16 @@ Read the file first to get exact content including whitespace."
             content.replacen(old_string, new_string, 1)
         };
 
-        tokio::fs::write(&path, updated.as_bytes())
-            .await
-            .map_err(|e| format!("failed to write {}: {}", path.display(), e))?;
+        // Atomic write (temp file + rename) so a failure never leaves the file
+        // truncated, and the write lands on the canonical path.
+        tokio::task::spawn_blocking({
+            let path = path.clone();
+            let updated = updated.clone();
+            move || super::checkpoint::atomic_write(&path, updated.as_bytes())
+        })
+        .await
+        .map_err(|e| format!("write task failed: {}", e))?
+        .map_err(|e| format!("failed to write {}: {}", path.display(), e))?;
 
         let count = if replace_all { occurrences } else { 1 };
         let diff = super::diff::unified_diff(&content, &updated);
@@ -151,6 +166,11 @@ mod tests {
             task_runner: None,
             events: crate::harness::event::event_channel().0,
             project_memory: None,
+            hooks: Default::default(),
+            checkpoints: std::sync::Arc::new(
+                crate::harness::tool::checkpoint::FileCheckpoints::new(),
+            ),
+            jobs: std::sync::Arc::new(crate::harness::tool::jobs::JobRegistry::new()),
         };
 
         let tool = EditTool;

@@ -324,6 +324,17 @@ fn context_block(app: &App, t: &Theme, w: usize) -> Vec<Line<'static>> {
                 .add_modifier(Modifier::BOLD),
         ),
     ]));
+    // Compact prompt-cache indicator (only when the provider reports reads).
+    if app.session_usage.cache_read_tokens > 0 {
+        lines.push(Line::from(vec![
+            Span::styled("  ↻ ".to_string(), Style::default().fg(t.text_dim)),
+            Span::styled(
+                format_tokens(app.session_usage.cache_read_tokens),
+                Style::default().fg(t.text_dim),
+            ),
+            Span::styled(" cached".to_string(), Style::default().fg(t.text_dim)),
+        ]));
+    }
 
     // Row 4 (optional): last turn usage + iterations.
     if app.last_iterations > 0 || app.last_usage.total() > 0 {

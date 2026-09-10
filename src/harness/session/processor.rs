@@ -59,11 +59,9 @@ pub struct TurnOutcome {
     pub aborted: bool,
 }
 
-const DOOM_LOOP_WARN: usize = 3;
-const DOOM_LOOP_STOP: usize = 5;
 /// How many times a turn may auto-continue after hitting max_iterations
 /// (effective iteration budget = (N + 1) × max_iterations).
-const DEFAULT_MAX_CONTINUATIONS: usize = 3;
+const DEFAULT_MAX_CONTINUATIONS: usize = 10;
 /// Safety net: if the provider stream stalls (no event for this long), abort
 /// the turn instead of hanging forever. Generous so long reasoning streams
 /// aren't interrupted; the client `read_timeout` normally fires first.
@@ -77,18 +75,65 @@ impl SessionProcessor {
     /// Persists a message to the store, logging a warning on failure instead
     /// of silently swallowing the error (so the history never silently diverges
     /// from what the agent sees).
-    fn persist(&self, session_id: &str, cwd: &std::path::Path, msg: &Message) {
-        if let Err(e) = self.store.save_message(session_id, cwd, msg) {
+    pub(crate) async fn persist(&self, session_id: &str, cwd: &std::path::Path, msg: &Message) {
+        let store = self.store.clone();
+        let sid = session_id.to_string();
+        let cwd = cwd.to_path_buf();
+        let msg = msg.clone();
+        let res = tokio::task::spawn_blocking(move || store.save_message(&sid, &cwd, &msg)).await;
+        if let Err(e) = res
+            .map_err(|e| anyhow::anyhow!("join error: {e}"))
+            .and_then(|r| r)
+        {
             tracing::warn!("failed to persist message (session={}): {}", session_id, e);
         }
     }
 
     /// Emits an event to the bus, logging a warning on failure instead of
     /// silently dropping it.
-    fn emit(&self, ev: HarnessEvent) {
+    pub(crate) fn emit(&self, ev: HarnessEvent) {
         if let Err(e) = self.events.send(ev) {
             tracing::warn!("failed to emit event: {}", e);
         }
+    }
+
+    /// Shared turn-restart logic: budget check, restart note, event emission,
+    /// usage accumulation and watchdog reset. Returns `false` when the
+    /// continuation budget is exhausted (caller should stop with `reason`).
+    #[allow(clippy::too_many_arguments)]
+    fn restart_turn(
+        &self,
+        session: &Session,
+        reason: &str,
+        label: &str,
+        continuations: usize,
+        usage: &Usage,
+        total_usage: &mut Usage,
+        iterations: &mut usize,
+        turn_deadline: &mut tokio::time::Instant,
+        turn_secs: u64,
+    ) -> bool {
+        total_usage.input_tokens += usage.input_tokens;
+        total_usage.output_tokens += usage.output_tokens;
+        total_usage.cache_read_tokens += usage.cache_read_tokens;
+        total_usage.cache_write_tokens += usage.cache_write_tokens;
+        // Note: push/persist of the restart note happen in the caller
+        // (needs `&mut Session`).
+        tracing::info!(
+            "{label} {continuations}/{}: {reason} (session={})",
+            DEFAULT_MAX_CONTINUATIONS,
+            session.id
+        );
+        self.emit(HarnessEvent::AutoContinue {
+            session_id: session.id.clone(),
+            round: continuations,
+            total: DEFAULT_MAX_CONTINUATIONS,
+            reason: format!("{reason} — turn restarted"),
+            parent_session_id: None,
+        });
+        *iterations = 0;
+        *turn_deadline = tokio::time::Instant::now() + Duration::from_secs(turn_secs);
+        true
     }
 
     /// Runs one user turn: loops stream -> tool exec until the model answers
@@ -105,8 +150,8 @@ impl SessionProcessor {
         let mut iterations = 0usize;
         let mut final_text = String::new();
         let mut aborted = false;
-        let mut recent_sigs: Vec<String> = Vec::new();
-        let mut warned = false;
+        let mut doom = crate::harness::session::doom_loop::DoomLoopDetector::new();
+        let mut text_loop = crate::harness::session::doom_loop::TextLoopDetector::new();
         let mut continuations = 0usize;
         let mut total_iterations = 0usize;
         let mut stop_reason: Option<String> = None;
@@ -125,11 +170,18 @@ impl SessionProcessor {
             self.config.turn_timeout_secs
         };
         let mut turn_deadline = tokio::time::Instant::now() + Duration::from_secs(turn_secs);
+        // Global cap across all continuations so restarts cannot pile up
+        // unbounded work (e.g. 74 iterations / million-token turns).
+        let iteration_budget = self.config.max_iterations * (DEFAULT_MAX_CONTINUATIONS + 1);
 
         'turn: loop {
             while iterations < self.config.max_iterations {
                 if ctx.abort.is_aborted() {
                     aborted = true;
+                    break;
+                }
+                if total_iterations >= iteration_budget {
+                    stop_reason = Some("iteration budget exhausted for this turn".to_string());
                     break;
                 }
                 if tokio::time::Instant::now() >= turn_deadline {
@@ -152,7 +204,7 @@ impl SessionProcessor {
                         .clone()
                         .unwrap_or_else(|| self.config.model.clone()),
                     system: system_prompt.to_string(),
-                    messages: session.messages.clone(),
+                    messages: std::sync::Arc::new(session.messages.clone()),
                     tools: tool_specs.clone(),
                     max_tokens: None,
                     temperature: agent.turn_temperature(),
@@ -230,7 +282,17 @@ impl SessionProcessor {
                             break;
                         }
                     };
-                    match ev? {
+                    // Transient stream errors (malformed SSE, connection
+                    // reset) become a restart reason instead of failing the
+                    // whole turn — accumulated text/tools are kept.
+                    let ev = match ev {
+                        Ok(ev) => ev,
+                        Err(e) => {
+                            stop_reason = Some(format!("stream error: {e}"));
+                            break;
+                        }
+                    };
+                    match ev {
                         ProviderEvent::TextDelta(d) => {
                             text.push_str(&d);
                             self.emit(HarnessEvent::TextDelta {
@@ -270,6 +332,18 @@ impl SessionProcessor {
                                         part.error = Some(format!("invalid tool arguments: {}", e));
                                     }
                                 }
+                            } else {
+                                // A ToolCallEnd without a matching ToolCallStart (provider
+                                // bug or malformed stream). Recover by creating the part so
+                                // the call isn't silently dropped and the model gets a
+                                // consistent history.
+                                tracing::warn!(
+                                    "ToolCallEnd for unknown id `{}` (no ToolCallStart seen)",
+                                    id
+                                );
+                                let input = serde_json::from_str::<serde_json::Value>(&arguments)
+                                    .unwrap_or(serde_json::Value::Null);
+                                tool_calls.push(ToolPart::pending(id, "unknown", input));
                             }
                         }
                         ProviderEvent::End {
@@ -312,27 +386,18 @@ impl SessionProcessor {
                         continuations, DEFAULT_MAX_CONTINUATIONS, reason
                     ));
                     session.push_message(note.clone());
-                    self.persist(&session.id, &session.cwd, &note);
-                    tracing::info!(
-                        "turn restart {}/{}: {} (session={})",
+                    self.persist(&session.id, &session.cwd, &note).await;
+                    self.restart_turn(
+                        session,
+                        &reason,
+                        "turn restart",
                         continuations,
-                        DEFAULT_MAX_CONTINUATIONS,
-                        reason,
-                        session.id
+                        &usage,
+                        &mut total_usage,
+                        &mut iterations,
+                        &mut turn_deadline,
+                        turn_secs,
                     );
-                    self.emit(HarnessEvent::AutoContinue {
-                        session_id: session.id.clone(),
-                        round: continuations,
-                        total: DEFAULT_MAX_CONTINUATIONS,
-                        reason: format!("{} — turn restarted", reason),
-                        parent_session_id: None,
-                    });
-                    total_usage.input_tokens += usage.input_tokens;
-                    total_usage.output_tokens += usage.output_tokens;
-                    total_usage.cache_read_tokens += usage.cache_read_tokens;
-                    total_usage.cache_write_tokens += usage.cache_write_tokens;
-                    iterations = 0;
-                    turn_deadline = tokio::time::Instant::now() + Duration::from_secs(turn_secs);
                     continue 'turn;
                 }
 
@@ -358,9 +423,11 @@ impl SessionProcessor {
 
                 let assistant = Message::with_id(assistant_id.clone(), Role::Assistant, parts);
                 session.push_message(assistant.clone());
-                let _ = self
-                    .store
-                    .save_message(&session.id, &session.cwd, &assistant);
+                {
+                    let sid = session.id.clone();
+                    let cwd = session.cwd.clone();
+                    self.persist(&sid, &cwd, &assistant).await;
+                }
 
                 if !assistant.has_tool_calls() {
                     final_text = text;
@@ -379,48 +446,74 @@ impl SessionProcessor {
                     break;
                 }
 
-                // Doom loop check (single repeated call across iterations).
+                // Doom loop check: detect repeated tool calls across iterations,
+                // including multi-call cycles (A,B,A,B) — not just a single
+                // repeated call. We compare the *set* of signatures of the
+                // current turn against the previous turns' sets.
                 let sigs = assistant
                     .tool_parts()
                     .iter()
                     .map(|t| format!("{}:{}", t.name, t.input))
                     .collect::<Vec<_>>();
-                if sigs.len() == 1 {
-                    let sig = sigs[0].clone();
-                    if recent_sigs.last().map(|s| s == &sig).unwrap_or(false) {
-                        recent_sigs.push(sig.clone());
-                    } else {
-                        recent_sigs.clear();
-                        recent_sigs.push(sig);
+                match doom.record(sigs) {
+                    crate::harness::session::doom_loop::DoomAction::Stop => {
+                        tracing::warn!(
+                            "doom loop detected: same tool call(s) repeated {} times (session={})",
+                            crate::harness::session::doom_loop::DOOM_LOOP_STOP,
+                            session.id
+                        );
+                        final_text =
+                            "Stopped: the same tool call was repeated many times without progress."
+                                .to_string();
+                        self.emit(HarnessEvent::Error {
+                            session_id: session.id.clone(),
+                            message: final_text.clone(),
+                            parent_session_id: None,
+                        });
+                        break;
                     }
-                } else {
-                    recent_sigs.clear();
+                    crate::harness::session::doom_loop::DoomAction::Warn => {
+                        let warn = Message::user(
+                            "System note: you just repeated the same tool call. Change the input \
+                         or try a different approach.",
+                        );
+                        session.push_message(warn.clone());
+                        self.persist(&session.id, &session.cwd, &warn).await;
+                    }
+                    crate::harness::session::doom_loop::DoomAction::Continue => {}
                 }
 
-                if recent_sigs.len() >= DOOM_LOOP_STOP {
-                    tracing::warn!(
-                        "doom loop detected: same tool call repeated {} times (session={})",
-                        recent_sigs.len(),
-                        session.id
-                    );
-                    final_text =
-                        "Stopped: the same tool call was repeated many times without progress."
-                            .to_string();
-                    self.emit(HarnessEvent::Error {
-                        session_id: session.id.clone(),
-                        message: final_text.clone(),
-                        parent_session_id: None,
-                    });
-                    break;
-                }
-                if recent_sigs.len() == DOOM_LOOP_WARN && !warned {
-                    warned = true;
-                    let warn = Message::user(
-                        "System note: you just repeated the same tool call. Change the input \
-                     or try a different approach.",
-                    );
-                    session.push_message(warn.clone());
-                    self.persist(&session.id, &session.cwd, &warn);
+                // Text-loop detection across iterations: the same (or
+                // alternating) assistant text with no real progress. Warns
+                // once, then hard-stops the turn.
+                let text_sig = crate::harness::session::doom_loop::normalize_text(&text);
+                match text_loop.record(text_sig) {
+                    crate::harness::session::doom_loop::DoomAction::Stop => {
+                        tracing::warn!(
+                            "text loop detected: same assistant text repeated {} times \
+                             (session={})",
+                            crate::harness::session::doom_loop::TEXT_LOOP_STOP,
+                            session.id
+                        );
+                        final_text =
+                            "Stopped: the model was repeating the same response without progress."
+                                .to_string();
+                        self.emit(HarnessEvent::Error {
+                            session_id: session.id.clone(),
+                            message: final_text.clone(),
+                            parent_session_id: None,
+                        });
+                        break;
+                    }
+                    crate::harness::session::doom_loop::DoomAction::Warn => {
+                        let warn = Message::user(
+                            "System note: you are repeating the same response. Change the \
+                             approach or give your final answer.",
+                        );
+                        session.push_message(warn.clone());
+                        self.persist(&session.id, &session.cwd, &warn).await;
+                    }
+                    crate::harness::session::doom_loop::DoomAction::Continue => {}
                 }
             }
 
@@ -431,6 +524,11 @@ impl SessionProcessor {
                 break 'turn;
             }
             if let Some(reason) = stop_reason.take() {
+                // A hard global budget cannot be restarted out of.
+                if reason == "iteration budget exhausted for this turn" {
+                    final_text = format!("Stopped: {}.", reason);
+                    break 'turn;
+                }
                 // Watchdog stop (e.g. time limit): let the model review what
                 // happened and decide whether to continue, budget permitting.
                 if continuations >= DEFAULT_MAX_CONTINUATIONS {
@@ -448,23 +546,18 @@ impl SessionProcessor {
                     continuations, DEFAULT_MAX_CONTINUATIONS, reason
                 ));
                 session.push_message(note.clone());
-                self.persist(&session.id, &session.cwd, &note);
-                tracing::info!(
-                    "turn restart {}/{}: {} (session={})",
+                self.persist(&session.id, &session.cwd, &note).await;
+                self.restart_turn(
+                    session,
+                    &reason,
+                    "turn restart",
                     continuations,
-                    DEFAULT_MAX_CONTINUATIONS,
-                    reason,
-                    session.id
+                    &Usage::default(),
+                    &mut total_usage,
+                    &mut iterations,
+                    &mut turn_deadline,
+                    turn_secs,
                 );
-                self.emit(HarnessEvent::AutoContinue {
-                    session_id: session.id.clone(),
-                    round: continuations,
-                    total: DEFAULT_MAX_CONTINUATIONS,
-                    reason: format!("{} — turn restarted", reason),
-                    parent_session_id: None,
-                });
-                iterations = 0;
-                turn_deadline = tokio::time::Instant::now() + Duration::from_secs(turn_secs);
                 continue 'turn;
             }
             if continuations >= DEFAULT_MAX_CONTINUATIONS {
@@ -474,6 +567,10 @@ impl SessionProcessor {
                 );
                 break 'turn;
             }
+            if total_iterations >= iteration_budget {
+                final_text = "Stopped: iteration budget exhausted for this turn.".to_string();
+                break 'turn;
+            }
             continuations += 1;
             let note = Message::user(format!(
                 "[auto-continue {}/{}] iteration limit reached — resuming the task \
@@ -481,7 +578,7 @@ impl SessionProcessor {
                 continuations, DEFAULT_MAX_CONTINUATIONS
             ));
             session.push_message(note.clone());
-            self.persist(&session.id, &session.cwd, &note);
+            self.persist(&session.id, &session.cwd, &note).await;
             tracing::info!(
                 "auto-continue {}/{}: iteration limit reached (session={})",
                 continuations,
@@ -502,6 +599,9 @@ impl SessionProcessor {
         if ctx.abort.is_aborted() && final_text.is_empty() {
             final_text = "Run aborted by user.".to_string();
         }
+
+        // Fire-and-forget on_turn_end hooks (never break the turn).
+        crate::harness::hooks::spawn_turn_end(&ctx.hooks, ctx.cwd.path());
 
         tracing::info!(
             "turn end: session={} iterations={} continuations={} aborted={} input_tokens={} output_tokens={} cache_read_tokens={} cache_write_tokens={}",
@@ -532,197 +632,8 @@ impl SessionProcessor {
         assistant_id: &str,
         ctx: &crate::harness::tool::context::ToolContext,
     ) {
-        use crate::harness::event::ToolStatus;
-
-        // Mark running + emit start events.
-        let pending: Vec<(String, String, serde_json::Value)> = {
-            let Some(msg) = session.messages.iter_mut().find(|m| m.id == *assistant_id) else {
-                return;
-            };
-            msg.parts
-                .iter_mut()
-                .filter_map(|p| match p {
-                    Part::Tool(t) => Some(t),
-                    _ => None,
-                })
-                .filter(|t| t.status == ToolStatus::Pending)
-                .map(|t| {
-                    t.status = ToolStatus::Running;
-                    self.emit(HarnessEvent::ToolStart {
-                        session_id: session.id.clone(),
-                        message_id: assistant_id.to_string(),
-                        tool_id: t.id.clone(),
-                        name: t.name.clone(),
-                        input: t.input.clone(),
-                        parent_session_id: None,
-                    });
-                    (t.id.clone(), t.name.clone(), t.input.clone())
-                })
-                .collect()
-        };
-        if let Some(msg) = session.messages.iter().find(|m| m.id == *assistant_id) {
-            let snapshot = msg.clone();
-            self.persist(&session.id, &session.cwd, &snapshot);
-        }
-
-        // Spawn executions (permission-checked, then run concurrently).
-        let mut join_set = tokio::task::JoinSet::new();
-        for (tool_id, name, input) in pending {
-            if ctx.abort.is_aborted() {
-                if let Some(msg) = session.messages.iter_mut().find(|m| m.id == *assistant_id) {
-                    if let Some(t) = found_tool(msg, &tool_id) {
-                        if t.status == ToolStatus::Pending || t.status == ToolStatus::Running {
-                            t.status = ToolStatus::Error;
-                            t.error = Some("aborted".to_string());
-                        }
-                    }
-                }
-                continue;
-            }
-            let registry = self.registry.clone();
-            let mut ctx2 = ctx.clone();
-            ctx2.session_id = session.id.clone();
-            join_set.spawn(async move {
-                if ctx2.abort.is_aborted() {
-                    return (tool_id, name, Err("aborted".to_string()));
-                }
-                let result = match ctx2.check_permission(&name, &input).await {
-                    Ok(()) => {
-                        if ctx2.abort.is_aborted() {
-                            Err("aborted".to_string())
-                        } else {
-                            registry.execute(&name, input, &ctx2).await
-                        }
-                    }
-                    Err(e) => Err(e),
-                };
-                (tool_id, name, result)
-            });
-        }
-
-        // Apply results in completion order. Esc mid-batch aborts the rest.
-        while !join_set.is_empty() {
-            if ctx.abort.is_aborted() {
-                join_set.abort_all();
-                if let Some(msg) = session.messages.iter_mut().find(|m| m.id == *assistant_id) {
-                    for p in &mut msg.parts {
-                        if let Part::Tool(t) = p {
-                            if t.status == ToolStatus::Running || t.status == ToolStatus::Pending {
-                                t.status = ToolStatus::Error;
-                                t.error = Some("aborted".to_string());
-                                self.emit(HarnessEvent::ToolEnd {
-                                    session_id: session.id.clone(),
-                                    message_id: assistant_id.to_string(),
-                                    tool_id: t.id.clone(),
-                                    name: t.name.clone(),
-                                    status: ToolStatus::Error,
-                                    title: String::new(),
-                                    output_preview: "aborted".to_string(),
-                                    diff: None,
-                                    parent_session_id: None,
-                                });
-                            }
-                        }
-                    }
-                }
-                break;
-            }
-            let joined = tokio::select! {
-                biased;
-                _ = async {
-                    loop {
-                        if ctx.abort.is_aborted() {
-                            break;
-                        }
-                        tokio::time::sleep(Duration::from_millis(50)).await;
-                    }
-                } => {
-                    continue;
-                }
-                j = join_set.join_next() => j,
-            };
-            let Some(joined) = joined else { break };
-            let (tool_id, name, result) = match joined {
-                Ok(tuple) => tuple,
-                Err(e) => {
-                    if e.is_cancelled() {
-                        continue;
-                    }
-                    if let Some(msg) = session.messages.iter_mut().find(|m| m.id == *assistant_id) {
-                        for p in &mut msg.parts {
-                            if let Part::Tool(t) = p {
-                                if t.status == ToolStatus::Running {
-                                    t.status = ToolStatus::Error;
-                                    t.error = Some(format!("tool task failed: {}", e));
-                                }
-                            }
-                        }
-                    }
-                    continue;
-                }
-            };
-
-            match result {
-                Ok(r) => {
-                    tracing::debug!("tool call completed: {} (session={})", name, session.id);
-                    if let Some(msg) = session.messages.iter_mut().find(|m| m.id == *assistant_id) {
-                        if let Some(t) = found_tool(msg, &tool_id) {
-                            t.status = ToolStatus::Completed;
-                            t.output = r.output;
-                            t.title = if r.title.is_empty() {
-                                name.clone()
-                            } else {
-                                r.title
-                            };
-                            t.error = None;
-                        }
-                    }
-                    self.emit(HarnessEvent::ToolEnd {
-                        session_id: session.id.clone(),
-                        message_id: assistant_id.to_string(),
-                        tool_id: tool_id.clone(),
-                        name: name.clone(),
-                        status: ToolStatus::Completed,
-                        title: name.clone(),
-                        output_preview: String::new(),
-                        diff: r
-                            .metadata
-                            .get("diff")
-                            .and_then(|v| v.as_str())
-                            .map(|s| s.to_string()),
-                        parent_session_id: None,
-                    });
-                }
-                Err(e) => {
-                    tracing::warn!("tool call failed: {} (session={}): {}", name, session.id, e);
-                    if let Some(msg) = session.messages.iter_mut().find(|m| m.id == *assistant_id) {
-                        if let Some(t) = found_tool(msg, &tool_id) {
-                            t.status = ToolStatus::Error;
-                            t.output = String::new();
-                            t.error = Some(e.clone());
-                            t.title = name.clone();
-                        }
-                    }
-                    self.emit(HarnessEvent::ToolEnd {
-                        session_id: session.id.clone(),
-                        message_id: assistant_id.to_string(),
-                        tool_id: tool_id.clone(),
-                        name,
-                        status: ToolStatus::Error,
-                        title: String::new(),
-                        output_preview: crate::harness::session::preview(&e, 160),
-                        diff: None,
-                        parent_session_id: None,
-                    });
-                }
-            }
-        }
-
-        // Persist tool results.
-        if let Some(msg) = session.messages.iter().find(|m| m.id == *assistant_id) {
-            let snapshot = msg.clone();
-            self.persist(&session.id, &session.cwd, &snapshot);
-        }
+        crate::harness::session::tool_exec::execute_tool_calls(self, session, assistant_id, ctx)
+            .await;
     }
 
     async fn maybe_compact(&self, session: &mut Session) -> anyhow::Result<()> {
@@ -737,13 +648,6 @@ impl SessionProcessor {
         .await?;
         Ok(())
     }
-}
-
-fn found_tool<'a>(msg: &'a mut Message, tool_id: &str) -> Option<&'a mut ToolPart> {
-    msg.parts.iter_mut().find_map(|p| match p {
-        Part::Tool(t) if t.id == tool_id => Some(t),
-        _ => None,
-    })
 }
 
 #[cfg(test)]
@@ -799,6 +703,11 @@ mod tests {
             task_runner: None,
             events: crate::harness::event::event_channel().0,
             project_memory: None,
+            hooks: Default::default(),
+            checkpoints: std::sync::Arc::new(
+                crate::harness::tool::checkpoint::FileCheckpoints::new(),
+            ),
+            jobs: std::sync::Arc::new(crate::harness::tool::jobs::JobRegistry::new()),
         }
     }
 
@@ -822,9 +731,7 @@ mod tests {
                 turn_timeout_secs: 1, // 1s so the test is fast
             },
         };
-        let mut session = store
-            .create_session("build", &dir.path().to_path_buf())
-            .unwrap();
+        let mut session = store.create_session("build", dir.path()).unwrap();
         session.messages.push(Message::user("hello"));
         let agent = crate::harness::agent::AgentSpec {
             name: "build".into(),
@@ -840,9 +747,9 @@ mod tests {
             .run_turn(&mut session, &agent, "sys", &ctx)
             .await
             .unwrap();
-        // The watchdog now restarts the turn (up to 3 continuations); each
+        // The watchdog now restarts the turn (up to 10 continuations); each
         // segment lasts the configured 1s before the next restart/stop.
-        assert_eq!(outcome.continuations, 3);
+        assert_eq!(outcome.continuations, 10);
         assert!(!outcome.aborted);
         assert!(
             outcome.final_text.contains("time limit"),
@@ -853,7 +760,9 @@ mod tests {
 
     /// Provider that always ends the assistant message with exactly one tool
     /// call (never a final answer). Simulates a long TODO-list run.
-    struct ToolCallProvider;
+    struct ToolCallProvider {
+        n: AtomicUsize,
+    }
 
     #[async_trait::async_trait]
     impl Provider for ToolCallProvider {
@@ -861,14 +770,17 @@ mod tests {
             "toolcall"
         }
         async fn stream(&self, _req: &LlmRequest) -> anyhow::Result<ProviderStream> {
+            // Distinct tool name per call so the doom-loop detector never
+            // fires and the continuations cap is what ends the turn.
+            let i = self.n.fetch_add(1, Ordering::SeqCst);
             let evs: Vec<anyhow::Result<ProviderEvent>> = vec![
                 Ok(ProviderEvent::ToolCallStart {
-                    id: "t".to_string(),
-                    name: "read".into(),
+                    id: format!("t{i}"),
+                    name: format!("tool_{}", i),
                 }),
                 Ok(ProviderEvent::ToolCallEnd {
-                    id: "t".to_string(),
-                    arguments: r#"{"path":"x"}"#.to_string(),
+                    id: format!("t{i}"),
+                    arguments: format!(r#"{{"n":{}}}"#, i),
                 }),
                 Ok(ProviderEvent::End {
                     stop_reason: None,
@@ -891,7 +803,9 @@ mod tests {
         );
         let (tx, _rx) = crate::harness::event::event_channel();
         let processor = SessionProcessor {
-            provider: StdArc::new(ToolCallProvider),
+            provider: StdArc::new(ToolCallProvider {
+                n: AtomicUsize::new(0),
+            }),
             registry: crate::harness::tool::registry::ToolRegistry::builder().build(),
             events: tx,
             store: store.clone(),
@@ -902,9 +816,7 @@ mod tests {
                 turn_timeout_secs: 5, // generous: no watchdog interference
             },
         };
-        let mut session = store
-            .create_session("build", &dir.path().to_path_buf())
-            .unwrap();
+        let mut session = store.create_session("build", dir.path()).unwrap();
         session.messages.push(Message::user("do the long todo run"));
         let agent = crate::harness::agent::AgentSpec {
             name: "build".into(),
@@ -920,11 +832,11 @@ mod tests {
             .run_turn(&mut session, &agent, "sys", &ctx)
             .await
             .unwrap();
-        // One tool call per iteration + 3 automatic continuations.
-        assert_eq!(outcome.continuations, 3);
-        assert_eq!(outcome.iterations, 4);
+        // One tool call per iteration + 10 automatic continuations.
+        assert_eq!(outcome.continuations, 10);
+        assert_eq!(outcome.iterations, 11);
         assert!(
-            outcome.final_text.contains("after 3 continuation(s)"),
+            outcome.final_text.contains("after 10 continuation(s)"),
             "unexpected final_text: {}",
             outcome.final_text
         );
@@ -934,6 +846,628 @@ mod tests {
             .iter()
             .filter(|m| m.role.as_str() == "user" && m.text_content().contains("[auto-continue"))
             .count();
-        assert_eq!(notes, 3);
+        assert_eq!(notes, 10);
+    }
+
+    // ─── Integration tests: full loop with a scripted MockProvider ──────────
+
+    use crate::harness::tool::Tool;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Scripted provider: `stream()` returns the event list for call N
+    /// (0-based, atomic counter). `complete` panics — the processor must only
+    /// use `stream`.
+    struct MockProvider {
+        /// One Vec<ProviderEvent> per expected `stream()` call.
+        script: Vec<Vec<ProviderEvent>>,
+        calls: AtomicUsize,
+    }
+
+    impl MockProvider {
+        fn new(script: Vec<Vec<ProviderEvent>>) -> Self {
+            Self {
+                script,
+                calls: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for MockProvider {
+        fn name(&self) -> &str {
+            "mock"
+        }
+        async fn stream(&self, _req: &LlmRequest) -> anyhow::Result<ProviderStream> {
+            let n = self.calls.fetch_add(1, Ordering::SeqCst);
+            let evs = self
+                .script
+                .get(n)
+                .cloned()
+                .unwrap_or_else(|| panic!("unexpected stream() call #{}", n + 1));
+            Ok(futures_util::stream::iter(evs.into_iter().map(Ok).collect::<Vec<_>>()).boxed())
+        }
+        async fn complete(&self, _req: &LlmRequest) -> anyhow::Result<LlmResponse> {
+            panic!("processor must not call complete()")
+        }
+    }
+
+    /// Fake tool returning a fixed output; optionally sleeps and/or aborts.
+    struct FakeTool {
+        name: &'static str,
+        output: &'static str,
+        sleep_ms: u64,
+        /// When set, the tool aborts this signal before returning.
+        abort: Option<AbortSignal>,
+    }
+
+    #[async_trait::async_trait]
+    impl Tool for FakeTool {
+        fn name(&self) -> &str {
+            self.name
+        }
+        fn description(&self) -> &str {
+            "fake test tool"
+        }
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+        async fn execute(
+            &self,
+            _args: serde_json::Value,
+            _ctx: &ToolContext,
+        ) -> Result<crate::harness::tool::ToolResult, String> {
+            if let Some(a) = &self.abort {
+                a.abort();
+            }
+            if self.sleep_ms > 0 {
+                tokio::time::sleep(Duration::from_millis(self.sleep_ms)).await;
+            }
+            Ok(crate::harness::tool::ToolResult::simple(
+                self.name,
+                self.output,
+            ))
+        }
+    }
+
+    fn agent_with_tools(tools: Vec<String>) -> AgentSpec {
+        AgentSpec {
+            name: "build".into(),
+            description: String::new(),
+            tools,
+            system_prompt: String::new(),
+            model: None,
+            temperature: None,
+            permission_overrides: Default::default(),
+        }
+    }
+
+    fn tool_call_events(id: &str, name: &str, args: &str) -> Vec<ProviderEvent> {
+        vec![
+            ProviderEvent::ToolCallStart {
+                id: id.to_string(),
+                name: name.to_string(),
+            },
+            ProviderEvent::ToolCallEnd {
+                id: id.to_string(),
+                arguments: args.to_string(),
+            },
+            ProviderEvent::End {
+                stop_reason: None,
+                usage: Some(Usage {
+                    input_tokens: 10,
+                    output_tokens: 5,
+                    ..Default::default()
+                }),
+            },
+        ]
+    }
+
+    fn final_text_events(text: &str) -> Vec<ProviderEvent> {
+        vec![
+            ProviderEvent::TextDelta(text.to_string()),
+            ProviderEvent::End {
+                stop_reason: None,
+                usage: Some(Usage {
+                    input_tokens: 10,
+                    output_tokens: 5,
+                    ..Default::default()
+                }),
+            },
+        ]
+    }
+
+    fn test_processor(
+        provider: MockProvider,
+        registry: crate::harness::tool::registry::ToolRegistry,
+        max_iterations: usize,
+    ) -> (SessionProcessor, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = StdArc::new(
+            crate::harness::session::store::SessionStore::open(&dir.path().join("test.db"))
+                .unwrap(),
+        );
+        let (tx, _rx) = crate::harness::event::event_channel();
+        let processor = SessionProcessor {
+            provider: StdArc::new(provider),
+            registry,
+            events: tx,
+            store: store.clone(),
+            config: ProcessorConfig {
+                model: "m".into(),
+                max_iterations,
+                max_context_tokens: 100_000,
+                turn_timeout_secs: 30, // generous: no watchdog interference
+            },
+        };
+        (processor, dir)
+    }
+
+    #[tokio::test]
+    async fn test_single_tool_call_result_flows_back_to_model() {
+        let registry = crate::harness::tool::registry::ToolRegistry::builder()
+            .register(StdArc::new(FakeTool {
+                name: "fake_ok",
+                output: "ok",
+                sleep_ms: 0,
+                abort: None,
+            }))
+            .build();
+        let provider = MockProvider::new(vec![
+            tool_call_events("t1", "fake_ok", "{}"),
+            final_text_events("done"),
+        ]);
+        let (processor, dir) = test_processor(provider, registry, 10);
+        let mut session = processor.store.create_session("build", dir.path()).unwrap();
+        session.messages.push(Message::user("use the tool"));
+        let agent = agent_with_tools(vec!["fake_ok".to_string()]);
+        let ctx = test_ctx();
+
+        let outcome = processor
+            .run_turn(&mut session, &agent, "sys", &ctx)
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.final_text, "done");
+        assert_eq!(outcome.iterations, 2);
+        assert!(!outcome.aborted);
+        assert_eq!(outcome.usage.input_tokens, 20);
+        assert_eq!(outcome.usage.output_tokens, 10);
+
+        // Session gained: user, assistant (with ToolPart), tool result is
+        // stored on the assistant's ToolPart, then the final assistant text.
+        let assistant: Vec<&Message> = session
+            .messages
+            .iter()
+            .filter(|m| m.role.as_str() == "assistant")
+            .collect();
+        assert_eq!(assistant.len(), 2, "expected 2 assistant messages");
+        let tool_msg = assistant[0];
+        let tools = tool_msg.tool_parts();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name, "fake_ok");
+        assert_eq!(tools[0].id, "t1");
+        assert_eq!(
+            tools[0].status,
+            crate::harness::session::ToolStatus::Completed
+        );
+        assert_eq!(tools[0].output, "ok");
+        assert_eq!(assistant[1].text_content(), "done");
+
+        // The tool result was persisted to the store.
+        let reloaded = processor
+            .store
+            .load_session(&session.id, dir.path())
+            .unwrap()
+            .unwrap();
+        let persisted_tool = reloaded
+            .messages
+            .iter()
+            .find_map(|m| m.tool_parts().into_iter().next());
+        let pt = persisted_tool.expect("tool part persisted");
+        assert_eq!(pt.output, "ok");
+    }
+
+    #[tokio::test]
+    async fn test_parallel_tool_calls_both_execute() {
+        let registry = crate::harness::tool::registry::ToolRegistry::builder()
+            .register(StdArc::new(FakeTool {
+                name: "fake_a",
+                output: "result-a",
+                sleep_ms: 50,
+                abort: None,
+            }))
+            .register(StdArc::new(FakeTool {
+                name: "fake_b",
+                output: "bee",
+                sleep_ms: 50,
+                abort: None,
+            }))
+            .build();
+        let provider = MockProvider::new(vec![
+            vec![
+                ProviderEvent::ToolCallStart {
+                    id: "a1".into(),
+                    name: "fake_a".into(),
+                },
+                ProviderEvent::ToolCallEnd {
+                    id: "a1".into(),
+                    arguments: "{}".into(),
+                },
+                ProviderEvent::ToolCallStart {
+                    id: "a2".into(),
+                    name: "fake_b".into(),
+                },
+                ProviderEvent::ToolCallEnd {
+                    id: "a2".into(),
+                    arguments: "{}".into(),
+                },
+                ProviderEvent::End {
+                    stop_reason: None,
+                    usage: None,
+                },
+            ],
+            final_text_events("both done"),
+        ]);
+        let (processor, dir) = test_processor(provider, registry, 10);
+        let mut session = processor.store.create_session("build", dir.path()).unwrap();
+        session.messages.push(Message::user("run both"));
+        let agent = agent_with_tools(vec!["fake_a".to_string(), "fake_b".to_string()]);
+        let ctx = test_ctx();
+
+        let outcome = processor
+            .run_turn(&mut session, &agent, "sys", &ctx)
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.final_text, "both done");
+        assert_eq!(outcome.iterations, 2);
+
+        // Both tool results present (order not guaranteed — set comparison).
+        let tool_outputs: std::collections::HashSet<String> = session
+            .messages
+            .iter()
+            .flat_map(|m| m.tool_parts())
+            .map(|t| t.output.clone())
+            .collect();
+        assert!(tool_outputs.contains("result-a"), "missing fake_a result");
+        assert!(tool_outputs.contains("bee"), "missing fake_b result");
+        // Both completed.
+        for t in session.messages.iter().flat_map(|m| m.tool_parts()) {
+            assert_eq!(
+                t.status,
+                crate::harness::session::ToolStatus::Completed,
+                "tool {} not completed",
+                t.id
+            );
+        }
+    }
+
+    /// Tool that panics during execution.
+    struct PanickyTool {
+        name: &'static str,
+    }
+
+    #[async_trait::async_trait]
+    impl Tool for PanickyTool {
+        fn name(&self) -> &str {
+            self.name
+        }
+        fn description(&self) -> &str {
+            "always panics"
+        }
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+        async fn execute(
+            &self,
+            _args: serde_json::Value,
+            _ctx: &ToolContext,
+        ) -> Result<crate::harness::tool::ToolResult, String> {
+            panic!("boom: tool exploded");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_panicking_tool_does_not_contaminate_others() {
+        let registry = crate::harness::tool::registry::ToolRegistry::builder()
+            .register(StdArc::new(FakeTool {
+                name: "fake_ok",
+                output: "result-ok",
+                sleep_ms: 50,
+                abort: None,
+            }))
+            .register(StdArc::new(PanickyTool { name: "fake_panic" }))
+            .build();
+        let provider = MockProvider::new(vec![
+            vec![
+                ProviderEvent::ToolCallStart {
+                    id: "p1".into(),
+                    name: "fake_panic".into(),
+                },
+                ProviderEvent::ToolCallEnd {
+                    id: "p1".into(),
+                    arguments: "{}".into(),
+                },
+                ProviderEvent::ToolCallStart {
+                    id: "o1".into(),
+                    name: "fake_ok".into(),
+                },
+                ProviderEvent::ToolCallEnd {
+                    id: "o1".into(),
+                    arguments: "{}".into(),
+                },
+                ProviderEvent::End {
+                    stop_reason: None,
+                    usage: None,
+                },
+            ],
+            final_text_events("recovered"),
+        ]);
+        let (processor, dir) = test_processor(provider, registry, 10);
+        let mut session = processor.store.create_session("build", dir.path()).unwrap();
+        session.messages.push(Message::user("run tools"));
+        let agent = agent_with_tools(vec!["fake_panic".to_string(), "fake_ok".to_string()]);
+        let ctx = test_ctx();
+
+        let outcome = processor
+            .run_turn(&mut session, &agent, "sys", &ctx)
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.final_text, "recovered");
+        let tools: Vec<crate::harness::session::ToolPart> = session
+            .messages
+            .iter()
+            .flat_map(|m| m.tool_parts())
+            .cloned()
+            .collect();
+        assert_eq!(tools.len(), 2);
+        for t in &tools {
+            if t.name == "fake_ok" {
+                assert_eq!(
+                    t.status,
+                    crate::harness::session::ToolStatus::Completed,
+                    "healthy tool must complete despite sibling panic"
+                );
+                assert_eq!(t.output, "result-ok");
+            } else {
+                assert_eq!(t.name, "fake_panic");
+                assert_eq!(t.status, crate::harness::session::ToolStatus::Error);
+                assert!(t.error.as_deref().unwrap_or_default().contains("panicked"));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_iteration_budget_exhausts_turn() {
+        // The model never produces a final answer; every "turn" is a tool
+        // call. The global budget caps the turn even across auto-continues.
+        let registry = crate::harness::tool::registry::ToolRegistry::builder()
+            .register(StdArc::new(FakeTool {
+                name: "fake_ok",
+                output: "ok",
+                sleep_ms: 0,
+                abort: None,
+            }))
+            .build();
+        let script: Vec<Vec<ProviderEvent>> = (0..8)
+            .map(|i| tool_call_events(&format!("i{}", i), "fake_ok", "{}"))
+            .collect();
+        let provider = MockProvider::new(script);
+        let (processor, dir) = test_processor(provider, registry, 1);
+        let mut session = processor.store.create_session("build", dir.path()).unwrap();
+        session.messages.push(Message::user("loop forever"));
+        let agent = agent_with_tools(vec!["fake_ok".to_string()]);
+        let ctx = test_ctx();
+
+        let outcome = processor
+            .run_turn(&mut session, &agent, "sys", &ctx)
+            .await
+            .unwrap();
+
+        assert!(
+            outcome.final_text.contains("Stopped:"),
+            "unexpected final: {}",
+            outcome.final_text
+        );
+        // With the raised continuations cap (10), the (10+1)×max budget no
+        // longer fires for a short script: the identical-call doom-loop
+        // detector ends the turn at the 5th repeat instead.
+        assert!(outcome.final_text.contains("same tool call"));
+        assert!(!outcome.aborted);
+        assert_eq!(outcome.iterations, 5);
+        assert_eq!(outcome.continuations, 4);
+    }
+
+    #[tokio::test]
+    async fn test_abort_during_tool_execution_stops_turn() {
+        // The tool aborts the shared signal as soon as it starts running.
+        let ctx = test_ctx();
+        let abort_clone = ctx.abort.clone();
+        let registry = crate::harness::tool::registry::ToolRegistry::builder()
+            .register(StdArc::new(FakeTool {
+                name: "fake_abort",
+                output: "x",
+                sleep_ms: 0,
+                abort: Some(abort_clone),
+            }))
+            .build();
+        let provider = MockProvider::new(vec![tool_call_events("t1", "fake_abort", "{}")]);
+        let (processor, dir) = test_processor(provider, registry, 10);
+        let mut session = processor.store.create_session("build", dir.path()).unwrap();
+        session.messages.push(Message::user("abort me"));
+        let agent = agent_with_tools(vec!["fake_abort".to_string()]);
+
+        let outcome = processor
+            .run_turn(&mut session, &agent, "sys", &ctx)
+            .await
+            .unwrap();
+
+        assert!(outcome.aborted, "expected aborted outcome");
+        assert!(
+            outcome.final_text.contains("aborted"),
+            "unexpected final_text: {}",
+            outcome.final_text
+        );
+    }
+
+    #[tokio::test]
+    async fn test_text_loop_hard_stops_repeated_assistant_text() {
+        // Each iteration: the SAME text plus a tool call that differs only in
+        // args (so the tool doom-loop doesn't fire). The text-loop detector
+        // must warn at 3 and hard-stop at 5 repetitions.
+        let registry = crate::harness::tool::registry::ToolRegistry::builder()
+            .register(StdArc::new(FakeTool {
+                name: "fake_grep",
+                output: "no results",
+                sleep_ms: 0,
+                abort: None,
+            }))
+            .build();
+        const TEXT: &str = "Let me check the session/mod.rs:";
+        let script: Vec<Vec<ProviderEvent>> = (0..6)
+            .map(|i| {
+                vec![
+                    ProviderEvent::TextDelta(TEXT.to_string()),
+                    ProviderEvent::ToolCallStart {
+                        id: format!("t{i}"),
+                        name: "fake_grep".into(),
+                    },
+                    ProviderEvent::ToolCallEnd {
+                        id: format!("t{i}"),
+                        arguments: format!(r#"{{"i":{i}}}"#),
+                    },
+                    ProviderEvent::End {
+                        stop_reason: None,
+                        usage: Some(Usage::default()),
+                    },
+                ]
+            })
+            .collect();
+        let provider = MockProvider::new(script);
+        let (processor, dir) = test_processor(provider, registry, 50);
+        let mut session = processor.store.create_session("build", dir.path()).unwrap();
+        session.messages.push(Message::user("find preview"));
+        let agent = agent_with_tools(vec!["fake_grep".to_string()]);
+        let ctx = test_ctx();
+
+        let outcome = processor
+            .run_turn(&mut session, &agent, "sys", &ctx)
+            .await
+            .unwrap();
+
+        assert!(
+            outcome.final_text.contains("repeating the same response"),
+            "unexpected final_text: {}",
+            outcome.final_text
+        );
+        assert_eq!(outcome.iterations, 5);
+        assert!(!outcome.aborted);
+        assert_eq!(outcome.continuations, 0);
+        // The warn note was persisted into the session history.
+        let warns = session
+            .messages
+            .iter()
+            .filter(|m| {
+                m.role.as_str() == "user"
+                    && m.text_content().contains("repeating the same response")
+            })
+            .count();
+        assert_eq!(warns, 1);
+    }
+
+    #[tokio::test]
+    async fn test_doom_loop_stops_after_repeated_identical_call() {
+        // Always the same tool call (same id/name/args): the loop must stop at
+        // DOOM_LOOP_STOP repetitions, not run to max_iterations.
+        let registry = crate::harness::tool::registry::ToolRegistry::builder()
+            .register(StdArc::new(FakeTool {
+                name: "fake_loop",
+                output: "same",
+                sleep_ms: 0,
+                abort: None,
+            }))
+            .build();
+        let script = vec![tool_call_events("t1", "fake_loop", "{}"); 50];
+        let provider = MockProvider::new(script);
+        let (processor, dir) = test_processor(provider, registry, 50);
+        let mut session = processor.store.create_session("build", dir.path()).unwrap();
+        session.messages.push(Message::user("loop forever"));
+        let agent = agent_with_tools(vec!["fake_loop".to_string()]);
+        let ctx = test_ctx();
+
+        let outcome = processor
+            .run_turn(&mut session, &agent, "sys", &ctx)
+            .await
+            .unwrap();
+
+        // DOOM_LOOP_STOP identical calls in a row -> stop. Iterations stay
+        // well below max_iterations (50) and no auto-continuation happens.
+        assert!(
+            outcome.iterations <= crate::harness::session::doom_loop::DOOM_LOOP_STOP + 1,
+            "doom loop not detected: {} iterations",
+            outcome.iterations
+        );
+        assert!(!outcome.aborted);
+        assert!(
+            outcome.final_text.contains("repeated many times"),
+            "unexpected final_text: {}",
+            outcome.final_text
+        );
+        // The warn note (DOOM_LOOP_WARN) was injected into the history.
+        let warns = session
+            .messages
+            .iter()
+            .filter(|m| m.text_content().contains("System note: you just repeated"))
+            .count();
+        assert_eq!(warns, 1);
+    }
+
+    #[tokio::test]
+    async fn test_doom_loop_detects_multi_call_cycle() {
+        // A,B,A,B cycle: each iteration emits TWO tool calls (fake_loop +
+        // fake_loop2) with the same args. The old single-call detector missed
+        // this; the set-based detector must stop it.
+        let registry = crate::harness::tool::registry::ToolRegistry::builder()
+            .register(StdArc::new(FakeTool {
+                name: "fake_loop",
+                output: "same",
+                sleep_ms: 0,
+                abort: None,
+            }))
+            .register(StdArc::new(FakeTool {
+                name: "fake_loop2",
+                output: "same2",
+                sleep_ms: 0,
+                abort: None,
+            }))
+            .build();
+        // Each iteration: ToolCallStart/End for A, then for B, then End.
+        let mut one_iter = tool_call_events("a1", "fake_loop", "{}");
+        one_iter.pop(); // drop the trailing End
+        one_iter.extend(tool_call_events("b1", "fake_loop2", "{}"));
+        let script = vec![one_iter; 50];
+        let provider = MockProvider::new(script);
+        let (processor, dir) = test_processor(provider, registry, 50);
+        let mut session = processor.store.create_session("build", dir.path()).unwrap();
+        session.messages.push(Message::user("cycle forever"));
+        let agent = agent_with_tools(vec!["fake_loop".to_string(), "fake_loop2".to_string()]);
+        let ctx = test_ctx();
+
+        let outcome = processor
+            .run_turn(&mut session, &agent, "sys", &ctx)
+            .await
+            .unwrap();
+
+        assert!(
+            outcome.iterations <= crate::harness::session::doom_loop::DOOM_LOOP_STOP + 1,
+            "multi-call cycle not detected: {} iterations",
+            outcome.iterations
+        );
+        assert!(
+            outcome.final_text.contains("repeated many times"),
+            "unexpected final_text: {}",
+            outcome.final_text
+        );
     }
 }

@@ -97,18 +97,11 @@ pub async fn should_compact_and_execute(
 pub async fn compact_if_needed(
     session: &mut Session,
     provider: Arc<dyn Provider>,
-    store: &SessionStore,
+    store: &Arc<SessionStore>,
     max_context_tokens: usize,
     force: bool,
     events: Option<&EventSender>,
 ) -> Result<usize> {
-    if let Some(tx) = events {
-        let _ = tx.send(HarnessEvent::CompactionStarted {
-            session_id: session.id.clone(),
-            parent_session_id: None,
-        });
-    }
-
     let config = CompactionConfig {
         max_context_tokens: if force { 0 } else { max_context_tokens },
         keep_recent_messages: KEEP_RECENT,
@@ -117,34 +110,44 @@ pub async fn compact_if_needed(
         summary_timeout: SUMMARY_TIMEOUT,
     };
 
-    let before = session.messages.len();
-    let summarized = match should_compact_and_execute(&session.messages, provider, &config).await? {
-        Some(new_messages) => {
-            // The summary message adds one to the new list, so the number of
-            // messages summarized away is before - new.len() + 1.
-            let n = before.saturating_sub(new_messages.len()) + 1;
-            session.messages = new_messages;
-            session.updated_at = chrono::Utc::now();
-            // Persist immediately so orphaned pre-summary messages are dropped
-            // from SQLite even if the turn aborts later.
-            store
-                .save_session(session)
-                .context("failed to persist compacted session")?;
-            n
-        }
-        None => 0,
+    // Decide first: events must only fire when a compaction actually runs,
+    // otherwise the TUI would show "[compacting context…]" on every turn tick.
+    let Some(new_messages) =
+        should_compact_and_execute(&session.messages, provider, &config).await?
+    else {
+        return Ok(0);
     };
 
     if let Some(tx) = events {
-        if summarized > 0 {
-            let _ = tx.send(HarnessEvent::CompactionFinished {
-                session_id: session.id.clone(),
-                summarized_messages: summarized,
-                parent_session_id: None,
-            });
-        }
+        let _ = tx.send(HarnessEvent::CompactionStarted {
+            session_id: session.id.clone(),
+            parent_session_id: None,
+        });
     }
-    Ok(summarized)
+
+    let before = session.messages.len();
+    // The summary message adds one to the new list, so the number of
+    // messages summarized away is before - new.len() + 1.
+    let n = before.saturating_sub(new_messages.len()) + 1;
+    session.messages = new_messages;
+    session.updated_at = chrono::Utc::now();
+    // Persist immediately so orphaned pre-summary messages are dropped
+    // from SQLite even if the turn aborts later.
+    let snapshot = session.clone();
+    let store_owned = store.clone();
+    tokio::task::spawn_blocking(move || store_owned.save_session(&snapshot))
+        .await
+        .map_err(|e| anyhow::anyhow!("join error: {e}"))?
+        .context("failed to persist compacted session")?;
+
+    if let Some(tx) = events {
+        let _ = tx.send(HarnessEvent::CompactionFinished {
+            session_id: session.id.clone(),
+            summarized_messages: n,
+            parent_session_id: None,
+        });
+    }
+    Ok(n)
 }
 
 /// Requests an LLM summary of the dropped messages, falling back to a plain
@@ -165,7 +168,7 @@ async fn summarize(
         system: "Summarize the following agent conversation in under 500 words, \
 preserving key decisions, file paths, and outcomes."
             .to_string(),
-        messages: vec![Message::user(transcript)],
+        messages: std::sync::Arc::new(vec![Message::user(transcript)]),
         tools: vec![],
         max_tokens: None,
         temperature: 0.2,
@@ -227,6 +230,7 @@ pub fn render_message(m: &Message) -> String {
                 out.push_str(text);
             }
             Part::Reasoning { .. } => {}
+            Part::Image { .. } => {}
             Part::Tool(t) => {
                 out.push_str(&format!(
                     " (tool {} status={} output={})",
@@ -442,10 +446,8 @@ mod tests {
         use crate::harness::session::store::SessionStore;
 
         let dir = tempfile::tempdir().unwrap();
-        let store = SessionStore::open(&dir.path().join("test.db")).unwrap();
-        let mut session = store
-            .create_session("build", &dir.path().to_path_buf())
-            .unwrap();
+        let store = std::sync::Arc::new(SessionStore::open(&dir.path().join("test.db")).unwrap());
+        let mut session = store.create_session("build", dir.path()).unwrap();
         // 12 messages exceed the tiny budget (1 token) and the min (10).
         session.messages = msgs(12);
 
@@ -472,7 +474,7 @@ mod tests {
 
         // Persisted: reloading from the store reflects the compacted list.
         let reloaded = store
-            .load_session(&session.id, &dir.path())
+            .load_session(&session.id, dir.path())
             .unwrap()
             .unwrap();
         assert_eq!(reloaded.messages.len(), 7);
@@ -499,10 +501,8 @@ mod tests {
         use crate::harness::session::store::SessionStore;
 
         let dir = tempfile::tempdir().unwrap();
-        let store = SessionStore::open(&dir.path().join("test.db")).unwrap();
-        let mut session = store
-            .create_session("build", &dir.path().to_path_buf())
-            .unwrap();
+        let store = std::sync::Arc::new(SessionStore::open(&dir.path().join("test.db")).unwrap());
+        let mut session = store.create_session("build", dir.path()).unwrap();
         // 3 messages: below the min (10) -> no compaction.
         session.messages = msgs(3);
 
@@ -512,5 +512,30 @@ mod tests {
             .unwrap();
         assert_eq!(summarized, 0);
         assert_eq!(session.messages.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_compact_if_needed_emits_no_events_when_noop() {
+        use crate::harness::event::event_channel;
+        use crate::harness::session::store::SessionStore;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(SessionStore::open(&dir.path().join("test.db")).unwrap());
+        let mut session = store.create_session("build", dir.path()).unwrap();
+        session.messages = msgs(3);
+
+        let provider = Arc::new(MockProvider::ok("summary"));
+        let (tx, mut rx) = event_channel();
+
+        let summarized = compact_if_needed(&mut session, provider, &store, 1, false, Some(&tx))
+            .await
+            .unwrap();
+
+        assert_eq!(summarized, 0);
+        // No compaction -> no CompactionStarted/Finished spam on the TUI.
+        assert!(
+            rx.try_recv().is_err(),
+            "no events should be emitted when nothing was compacted"
+        );
     }
 }

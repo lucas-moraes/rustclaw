@@ -29,8 +29,24 @@ pub struct PaletteState {
 }
 
 impl PaletteState {
+    #[allow(dead_code)] // convenience wrapper kept for API symmetry
     pub fn open(seed: &str) -> Self {
-        let items = all_items();
+        Self::open_with(seed, &[])
+    }
+
+    /// `extra_agents`: custom agents (name, description) discovered from
+    /// `.agents/agents/*.md`, appended after the builtin agent entries.
+    pub fn open_with(seed: &str, extra_agents: &[(String, String)]) -> Self {
+        let mut items = all_items();
+        for (name, desc) in extra_agents {
+            items.push(item(
+                &format!("agent-{name}"),
+                &format!("agent · {name}"),
+                &desc.clone(),
+                PaletteKind::Agent,
+                &format!("/agent {name}"),
+            ));
+        }
         let mut s = Self {
             query: seed.to_string(),
             selected: 0,
@@ -160,6 +176,13 @@ pub fn all_items() -> Vec<PaletteItem> {
             "/sessions",
         ),
         item(
+            "fork",
+            "/fork",
+            "Fork the session (copy first N messages into a new one)",
+            PaletteKind::Command,
+            "/fork ",
+        ),
+        item(
             "agent",
             "/agent",
             "Switch agent (build/plan/explore/general/chat-free)",
@@ -200,6 +223,41 @@ pub fn all_items() -> Vec<PaletteItem> {
             "List / search / rm / clear project memory (remember tool)",
             PaletteKind::Command,
             "/memory ",
+        ),
+        item(
+            "export",
+            "/export",
+            "Export session transcript to Markdown or JSON",
+            PaletteKind::Command,
+            "/export ",
+        ),
+        item(
+            "apply-plan",
+            "/apply-plan",
+            "Inject the plan agent's plan and switch to build",
+            PaletteKind::Command,
+            "/apply-plan",
+        ),
+        item(
+            "image",
+            "/image",
+            "Attach an image (png/jpeg/gif/webp) to the next prompt",
+            PaletteKind::Command,
+            "/image ",
+        ),
+        item(
+            "diff",
+            "/diff",
+            "Show file changes since the pre-agent snapshot",
+            PaletteKind::Command,
+            "/diff ",
+        ),
+        item(
+            "restore",
+            "/restore",
+            "Restore a file to its pre-agent snapshot",
+            PaletteKind::Command,
+            "/restore ",
         ),
         item(
             "mcp",
@@ -256,6 +314,13 @@ pub fn all_items() -> Vec<PaletteItem> {
             "Grant all in-project permissions",
             PaletteKind::Command,
             "/allow-all-permissions",
+        ),
+        item(
+            "jobs",
+            "/jobs",
+            "Background bash jobs: list / show output",
+            PaletteKind::Command,
+            "/jobs ",
         ),
         item(
             "undo",

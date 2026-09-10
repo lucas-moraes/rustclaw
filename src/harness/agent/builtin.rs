@@ -20,6 +20,7 @@ const BUILD_TOOLS_NO_WRITE: &[&str] = &[
     "glob",
     "grep",
     "ast_search",
+    "diagnostics",
     "todo_read",
     "todo_write",
     "question",

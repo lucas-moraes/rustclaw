@@ -7,7 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// Every builtin harness tool name. Used by `allow_all` to grant the harness
@@ -17,6 +17,7 @@ pub const ALL_TOOLS: &[&str] = &[
     "glob",
     "grep",
     "ast_search",
+    "diagnostics",
     "todo_read",
     "todo_write",
     "web_search",
@@ -39,7 +40,7 @@ type PersistFn = Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
 /// Request shown to the user when a tool needs approval.
 // Fields are part of the event-bus data API (carried in `HarnessEvent::PermissionAsk`);
 // not all are read by the current UI, but they are intentionally public.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[allow(dead_code)]
 pub struct PermissionRequest {
     pub id: String,
@@ -163,6 +164,16 @@ impl PermissionEngine {
         *self.persist.lock().unwrap_or_else(|e| e.into_inner()) = f;
     }
 
+    /// Returns a clone of the persist callback (used by tests to exercise
+    /// concurrent persistence).
+    #[allow(dead_code)] // used in runtime.rs tests, clippy false positive
+    pub fn persist_callback(&self) -> Option<PersistFn> {
+        self.persist
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
     pub fn set_always_allow(&self, tool: &str) {
         self.always_allow
             .lock()
@@ -253,8 +264,16 @@ impl PermissionEngine {
             .unwrap_or(Rule::Ask);
 
         // Paths outside the workspace always escalate to Ask (unless denied).
+        // Both sides are canonicalized first so lexical escapes like
+        // `/proj/../etc/passwd` or symlinks pointing outside are caught.
         if let Some(p) = path {
-            if !Path::new(p).starts_with(cwd) {
+            // Canonicalize both sides so lexical escapes (`/proj/../etc`)
+            // and symlinks pointing outside are caught. For nonexistent
+            // paths, canonicalize the deepest existing ancestor and rejoin
+            // the remainder (handles symlinked parents like /tmp on macOS).
+            let abs = canonicalize_best_effort(Path::new(p));
+            let root = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+            if !abs.starts_with(&root) {
                 if rule == Rule::Deny {
                     return PermissionDecision::Deny;
                 }
@@ -272,6 +291,33 @@ impl PermissionEngine {
             Rule::Deny => PermissionDecision::Deny,
         }
     }
+}
+
+/// Canonicalizes `p`, or, if it does not exist yet, the deepest existing
+/// ancestor with the non-existing tail re-joined lexically. Falls back to
+/// the raw path when nothing can be canonicalized.
+fn canonicalize_best_effort(p: &Path) -> PathBuf {
+    if let Ok(c) = std::fs::canonicalize(p) {
+        return c;
+    }
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+    let mut cur = p.to_path_buf();
+    loop {
+        let parent = match cur.parent() {
+            Some(par) if par != cur => par.to_path_buf(),
+            _ => break,
+        };
+        tail.push(cur.file_name().unwrap_or_default().to_os_string());
+        if let Ok(c) = std::fs::canonicalize(&parent) {
+            let mut abs = c;
+            for part in tail.iter().rev() {
+                abs.push(part);
+            }
+            return abs;
+        }
+        cur = parent;
+    }
+    p.to_path_buf()
 }
 
 #[cfg(test)]
@@ -316,6 +362,59 @@ mod tests {
         assert_eq!(
             engine.check("read", Some("/proj/src/main.rs"), cwd),
             PermissionDecision::Allow
+        );
+    }
+
+    #[test]
+    fn test_lexical_escape_is_canonicalized() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("proj");
+        std::fs::create_dir_all(&root).unwrap();
+        let engine = PermissionEngine::default();
+
+        // `/proj/../etc/passwd` is lexically inside but really outside.
+        let escape = root.join("..").join("etc").join("passwd");
+        assert_eq!(
+            engine.check("read", Some(escape.to_str().unwrap()), &root),
+            PermissionDecision::Ask
+        );
+        // A real file inside the project still passes.
+        std::fs::write(root.join("f.txt"), b"x").unwrap();
+        assert_eq!(
+            engine.check("read", Some(root.join("f.txt").to_str().unwrap()), &root),
+            PermissionDecision::Allow
+        );
+    }
+
+    #[test]
+    fn test_symlink_escape_is_canonicalized() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("proj");
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let link = root.join("link");
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        let engine = PermissionEngine::default();
+        assert_eq!(
+            engine.check("read", Some(link.to_str().unwrap()), &root),
+            PermissionDecision::Ask
+        );
+    }
+
+    #[test]
+    fn test_nonexistent_path_falls_back_lexical() {
+        let engine = PermissionEngine::default();
+        let cwd = Path::new("/proj");
+        // Nonexistent path inside cwd: lexical fallback keeps it inside.
+        assert_eq!(
+            engine.check("read", Some("/proj/new-file.txt"), cwd),
+            PermissionDecision::Allow
+        );
+        // Nonexistent path outside cwd: still escalates.
+        assert_eq!(
+            engine.check("read", Some("/etc/nonexistent"), cwd),
+            PermissionDecision::Ask
         );
     }
 

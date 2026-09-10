@@ -2,12 +2,14 @@
 #![allow(dead_code)] // events are the API surface consumed by the UI
 
 use crate::harness::permission::PermissionRequest;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// Tool execution status, mirrors `ToolPart::status`.
 pub use crate::harness::session::ToolStatus;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(test, derive(PartialEq))]
 pub enum HarnessEvent {
     RunStarted {
         session_id: String,
@@ -87,6 +89,18 @@ pub enum HarnessEvent {
         reason: String,
         parent_session_id: Option<String>,
     },
+    /// A background bash job (`bash --background`) finished.
+    /// Emitted by the job watcher; the UI surfaces it as a system line.
+    JobFinished {
+        session_id: String,
+        job_id: u64,
+        exit_code: Option<i32>,
+    },
+    /// Daily budget warning (80% or exceeded). Surfaced as a system line.
+    BudgetWarn {
+        session_id: String,
+        message: String,
+    },
     Error {
         session_id: String,
         message: String,
@@ -108,7 +122,9 @@ impl HarnessEvent {
             | HarnessEvent::CompactionStarted { session_id, .. }
             | HarnessEvent::CompactionFinished { session_id, .. }
             | HarnessEvent::AutoContinue { session_id, .. }
-            | HarnessEvent::Error { session_id, .. } => Some(session_id),
+            | HarnessEvent::Error { session_id, .. }
+            | HarnessEvent::BudgetWarn { session_id, .. }
+            | HarnessEvent::JobFinished { session_id, .. } => Some(session_id),
             HarnessEvent::PermissionAsk { request } => Some(&request.session_id),
             HarnessEvent::PermissionResolved { .. } => None,
         }

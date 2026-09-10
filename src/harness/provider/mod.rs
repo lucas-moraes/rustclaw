@@ -11,6 +11,9 @@ pub mod retry;
 pub mod user_store;
 
 use crate::harness::session::{Message, Part};
+use anyhow::anyhow;
+use futures_util::StreamExt;
+use std::collections::VecDeque;
 use std::time::Duration;
 
 /// Tool definition sent to the provider (single definition, from tool module).
@@ -40,14 +43,19 @@ impl Usage {
 
     /// Total tokens served from / written to the prompt cache.
     pub fn cache_total(self) -> u64 {
-        self.cache_read_tokens.saturating_add(self.cache_write_tokens)
+        self.cache_read_tokens
+            .saturating_add(self.cache_write_tokens)
     }
 
     pub fn add_assign(&mut self, other: Usage) {
         self.input_tokens = self.input_tokens.saturating_add(other.input_tokens);
         self.output_tokens = self.output_tokens.saturating_add(other.output_tokens);
-        self.cache_read_tokens = self.cache_read_tokens.saturating_add(other.cache_read_tokens);
-        self.cache_write_tokens = self.cache_write_tokens.saturating_add(other.cache_write_tokens);
+        self.cache_read_tokens = self
+            .cache_read_tokens
+            .saturating_add(other.cache_read_tokens);
+        self.cache_write_tokens = self
+            .cache_write_tokens
+            .saturating_add(other.cache_write_tokens);
     }
 }
 
@@ -135,13 +143,18 @@ pub type ProviderStream =
     Pin<Box<dyn futures_util::Stream<Item = Result<ProviderEvent, anyhow::Error>> + Send>>;
 
 use std::pin::Pin;
+use std::sync::Arc;
 
 /// LLM request in harness form; adapters convert messages/tools.
 #[derive(Clone)]
 pub struct LlmRequest {
     pub model: String,
     pub system: String,
-    pub messages: Vec<Message>,
+    /// Shared message history. `Arc` keeps per-iteration/retry clones cheap
+    /// (the processor rebuilds the request each iteration, and the retry
+    /// closure clones it per attempt — a deep `Vec<Message>` clone there is
+    /// O(n²) over a long turn).
+    pub messages: Arc<Vec<Message>>,
     pub tools: Vec<ToolSpec>,
     /// Optional cap on output tokens. `None` = omit the field so the
     /// provider/model applies its own default (except Anthropic, which
@@ -217,6 +230,10 @@ impl HttpConfig {
     }
 }
 
+/// Cap on buffered SSE bytes: a stream that never emits `\n\n` (bug or
+/// malicious user-defined provider) must not accumulate unbounded memory.
+const MAX_SSE_BUFFER: usize = 10 * 1024 * 1024; // 10 MB
+
 /// Extracts complete `data: ...` SSE payloads from a byte-chunk stream.
 ///
 /// Buffers until `\n\n` (event boundary) and yields each `data:` line content.
@@ -245,6 +262,13 @@ impl SseParser {
                 }
             }
         }
+        if self.buffer.len() > MAX_SSE_BUFFER {
+            tracing::warn!(
+                "SSE buffer exceeded {} bytes without an event boundary; dropping",
+                MAX_SSE_BUFFER
+            );
+            self.buffer.clear();
+        }
         events
     }
 
@@ -260,6 +284,118 @@ impl SseParser {
         }
         events
     }
+}
+
+/// Control signal returned by [`SseHandler::handle_event`].
+#[derive(Debug)]
+pub enum SseAction {
+    /// Keep reading bytes and processing events.
+    Continue,
+    /// Stop reading bytes (e.g. `[DONE]`/`message_stop`); finalize and emit End.
+    Finish,
+    /// Abort the stream with an error (surfaced to the processor).
+    Error(String),
+}
+
+/// Provider-specific SSE event handler used by [`drive_sse_stream`].
+///
+/// Each provider implements only the per-payload parsing; the shared driver
+/// owns the byte stream, the `SseParser`, the pending queue and the terminal
+/// `End` event.
+pub trait SseHandler {
+    /// Process one complete SSE `data:` payload, pushing any events into
+    /// `out`. Returns the control signal for the driver.
+    fn handle_event(&mut self, data: &str, out: &mut VecDeque<ProviderEvent>) -> SseAction;
+    /// Called once when the byte stream is exhausted (before the `End` event),
+    /// to finalize any buffered state (e.g. accumulated tool calls).
+    fn on_finish(&mut self, _out: &mut VecDeque<ProviderEvent>) {}
+    /// Build the terminal `End` event.
+    fn end_event(&self) -> ProviderEvent;
+}
+
+/// Shared SSE streaming driver: drains the pending queue, feeds bytes through
+/// the [`SseParser`], delegates each payload to `handler`, and emits a single
+/// terminal `End` event. Used by both the OpenAI- and Anthropic-compatible
+/// providers so a fix to the loop propagates to both.
+pub fn drive_sse_stream<H: SseHandler + Send + 'static>(
+    bytes: Pin<Box<dyn futures_util::Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Send>>,
+    handler: H,
+) -> ProviderStream {
+    let parser = SseParser::new();
+    let pending: VecDeque<ProviderEvent> = VecDeque::new();
+    let finished = false;
+    let end_emitted = false;
+    let handler = handler;
+
+    Box::pin(futures_util::stream::unfold(
+        (bytes, parser, pending, finished, end_emitted, handler),
+        |(mut bytes, mut parser, mut pending, mut finished, mut end_emitted, mut handler)| async move {
+            loop {
+                // Drain queued events first.
+                if let Some(ev) = pending.pop_front() {
+                    return Some((
+                        Ok(ev),
+                        (bytes, parser, pending, finished, end_emitted, handler),
+                    ));
+                }
+                if end_emitted {
+                    return None;
+                }
+
+                // Feed more bytes while available.
+                if !finished {
+                    match bytes.next().await {
+                        Some(Ok(chunk)) => {
+                            for data in parser.push(&chunk) {
+                                match handler.handle_event(&data, &mut pending) {
+                                    SseAction::Continue => {}
+                                    SseAction::Finish => {
+                                        finished = true;
+                                        break;
+                                    }
+                                    SseAction::Error(msg) => {
+                                        return Some((
+                                            Err(anyhow!("stream error: {}", msg)),
+                                            (
+                                                bytes,
+                                                parser,
+                                                pending,
+                                                finished,
+                                                end_emitted,
+                                                handler,
+                                            ),
+                                        ));
+                                    }
+                                }
+                            }
+                            continue;
+                        }
+                        Some(Err(e)) => {
+                            return Some((
+                                Err(anyhow!("stream error: {}", e)),
+                                (bytes, parser, pending, finished, end_emitted, handler),
+                            ));
+                        }
+                        None => {
+                            for data in parser.finish() {
+                                match handler.handle_event(&data, &mut pending) {
+                                    SseAction::Continue => {}
+                                    SseAction::Finish | SseAction::Error(_) => break,
+                                }
+                            }
+                            finished = true;
+                            continue;
+                        }
+                    }
+                }
+
+                // Bytes done: finalize and emit End once.
+                end_emitted = true;
+                handler.on_finish(&mut pending);
+                pending.push_back(handler.end_event());
+            }
+        },
+    ))
 }
 
 fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {

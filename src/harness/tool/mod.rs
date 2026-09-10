@@ -2,13 +2,17 @@
 
 pub mod ast_search;
 pub mod bash;
+pub mod checkpoint;
 pub mod context;
+pub mod diagnostics;
 pub mod diff;
 pub mod edit;
+pub mod env;
 pub mod fetch_webpage;
 pub mod git;
 pub mod glob;
 pub mod grep;
+pub mod jobs;
 pub mod question;
 pub mod read;
 pub mod registry;

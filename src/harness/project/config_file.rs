@@ -1,25 +1,25 @@
-//! Per-project model/provider selection, persisted as `rustclaw.json` in the
-//! project root (opencode-style). Token resolution is global (auth store);
-//! provider/model/base_url selection is project-scoped.
+//! Per-project persistent permission rules, persisted as `rustclaw.json` in
+//! the project root (opencode-style). Token resolution is global (auth store)
+//! and provider/model/base_url selection is global (config.json); only
+//! permission rules are project-scoped.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+use crate::harness::hooks::HooksConfig;
 use crate::harness::permission::PermissionConfig;
 
-/// Project-scoped model/provider selection (`rustclaw.json`).
+/// Project-scoped config (`rustclaw.json`): persistent per-tool permission
+/// rules. Provider/model/base_url are global (config.json), not project-scoped.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProjectConfig {
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub provider: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub model: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub base_url: String,
     /// Persistent per-tool permission rules (e.g. `{ "bash": "allow" }`).
     #[serde(default, skip_serializing_if = "PermissionConfig::is_empty")]
     pub permission: PermissionConfig,
+    /// Project hooks (pre_tool/post_tool/on_turn_end).
+    #[serde(default, skip_serializing_if = "HooksConfig::is_empty")]
+    pub hooks: HooksConfig,
 }
 
 impl ProjectConfig {
@@ -58,12 +58,10 @@ impl ProjectConfig {
         Ok(())
     }
 
-    /// True when the file carries any explicit selection.
+    /// True when the file carries no explicit permission rules.
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
-        self.provider.is_empty()
-            && self.model.is_empty()
-            && self.base_url.is_empty()
-            && self.permission.is_empty()
+        self.permission.is_empty()
     }
 }
 
@@ -80,16 +78,27 @@ mod tests {
 
     #[test]
     fn test_roundtrip() {
+        use crate::harness::permission::Rule;
         let d = tempfile::tempdir().unwrap();
         let mut c = ProjectConfig::default();
-        c.provider = "deepinfra".into();
-        c.model = "deepseek-ai/DeepSeek-V4-Flash-0731".into();
+        c.permission.tools.insert("bash".to_string(), Rule::Allow);
         c.save(d.path()).unwrap();
 
         let back = ProjectConfig::load_from(&ProjectConfig::path(d.path())).unwrap();
-        assert_eq!(back.provider, "deepinfra");
-        assert_eq!(back.model, "deepseek-ai/DeepSeek-V4-Flash-0731");
-        assert!(back.base_url.is_empty());
+        assert_eq!(back.permission.tools.get("bash"), Some(&Rule::Allow));
+        assert!(!back.is_empty());
+    }
+
+    #[test]
+    fn test_no_model_or_provider_serialized() {
+        let d = tempfile::tempdir().unwrap();
+        let c = ProjectConfig::default();
+        c.save(d.path()).unwrap();
+
+        let raw = std::fs::read_to_string(d.path().join("rustclaw.json")).unwrap();
+        assert!(!raw.contains("provider"), "got: {}", raw);
+        assert!(!raw.contains("model"), "got: {}", raw);
+        assert!(!raw.contains("base_url"), "got: {}", raw);
     }
 
     #[test]
@@ -105,16 +114,12 @@ mod tests {
     }
 
     #[test]
-    fn test_is_empty_and_field_access() {
-        let mut c = ProjectConfig {
-            provider: "deepinfra".into(),
-            model: String::new(),
-            base_url: String::new(),
-            permission: Default::default(),
-        };
-        assert!(!c.is_empty());
-        c.provider = String::new();
+    fn test_is_empty_only_checks_permission() {
+        use crate::harness::permission::Rule;
+        let mut c = ProjectConfig::default();
         assert!(c.is_empty());
+        c.permission.tools.insert("bash".to_string(), Rule::Allow);
+        assert!(!c.is_empty());
     }
 
     #[test]

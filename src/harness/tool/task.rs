@@ -264,6 +264,11 @@ mod tests {
             task_runner: Some(runner),
             events: tx.clone(),
             project_memory: None,
+            hooks: Default::default(),
+            checkpoints: std::sync::Arc::new(
+                crate::harness::tool::checkpoint::FileCheckpoints::new(),
+            ),
+            jobs: std::sync::Arc::new(crate::harness::tool::jobs::JobRegistry::new()),
         };
         (ctx, tx, rx)
     }

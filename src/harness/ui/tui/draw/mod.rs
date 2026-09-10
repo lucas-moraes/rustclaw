@@ -6,11 +6,12 @@ mod modal;
 mod model_picker;
 mod palette_view;
 mod resume_picker;
+mod search;
 mod sidebar;
 mod skill_picker;
 mod splash;
 mod status;
-mod transcript;
+pub(crate) mod transcript;
 
 use crate::harness::ui::tui::app::App;
 use crate::harness::ui::tui::theme::Theme;
@@ -115,6 +116,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         model_picker::draw_auth(frame, app, auth, area);
     } else if app.resume_picker.is_some() {
         resume_picker::draw(frame, app, area);
+    } else if app.search.is_some() {
+        search::draw(frame, app, area);
     } else if app.skill_picker.is_some() {
         skill_picker::draw(frame, app, area);
     }

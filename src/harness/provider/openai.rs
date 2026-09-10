@@ -1,15 +1,12 @@
 //! OpenAI-compatible provider: `/chat/completions` with native `tools`.
 
 use super::{
-    AuthStyle, HttpConfig, LlmRequest, LlmResponse, Provider, ProviderEvent, ProviderStream,
-    SseParser, Usage,
+    AuthStyle, HttpConfig, LlmRequest, LlmResponse, Provider, ProviderEvent, ProviderStream, Usage,
 };
 use crate::harness::session::{Message, Part, Role, ToolPart};
 use anyhow::{anyhow, Context as AnyhowContext};
-use futures_util::StreamExt;
 use serde_json::{json, Value};
 use std::collections::VecDeque;
-use std::pin::Pin;
 
 pub struct OpenAiProvider {
     pub http: HttpConfig,
@@ -31,9 +28,29 @@ pub fn to_openai_messages(system: &str, messages: &[Message]) -> Vec<Value> {
                 // System is passed as the top-level `system`; skip in-session ones.
             }
             Role::User => {
-                let text = msg.text_content();
-                if !text.is_empty() {
-                    out.push(json!({"role": "user", "content": text}));
+                let has_image = msg.parts.iter().any(|p| matches!(p, Part::Image { .. }));
+                if has_image {
+                    // Vision request: content must be an array of parts.
+                    let mut content = Vec::new();
+                    for part in &msg.parts {
+                        match part {
+                            Part::Text { text } if !text.is_empty() => {
+                                content.push(json!({"type": "text", "text": text}));
+                            }
+                            Part::Image { path } => {
+                                content.push(image_url_block_or_fallback(path));
+                            }
+                            _ => {}
+                        }
+                    }
+                    if !content.is_empty() {
+                        out.push(json!({"role": "user", "content": content}));
+                    }
+                } else {
+                    let text = msg.text_content();
+                    if !text.is_empty() {
+                        out.push(json!({"role": "user", "content": text}));
+                    }
                 }
             }
             Role::Assistant => {
@@ -81,6 +98,22 @@ pub fn to_openai_messages(system: &str, messages: &[Message]) -> Vec<Value> {
     out
 }
 
+/// Converts a `Part::Image` into an OpenAI `image_url` content block with a
+/// `data:` URL. On errors, degrades to a text block so the request still goes
+/// out.
+fn image_url_block_or_fallback(path: &str) -> Value {
+    match crate::harness::session::image::load_image(path) {
+        Ok(img) => json!({
+            "type": "image_url",
+            "image_url": {"url": format!("data:{};base64,{}", img.media_type, img.data)}
+        }),
+        Err(reason) => json!({
+            "type": "text",
+            "text": crate::harness::session::image::image_fallback_text(path, &reason),
+        }),
+    }
+}
+
 fn tool_result_message(t: &crate::harness::session::ToolPart) -> Value {
     let content = match t.status {
         crate::harness::session::ToolStatus::Completed => t.output.clone(),
@@ -109,7 +142,7 @@ fn tools_body(tools: &[super::ToolSpec]) -> Value {
 fn build_request_body(req: &LlmRequest, stream: bool) -> Value {
     let mut body = json!({
         "model": req.model,
-        "messages": to_openai_messages(&req.system, &req.messages),
+        "messages": to_openai_messages(&req.system, &req.messages[..]),
         "temperature": req.temperature,
         "stream": stream,
     });
@@ -203,11 +236,25 @@ impl ToolCallAccumulator {
         let Some(arr) = delta_tool_calls.as_array() else {
             return;
         };
-        for call in arr {
-            let index = call["index"]
-                .as_u64()
-                .map(|i| i.to_string())
-                .unwrap_or_else(|| "0".to_string());
+        for (pos, call) in arr.iter().enumerate() {
+            // `index` is the canonical key; when absent, fall back to the
+            // position in the delta array. A non-numeric index is ignored
+            // (with a warning) instead of collapsing everything into slot 0
+            // and corrupting distinct tool-call arguments.
+            let index = match call["index"].as_u64() {
+                Some(i) => i.to_string(),
+                None => {
+                    if call["index"].is_null() {
+                        pos.to_string()
+                    } else {
+                        tracing::warn!(
+                            "tool_call delta with non-numeric index ignored: {}",
+                            call["index"]
+                        );
+                        continue;
+                    }
+                }
+            };
             let entry = self
                 .calls
                 .entry(index)
@@ -271,108 +318,85 @@ fn parse_stream_json(json: &Value, acc: &mut ToolCallAccumulator) {
     }
 }
 
+/// If the SSE payload carries a provider `{"error": {...}}` event, returns the
+/// error message. Providers (OpenRouter, DeepInfra, …) send this after a 200 OK
+/// to signal a mid-stream failure; without this check the turn would end with a
+/// silent empty reply.
+fn sse_error_message(json: &Value) -> Option<String> {
+    let err = json.get("error")?;
+    let msg = err["message"]
+        .as_str()
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| err.to_string());
+    Some(msg)
+}
+
 fn response_to_events(response: reqwest::Response) -> ProviderStream {
     let state = OpenAiStreamState {
-        bytes: Box::pin(response.bytes_stream()),
-        parser: SseParser::new(),
         acc: ToolCallAccumulator::default(),
         usage: None,
         stop_reason: None,
-        pending: VecDeque::new(),
-        bytes_done: false,
-        end_emitted: false,
     };
-
-    Box::pin(futures_util::stream::unfold(state, |mut st| async move {
-        loop {
-            // Drain queued events first.
-            if let Some(ev) = st.pending.pop_front() {
-                return Some((Ok(ev), st));
-            }
-            if st.end_emitted {
-                return None;
-            }
-
-            // Feed more bytes while available.
-            if !st.bytes_done {
-                match st.bytes.next().await {
-                    Some(Ok(chunk)) => {
-                        for data in st.parser.push(&chunk) {
-                            if data.trim() == "[DONE]" {
-                                st.bytes_done = true;
-                                continue;
-                            }
-                            if let Ok(json) = serde_json::from_str::<Value>(&data) {
-                                if let Some(usage) = json.get("usage") {
-                                    st.usage = Some(Usage {
-                                        input_tokens: usage["prompt_tokens"]
-                                            .as_u64()
-                                            .unwrap_or(0),
-                                        output_tokens: usage["completion_tokens"]
-                                            .as_u64()
-                                            .unwrap_or(0),
-                                        cache_read_tokens: usage
-                                            ["prompt_tokens_details"]["cached_tokens"]
-                                            .as_u64()
-                                            .unwrap_or(0),
-                                        cache_write_tokens: 0,
-                                    });
-                                }
-                                if let Some(fr) = json["choices"][0]["finish_reason"]
-                                    .as_str()
-                                    .map(|s| s.to_string())
-                                {
-                                    st.stop_reason = Some(fr);
-                                }
-                                parse_stream_json(&json, &mut st.acc);
-                            }
-                        }
-                        continue;
-                    }
-                    Some(Err(e)) => {
-                        return Some((Err(anyhow!("stream error: {}", e)), st));
-                    }
-                    None => {
-                        for data in st.parser.finish() {
-                            if data.trim() == "[DONE]" {
-                                continue;
-                            }
-                            if let Ok(json) = serde_json::from_str::<Value>(&data) {
-                                parse_stream_json(&json, &mut st.acc);
-                            }
-                        }
-                        st.bytes_done = true;
-                        continue;
-                    }
-                }
-            }
-
-            // Bytes done: finalize accumulated tool calls and emit End once.
-            st.end_emitted = true;
-            let mut acc = std::mem::take(&mut st.acc);
-            acc.finish_all();
-            while let Some(ev) = acc.pending.pop_front() {
-                st.pending.push_back(ev);
-            }
-            let usage = st.usage;
-            let stop_reason = st.stop_reason.clone();
-            st.pending
-                .push_back(ProviderEvent::End { stop_reason, usage });
-        }
-    }))
+    super::drive_sse_stream(Box::pin(response.bytes_stream()), state)
 }
 
 struct OpenAiStreamState {
-    bytes: Pin<Box<dyn futures_util::Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Send>>,
-    parser: SseParser,
     acc: ToolCallAccumulator,
     usage: Option<Usage>,
     stop_reason: Option<String>,
-    pending: VecDeque<ProviderEvent>,
-    /// Byte stream fully consumed.
-    bytes_done: bool,
-    /// Terminal End event emitted (stream terminates after this).
-    end_emitted: bool,
+}
+
+impl super::SseHandler for OpenAiStreamState {
+    fn handle_event(&mut self, data: &str, out: &mut VecDeque<ProviderEvent>) -> super::SseAction {
+        if data.trim() == "[DONE]" {
+            return super::SseAction::Finish;
+        }
+        let Ok(json) = serde_json::from_str::<Value>(data) else {
+            tracing::warn!("malformed SSE payload: {:.200}", data);
+            return super::SseAction::Continue;
+        };
+        // Providers (OpenRouter, DeepInfra, …) may send an `{"error": {...}}`
+        // event after a 200 OK. Surface it as a stream error instead of a
+        // silent empty reply.
+        if let Some(msg) = sse_error_message(&json) {
+            return super::SseAction::Error(msg);
+        }
+        if let Some(usage) = json.get("usage") {
+            self.usage = Some(Usage {
+                input_tokens: usage["prompt_tokens"].as_u64().unwrap_or(0),
+                output_tokens: usage["completion_tokens"].as_u64().unwrap_or(0),
+                cache_read_tokens: usage["prompt_tokens_details"]["cached_tokens"]
+                    .as_u64()
+                    .unwrap_or(0),
+                cache_write_tokens: 0,
+            });
+        }
+        if let Some(fr) = json["choices"][0]["finish_reason"]
+            .as_str()
+            .map(|s| s.to_string())
+        {
+            self.stop_reason = Some(fr);
+        }
+        parse_stream_json(&json, &mut self.acc);
+        while let Some(ev) = self.acc.pending.pop_front() {
+            out.push_back(ev);
+        }
+        super::SseAction::Continue
+    }
+
+    fn on_finish(&mut self, out: &mut VecDeque<ProviderEvent>) {
+        self.acc.finish_all();
+        while let Some(ev) = self.acc.pending.pop_front() {
+            out.push_back(ev);
+        }
+    }
+
+    fn end_event(&self) -> ProviderEvent {
+        ProviderEvent::End {
+            stop_reason: self.stop_reason.clone(),
+            usage: self.usage,
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -452,6 +476,7 @@ impl Provider for OpenAiProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine as _;
 
     #[test]
     fn test_to_openai_messages_system_and_user() {
@@ -525,6 +550,55 @@ mod tests {
     }
 
     #[test]
+    fn test_to_openai_messages_image() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pic.jpg");
+        std::fs::write(&path, [0xFF, 0xD8, 0xFF]).unwrap();
+        let msgs = vec![Message::new(
+            Role::User,
+            vec![
+                Part::image(path.to_str().unwrap()),
+                Part::text("what is this?"),
+            ],
+        )];
+        let out = to_openai_messages("", &msgs);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0]["role"], "user");
+        let content = out[0]["content"].as_array().unwrap();
+        assert_eq!(content.len(), 2);
+        assert_eq!(content[0]["type"], "image_url");
+        let url = content[0]["image_url"]["url"].as_str().unwrap();
+        assert!(url.starts_with("data:image/jpeg;base64,"), "url: {}", url);
+        assert_eq!(
+            url,
+            format!(
+                "data:image/jpeg;base64,{}",
+                base64::engine::general_purpose::STANDARD.encode([0xFF, 0xD8, 0xFF])
+            )
+        );
+        assert_eq!(content[1], json!({"type": "text", "text": "what is this?"}));
+    }
+
+    #[test]
+    fn test_to_openai_messages_image_missing_file_degrades_to_text() {
+        let msgs = vec![Message::new(
+            Role::User,
+            vec![Part::image("/nonexistent/nope.png")],
+        )];
+        let out = to_openai_messages("", &msgs);
+        let content = out[0]["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "text");
+        assert!(content[0]["text"].as_str().unwrap().contains("[image:"));
+    }
+
+    #[test]
+    fn test_to_openai_messages_plain_text_stays_string() {
+        let msgs = vec![Message::user("hello")];
+        let out = to_openai_messages("", &msgs);
+        assert_eq!(out[0]["content"], "hello");
+    }
+
+    #[test]
     fn test_parse_response_with_tool_calls() {
         let json = json!({
             "choices": [{
@@ -561,6 +635,27 @@ mod tests {
     }
 
     #[test]
+    fn test_sse_error_message_detects_provider_error() {
+        let json = json!({"error": {"message": "rate limit exceeded", "type": "rate_limit"}});
+        assert_eq!(
+            sse_error_message(&json).as_deref(),
+            Some("rate limit exceeded")
+        );
+    }
+
+    #[test]
+    fn test_sse_error_message_none_for_normal_chunk() {
+        let json = json!({"choices": [{"delta": {"content": "hi"}}]});
+        assert_eq!(sse_error_message(&json), None);
+    }
+
+    #[test]
+    fn test_sse_error_message_falls_back_to_raw() {
+        let json = json!({"error": {"code": 500}});
+        assert!(sse_error_message(&json).is_some());
+    }
+
+    #[test]
     fn test_parse_response_cached_tokens() {
         // OpenAI includes cached tokens in prompt_tokens; the details field
         // is the cached subset.
@@ -584,7 +679,7 @@ mod tests {
         let req = LlmRequest {
             model: "gpt-test".into(),
             system: "sys".into(),
-            messages: vec![Message::user("hi")],
+            messages: std::sync::Arc::new(vec![Message::user("hi")]),
             tools: vec![],
             max_tokens: None,
             temperature: 0.0,

@@ -90,7 +90,7 @@ impl SessionStore {
                 [],
                 |r| r.get(0),
             )
-            .unwrap_or(1);
+            .context("failed to check title column")?;
         if has_title == 0 {
             conn.execute(&format!("ALTER TABLE {sessions} ADD COLUMN title TEXT"), [])
                 .context("failed to add title column")?;
@@ -104,7 +104,7 @@ impl SessionStore {
                 [],
                 |r| r.get(0),
             )
-            .unwrap_or(1);
+            .context("failed to check parent_id column")?;
         if has_parent == 0 {
             conn.execute(
                 &format!("ALTER TABLE {sessions} ADD COLUMN parent_id TEXT"),
@@ -321,7 +321,7 @@ impl SessionStore {
                     params![session_id],
                     |r| r.get(0),
                 )
-                .unwrap_or(0);
+                .context("failed to compute next ord")?;
             conn.execute(
                 &format!(
                     "INSERT INTO {messages_t} (id, session_id, role, parts_json, created_at, ord)
@@ -483,6 +483,8 @@ impl SessionStore {
                     parts
                         .iter()
                         .find_map(|p| p.as_text().map(|s| s.to_string()))
+                        // Skip the injected `<project-memory>` prefix part.
+                        .filter(|t| !crate::harness::project::memory::is_memory_block(t))
                 })
                 .unwrap_or_default();
             out.push(SessionSummary {
@@ -566,7 +568,8 @@ impl SessionStore {
             &format!(
                 "DELETE FROM {messages_t}
                  WHERE session_id = ?1
-                   AND ord >= (SELECT ord FROM {messages_t} WHERE id = ?2)"
+                   AND ord >= (SELECT ord FROM {messages_t}
+                               WHERE id = ?2 AND session_id = ?1)"
             ),
             params![id, msg_id],
         )
@@ -602,11 +605,12 @@ impl SessionStore {
         self.ensure_project(&session.cwd)?;
         let sessions_t = table_name(&session.cwd, "sessions");
         let messages_t = table_name(&session.cwd, "messages");
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let tx = conn.transaction().context("failed to begin transaction")?;
         // Saving a session marks it as updated now, so it becomes the most
         // recently used session (drives "resume last session" on startup).
         let now = chrono::Utc::now().to_rfc3339();
-        conn.execute(
+        tx.execute(
             &format!(
                 "UPDATE {sessions_t} SET agent = ?2, cwd = ?3, updated_at = ?4,
                         todos_json = ?5, skills_json = ?6
@@ -625,7 +629,7 @@ impl SessionStore {
 
         // Collect existing ids while we hold the lock.
         let existing: std::collections::HashSet<String> = {
-            let mut stmt = conn
+            let mut stmt = tx
                 .prepare(&format!(
                     "SELECT id FROM {messages_t} WHERE session_id = ?1"
                 ))
@@ -643,7 +647,7 @@ impl SessionStore {
 
         // Drop messages removed by compaction / revert.
         for mid in existing.difference(&keep) {
-            conn.execute(
+            tx.execute(
                 &format!("DELETE FROM {messages_t} WHERE session_id = ?1 AND id = ?2"),
                 params![session.id, mid],
             )
@@ -658,7 +662,7 @@ impl SessionStore {
                 serde_json::to_string(&msg.parts).context("failed to serialize parts")?;
             let created_at = msg.created_at.to_rfc3339();
             if existing.contains(&msg.id) {
-                conn.execute(
+                tx.execute(
                     &format!(
                         "UPDATE {messages_t}
                          SET role = ?3, parts_json = ?4, created_at = ?5, ord = ?6
@@ -675,7 +679,7 @@ impl SessionStore {
                 )
                 .context("failed to update message ord")?;
             } else {
-                conn.execute(
+                tx.execute(
                     &format!(
                         "INSERT INTO {messages_t}
                          (id, session_id, role, parts_json, created_at, ord)
@@ -693,6 +697,7 @@ impl SessionStore {
                 .context("failed to insert message")?;
             }
         }
+        tx.commit().context("failed to commit session save")?;
         Ok(())
     }
 
@@ -950,7 +955,7 @@ mod tests {
     fn test_list_orders_most_recent_first() {
         let (_dir, store) = temp_store();
         let s1 = store.create_session("build", Path::new("/a")).unwrap();
-        let s2 = store.create_session("build", Path::new("/a")).unwrap();
+        let _s2 = store.create_session("build", Path::new("/a")).unwrap();
         // Touch s1 so it becomes the most recently updated.
         store
             .save_message(&s1.id, Path::new("/a"), &Message::user("later"))
@@ -997,6 +1002,68 @@ mod tests {
             .unwrap();
         assert_eq!(loaded.messages.len(), 1);
         assert_eq!(loaded.messages[0].parts[0].as_text(), Some("first"));
+    }
+
+    #[test]
+    fn test_delete_messages_from_filters_by_session() {
+        let (_dir, store) = temp_store();
+        let sa = store.create_session("build", Path::new("/a")).unwrap();
+        let sb = store.create_session("build", Path::new("/a")).unwrap();
+        let ma = Message::user("msg-a");
+        store.save_message(&sa.id, Path::new("/a"), &ma).unwrap();
+        let mb = Message::user("msg-b");
+        store.save_message(&sb.id, Path::new("/a"), &mb).unwrap();
+
+        // Truncating session A from a msg_id of session B must not touch A.
+        store
+            .delete_messages_from(&sa.id, Path::new("/a"), &mb.id)
+            .unwrap();
+        let loaded = store
+            .load_session(&sa.id, Path::new("/a"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.messages.len(), 1);
+        assert_eq!(loaded.messages[0].id, ma.id);
+    }
+
+    #[test]
+    fn test_save_session_is_atomic_on_mid_save_error() {
+        let (_dir, store) = temp_store();
+        let mut session = store.create_session("build", Path::new("/a")).unwrap();
+        let m1 = Message::user("first");
+        let m2 = Message::user("second");
+        store
+            .save_message(&session.id, Path::new("/a"), &m1)
+            .unwrap();
+        store
+            .save_message(&session.id, Path::new("/a"), &m2)
+            .unwrap();
+
+        // Force a failure mid-save: any UPDATE on messages aborts. The save
+        // must roll back completely (the orphan DELETE of m1 is undone).
+        let messages_t = table_name(Path::new("/a"), "messages");
+        {
+            let conn = store.conn.lock().unwrap_or_else(|e| e.into_inner());
+            conn.execute(
+                &format!(
+                    "CREATE TRIGGER fail_msg_update BEFORE UPDATE ON {messages_t}
+                     BEGIN SELECT RAISE(ABORT, 'forced failure'); END"
+                ),
+                [],
+            )
+            .unwrap();
+        }
+        session.messages = vec![m2.clone()]; // m1 becomes orphaned
+        assert!(store.save_session(&session).is_err());
+
+        // Rollback: m1 was NOT deleted, m2 kept its original ord/content.
+        let loaded = store
+            .load_session(&session.id, Path::new("/a"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.messages.len(), 2);
+        assert_eq!(loaded.messages[0].id, m1.id);
+        assert_eq!(loaded.messages[1].id, m2.id);
     }
 
     #[test]

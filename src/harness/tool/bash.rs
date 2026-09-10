@@ -9,6 +9,10 @@
 //!   flagged to require an `Ask` permission escalation (even when `bash` is
 //!   otherwise `Allow`).
 //! - **Destructive redirection**: `> /dev/sd*`, `> /etc/...` are blocked.
+//!
+//! NOTE: the denylist is best-effort only — it is trivially bypassable by a
+//! determined model (variables, base64, heredocs, etc.). The real defense is
+//! the PermissionEngine (Ask/Deny per tool and path), not this list.
 
 use super::{Tool, ToolResult};
 use crate::harness::session::preview;
@@ -35,6 +39,8 @@ pub enum BashCheck {
 /// Splits a shell command into tokens, handling quotes and escapes minimally.
 /// This is intentionally simple: it splits on whitespace but keeps quoted
 /// strings together so `rm -rf "/path with spaces"` is tokenized correctly.
+/// Quote characters are stripped from tokens so `rm -rf "/"` matches the
+/// same denylist rules as `rm -rf /`.
 fn tokenize(command: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     let mut current = String::new();
@@ -55,11 +61,11 @@ fn tokenize(command: &str) -> Vec<String> {
             }
             '\'' if !in_double => {
                 in_single = !in_single;
-                current.push(c);
+                // Quote char itself is dropped from the token.
             }
             '"' if !in_single => {
                 in_double = !in_double;
-                current.push(c);
+                // Quote char itself is dropped from the token.
             }
             c if c.is_whitespace() && !in_single && !in_double => {
                 if !current.is_empty() {
@@ -135,19 +141,34 @@ fn is_destructive_rm(tokens: &[String]) -> bool {
 }
 
 /// Checks for destructive redirection like `> /dev/sda` or `> /etc/...`.
+/// Also detects redirects glued to their target (`echo x>/etc/passwd`),
+/// which tokenize as a single token.
 fn has_destructive_redirect(tokens: &[String]) -> bool {
     for (i, t) in tokens.iter().enumerate() {
         if t == ">" || t == ">>" || t == "2>" || t == "1>" {
             if let Some(target) = tokens.get(i + 1) {
-                let target = target.trim_start_matches('"').trim_start_matches('\'');
-                if target.starts_with("/dev/sd") || target.starts_with("/dev/nvme") {
-                    return true;
-                }
-                if target.starts_with("/etc/") || target.starts_with("/boot/") {
+                if is_destructive_target(target) {
                     return true;
                 }
             }
         }
+        // Redirect glued to the target: `x>/etc/passwd`, `x>>/etc/y`, `2>/dev/null`.
+        if let Some(pos) = t.find('>') {
+            let target = t[pos..].trim_start_matches('>');
+            if is_destructive_target(target) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn is_destructive_target(target: &str) -> bool {
+    if target.starts_with("/dev/sd") || target.starts_with("/dev/nvme") {
+        return true;
+    }
+    if target.starts_with("/etc/") || target.starts_with("/boot/") {
+        return true;
     }
     false
 }
@@ -237,6 +258,90 @@ fn timeout_secs(args: &Value) -> u64 {
         .min(600)
 }
 
+impl BashTool {
+    /// Runs `command` detached in the background: stdout/stderr go to temp
+    /// files, the child is kept alive in the shared `JobRegistry`
+    /// (`kill_on_drop(false)`), and a `ToolResult` with the job id is
+    /// returned immediately. Completion is surfaced via
+    /// `HarnessEvent::JobFinished` and `/jobs`.
+    async fn execute_background(
+        &self,
+        command: String,
+        ctx: &ToolContext,
+    ) -> Result<ToolResult, String> {
+        if command.trim().is_empty() {
+            return Err("command is empty".to_string());
+        }
+        match check_denylist(&command) {
+            BashCheck::Blocked => {
+                return Err(format!(
+                    "blocked dangerous command: `{}`",
+                    preview(&command, 80)
+                ));
+            }
+            BashCheck::NeedsPrivilege => {
+                let input = crate::harness::tool::context::PermissionAskInput {
+                    tool: "bash".to_string(),
+                    args_summary: format!("[privileged background] {}", preview(&command, 200)),
+                    path: None,
+                };
+                let allowed = ctx.asker.ask(input).await;
+                if !allowed {
+                    return Err("The user denied permission for the privileged command. \
+                         Do not retry the same call; explain and ask how to proceed."
+                        .to_string());
+                }
+            }
+            BashCheck::Ok => {}
+        }
+
+        let cwd = ctx.cwd.path().to_path_buf();
+        let id = ctx.jobs.reserve_id();
+        let out_path = std::env::temp_dir().join(format!("rustclaw-job-{}.out", id));
+        let err_path = std::env::temp_dir().join(format!("rustclaw-job-{}.err", id));
+        let out_file = std::fs::File::create(&out_path)
+            .map_err(|e| format!("failed to create job output file: {}", e))?;
+        let err_file = std::fs::File::create(&err_path)
+            .map_err(|e| format!("failed to create job output file: {}", e))?;
+        // Job output may contain secrets; restrict to the owner.
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&out_path, std::fs::Permissions::from_mode(0o600));
+        let _ = std::fs::set_permissions(&err_path, std::fs::Permissions::from_mode(0o600));
+
+        let child = tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg(&command)
+            .current_dir(&cwd)
+            .env_clear()
+            .envs(crate::harness::tool::env::sanitized_env(&Default::default()))
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::from(out_file))
+            .stderr(std::process::Stdio::from(err_file))
+            .kill_on_drop(false)
+            .spawn()
+            .map_err(|e| format!("failed to spawn command: {}", e))?;
+
+        let job_id = ctx.jobs.spawn_with_id(
+            id,
+            command.clone(),
+            child,
+            out_path,
+            err_path,
+            Some(ctx.events.clone()),
+            ctx.session_id.clone(),
+        );
+
+        Ok(ToolResult {
+            title: preview(&format!("[bg] {}", command), 60),
+            output: format!(
+                "started background job {}: {}\ncheck status with /jobs (or /jobs {} for output)",
+                job_id, command, job_id
+            ),
+            metadata: json!({"background": true, "job_id": job_id}),
+        })
+    }
+}
+
 #[async_trait::async_trait]
 impl Tool for BashTool {
     fn name(&self) -> &str {
@@ -259,6 +364,11 @@ impl Tool for BashTool {
                 "timeout_secs": {
                     "type": "integer",
                     "description": "Timeout in seconds (default 120, max 600)"
+                },
+                "background": {
+                    "type": "boolean",
+                    "description": "Run in background: returns a job id immediately; \
+                     check with /jobs (or `bash --background <cmd>`)"
                 }
             },
             "required": ["command"]
@@ -275,6 +385,18 @@ impl Tool for BashTool {
             .to_string();
         if command.trim().is_empty() {
             return Err("command is empty".to_string());
+        }
+
+        // Background mode: explicit arg or `--background ` command prefix.
+        let mut command = command;
+        let background = args["background"].as_bool().unwrap_or(false);
+        let mut background = background;
+        if let Some(rest) = command.strip_prefix("--background ") {
+            command = rest.trim().to_string();
+            background = true;
+        }
+        if background {
+            return self.execute_background(command, ctx).await;
         }
 
         let secs = timeout_secs(&args);
@@ -312,6 +434,8 @@ impl Tool for BashTool {
             .arg("-c")
             .arg(&command)
             .current_dir(&cwd)
+            .env_clear()
+            .envs(crate::harness::tool::env::sanitized_env(&Default::default()))
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -399,10 +523,26 @@ mod tests {
     fn test_tokenize_basic() {
         assert_eq!(tokenize("ls -la"), vec!["ls", "-la"]);
         assert_eq!(tokenize("rm -rf /"), vec!["rm", "-rf", "/"]);
-        assert_eq!(
-            tokenize("echo 'hello world'"),
-            vec!["echo", "'hello world'"]
-        );
+        assert_eq!(tokenize("echo 'hello world'"), vec!["echo", "hello world"]);
+    }
+
+    #[test]
+    fn test_denylist_blocks_quoted_paths() {
+        // Quotes must not hide the dangerous path from the denylist.
+        assert_eq!(check_denylist("rm -rf \"/\""), BashCheck::Blocked);
+        assert_eq!(check_denylist("rm -rf '/'"), BashCheck::Blocked);
+        assert_eq!(check_denylist("rm -rf \"/etc\""), BashCheck::Blocked);
+        assert_eq!(check_denylist("rm -rf '/etc'"), BashCheck::Blocked);
+    }
+
+    #[test]
+    fn test_denylist_blocks_glued_redirect() {
+        // Redirect glued to the target tokenizes as one token.
+        assert_eq!(check_denylist("echo x>/etc/passwd"), BashCheck::Blocked);
+        assert_eq!(check_denylist("echo x>>/etc/passwd"), BashCheck::Blocked);
+        assert_eq!(check_denylist("echo x>/dev/sda"), BashCheck::Blocked);
+        assert_eq!(check_denylist("cat > ~/.zshrc"), BashCheck::Ok);
+        assert_eq!(check_denylist("echo x > out.txt"), BashCheck::Ok);
     }
 
     #[test]
@@ -503,6 +643,11 @@ mod tests {
             task_runner: None,
             events: crate::harness::event::event_channel().0,
             project_memory: None,
+            hooks: Default::default(),
+            checkpoints: std::sync::Arc::new(
+                crate::harness::tool::checkpoint::FileCheckpoints::new(),
+            ),
+            jobs: std::sync::Arc::new(crate::harness::tool::jobs::JobRegistry::new()),
         };
 
         // Abort after a short delay while a long sleep is running.
@@ -522,6 +667,67 @@ mod tests {
             started.elapsed() < Duration::from_secs(5),
             "abort should kill sleep quickly, took {:?}",
             started.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_bash_strips_secret_env() {
+        use crate::harness::permission::PermissionEngine;
+        use crate::harness::tool::context::{
+            AbortSignal, PathBufGuard, PermissionAsker, ToolContext, UserAsker,
+        };
+        use std::sync::Arc;
+
+        struct AllowAsker;
+        struct NoUserAsker;
+        #[async_trait::async_trait]
+        impl PermissionAsker for AllowAsker {
+            async fn ask(&self, _req: crate::harness::tool::context::PermissionAskInput) -> bool {
+                true
+            }
+        }
+        #[async_trait::async_trait]
+        impl UserAsker for NoUserAsker {
+            async fn ask(&self, _q: String, _opts: Vec<String>) -> Option<String> {
+                None
+            }
+        }
+
+        let ctx = ToolContext {
+            session_id: "s".into(),
+            agent: "build".into(),
+            agent_tools: vec![],
+            cwd: PathBufGuard(std::env::temp_dir()),
+            abort: AbortSignal::new(),
+            permission: Arc::new(PermissionEngine::default()),
+            asker: Arc::new(AllowAsker),
+            user_asker: Arc::new(NoUserAsker),
+            todos: Arc::new(tokio::sync::RwLock::new(Vec::new())),
+            task_runner: None,
+            events: crate::harness::event::event_channel().0,
+            project_memory: None,
+            hooks: Default::default(),
+            checkpoints: std::sync::Arc::new(
+                crate::harness::tool::checkpoint::FileCheckpoints::new(),
+            ),
+            jobs: std::sync::Arc::new(crate::harness::tool::jobs::JobRegistry::new()),
+        };
+
+        // Set a secret in the parent env; the bash tool must not see it.
+        std::env::set_var("RUSTCLAW_TEST_SECRET_KEY", "super-secret-value");
+        let result = BashTool
+            .execute(
+                json!({"command": "printf '%s' \"$RUSTCLAW_TEST_SECRET_KEY\"", "timeout_secs": 10}),
+                &ctx,
+            )
+            .await
+            .expect("bash should run");
+        std::env::remove_var("RUSTCLAW_TEST_SECRET_KEY");
+        // The variable is stripped → the shell sees it as empty.
+        assert!(
+            !result.output.contains("super-secret-value"),
+            "secret leaked into bash env: {}",
+            result.output
         );
     }
 }

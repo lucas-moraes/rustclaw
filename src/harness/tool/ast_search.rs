@@ -102,8 +102,9 @@ o arquivo inteiro e sem falsos positivos."
 
         // Parse with the official Rust grammar.
         let mut parser = tree_sitter::Parser::new();
+        let language = tree_sitter::Language::new(tree_sitter_rust::LANGUAGE);
         parser
-            .set_language(&tree_sitter_rust::language())
+            .set_language(&language)
             .map_err(|e| format!("failed to load Rust grammar: {}", e))?;
         let tree = parser
             .parse(&code, None)
@@ -221,7 +222,6 @@ mod tests {
     use super::*;
     use crate::harness::permission::PermissionEngine;
     use crate::harness::tool::context::ToolContext;
-    use std::path::Path;
     use std::sync::Arc;
 
     const SAMPLE: &str = r#"
@@ -269,6 +269,11 @@ pub fn execute(cmd: &str) -> i32 {
             task_runner: None,
             events: crate::harness::event::event_channel().0,
             project_memory: None,
+            hooks: Default::default(),
+            checkpoints: std::sync::Arc::new(
+                crate::harness::tool::checkpoint::FileCheckpoints::new(),
+            ),
+            jobs: std::sync::Arc::new(crate::harness::tool::jobs::JobRegistry::new()),
         }
     }
 
@@ -290,7 +295,7 @@ pub fn execute(cmd: &str) -> i32 {
     #[tokio::test]
     async fn test_finds_specific_struct() {
         let dir = tempfile::tempdir().unwrap();
-        let path = write_sample(dir.path());
+        let _path = write_sample(dir.path());
         let ctx = ctx_with_cwd(dir.path().to_path_buf());
         let result = AstSearchTool
             .execute(
@@ -307,7 +312,7 @@ pub fn execute(cmd: &str) -> i32 {
     #[tokio::test]
     async fn test_filters_by_function_and_name() {
         let dir = tempfile::tempdir().unwrap();
-        let path = write_sample(dir.path());
+        let _path = write_sample(dir.path());
         let ctx = ctx_with_cwd(dir.path().to_path_buf());
         let result = AstSearchTool
             .execute(
@@ -325,7 +330,7 @@ pub fn execute(cmd: &str) -> i32 {
     #[tokio::test]
     async fn test_all_kinds_returns_everything() {
         let dir = tempfile::tempdir().unwrap();
-        let path = write_sample(dir.path());
+        let _path = write_sample(dir.path());
         let ctx = ctx_with_cwd(dir.path().to_path_buf());
         let result = AstSearchTool
             .execute(json!({"path": "sample.rs", "symbol_kind": "all"}), &ctx)
@@ -345,7 +350,7 @@ pub fn execute(cmd: &str) -> i32 {
     #[tokio::test]
     async fn test_missing_symbol_returns_no_match() {
         let dir = tempfile::tempdir().unwrap();
-        let path = write_sample(dir.path());
+        let _path = write_sample(dir.path());
         let ctx = ctx_with_cwd(dir.path().to_path_buf());
         let result = AstSearchTool
             .execute(
@@ -371,7 +376,7 @@ pub fn execute(cmd: &str) -> i32 {
     #[tokio::test]
     async fn test_invalid_symbol_kind_errors() {
         let dir = tempfile::tempdir().unwrap();
-        let path = write_sample(dir.path());
+        let _path = write_sample(dir.path());
         let ctx = ctx_with_cwd(dir.path().to_path_buf());
         let err = AstSearchTool
             .execute(json!({"path": "sample.rs", "symbol_kind": "bogus"}), &ctx)

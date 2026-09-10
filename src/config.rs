@@ -5,8 +5,11 @@
 //!
 //! 1. Builtin provider catalog (defaults for provider/model/base_url)
 //! 2. Global settings — `~/.local/share/rustclaw/config.json`
-//! 3. Project settings — `rustclaw.json` in the project root
-//! 4. Auth store — `~/.local/share/rustclaw/auth.json` (token per provider)
+//! 3. Auth store — `~/.local/share/rustclaw/auth.json` (token per provider)
+//!
+//! Provider/model/base_url are global-only. The project's `rustclaw.json`
+//! carries only persistent permission rules and does not influence the
+//! resolved provider/model.
 //!
 //! An absent API key is tolerated so the TUI can onboarding the user
 //! (`/auth`); the CLI surfaces an actionable error instead.
@@ -17,7 +20,7 @@ use std::path::Path;
 use crate::harness::auth::AuthStore;
 
 /// Global, cross-project settings stored as `config.json`.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct GlobalSettings {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub provider: String,
@@ -34,6 +37,43 @@ pub struct GlobalSettings {
     pub turn_timeout_secs: usize,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub theme: String,
+    /// Kill-switch for Anthropic-style prompt caching (`cache_control`
+    /// breakpoints). Default `true`; set to `false` to disable everywhere.
+    #[serde(default = "default_true", skip_serializing_if = "is_false")]
+    pub prompt_caching: bool,
+    /// Daily spend limit in USD (estimated cost). `0.0` = no limit.
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
+    pub daily_budget_usd: f64,
+}
+
+fn is_zero_f64(v: &f64) -> bool {
+    *v == 0.0
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn is_false(v: &bool) -> bool {
+    !*v
+}
+
+// Manual Default so the absent-file case honors `prompt_caching = true`
+// (the derived Default would give `false`).
+impl Default for GlobalSettings {
+    fn default() -> Self {
+        Self {
+            provider: String::new(),
+            model: String::new(),
+            base_url: String::new(),
+            max_iterations: 0,
+            max_context_tokens: 0,
+            turn_timeout_secs: 0,
+            theme: String::new(),
+            daily_budget_usd: 0.0,
+            prompt_caching: true,
+        }
+    }
 }
 
 fn usize_is_zero(v: &usize) -> bool {
@@ -60,8 +100,19 @@ impl GlobalSettings {
         }
         let raw = std::fs::read_to_string(path)
             .map_err(|e| anyhow::anyhow!("failed to read {}: {e}", path.display()))?;
-        serde_json::from_str(&raw)
-            .map_err(|e| anyhow::anyhow!("failed to parse {}: {e}", path.display()))
+        match serde_json::from_str(&raw) {
+            Ok(settings) => Ok(settings),
+            Err(e) => {
+                // Preserve the corrupt file as a backup before any save()
+                // overwrites it, and surface a clear warning.
+                crate::harness::auth::backup_corrupt(path, "config");
+                Err(anyhow::anyhow!(
+                    "failed to parse {}: {e} (backed up to {}.bak)",
+                    path.display(),
+                    path.display()
+                ))
+            }
+        }
     }
 
     /// Persists with `0600` permissions (best effort).
@@ -106,6 +157,8 @@ pub struct RuntimeConfig {
     pub turn_timeout_secs: usize,
     /// Agent used when starting a fresh session.
     pub default_agent: String,
+    /// Daily spend limit in USD (estimated cost). `0.0` = no limit.
+    pub daily_budget_usd: f64,
 }
 
 impl Default for RuntimeConfig {
@@ -138,13 +191,15 @@ impl RuntimeConfig {
             provider: p.name.to_string(),
             max_iterations: 50,
             max_context_tokens: 100_000,
-            turn_timeout_secs: 600,
+            turn_timeout_secs: 1200,
             default_agent: "build".to_string(),
+            daily_budget_usd: 0.0,
         }
     }
 
-    /// File-based resolution: catalog defaults → global `config.json` →
-    /// project `rustclaw.json` → auth store token. Never reads env vars.
+    /// File-based resolution: catalog defaults → global `config.json` → auth
+    /// store token. Never reads env vars; the project's `rustclaw.json` (only
+    /// permission rules) does not influence provider/model/base_url.
     pub fn load() -> Self {
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         let settings = GlobalSettings::load();
@@ -153,37 +208,22 @@ impl RuntimeConfig {
     }
 
     /// Testable resolution given explicit inputs.
-    pub fn resolve(project_root: &Path, settings: &GlobalSettings, auth: &AuthStore) -> Self {
+    pub fn resolve(_project_root: &Path, settings: &GlobalSettings, auth: &AuthStore) -> Self {
         let fallback = crate::harness::provider::catalog::find_provider("opencode-go")
             .unwrap_or_else(Self::opencode_go_fallback);
         let mut cfg = RuntimeConfig::defaults();
 
-        // 1. Provider/model: catalog <- global settings <- project config.
+        // 1. Provider/model: catalog defaults <- global settings.
         if !settings.provider.is_empty() {
             cfg.provider = settings.provider.clone();
         }
         if !settings.model.is_empty() {
             cfg.model = settings.model.clone();
         }
-        let proj = crate::harness::project::config_file::ProjectConfig::load_from(
-            &crate::harness::project::config_file::ProjectConfig::path(project_root),
-        )
-        .unwrap_or_default();
-        if !proj.is_empty() {
-            if !proj.provider.is_empty() {
-                cfg.provider = proj.provider;
-            }
-            if !proj.model.is_empty() {
-                cfg.model = proj.model;
-            }
-        }
-        let proj_base_url = proj.base_url.clone();
 
-        // 2. base_url follows the *final* provider: project > global (only
-        //    when it matches the resolved provider) > catalog default.
-        cfg.base_url = if !proj_base_url.is_empty() {
-            proj_base_url
-        } else if !settings.base_url.is_empty() && cfg.provider == settings.provider {
+        // 2. base_url follows the *final* provider: global (when it matches
+        //    the resolved provider) > catalog default.
+        cfg.base_url = if !settings.base_url.is_empty() && cfg.provider == settings.provider {
             settings.base_url.clone()
         } else {
             crate::harness::provider::catalog::default_base_url(&cfg.provider)
@@ -199,6 +239,9 @@ impl RuntimeConfig {
         }
         if settings.turn_timeout_secs != 0 {
             cfg.turn_timeout_secs = settings.turn_timeout_secs;
+        }
+        if settings.daily_budget_usd != 0.0 {
+            cfg.daily_budget_usd = settings.daily_budget_usd;
         }
 
         // 4. Token from the global auth store for the resolved provider.
@@ -256,12 +299,18 @@ mod tests {
     }
 
     #[test]
-    fn test_project_config_wins_over_global() {
+    fn test_project_file_does_not_override_model_provider() {
+        // A legacy rustclaw.json carrying provider/model must be ignored: the
+        // project no longer influences provider/model/base_url (global only).
         let d = dir();
-        let mut proj = crate::harness::project::config_file::ProjectConfig::default();
-        proj.provider = "openrouter".into();
-        proj.model = "z-ai/glm-4.6".into();
-        proj.save(d.path()).unwrap();
+        // Write a legacy rustclaw.json with the old fields as raw JSON (the
+        // current ProjectConfig struct no longer parses them, so we write the
+        // file directly to simulate a stale project config).
+        std::fs::write(
+            d.path().join("rustclaw.json"),
+            r#"{"provider":"openrouter","model":"z-ai/glm-4.6","base_url":"https://openrouter.ai/api/v1"}"#,
+        )
+        .unwrap();
 
         let s = GlobalSettings {
             provider: "deepinfra".into(),
@@ -269,9 +318,9 @@ mod tests {
             ..Default::default()
         };
         let cfg = RuntimeConfig::resolve(d.path(), &s, &AuthStore::default());
-        assert_eq!(cfg.provider, "openrouter");
-        assert_eq!(cfg.model, "z-ai/glm-4.6");
-        assert_eq!(cfg.base_url, "https://openrouter.ai/api/v1");
+        assert_eq!(cfg.provider, "deepinfra");
+        assert_eq!(cfg.model, "zai-org/GLM-5.3");
+        assert_eq!(cfg.base_url, "https://api.deepinfra.com/v1/openai");
     }
 
     #[test]
@@ -289,6 +338,19 @@ mod tests {
     }
 
     #[test]
+    fn test_corrupt_config_is_backed_up() {
+        let d = dir();
+        let p = d.path().join("config.json");
+        std::fs::write(&p, "not json at all").unwrap();
+        let err = GlobalSettings::load_from(&p).unwrap_err();
+        assert!(err.to_string().contains("backed up"), "err: {err}");
+        let bak = p.with_extension("json.bak");
+        assert!(bak.exists(), ".bak should exist");
+        assert!(!p.exists(), "original should be moved to .bak");
+        assert_eq!(std::fs::read_to_string(&bak).unwrap(), "not json at all");
+    }
+
+    #[test]
     fn test_unified_defaults_are_single_source_of_truth() {
         // D6: the runtime and `/settings` must agree on the same limits. The
         // defaults live in exactly one place (`RuntimeConfig::defaults`) and
@@ -298,7 +360,7 @@ mod tests {
             RuntimeConfig::resolve(d.path(), &GlobalSettings::default(), &AuthStore::default());
         assert_eq!(cfg.max_iterations, 50);
         assert_eq!(cfg.max_context_tokens, 100_000);
-        assert_eq!(cfg.turn_timeout_secs, 600);
+        assert_eq!(cfg.turn_timeout_secs, 1200);
         assert_eq!(cfg.default_agent, "build");
     }
 

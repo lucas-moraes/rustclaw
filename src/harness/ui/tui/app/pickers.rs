@@ -65,7 +65,7 @@ pub(crate) fn handle_settings_command(app: &mut App, text: &str) {
         }
         Some("turn_timeout") => {
             let Some(n) = parts.next().and_then(|v| v.parse::<u64>().ok()) else {
-                app.add_system("usage: /settings turn_timeout <secs> (e.g. 600)");
+                app.add_system("usage: /settings turn_timeout <secs> (e.g. 1200)");
                 return;
             };
             match app.runtime.update_settings(None, None, Some(n)) {
@@ -186,6 +186,7 @@ pub(crate) fn handle_model_picker_key(app: &mut App, key: KeyEvent) -> Result<bo
                             vec![default_model.clone()]
                         },
                         removed: false,
+                        prompt_cache: None,
                     });
                     match store.save() {
                         Ok(()) => {

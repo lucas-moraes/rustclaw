@@ -143,6 +143,7 @@ pub const HELP: &str = "\
   Ctrl+Z     reset prompt input
   Del        delete char at cursor
   PgUp/PgDn  scroll transcript
+  x          expand/collapse thinking (reasoning) blocks
   Drag       select transcript text (auto-copy on release)
   Ctrl+C     copy selection · quit (no selection)
   Esc        (same: cancel in-flight action first)

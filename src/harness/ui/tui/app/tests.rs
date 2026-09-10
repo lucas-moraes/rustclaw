@@ -139,7 +139,7 @@ mod input_tests {
     #[test]
     fn test_subagent_events_routed_to_panel_not_transcript() {
         let mut app = App::inline_for_tests("");
-        let before = app.lines.len();
+        let _before = app.lines.len();
 
         // Parent: a `task` tool starts → opens a panel.
         app.apply_event(HarnessEvent::ToolStart {
@@ -190,7 +190,7 @@ mod input_tests {
             !app.lines.iter().any(|l| l.text.contains("child text")),
             "child events leaked into transcript"
         );
-        assert!(!app.streaming.is_some());
+        assert!(app.streaming.is_none());
 
         // Parent ToolEnd for `task` finalizes the panel with the summary.
         app.apply_event(HarnessEvent::ToolEnd {
@@ -278,5 +278,242 @@ mod code_block_tests {
             "text\n```python\nprint(1)\nprint(2)\n```\nmore",
         )]);
         assert_eq!(app.last_code_block().unwrap(), "print(1)\nprint(2)");
+    }
+}
+
+mod search_tests {
+    use super::*;
+    use crate::harness::ui::tui::app::search_lines;
+    use crate::harness::ui::tui::app::SearchState;
+
+    #[test]
+    fn test_search_lines_case_insensitive_substring() {
+        let lines = vec![
+            TranscriptLine {
+                kind: LineKind::User,
+                text: "Fix the Parser bug".into(),
+            },
+            TranscriptLine {
+                kind: LineKind::Assistant,
+                text: "done, parser updated".into(),
+            },
+            TranscriptLine {
+                kind: LineKind::System,
+                text: "unrelated".into(),
+            },
+        ];
+        assert_eq!(search_lines(&lines, "parser"), vec![0, 1]);
+        assert_eq!(search_lines(&lines, "PARSER"), vec![0, 1]);
+        assert_eq!(search_lines(&lines, "unrel"), vec![2]);
+        assert!(search_lines(&lines, "missing").is_empty());
+    }
+
+    #[test]
+    fn test_search_lines_empty_query_returns_empty() {
+        let lines = vec![TranscriptLine {
+            kind: LineKind::User,
+            text: "hello".into(),
+        }];
+        assert!(search_lines(&lines, "").is_empty());
+        assert!(search_lines(&lines, "   ").is_empty());
+    }
+
+    #[test]
+    fn test_search_state_refresh_and_navigation() {
+        let lines = vec![
+            TranscriptLine {
+                kind: LineKind::User,
+                text: "alpha".into(),
+            },
+            TranscriptLine {
+                kind: LineKind::Assistant,
+                text: "beta".into(),
+            },
+            TranscriptLine {
+                kind: LineKind::User,
+                text: "ALPHA again".into(),
+            },
+        ];
+        let mut st = SearchState::new();
+        st.push_char('a');
+        st.push_char('l');
+        st.refresh(&lines);
+        assert_eq!(st.matches, vec![0, 2]);
+        st.move_sel(1);
+        assert_eq!(st.current(), Some(2));
+        st.move_sel(1);
+        assert_eq!(st.current(), Some(0)); // wraps
+        st.backspace();
+        st.backspace();
+        st.refresh(&lines);
+        assert!(st.matches.is_empty());
+        assert_eq!(st.current(), None);
+    }
+
+    #[test]
+    fn test_search_state_no_matches_keeps_selected_zero() {
+        let lines = vec![TranscriptLine {
+            kind: LineKind::User,
+            text: "x".into(),
+        }];
+        let mut st = SearchState::new();
+        st.push_char('z');
+        st.refresh(&lines);
+        assert!(st.matches.is_empty());
+        assert_eq!(st.selected, 0);
+    }
+}
+
+mod thinking_tests {
+    use super::*;
+    use crate::harness::ui::tui::transcript::{collapse_thinking, THINKING_COLLAPSED_MARKER};
+
+    fn reasoning(text: &str) -> TranscriptLine {
+        TranscriptLine {
+            kind: LineKind::Reasoning,
+            text: text.to_string(),
+        }
+    }
+
+    fn text(text: &str) -> TranscriptLine {
+        TranscriptLine {
+            kind: LineKind::Assistant,
+            text: text.to_string(),
+        }
+    }
+
+    #[test]
+    fn test_collapse_thinking_collapsed_shows_one_line_with_counter() {
+        let lines = vec![
+            text("answer"),
+            reasoning("first thought"),
+            reasoning("second thought"),
+            text("done"),
+        ];
+        let out = collapse_thinking(&lines, false);
+        assert_eq!(out.len(), 3);
+        let summary = &out[1];
+        assert_eq!(summary.kind, LineKind::Reasoning);
+        assert!(summary.text.contains("first thought"));
+        assert!(summary.text.contains("27 chars thinking"));
+        assert!(summary.text.contains(THINKING_COLLAPSED_MARKER));
+    }
+
+    #[test]
+    fn test_collapse_thinking_expanded_keeps_all_lines() {
+        let lines = vec![reasoning("a"), reasoning("b"), text("c")];
+        let out = collapse_thinking(&lines, true);
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0].text, "a");
+        assert_eq!(out[1].text, "b");
+    }
+
+    #[test]
+    fn test_collapse_thinking_truncates_long_preview() {
+        let long = "x".repeat(200);
+        let lines = vec![reasoning(&long)];
+        let out = collapse_thinking(&lines, false);
+        assert_eq!(out.len(), 1);
+        assert!(out[0].text.starts_with("xxxxxxxxxx"));
+        assert!(out[0].text.contains("200 chars thinking"));
+        assert!(out[0].text.contains('…'));
+    }
+
+    #[test]
+    fn test_collapse_thinking_preserves_non_reasoning() {
+        let lines = vec![text("a"), text("b")];
+        let out = collapse_thinking(&lines, false);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].text, "a");
+        assert_eq!(out[1].text, "b");
+    }
+
+    #[test]
+    fn test_collapse_thinking_separate_runs() {
+        let lines = vec![reasoning("one"), text("mid"), reasoning("two")];
+        let out = collapse_thinking(&lines, false);
+        assert_eq!(out.len(), 3);
+        assert!(out[0].text.contains("3 chars thinking"));
+        assert!(out[2].text.contains("3 chars thinking"));
+    }
+}
+
+mod modal_queue_tests {
+    use super::*;
+    use crate::harness::tool::context::PermissionAskInput;
+    use crate::harness::ui::tui::askers::{PermissionRequest, QuestionRequest};
+    use tokio::sync::oneshot;
+
+    fn perm_req() -> (PermissionRequest, oneshot::Receiver<bool>) {
+        let (tx, rx) = oneshot::channel();
+        let req = PermissionRequest {
+            input: PermissionAskInput {
+                tool: "bash".to_string(),
+                args_summary: "ls".to_string(),
+                path: None,
+            },
+            reply: tx,
+        };
+        (req, rx)
+    }
+
+    fn question_req() -> (QuestionRequest, oneshot::Receiver<Option<String>>) {
+        let (tx, rx) = oneshot::channel();
+        let req = QuestionRequest {
+            question: "pick one".to_string(),
+            options: vec!["a".to_string(), "b".to_string()],
+            reply: tx,
+        };
+        (req, rx)
+    }
+
+    #[test]
+    fn test_second_modal_queues_instead_of_overwriting() {
+        let mut app = App::inline_for_tests("");
+        let (p1, _rx1) = perm_req();
+        let (p2, _rx2) = perm_req();
+
+        app.enqueue_modal(Modal::Permission(p1));
+        assert!(app.modal.is_some());
+        assert!(app.modal_queue.is_empty());
+
+        // Second ask while a modal is open → queued, not dropped.
+        app.enqueue_modal(Modal::Permission(p2));
+        assert!(app.modal.is_some());
+        assert_eq!(app.modal_queue.len(), 1);
+
+        // Closing the current modal opens the queued one.
+        app.close_modal();
+        assert!(app.modal.is_some());
+        assert!(app.modal_queue.is_empty());
+    }
+
+    #[test]
+    fn test_question_and_permission_are_both_served() {
+        let mut app = App::inline_for_tests("");
+        let (p, _prx) = perm_req();
+        let (q, _qrx) = question_req();
+
+        app.enqueue_modal(Modal::Permission(p));
+        app.enqueue_modal(Modal::Question {
+            req: q,
+            draft: String::new(),
+            cursor: 0,
+        });
+        assert_eq!(app.modal_queue.len(), 1);
+
+        app.close_modal();
+        assert!(matches!(app.modal, Some(Modal::Question { .. })));
+        assert!(app.modal_queue.is_empty());
+    }
+
+    #[test]
+    fn test_close_modal_with_empty_queue_clears() {
+        let mut app = App::inline_for_tests("");
+        let (p, _rx) = perm_req();
+        app.enqueue_modal(Modal::Permission(p));
+        app.close_modal();
+        assert!(app.modal.is_none());
+        assert!(app.modal_queue.is_empty());
     }
 }

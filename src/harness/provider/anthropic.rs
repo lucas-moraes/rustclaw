@@ -2,19 +2,20 @@
 //! Used for opencode-go (MiniMax) and Anthropic-style endpoints.
 
 use super::{
-    AuthStyle, HttpConfig, LlmRequest, LlmResponse, Provider, ProviderEvent, ProviderStream,
-    SseParser, Usage,
+    AuthStyle, HttpConfig, LlmRequest, LlmResponse, Provider, ProviderEvent, ProviderStream, Usage,
 };
 use crate::harness::session::{Message, Part, Role, ToolPart};
 use anyhow::{anyhow, Context as AnyhowContext};
-use futures_util::StreamExt;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, VecDeque};
-use std::pin::Pin;
 
 pub struct AnthropicProvider {
     pub http: HttpConfig,
     pub auth: AuthStyle,
+    /// When true, marks system/tools/last message with `cache_control`
+    /// breakpoints (Anthropic prompt caching). MiniMax rejects them, so the
+    /// opencode-go router keeps this off by default.
+    pub prompt_cache: bool,
 }
 
 /// Converts harness messages to Anthropic `/messages` format.
@@ -33,9 +34,20 @@ pub fn to_anthropic_messages(messages: &[Message]) -> Vec<Value> {
                 }
             }
             Role::User => {
-                let text = msg.text_content();
-                if !text.is_empty() {
-                    out.push(json!({"role": "user", "content": [{"type": "text", "text": text}]}));
+                let mut content = Vec::new();
+                for part in &msg.parts {
+                    match part {
+                        Part::Text { text } if !text.is_empty() => {
+                            content.push(json!({"type": "text", "text": text}));
+                        }
+                        Part::Image { path } => {
+                            content.push(image_block_or_fallback(path));
+                        }
+                        _ => {}
+                    }
+                }
+                if !content.is_empty() {
+                    out.push(json!({"role": "user", "content": content}));
                 }
             }
             Role::Assistant => {
@@ -46,6 +58,7 @@ pub fn to_anthropic_messages(messages: &[Message]) -> Vec<Value> {
                             content.push(json!({"type": "text", "text": text}));
                         }
                         Part::Reasoning { .. } => {}
+                        Part::Image { .. } => {}
                         Part::Tool(t) => {
                             // Skip pending/running tool calls (no result yet).
                             if t.is_terminal() {
@@ -89,7 +102,26 @@ pub fn to_anthropic_messages(messages: &[Message]) -> Vec<Value> {
     out
 }
 
-fn build_request_body(req: &LlmRequest, stream: bool) -> Value {
+/// Converts a `Part::Image` into an Anthropic image content block. On read or
+/// extension errors, degrades to a text block so the request still goes out.
+fn image_block_or_fallback(path: &str) -> Value {
+    match crate::harness::session::image::load_image(path) {
+        Ok(img) => json!({
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": img.media_type,
+                "data": img.data,
+            }
+        }),
+        Err(reason) => json!({
+            "type": "text",
+            "text": crate::harness::session::image::image_fallback_text(path, &reason),
+        }),
+    }
+}
+
+fn build_request_body(req: &LlmRequest, stream: bool, prompt_cache: bool) -> Value {
     // The Anthropic Messages API requires max_tokens; we cannot omit it, so
     // fall back to a conservative default when the request doesn't set one.
     const DEFAULT_MAX_TOKENS: usize = 4096;
@@ -98,21 +130,58 @@ fn build_request_body(req: &LlmRequest, stream: bool) -> Value {
         "max_tokens": req.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS),
         "temperature": req.temperature,
         "stream": stream,
-        "messages": to_anthropic_messages(&req.messages),
+        "messages": to_anthropic_messages(&req.messages[..]),
     });
     if !req.system.trim().is_empty() {
-        body["system"] = json!(req.system);
+        if prompt_cache {
+            // Breakpoint 1: system prompt (stable prefix).
+            body["system"] = json!([{
+                "type": "text",
+                "text": req.system,
+                "cache_control": {"type": "ephemeral"},
+            }]);
+        } else {
+            body["system"] = json!(req.system);
+        }
     }
     if !req.tools.is_empty() {
-        body["tools"] = json!(req
+        let mut tools: Vec<Value> = req
             .tools
             .iter()
-            .map(|t| json!({
-                "name": t.name,
-                "description": t.description,
-                "input_schema": t.parameters,
-            }))
-            .collect::<Vec<_>>());
+            .map(|t| {
+                json!({
+                    "name": t.name,
+                    "description": t.description,
+                    "input_schema": t.parameters,
+                })
+            })
+            .collect();
+        if prompt_cache {
+            // Breakpoint 2: last tool definition (tool list is stable).
+            tools.last_mut().unwrap()["cache_control"] = json!({"type": "ephemeral"});
+        }
+        body["tools"] = json!(tools);
+    }
+    if prompt_cache {
+        // Breakpoint 3: last content block of the last message (grows with
+        // the conversation; the prefix up to it gets cached).
+        if let Some(last) = body["messages"].as_array_mut().and_then(|m| m.last_mut()) {
+            if last["content"].is_array() {
+                if let Some(blocks) = last["content"].as_array_mut() {
+                    if let Some(block) = blocks.last_mut() {
+                        block["cache_control"] = json!({"type": "ephemeral"});
+                    }
+                }
+            } else {
+                // content is a string → convert to a 1-block text array.
+                let text = last["content"].as_str().unwrap_or_default().to_string();
+                last["content"] = json!([{
+                    "type": "text",
+                    "text": text,
+                    "cache_control": {"type": "ephemeral"},
+                }]);
+            }
+        }
     }
     body
 }
@@ -166,10 +235,6 @@ pub fn parse_response(json: &Value) -> anyhow::Result<(Vec<Part>, Option<Usage>,
 
 /// State machine for the Anthropic SSE stream.
 struct AnthropicStreamState {
-    bytes: Pin<Box<dyn futures_util::Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Send>>,
-    parser: SseParser,
-    /// pending events queue
-    pending: VecDeque<ProviderEvent>,
     /// index -> (block_type, tool_id, tool_name, json buffer)
     blocks: BTreeMap<u64, (String, String, String, String)>,
     input_tokens: u64,
@@ -177,20 +242,16 @@ struct AnthropicStreamState {
     cache_read_tokens: u64,
     cache_write_tokens: u64,
     stop_reason: Option<String>,
-    /// message_stop/[DONE] received (data complete).
-    finished: bool,
-    /// Terminal End event emitted (stream terminates after this).
-    end_emitted: bool,
 }
 
 impl AnthropicStreamState {
-    fn handle_event(&mut self, data: &str) {
+    fn handle_event(&mut self, data: &str, out: &mut VecDeque<ProviderEvent>) -> super::SseAction {
         if data.trim() == "[DONE]" {
-            self.finished = true;
-            return;
+            return super::SseAction::Finish;
         }
         let Ok(json) = serde_json::from_str::<Value>(data) else {
-            return;
+            tracing::warn!("malformed SSE payload: {:.200}", data);
+            return super::SseAction::Continue;
         };
         match json["type"].as_str() {
             Some("message_start") => {
@@ -207,7 +268,7 @@ impl AnthropicStreamState {
                 let id = block["id"].as_str().unwrap_or_default().to_string();
                 let name = block["name"].as_str().unwrap_or_default().to_string();
                 if btype == "tool_use" {
-                    self.pending.push_back(ProviderEvent::ToolCallStart {
+                    out.push_back(ProviderEvent::ToolCallStart {
                         id: id.clone(),
                         name: name.clone(),
                     });
@@ -220,15 +281,13 @@ impl AnthropicStreamState {
                     "text_delta" => {
                         let text = delta["text"].as_str().unwrap_or("");
                         if !text.is_empty() {
-                            self.pending
-                                .push_back(ProviderEvent::TextDelta(text.to_string()));
+                            out.push_back(ProviderEvent::TextDelta(text.to_string()));
                         }
                     }
                     "thinking_delta" => {
                         let text = delta["thinking"].as_str().unwrap_or("");
                         if !text.is_empty() {
-                            self.pending
-                                .push_back(ProviderEvent::ReasoningDelta(text.to_string()));
+                            out.push_back(ProviderEvent::ReasoningDelta(text.to_string()));
                         }
                     }
                     "input_json_delta" => {
@@ -249,8 +308,7 @@ impl AnthropicStreamState {
                         } else {
                             buf
                         };
-                        self.pending
-                            .push_back(ProviderEvent::ToolCallEnd { id, arguments });
+                        out.push_back(ProviderEvent::ToolCallEnd { id, arguments });
                     }
                 }
             }
@@ -261,69 +319,42 @@ impl AnthropicStreamState {
                 self.output_tokens = json["usage"]["output_tokens"].as_u64().unwrap_or(0);
             }
             Some("message_stop") => {
-                self.finished = true;
+                return super::SseAction::Finish;
             }
             _ => {}
+        }
+        super::SseAction::Continue
+    }
+}
+
+impl super::SseHandler for AnthropicStreamState {
+    fn handle_event(&mut self, data: &str, out: &mut VecDeque<ProviderEvent>) -> super::SseAction {
+        AnthropicStreamState::handle_event(self, data, out)
+    }
+
+    fn end_event(&self) -> ProviderEvent {
+        ProviderEvent::End {
+            stop_reason: self.stop_reason.clone(),
+            usage: Some(Usage {
+                input_tokens: self.input_tokens,
+                output_tokens: self.output_tokens,
+                cache_read_tokens: self.cache_read_tokens,
+                cache_write_tokens: self.cache_write_tokens,
+            }),
         }
     }
 }
 
 fn response_to_events(response: reqwest::Response) -> ProviderStream {
     let state = AnthropicStreamState {
-        bytes: Box::pin(response.bytes_stream()),
-        parser: SseParser::new(),
-        pending: VecDeque::new(),
         blocks: BTreeMap::new(),
         input_tokens: 0,
         output_tokens: 0,
         cache_read_tokens: 0,
         cache_write_tokens: 0,
         stop_reason: None,
-        finished: false,
-        end_emitted: false,
     };
-
-    Box::pin(futures_util::stream::unfold(state, |mut st| async move {
-        loop {
-            if let Some(ev) = st.pending.pop_front() {
-                return Some((Ok(ev), st));
-            }
-            if st.end_emitted {
-                return None;
-            }
-            if !st.finished {
-                match st.bytes.next().await {
-                    Some(Ok(chunk)) => {
-                        for data in st.parser.push(&chunk) {
-                            st.handle_event(&data);
-                        }
-                        continue;
-                    }
-                    Some(Err(e)) => {
-                        return Some((Err(anyhow!("stream error: {}", e)), st));
-                    }
-                    None => {
-                        for data in st.parser.finish() {
-                            st.handle_event(&data);
-                        }
-                        st.finished = true;
-                        continue;
-                    }
-                }
-            }
-
-            st.end_emitted = true;
-            st.pending.push_back(ProviderEvent::End {
-                stop_reason: st.stop_reason.clone(),
-                usage: Some(Usage {
-                    input_tokens: st.input_tokens,
-                    output_tokens: st.output_tokens,
-                    cache_read_tokens: st.cache_read_tokens,
-                    cache_write_tokens: st.cache_write_tokens,
-                }),
-            });
-        }
-    }))
+    super::drive_sse_stream(Box::pin(response.bytes_stream()), state)
 }
 
 #[async_trait::async_trait]
@@ -334,7 +365,7 @@ impl Provider for AnthropicProvider {
 
     async fn stream(&self, req: &LlmRequest) -> anyhow::Result<ProviderStream> {
         let url = format!("{}/messages", self.http.base_url);
-        let body = build_request_body(req, true);
+        let body = build_request_body(req, true, self.prompt_cache);
 
         let response = self
             .http
@@ -365,7 +396,7 @@ impl Provider for AnthropicProvider {
 
     async fn complete(&self, req: &LlmRequest) -> anyhow::Result<LlmResponse> {
         let url = format!("{}/messages", self.http.base_url);
-        let body = build_request_body(req, false);
+        let body = build_request_body(req, false, self.prompt_cache);
 
         let response = self
             .http
@@ -403,6 +434,59 @@ impl Provider for AnthropicProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine as _;
+
+    #[test]
+    fn test_to_anthropic_messages_image() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pic.png");
+        std::fs::write(&path, [0x89, b'P', b'N', b'G']).unwrap();
+        let msgs = vec![Message::new(
+            Role::User,
+            vec![
+                Part::image(path.to_str().unwrap()),
+                Part::text("describe this image"),
+            ],
+        )];
+        let out = to_anthropic_messages(&msgs);
+        assert_eq!(out.len(), 1);
+        let blocks = out[0]["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0]["type"], "image");
+        assert_eq!(blocks[0]["source"]["type"], "base64");
+        assert_eq!(blocks[0]["source"]["media_type"], "image/png");
+        assert_eq!(
+            blocks[0]["source"]["data"],
+            base64::engine::general_purpose::STANDARD.encode([0x89, b'P', b'N', b'G'])
+        );
+        assert_eq!(blocks[1]["type"], "text");
+    }
+
+    #[test]
+    fn test_to_anthropic_messages_image_missing_file_degrades_to_text() {
+        let msgs = vec![Message::new(
+            Role::User,
+            vec![Part::image("/nonexistent/nope.png")],
+        )];
+        let out = to_anthropic_messages(&msgs);
+        let blocks = out[0]["content"].as_array().unwrap();
+        assert_eq!(blocks[0]["type"], "text");
+        assert!(
+            blocks[0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("[image: /nonexistent/nope.png"),
+            "must degrade to a text placeholder"
+        );
+    }
+
+    #[test]
+    fn test_to_anthropic_messages_image_unsupported_extension() {
+        let msgs = vec![Message::new(Role::User, vec![Part::image("notes.txt")])];
+        let out = to_anthropic_messages(&msgs);
+        let blocks = out[0]["content"].as_array().unwrap();
+        assert_eq!(blocks[0]["type"], "text");
+    }
 
     #[test]
     fn test_to_anthropic_messages_basic() {
@@ -500,24 +584,21 @@ mod tests {
     #[test]
     fn test_stream_state_parses_cache_usage_from_message_start() {
         let mut st = AnthropicStreamState {
-            bytes: Box::pin(futures_util::stream::empty()),
-            parser: SseParser::new(),
-            pending: VecDeque::new(),
             blocks: BTreeMap::new(),
             input_tokens: 0,
             output_tokens: 0,
             cache_read_tokens: 0,
             cache_write_tokens: 0,
             stop_reason: None,
-            finished: false,
-            end_emitted: false,
         };
+        let mut out = VecDeque::new();
         st.handle_event(
             r#"{"type":"message_start","message":{"usage":{
                 "input_tokens":50,
                 "cache_creation_input_tokens":100,
                 "cache_read_input_tokens":200
             }}}"#,
+            &mut out,
         );
         assert_eq!(st.input_tokens, 50);
         assert_eq!(st.cache_write_tokens, 100);
@@ -529,7 +610,7 @@ mod tests {
         let req = LlmRequest {
             model: "minimax".into(),
             system: "sys".into(),
-            messages: vec![Message::user("hi")],
+            messages: std::sync::Arc::new(vec![Message::user("hi")]),
             tools: vec![super::super::ToolSpec {
                 name: "bash".into(),
                 description: "shell".into(),
@@ -538,9 +619,108 @@ mod tests {
             max_tokens: Some(100),
             temperature: 0.5,
         };
-        let body = build_request_body(&req, true);
+        let body = build_request_body(&req, true, false);
         assert_eq!(body["system"], "sys");
         assert_eq!(body["tools"][0]["name"], "bash");
         assert_eq!(body["messages"][0]["role"], "user");
+    }
+
+    fn cache_control_count(v: &Value) -> usize {
+        match v {
+            Value::Object(map) => map
+                .iter()
+                .map(|(k, val)| {
+                    if k == "cache_control" {
+                        1
+                    } else {
+                        cache_control_count(val)
+                    }
+                })
+                .sum(),
+            Value::Array(items) => items.iter().map(cache_control_count).sum(),
+            _ => 0,
+        }
+    }
+
+    #[test]
+    fn test_build_request_body_cache_off_unchanged() {
+        let req = LlmRequest {
+            model: "claude".into(),
+            system: "sys".into(),
+            messages: std::sync::Arc::new(vec![Message::user("hi")]),
+            tools: vec![super::super::ToolSpec {
+                name: "bash".into(),
+                description: "shell".into(),
+                parameters: serde_json::json!({"type": "object"}),
+            }],
+            max_tokens: Some(100),
+            temperature: 0.5,
+        };
+        let body = build_request_body(&req, true, false);
+        assert_eq!(body["system"], "sys");
+        assert!(body["system"].is_string());
+        assert!(cache_control_count(&body) == 0);
+    }
+
+    #[test]
+    fn test_build_request_body_cache_breakpoints() {
+        use crate::harness::session::ToolStatus;
+        let mut tool = ToolPart::pending("tu1", "bash", serde_json::json!({"command": "ls"}));
+        tool.status = ToolStatus::Completed;
+        tool.output = "out".into();
+        let msgs = vec![
+            Message::user("run"),
+            Message::new(Role::Assistant, vec![Part::Tool(tool)]),
+        ];
+        let req = LlmRequest {
+            model: "claude".into(),
+            system: "sys".into(),
+            messages: std::sync::Arc::new(msgs),
+            tools: vec![
+                super::super::ToolSpec {
+                    name: "bash".into(),
+                    description: "shell".into(),
+                    parameters: serde_json::json!({"type": "object"}),
+                },
+                super::super::ToolSpec {
+                    name: "read".into(),
+                    description: "read".into(),
+                    parameters: serde_json::json!({"type": "object"}),
+                },
+            ],
+            max_tokens: Some(100),
+            temperature: 0.5,
+        };
+        let body = build_request_body(&req, true, true);
+        // Breakpoint 1: system is an array with cache_control.
+        assert!(body["system"].is_array());
+        assert_eq!(body["system"][0]["cache_control"]["type"], "ephemeral");
+        // Breakpoint 2: last tool marked, first not.
+        assert!(body["tools"][0]["cache_control"].is_null());
+        assert_eq!(body["tools"][1]["cache_control"]["type"], "ephemeral");
+        // Breakpoint 3: last block of the last message (tool_result) marked.
+        let last_msg = body["messages"].as_array().unwrap().last().unwrap();
+        let blocks = last_msg["content"].as_array().unwrap();
+        assert_eq!(blocks.last().unwrap()["cache_control"]["type"], "ephemeral");
+        // API limit: at most 4 breakpoints; we use 3.
+        assert_eq!(cache_control_count(&body), 3);
+    }
+
+    #[test]
+    fn test_build_request_body_cache_string_content_converted() {
+        let req = LlmRequest {
+            model: "claude".into(),
+            system: "sys".into(),
+            messages: std::sync::Arc::new(vec![Message::user("hi")]),
+            tools: vec![],
+            max_tokens: Some(100),
+            temperature: 0.5,
+        };
+        let body = build_request_body(&req, false, true);
+        let last_msg = body["messages"].as_array().unwrap().last().unwrap();
+        assert!(last_msg["content"].is_array());
+        assert_eq!(last_msg["content"][0]["type"], "text");
+        assert_eq!(last_msg["content"][0]["cache_control"]["type"], "ephemeral");
+        assert_eq!(cache_control_count(&body), 2); // system + message
     }
 }

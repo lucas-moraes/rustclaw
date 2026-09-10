@@ -53,9 +53,10 @@ técnicos ou resoluções de erros de compilação."
             .build()
             .map_err(|e| format!("failed to build HTTP client: {}", e))?;
 
+        let url = reqwest::Url::parse_with_params(DDG_ENDPOINT, &[("q", query)])
+            .map_err(|e| format!("failed to build search URL: {}", e))?;
         let resp = client
-            .get(DDG_ENDPOINT)
-            .query(&[("q", query)])
+            .get(url)
             .send()
             .await
             .map_err(|e| format!("web search request failed: {}", e))?;
@@ -180,6 +181,11 @@ mod tests {
             task_runner: None,
             events: crate::harness::event::event_channel().0,
             project_memory: None,
+            hooks: Default::default(),
+            checkpoints: std::sync::Arc::new(
+                crate::harness::tool::checkpoint::FileCheckpoints::new(),
+            ),
+            jobs: std::sync::Arc::new(crate::harness::tool::jobs::JobRegistry::new()),
         }
     }
 

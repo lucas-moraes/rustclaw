@@ -95,6 +95,12 @@ pub struct ToolContext {
     pub events: EventSender,
     /// Project memory store (SQLite) used by the `remember` tool.
     pub project_memory: Option<Arc<ProjectMemoryStore>>,
+    /// File checkpoints (pre-agent snapshots) powering `/diff` and `/restore`.
+    pub checkpoints: Arc<crate::harness::tool::checkpoint::FileCheckpoints>,
+    /// Project hooks (pre_tool/post_tool/on_turn_end) from rustclaw.json.
+    pub hooks: crate::harness::hooks::HooksConfig,
+    /// Shared registry of background bash jobs (`bash --background`, `/jobs`).
+    pub jobs: Arc<crate::harness::tool::jobs::JobRegistry>,
 }
 
 /// Working directory guard: all path resolution goes through this.

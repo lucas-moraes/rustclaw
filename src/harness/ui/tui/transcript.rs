@@ -24,6 +24,53 @@ pub struct TranscriptLine {
     pub text: String,
 }
 
+/// Marker appended to the collapsed thinking summary line; the draw layer
+/// uses it to render the compact one-line panel instead of the full box.
+pub const THINKING_COLLAPSED_MARKER: &str = "— press x to expand)";
+
+/// Groups consecutive [`LineKind::Reasoning`] lines into a collapsible block.
+///
+/// When `expanded` is `false`, each run of consecutive reasoning lines is
+/// replaced by a single line: a truncated preview of the first line plus a
+/// char counter and the expand hint. When `true`, all lines are kept as-is.
+/// Non-reasoning lines are always preserved.
+pub fn collapse_thinking(lines: &[TranscriptLine], expanded: bool) -> Vec<TranscriptLine> {
+    if expanded {
+        return lines.to_vec();
+    }
+    let mut out: Vec<TranscriptLine> = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        if lines[i].kind != LineKind::Reasoning {
+            out.push(lines[i].clone());
+            i += 1;
+            continue;
+        }
+        // Find the end of the consecutive reasoning run.
+        let start = i;
+        let mut total_chars = 0usize;
+        while i < lines.len() && lines[i].kind == LineKind::Reasoning {
+            total_chars += lines[i].text.chars().count();
+            i += 1;
+        }
+        let first = &lines[start].text;
+        let preview: String = first.chars().take(80).collect();
+        let ellipsis = if first.chars().count() > 80 {
+            "…"
+        } else {
+            ""
+        };
+        out.push(TranscriptLine {
+            kind: LineKind::Reasoning,
+            text: format!(
+                "{}{} ({} chars thinking — {}",
+                preview, ellipsis, total_chars, THINKING_COLLAPSED_MARKER
+            ),
+        });
+    }
+    out
+}
+
 #[derive(Clone, Debug)]
 pub struct ActiveTool {
     pub name: String,

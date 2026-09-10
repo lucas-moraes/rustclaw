@@ -1,9 +1,15 @@
 //! Shared slash-command handling for both the TUI and CLI surfaces.
 
+pub mod apply_plan;
+pub mod export;
 pub mod memory;
+pub mod replay;
+pub(crate) mod permissions_cmd;
+pub(crate) mod provider_cmd;
+pub(crate) mod session_cmd;
 
 use crate::harness::runtime::SessionRuntime;
-use crate::harness::session::Session;
+use crate::harness::session::{Message, Role, Session};
 use anyhow::Result;
 
 /// Processes a slash command (line starts with `/`).
@@ -15,15 +21,6 @@ pub enum CommandOutcome {
     Continue(Vec<String>),
     /// User requested to exit the session.
     Exit,
-}
-
-/// Human-readable label for a permission rule.
-fn rule_label(rule: crate::harness::permission::Rule) -> &'static str {
-    match rule {
-        crate::harness::permission::Rule::Allow => "allow",
-        crate::harness::permission::Rule::Ask => "ask",
-        crate::harness::permission::Rule::Deny => "deny",
-    }
 }
 
 /// Dispatches a slash command. `runtime` is mutable so commands may switch
@@ -45,7 +42,7 @@ pub async fn handle(
                 "commands: /help /new /sessions /agent <name> /skills \
                   /compact /theme [name] /usage /memory /models /model <name> \
                   /provider <name> /provider add|rm|list /auth <provider> /settings \
-                  /undo /permissions /allow-all-permissions /mcp /exit"
+                  /undo /diff /restore /fork [N] /apply-plan /image <path> /permissions /allow-all-permissions /mcp /jobs /record on|off|status /replay <file> /exit"
                     .to_string(),
             );
             out.push("keys: Ctrl+P palette · Ctrl+T theme · ? help · Ctrl+L clear".to_string());
@@ -110,327 +107,100 @@ pub async fn handle(
             out.push(format!("context · ~{} / {} tokens ({}%)", ctx, max, pct));
             out.push("full usage breakdown is shown in the TUI status bar".to_string());
         }
-        "/new" => {
-            *session = runtime
-                .create_session(&runtime.config.default_agent)
-                .await?;
-            out.push(format!(
-                "new session: {} (agent: {})",
-                session.id, session.agent
-            ));
+        "/new" | "/sessions" | "/agent" | "/skills" | "/compact" => {
+            session_cmd::handle_session_cmd(runtime, session, cmd, arg, &mut out).await?;
         }
-        "/sessions" => {
-            let sub = arg.split_whitespace().next().unwrap_or("");
-            if sub.is_empty() {
-                for s in runtime.list_sessions()? {
-                    let label = s.title.clone().unwrap_or_else(|| s.preview.clone());
-                    let marker = if s.parent_id.is_some() { "↳ " } else { "" };
-                    out.push(format!(
-                        "{}{}  [{}]  {} msgs — {}",
-                        marker, s.id, s.agent, s.message_count, label
-                    ));
-                }
-                if out.is_empty() {
-                    out.push("no sessions yet".to_string());
-                }
-                out.push(
-                    "usage: /sessions delete <id> · rename <id> <title> · select <id>".to_string(),
-                );
-            } else {
-                let rest = arg.split_whitespace().collect::<Vec<_>>();
-                match (sub, rest.get(1).copied()) {
-                    ("delete", Some(id)) => match runtime.delete_session(id) {
-                        Ok(()) => out.push(format!("deleted session {}", id)),
-                        Err(e) => out.push(format!("[error] {}", e)),
-                    },
-                    ("rename", Some(id)) => {
-                        let title = arg.split_whitespace().skip(2).collect::<Vec<_>>().join(" ");
-                        if title.is_empty() {
-                            out.push("usage: /sessions rename <id> <title>".to_string());
-                        } else if let Err(e) = runtime.set_session_title(id, &title) {
-                            out.push(format!("[error] {}", e));
-                        } else {
-                            if session.id == id {
-                                session.title = Some(title.clone());
-                            }
-                            out.push(format!("renamed session {} → {}", id, title));
-                        }
-                    }
-                    ("select", Some(id)) => match runtime.load_session(id)? {
-                        Some(mut loaded) => {
-                            let note = if runtime.config.is_configured() {
-                                match runtime.maybe_compact(&mut loaded, false, None).await {
-                                    Ok(n) if n > 0 => {
-                                        format!(" · auto-compacted {n} message(s)")
-                                    }
-                                    Ok(_) => String::new(),
-                                    Err(e) => format!(" · auto-compact failed: {e}"),
-                                }
-                            } else {
-                                String::new()
-                            };
-                            *session = loaded;
-                            out.push(format!(
-                                "selected session {} ({}){note}",
-                                session.id, session.agent
-                            ));
-                        }
-                        None => out.push(format!("session not found: {}", id)),
-                    },
-                    _ => {
-                        out.push(
-                            "usage: /sessions [delete <id>|rename <id> <title>|select <id>]"
-                                .to_string(),
-                        );
-                    }
-                }
-            }
-        }
-        "/agent" => {
-            if arg.is_empty() {
-                out.push(format!("current agent: {}", session.agent));
-                out.push("available: build, plan, explore, general, chat-free".to_string());
-            } else {
-                let spec = runtime.resolve_agent(arg);
-                session.agent = spec.name.clone();
-                out.push(format!("agent -> {}", spec.name));
-            }
-        }
-        "/skills" => {
-            if runtime.skills.skills.is_empty() {
-                out.push("no skills discovered (look for .agents/skills/SKILL.md or RUSTCLAW_SKILLS_DIR)".to_string());
-            } else {
-                let current: Vec<String> =
-                    session.skills.iter().map(|s| s.skill_id.clone()).collect();
-                out.push(format!(
-                    "session skills ({}): {}",
-                    current.len(),
-                    if current.is_empty() {
-                        "none".to_string()
-                    } else {
-                        current.join(", ")
-                    }
-                ));
-                out.push(format!("available: {}", runtime.skills.names().join(", ")));
-            }
-        }
-        "/compact" => match runtime.maybe_compact(session, true, None).await {
-            Ok(0) => out.push("nothing to compact".to_string()),
-            Ok(n) => out.push(format!("compacted {} message(s)", n)),
-            Err(e) => out.push(format!("[error] compact failed: {e}")),
-        },
         "/memory" => {
             let args: Vec<&str> = arg.split_whitespace().collect();
             out.push(memory::handle_memory_command(runtime, &args)?);
         }
-        "/models" => {
-            use crate::harness::provider::catalog;
-            use crate::harness::provider::user_store::UserProviders;
-            let mut parts = arg.split_whitespace();
-            let sub = parts.next().unwrap_or("");
-            match sub {
-                "" => {
-                    out.push(format!(
-                        "current: provider `{}` · model `{}`",
-                        runtime.config.provider, runtime.config.model
-                    ));
-                    out.push(format!(
-                        "providers: {} · usage: /models <provider> · /models add <provider> <model>",
-                        catalog::provider_names().join(", ")
-                    ));
-                }
-                "add" => {
-                    let provider = parts.next().unwrap_or("");
-                    let model = parts.next().unwrap_or("");
-                    if provider.is_empty() || model.is_empty() {
-                        out.push("usage: /models add <provider> <model>".to_string());
-                    } else {
-                        let mut store = UserProviders::load();
-                        if store.add_model_anywhere(provider, model) {
-                            match store.save() {
-                                Ok(()) => out.push(format!(
-                                    "model `{}` added to provider `{}`",
-                                    model, provider
-                                )),
-                                Err(e) => out.push(format!("[error] {}", e)),
-                            }
-                        } else {
-                            out.push(format!("unknown provider: `{}`", provider));
-                        }
-                    }
-                }
-                _ => {
-                    let models = catalog::models_for(sub);
-                    if models.is_empty() {
-                        out.push(format!("unknown provider: {}", sub));
-                    } else {
-                        out.push(format!("models for {} ({}):", sub, models.len()));
-                        for m in models {
-                            out.push(format!("  {}", m));
-                        }
-                        out.push("switch with /provider <name> or /model <name>".to_string());
-                    }
-                }
-            }
-        }
-        "/model" => {
+        "/apply-plan" => match apply_plan::handle_apply_plan_command(runtime, session) {
+            Ok(lines) => out.extend(lines),
+            Err(e) => out.push(format!("[error] apply-plan failed: {e:#}")),
+        },
+        "/image" => {
             if arg.is_empty() {
-                out.push(format!(
-                    "current model: {} (provider {}) · usage: /model <name>",
-                    runtime.config.model, runtime.config.provider
-                ));
+                out.push(
+                    "usage: /image <path> — attach an image (png/jpeg/gif/webp) \
+                          to the next prompt"
+                        .to_string(),
+                );
             } else {
-                let provider = runtime.config.provider.clone();
-                runtime.switch_model(&provider, arg)?;
-                out.push(format!("model → {} ({})", arg, runtime.provider.name()));
-                out.push("selection saved to rustclaw.json (this project)".to_string());
-                if !runtime.has_token_for(&provider) {
-                    out.push(format!(
-                        "no token for provider `{}` — use /auth {} to add one",
-                        provider, provider
-                    ));
-                }
-            }
-        }
-        "/provider" => {
-            use crate::harness::provider::catalog;
-            use crate::harness::provider::user_store::{UserProvider, UserProviders};
-            let mut parts = arg.split_whitespace();
-            let sub = parts.next().unwrap_or("");
-            match sub {
-                "" => {
-                    out.push(format!(
-                        "current provider: {} (model {}) · usage: /provider <name>",
-                        runtime.config.provider, runtime.config.model
-                    ));
-                    out.push(format!(
-                        "providers: {} · manage: /provider add|rm|list",
-                        catalog::provider_names().join(", ")
-                    ));
-                }
-                "add" => {
-                    let name = parts.next().unwrap_or("");
-                    let base_url = parts.next().unwrap_or("");
-                    let default_model = parts.next().unwrap_or("");
-                    if name.is_empty() || base_url.is_empty() {
-                        out.push(
-                            "usage: /provider add <name> <base_url> [default_model]".to_string(),
+                match crate::harness::session::image::load_image(arg) {
+                    Ok(_) => {
+                        let msg = Message::new(
+                            Role::User,
+                            vec![
+                                crate::harness::session::Part::image(arg.to_string()),
+                                crate::harness::session::Part::text("describe this image"),
+                            ],
                         );
-                    } else {
-                        let mut store = UserProviders::load();
-                        let replaced = store.upsert(UserProvider {
-                            name: name.to_string(),
-                            base_url: base_url.to_string(),
-                            default_model: default_model.to_string(),
-                            models: if default_model.is_empty() {
-                                Vec::new()
-                            } else {
-                                vec![default_model.to_string()]
-                            },
-                            removed: false,
-                        });
-                        match store.save() {
-                            Ok(()) => out.push(format!(
-                                "provider `{}` {} (providers.json)",
-                                name,
-                                if replaced { "updated" } else { "added" }
-                            )),
-                            Err(e) => out.push(format!("[error] {}", e)),
-                        }
-                    }
-                }
-                "rm" => {
-                    let name = parts.next().unwrap_or("");
-                    if name.is_empty() {
-                        out.push("usage: /provider rm <name>".to_string());
-                    } else {
-                        let mut store = UserProviders::load();
-                        if store.remove(name) {
-                            match store.save() {
-                                Ok(()) => out.push(format!("provider `{}` removed", name)),
-                                Err(e) => out.push(format!("[error] {}", e)),
-                            }
-                        } else {
-                            out.push(format!("no user provider named `{}`", name));
-                        }
-                    }
-                }
-                "list" => {
-                    let all = catalog::all_providers();
-                    out.push(format!("providers ({}):", all.len()));
-                    for p in all {
-                        let tag = if p.user_defined { " (custom)" } else { "" };
+                        runtime
+                            .store
+                            .save_message(&session.id, &session.cwd, &msg)?;
+                        session.push_message(msg);
                         out.push(format!(
-                            "  {}{} · {} · default `{}`",
-                            p.name, tag, p.base_url, p.default_model
+                            "image attached: {} — sent with your next prompt",
+                            arg
                         ));
                     }
-                }
-                _ => {
-                    if let Some(default_model) = catalog::default_model(sub) {
-                        runtime.switch_model(sub, &default_model)?;
-                        out.push(format!("provider → {} · model → {}", sub, default_model));
-                        out.push("selection saved to rustclaw.json (this project)".to_string());
-                        if !runtime.has_token_for(sub) {
-                            out.push(format!(
-                                "no token for provider `{}` — use /auth {} to add one",
-                                sub, sub
-                            ));
-                        }
-                    } else {
-                        out.push(format!(
-                            "unknown provider: {} (options: {})",
-                            sub,
-                            catalog::provider_names().join(", ")
-                        ));
-                    }
+                    Err(reason) => out.push(format!("[error] {}", reason)),
                 }
             }
         }
-        "/auth" => {
-            use crate::harness::auth::AuthStore;
-            // No argument → update the token for the current provider/model.
-            let provider = if arg.is_empty() {
-                runtime.config.provider.clone()
+        "/export" => match export::handle_export_command(runtime, session, arg) {
+            Ok(lines) => out.extend(lines),
+            Err(e) => out.push(format!("[error] export failed: {e:#}")),
+        },
+        "/diff" => {
+            let cp = &runtime.checkpoints;
+            let paths = if arg.is_empty() {
+                cp.list()
             } else {
-                arg.to_string()
+                vec![session.cwd.join(arg)]
             };
-            if provider.is_empty() {
-                let store = AuthStore::load();
-                let names = store.entries.keys().cloned().collect::<Vec<_>>();
-                out.push("usage: /auth <provider> — stored providers:".to_string());
-                if names.is_empty() {
-                    out.push("  (none)".to_string());
-                } else {
-                    out.push(format!("  {}", names.join(", ")));
-                }
-            } else {
-                // Prompt goes straight to stdout so it shows before blocking on input.
-                println!("paste the API key for `{}`: ", provider);
-                let key = tokio::task::spawn_blocking(|| -> String {
-                    let mut s = String::new();
-                    if std::io::stdin().read_line(&mut s).is_ok() {
-                        s.trim().to_string()
-                    } else {
-                        String::new()
+            if paths.is_empty() {
+                out.push("no file checkpoints yet (files change after write/edit)".to_string());
+            }
+            for path in paths {
+                match cp.diff_since_snapshot(&path) {
+                    Ok(diff) => {
+                        out.push(format!("diff {} (since snapshot):", path.display()));
+                        if diff.trim().is_empty() {
+                            out.push("  (no changes)".to_string());
+                        } else {
+                            for line in diff.lines() {
+                                out.push(format!("  {line}"));
+                            }
+                        }
                     }
-                })
-                .await
-                .unwrap_or_default();
-                if key.trim().is_empty() {
-                    out.push("empty token — auth cancelled".to_string());
-                } else {
-                    let mut store = AuthStore::load();
-                    store.set_key(&provider, key.trim());
-                    match store.save() {
-                        Ok(()) => out.push(format!(
-                            "token saved for `{}` (auth.json, chmod 600)",
-                            provider
-                        )),
-                        Err(e) => out.push(format!("[error] failed to save token: {}", e)),
-                    }
+                    Err(e) => out.push(format!("[error] {e:#}")),
                 }
             }
+        }
+        "/restore" => {
+            let cp = &runtime.checkpoints;
+            if arg.is_empty() {
+                let paths = cp.list();
+                if paths.is_empty() {
+                    out.push("no file checkpoints yet".to_string());
+                } else {
+                    out.push(format!("checkpointed files ({}):", paths.len()));
+                    for p in paths {
+                        out.push(format!("  {}", p.display()));
+                    }
+                    out.push("usage: /restore <path>".to_string());
+                }
+            } else {
+                let path = session.cwd.join(arg);
+                match cp.restore(&path) {
+                    Ok(msg) => out.push(msg),
+                    Err(e) => out.push(format!("[error] {e:#}")),
+                }
+            }
+        }
+        "/models" | "/model" | "/provider" | "/auth" => {
+            provider_cmd::handle_provider_cmd(runtime, cmd, arg, &mut out).await?;
         }
         "/mcp" => {
             let mut parts = arg.split_whitespace();
@@ -502,84 +272,9 @@ pub async fn handle(
                 },
             }
         }
-        "/permissions" => {
-            let mut parts = arg.split_whitespace();
-            let sub = parts.next().unwrap_or("");
-            match sub {
-                "" | "list" => {
-                    let rules = runtime.permission_rules();
-                    if rules.is_empty() {
-                        out.push("no per-tool permission rules (defaults apply)".to_string());
-                    } else {
-                        out.push(format!("permission rules ({}):", rules.len()));
-                        for (tool, rule) in rules {
-                            out.push(format!("  {} = {}", tool, rule_label(rule)));
-                        }
-                    }
-                    out.push(
-                        "usage: /permissions set <tool> <allow|ask|deny> · rm <tool>".to_string(),
-                    );
-                }
-                "set" => {
-                    let tool = parts.next().unwrap_or("");
-                    let rule = parts.next().unwrap_or("");
-                    if tool.is_empty() || rule.is_empty() {
-                        out.push("usage: /permissions set <tool> <allow|ask|deny>".to_string());
-                    } else {
-                        let parsed = match rule.to_lowercase().as_str() {
-                            "allow" | "a" => Some(crate::harness::permission::Rule::Allow),
-                            "ask" => Some(crate::harness::permission::Rule::Ask),
-                            "deny" | "d" => Some(crate::harness::permission::Rule::Deny),
-                            _ => None,
-                        };
-                        match parsed {
-                            Some(r) => match runtime.set_permission_rule(tool, r) {
-                                Ok(()) => out.push(format!(
-                                    "permission: {} = {} (saved to rustclaw.json)",
-                                    tool,
-                                    rule_label(r)
-                                )),
-                                Err(e) => out.push(format!("[error] {}", e)),
-                            },
-                            None => {
-                                out.push(format!("unknown rule: {} (allow · ask · deny)", rule))
-                            }
-                        }
-                    }
-                }
-                "rm" | "remove" => {
-                    let tool = parts.next().unwrap_or("");
-                    if tool.is_empty() {
-                        out.push("usage: /permissions rm <tool>".to_string());
-                    } else {
-                        match runtime.remove_permission_rule(tool) {
-                            Ok(true) => out.push(format!(
-                                "permission rule for `{}` removed (falls back to default)",
-                                tool
-                            )),
-                            Ok(false) => out.push(format!("no rule for tool `{}`", tool)),
-                            Err(e) => out.push(format!("[error] {}", e)),
-                        }
-                    }
-                }
-                _ => out.push(format!("unknown subcommand: {} (list · set · rm)", sub)),
-            }
+        "/permissions" | "/allow-all-permissions" => {
+            permissions_cmd::handle_permissions_cmd(runtime, cmd, arg, &mut out)?;
         }
-        "/allow-all-permissions" => match runtime.allow_all_permissions() {
-            Ok(()) => {
-                out.push(
-                    "✅ all permissions granted: the harness may modify any file inside \
-                         the project (saved to rustclaw.json)."
-                        .to_string(),
-                );
-                out.push(
-                    "Paths outside the project still require approval. Use \
-                         `/permissions rm <tool>` to revoke a specific tool."
-                        .to_string(),
-                );
-            }
-            Err(e) => out.push(format!("[error] {}", e)),
-        },
         "/undo" => {
             // Revert the last user prompt and everything after it (replies +
             // tool results). Reuses the same truncation the TUI's revert action
@@ -607,6 +302,136 @@ pub async fn handle(
                         }
                         Err(e) => out.push(format!("[error] failed to revert: {}", e)),
                     }
+                }
+            }
+        }
+        "/fork" => {
+            // Fork: copy messages 0..N (default: all) of the active session
+            // into a brand-new session, then switch to it (same mechanism as
+            // /sessions select).
+            let n = if arg.is_empty() {
+                None
+            } else {
+                match arg.parse::<usize>() {
+                    Ok(n) => Some(n),
+                    Err(_) => {
+                        out.push(
+                            "usage: /fork [N] — N must be a number of messages to copy".to_string(),
+                        );
+                        return Ok(CommandOutcome::Continue(out));
+                    }
+                }
+            };
+            if session.messages.is_empty() {
+                out.push("nothing to fork: this session has no messages".to_string());
+            } else {
+                let take = n
+                    .unwrap_or(session.messages.len())
+                    .min(session.messages.len());
+                let mut forked = runtime.store.create_session(&session.agent, &session.cwd)?;
+                forked.skills = session.skills.clone();
+                forked.title = session.title.clone();
+                for msg in &session.messages[..take] {
+                    // Message ids are globally unique (PRIMARY KEY), so the
+                    // fork gets fresh ids while preserving role/parts/time.
+                    let mut copy = msg.clone();
+                    copy.id = crate::harness::session::new_id();
+                    runtime.store.save_message(&forked.id, &forked.cwd, &copy)?;
+                    forked.push_message(copy);
+                }
+                runtime.store.save_session(&forked)?;
+                match runtime.load_session(&forked.id)? {
+                    Some(mut loaded) => {
+                        let note = if runtime.config.is_configured() {
+                            match runtime.maybe_compact(&mut loaded, false, None).await {
+                                Ok(n) if n > 0 => format!(" · auto-compacted {n} message(s)"),
+                                Ok(_) => String::new(),
+                                Err(e) => format!(" · auto-compact failed: {e}"),
+                            }
+                        } else {
+                            String::new()
+                        };
+                        *session = loaded;
+                        out.push(format!(
+                            "forked session {} → {} ({} message(s) copied){note}",
+                            session.id, forked.id, take
+                        ));
+                    }
+                    None => out.push(format!(
+                        "forked session {} ({} message(s) copied) — use /sessions select {}",
+                        forked.id, take, forked.id
+                    )),
+                }
+            }
+        }
+        "/record" => {
+            let mut parts = arg.split_whitespace();
+            match parts.next().unwrap_or("") {
+                "on" => {
+                    let path = replay::recording_path(&session.id);
+                    match runtime.event_recorder.start(path.clone()) {
+                        Ok(existing) => out.push(format!(
+                            "recording events → {} (append; {} line(s) already there)",
+                            path.display(),
+                            existing
+                        )),
+                        Err(e) => out.push(format!("[error] {e:#}")),
+                    }
+                }
+                "off" => match runtime.event_recorder.stop() {
+                    Some((path, n)) => out.push(format!(
+                        "recording stopped: {} event(s) → {}",
+                        n,
+                        path.display()
+                    )),
+                    None => out.push("not recording".to_string()),
+                },
+                "status" => match runtime.event_recorder.status() {
+                    Some((path, n)) => out.push(format!("recording: {} ({} event(s))", path, n)),
+                    None => out.push("not recording (use /record on)".to_string()),
+                },
+                _ => out.push("usage: /record on|off|status".to_string()),
+            }
+        }
+        "/replay" => {
+            if arg.is_empty() {
+                out.push(
+                    "usage: /replay <events.jsonl> — re-render a recorded event stream".to_string(),
+                );
+            } else {
+                let path = session.cwd.join(arg);
+                let path = if path.exists() {
+                    path
+                } else {
+                    std::path::PathBuf::from(arg)
+                };
+                match replay::read_events(&path) {
+                    Ok((events, skipped)) => {
+                        let mut rendered = 0usize;
+                        for ev in &events {
+                            for line in replay::render_event_lines(ev) {
+                                out.push(line);
+                            }
+                            if !matches!(
+                                ev,
+                                crate::harness::event::HarnessEvent::MessageUpdated { .. }
+                            ) {
+                                rendered += 1;
+                            }
+                        }
+                        let note = if skipped > 0 {
+                            format!(" · {} malformed line(s) skipped", skipped)
+                        } else {
+                            String::new()
+                        };
+                        out.push(format!(
+                            "replayed {} event(s) from {}{}",
+                            rendered,
+                            path.display(),
+                            note
+                        ));
+                    }
+                    Err(e) => out.push(format!("[error] {e:#}")),
                 }
             }
         }
@@ -646,7 +471,8 @@ mod tests {
             base_url: "https://api.deepinfra.com/v1/openai".to_string(),
             api_key: "sk-initial-test-key-123456".to_string(),
         };
-        let provider = crate::harness::provider::opencode_go::build_provider("deepinfra", http)?;
+        let provider =
+            crate::harness::provider::opencode_go::build_provider("deepinfra", http, false)?;
         let db = dir.join("test.db");
         SessionRuntime::new_in(
             dir,
@@ -768,7 +594,7 @@ mod tests {
         assert!(lines.iter().any(|l| l.contains("removed")));
 
         let proj = crate::harness::project::config_file::ProjectConfig::load(dir.path());
-        assert!(proj.permission.tools.get("bash").is_none());
+        assert!(!proj.permission.tools.contains_key("bash"));
     }
 
     #[tokio::test]
@@ -827,5 +653,86 @@ mod tests {
             panic!("expected Continue");
         };
         assert!(lines.iter().any(|l| l.contains("unknown rule")));
+    }
+
+    async fn seed_session(rt: &mut SessionRuntime, session: &mut Session, n: usize) {
+        for i in 0..n {
+            let m = Message::user(format!("prompt {i}"));
+            session.push_message(m.clone());
+            rt.store
+                .save_message(&session.id, &session.cwd, &m)
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn test_fork_copies_first_n_messages() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut rt = test_runtime(dir.path()).unwrap();
+        let mut session = rt.create_session("build").await.unwrap();
+        seed_session(&mut rt, &mut session, 5).await;
+
+        let original_id = session.id.clone();
+        let outcome = handle(&mut rt, &mut session, "/fork 3").await.unwrap();
+        let CommandOutcome::Continue(lines) = outcome else {
+            panic!("expected Continue");
+        };
+        assert!(lines.iter().any(|l| l.contains("3 message(s) copied")));
+
+        // Active session switched to the fork, with exactly 3 messages.
+        assert_ne!(session.id, original_id);
+        assert_eq!(session.messages.len(), 3);
+        assert_eq!(session.messages[0].parts[0].as_text(), Some("prompt 0"));
+        assert_eq!(session.messages[2].parts[0].as_text(), Some("prompt 2"));
+
+        // Original session intact with all 5 messages.
+        let original = rt
+            .store
+            .load_session(&original_id, &session.cwd)
+            .unwrap()
+            .unwrap();
+        assert_eq!(original.messages.len(), 5);
+    }
+
+    #[tokio::test]
+    async fn test_fork_default_copies_all_messages() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut rt = test_runtime(dir.path()).unwrap();
+        let mut session = rt.create_session("build").await.unwrap();
+        seed_session(&mut rt, &mut session, 5).await;
+
+        let outcome = handle(&mut rt, &mut session, "/fork").await.unwrap();
+        let CommandOutcome::Continue(lines) = outcome else {
+            panic!("expected Continue");
+        };
+        assert!(lines.iter().any(|l| l.contains("5 message(s) copied")));
+        assert_eq!(session.messages.len(), 5);
+    }
+
+    #[tokio::test]
+    async fn test_fork_empty_session_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut rt = test_runtime(dir.path()).unwrap();
+        let mut session = rt.create_session("build").await.unwrap();
+
+        let outcome = handle(&mut rt, &mut session, "/fork").await.unwrap();
+        let CommandOutcome::Continue(lines) = outcome else {
+            panic!("expected Continue");
+        };
+        assert!(lines.iter().any(|l| l.contains("nothing to fork")));
+    }
+
+    #[tokio::test]
+    async fn test_fork_invalid_n_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut rt = test_runtime(dir.path()).unwrap();
+        let mut session = rt.create_session("build").await.unwrap();
+        seed_session(&mut rt, &mut session, 2).await;
+
+        let outcome = handle(&mut rt, &mut session, "/fork abc").await.unwrap();
+        let CommandOutcome::Continue(lines) = outcome else {
+            panic!("expected Continue");
+        };
+        assert!(lines.iter().any(|l| l.contains("must be a number")));
     }
 }

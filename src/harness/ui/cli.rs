@@ -6,6 +6,7 @@ use crate::harness::permission::PermissionEngine;
 use crate::harness::runtime::SessionRuntime;
 use crate::harness::tool::context::{PermissionAskInput, PermissionAsker, UserAsker};
 use crate::harness::ui::commands;
+use crate::harness::ui::commands::replay::EventRecorder;
 use anyhow::Result;
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
@@ -83,11 +84,14 @@ fn blocking_read_line() -> Option<String> {
 /// Consumes events and renders them to the terminal.
 /// Events from subagent (child) sessions are prefixed with `[agent#n]` so the
 /// parent transcript stays readable.
-pub async fn print_events(mut rx: EventReceiver) {
+pub async fn print_events(mut rx: EventReceiver, recorder: Option<Arc<EventRecorder>>) {
     let mut streaming_text = false;
     let mut child_labels: std::collections::HashMap<String, String> = Default::default();
     let mut next_child = 1usize;
     while let Some(event) = rx.recv().await {
+        if let Some(rec) = &recorder {
+            rec.record(&event);
+        }
         // Child sessions: prefix + suppress text streaming (only tool activity).
         let child_prefix = match event.parent_session_id() {
             Some(_) => {
@@ -117,8 +121,16 @@ pub async fn print_events(mut rx: EventReceiver) {
                 print!("{}", delta);
                 flush_stdout();
             }
-            HarnessEvent::ReasoningDelta { .. } => {
-                // rendered faint; skip for the streaming CLI
+            HarnessEvent::ReasoningDelta { delta, .. } => {
+                // Rendered faint with a `· thinking:` prefix (one line per delta).
+                if !child_prefix.is_empty() {
+                    continue;
+                }
+                let text = delta.trim();
+                if !text.is_empty() {
+                    println!("{}· thinking: {}", child_prefix, text);
+                    flush_stdout();
+                }
             }
             HarnessEvent::MessageUpdated { .. } => {
                 if streaming_text {
@@ -181,9 +193,39 @@ pub async fn print_events(mut rx: EventReceiver) {
                 println!("\n{}[error] {}", child_prefix, message);
             }
             HarnessEvent::PermissionAsk { .. } | HarnessEvent::PermissionResolved { .. } => {}
-            HarnessEvent::RunStarted { .. }
-            | HarnessEvent::RunFinished { .. }
-            | HarnessEvent::UserMessage { .. } => {}
+            HarnessEvent::BudgetWarn { message, .. } => {
+                println!("\n[budget] {}", message);
+                flush_stdout();
+            }
+            HarnessEvent::RunStarted { .. } => {
+                if child_prefix.is_empty() {
+                    // Progress hint: the model may think for a while before the
+                    // first delta/tool arrives.
+                    print!("\nworking… ");
+                    flush_stdout();
+                }
+            }
+            HarnessEvent::RunFinished { .. } => {
+                if child_prefix.is_empty() {
+                    println!();
+                    flush_stdout();
+                }
+            }
+            HarnessEvent::UserMessage { .. } => {}
+            HarnessEvent::JobFinished {
+                job_id, exit_code, ..
+            } => {
+                println!(
+                    "\n{}[background job {} finished · exit {}] — /jobs {} for output",
+                    child_prefix,
+                    job_id,
+                    exit_code
+                        .map(|c| c.to_string())
+                        .unwrap_or_else(|| "signal".into()),
+                    job_id
+                );
+                flush_stdout();
+            }
         }
     }
 }
@@ -315,7 +357,8 @@ pub async fn run(config: crate::config::RuntimeConfig, cwd: std::path::PathBuf) 
         }
 
         let (tx, rx) = crate::harness::event::event_channel();
-        let printer = tokio::spawn(print_events(rx));
+        let recorder = runtime.event_recorder.clone();
+        let printer = tokio::spawn(print_events(rx, Some(recorder)));
 
         let result = runtime
             .prompt(

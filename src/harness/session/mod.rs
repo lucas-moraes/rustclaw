@@ -4,8 +4,11 @@
 //! them to/from OpenAI or Anthropic wire formats.
 
 pub mod compaction;
+pub mod doom_loop;
+pub mod image;
 pub mod processor;
 pub mod store;
+pub mod tool_exec;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -87,9 +90,18 @@ impl ToolPart {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Part {
-    Text { text: String },
-    Reasoning { text: String },
+    Text {
+        text: String,
+    },
+    Reasoning {
+        text: String,
+    },
     Tool(ToolPart),
+    /// Image attached by the user (`/image <path>`); converted to a vision
+    /// content block by providers that support it (Anthropic, OpenAI).
+    Image {
+        path: String,
+    },
 }
 
 impl Part {
@@ -102,6 +114,11 @@ impl Part {
             Part::Text { text } => Some(text),
             _ => None,
         }
+    }
+
+    #[allow(dead_code)] // in-progress /image feature; constructor not yet wired
+    pub fn image(path: impl Into<String>) -> Self {
+        Part::Image { path: path.into() }
     }
 }
 
@@ -248,6 +265,7 @@ pub fn approx_tokens(messages: &[Message]) -> usize {
                 Part::Tool(t) => {
                     chars += t.name.len() + t.output.len() + t.input.to_string().len();
                 }
+                Part::Image { .. } => {}
             }
         }
     }
@@ -300,6 +318,19 @@ pub fn preview(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_part_image_serde_roundtrip() {
+        let part = Part::image("/tmp/pic.png");
+        let json = serde_json::to_string(&part).unwrap();
+        assert!(json.contains("\"image\""), "json: {}", json);
+        assert!(json.contains("/tmp/pic.png"));
+        let back: Part = serde_json::from_str(&json).unwrap();
+        match back {
+            Part::Image { path } => assert_eq!(path, "/tmp/pic.png"),
+            _ => panic!("expected image part"),
+        }
+    }
 
     #[test]
     fn test_message_serialization_roundtrip() {
