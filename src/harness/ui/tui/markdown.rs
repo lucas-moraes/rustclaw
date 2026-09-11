@@ -11,6 +11,15 @@ pub fn render_text(text: &str, theme: &Theme, base: Style) -> Vec<Line<'static>>
     let mut in_fence = false;
     let mut fence_buf: Vec<String> = Vec::new();
     let mut fence_lang = String::new();
+    let mut table_buf: Vec<String> = Vec::new();
+
+    // Flush a buffered markdown table (if any) into styled lines.
+    let flush_table = |out: &mut Vec<Line<'static>>, buf: &mut Vec<String>| {
+        if !buf.is_empty() {
+            out.extend(table_lines(buf, theme));
+            buf.clear();
+        }
+    };
 
     for raw in text.lines() {
         let line = raw.to_string();
@@ -18,6 +27,7 @@ pub fn render_text(text: &str, theme: &Theme, base: Style) -> Vec<Line<'static>>
 
         // Code fence open/close.
         if trimmed.starts_with("```") {
+            flush_table(&mut out, &mut table_buf);
             if in_fence {
                 // Closing fence — flush the buffered code lines.
                 out.extend(fence_lines(&fence_buf, &fence_lang, theme, false));
@@ -36,6 +46,14 @@ pub fn render_text(text: &str, theme: &Theme, base: Style) -> Vec<Line<'static>>
             fence_buf.push(line);
             continue;
         }
+
+        // Markdown table: a line starting with `|` (or a separator row of
+        // dashes/pipes). Buffer consecutive table lines and render as a grid.
+        if is_table_line(&line) {
+            table_buf.push(line);
+            continue;
+        }
+        flush_table(&mut out, &mut table_buf);
 
         // Headers.
         if let Some(rest) = line.strip_prefix("### ") {
@@ -96,6 +114,9 @@ pub fn render_text(text: &str, theme: &Theme, base: Style) -> Vec<Line<'static>>
         out.push(Line::from(inline_spans(&line, theme, base)));
     }
 
+    // Flush any trailing table.
+    flush_table(&mut out, &mut table_buf);
+
     // Unclosed fence — flush what we have with a streaming hint.
     if in_fence {
         out.extend(fence_lines(&fence_buf, &fence_lang, theme, true));
@@ -104,6 +125,140 @@ pub fn render_text(text: &str, theme: &Theme, base: Style) -> Vec<Line<'static>>
     if out.is_empty() {
         out.push(Line::from(Span::styled(text.to_string(), base)));
     }
+    out
+}
+
+/// True if a line looks like a markdown table row: starts with `|` or is a
+/// separator row of dashes/pipes/colons.
+fn is_table_line(line: &str) -> bool {
+    let t = line.trim();
+    if t.starts_with('|') {
+        return true;
+    }
+    // Separator row like `|---|---|` or `| :--- | ---: |`.
+    if t.contains('|') && t.chars().all(|c| matches!(c, '|' | '-' | ':' | ' ')) {
+        return true;
+    }
+    false
+}
+
+/// Render a buffered markdown table as a styled grid with a header row.
+fn table_lines(buf: &[String], theme: &Theme) -> Vec<Line<'static>> {
+    // Parse rows into cells.
+    let mut rows: Vec<Vec<String>> = Vec::new();
+    let mut header: Option<Vec<String>> = None;
+    for raw in buf {
+        let t = raw.trim();
+        if !t.starts_with('|') {
+            continue; // not a table row
+        }
+        // Skip the separator row (e.g. `|---|---|` or `| :--- | ---: |`).
+        let inner = t.trim_matches('|');
+        let stripped: String = inner.chars().filter(|c| *c != '|').collect();
+        if !stripped.is_empty() && stripped.chars().all(|c| matches!(c, '-' | ':' | ' ')) {
+            continue;
+        }
+        let cells: Vec<String> = inner.split('|').map(|c| c.trim().to_string()).collect();
+        if header.is_none() {
+            header = Some(cells);
+        } else {
+            rows.push(cells);
+        }
+    }
+    let header = match header {
+        Some(h) => h,
+        None => return Vec::new(),
+    };
+
+    // Column widths = max of header + body cells.
+    let ncols = header.len();
+    let mut widths: Vec<usize> = header.iter().map(|c| c.chars().count()).collect();
+    for row in &rows {
+        for (i, cell) in row.iter().enumerate() {
+            if i < ncols {
+                widths[i] = widths[i].max(cell.chars().count());
+            }
+        }
+    }
+
+    let rail = Style::default().fg(theme.accent3);
+    let header_fg = Style::default()
+        .fg(theme.accent)
+        .add_modifier(Modifier::BOLD);
+    let body_fg = Style::default().fg(theme.text);
+
+    let mut out = Vec::new();
+
+    // Top border.
+    out.push(Line::from(Span::styled(
+        format!(
+            "  ┌─{}─┐",
+            widths
+                .iter()
+                .map(|w| "─".repeat(w + 2))
+                .collect::<Vec<_>>()
+                .join("─┬─")
+        ),
+        rail,
+    )));
+
+    // Header row.
+    let mut hspans = vec![Span::styled("  │ ".to_string(), rail)];
+    for (i, cell) in header.iter().enumerate() {
+        hspans.push(Span::styled(
+            format!("{:<width$}", cell, width = widths[i]),
+            header_fg,
+        ));
+        hspans.push(Span::styled(" │ ".to_string(), rail));
+    }
+    out.push(Line::from(hspans));
+
+    // Separator under header.
+    out.push(Line::from(Span::styled(
+        format!(
+            "  ├─{}─┤",
+            widths
+                .iter()
+                .map(|w| "─".repeat(w + 2))
+                .collect::<Vec<_>>()
+                .join("─┼─")
+        ),
+        rail,
+    )));
+
+    // Body rows.
+    for row in &rows {
+        let mut spans = vec![Span::styled("  │ ".to_string(), rail)];
+        for (i, cell) in row.iter().enumerate() {
+            if i < ncols {
+                spans.push(Span::styled(
+                    format!("{:<width$}", cell, width = widths[i]),
+                    body_fg,
+                ));
+            } else {
+                spans.push(Span::styled(
+                    format!("{:<width$}", "", width = widths[i]),
+                    body_fg,
+                ));
+            }
+            spans.push(Span::styled(" │ ".to_string(), rail));
+        }
+        out.push(Line::from(spans));
+    }
+
+    // Bottom border.
+    out.push(Line::from(Span::styled(
+        format!(
+            "  └─{}─┘",
+            widths
+                .iter()
+                .map(|w| "─".repeat(w + 2))
+                .collect::<Vec<_>>()
+                .join("─┴─")
+        ),
+        rail,
+    )));
+
     out
 }
 
@@ -371,5 +526,35 @@ mod tests {
         let p = plain(&out);
         assert!(p[0].contains("✦"), "bullet: {:?}", p[0]);
         assert!(p[0].contains("item one"));
+    }
+
+    #[test]
+    fn test_table_renders_grid() {
+        let t = Theme::cyberclaw();
+        let text = "| Comando | Desc |\n|---|---|\n| build | compila |\n| test | roda |";
+        let out = render_text(text, &t, Style::default());
+        let p = plain(&out);
+        let joined = p.join("\n");
+        // Top border, header, separator, 2 body rows, bottom border.
+        assert!(joined.contains("┌"), "top border:\n{}", joined);
+        assert!(joined.contains("Comando"), "header:\n{}", joined);
+        assert!(joined.contains("Desc"), "header:\n{}", joined);
+        assert!(joined.contains("├"), "separator:\n{}", joined);
+        assert!(joined.contains("build"), "body:\n{}", joined);
+        assert!(joined.contains("compila"), "body:\n{}", joined);
+        assert!(joined.contains("└"), "bottom border:\n{}", joined);
+        // No raw pipes should leak.
+        assert!(!joined.contains("|"), "pipes leaked:\n{}", joined);
+    }
+
+    #[test]
+    fn test_table_after_text() {
+        let t = Theme::cyberclaw();
+        let text = "Tabela:\n| A | B |\n|---|---|\n| 1 | 2 |";
+        let out = render_text(text, &t, Style::default());
+        let p = plain(&out);
+        let joined = p.join("\n");
+        assert!(p[0].contains("Tabela:"), "intro text:\n{}", joined);
+        assert!(joined.contains("┌"), "table rendered:\n{}", joined);
     }
 }
