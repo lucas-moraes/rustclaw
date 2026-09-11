@@ -505,4 +505,37 @@ mod tests {
             .iter()
             .all(|p| !p.trim().is_empty() || p.starts_with('╰')));
     }
+
+    #[test]
+    fn test_bubble_preserves_code_fence_box() {
+        let t = Theme::cyberclaw();
+        let text = "Aqui vai o código:\n```rust\nfn main() {}\n```\nFim.";
+        let out = bubble(
+            "claw",
+            "✦",
+            text,
+            t.accent,
+            t.assistant_fg,
+            &t,
+            60,
+            false,
+            0,
+        );
+        let plain = plain_lines(&out);
+        let joined = plain.join("\n");
+        // The code fence box must survive the bubble wrap path.
+        assert!(
+            joined.contains("╭─ rust"),
+            "fence top bar lost:\n{}",
+            joined
+        );
+        assert!(
+            joined.contains("fn main() {}"),
+            "fence body lost:\n{}",
+            joined
+        );
+        assert!(joined.contains("╰"), "fence bottom bar lost:\n{}", joined);
+        // No raw backticks should leak.
+        assert!(!joined.contains("```"), "backticks leaked:\n{}", joined);
+    }
 }
