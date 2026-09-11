@@ -507,6 +507,29 @@ mod tests {
     }
 
     #[test]
+    fn test_bubble_table_inside_fence() {
+        let t = Theme::cyberclaw();
+        let text = "```\n| A | B |\n|---|---|\n| 1 | 2 |\n```";
+        let out = bubble(
+            "claw",
+            "\u{2726}",
+            text,
+            t.accent,
+            t.assistant_fg,
+            &t,
+            60,
+            false,
+            0,
+        );
+        let plain = plain_lines(&out);
+        let joined = plain.join("\n");
+        // The table grid should render directly, not wrapped in a code box.
+        assert!(joined.contains("\u{250c}"), "grid top:\n{}", joined);
+        assert!(!joined.contains("code"), "code box leaked:\n{}", joined);
+        assert!(!joined.contains("```"), "backticks leaked:\n{}", joined);
+    }
+
+    #[test]
     fn test_bubble_preserves_code_fence_box() {
         let t = Theme::cyberclaw();
         let text = "Aqui vai o código:\n```rust\nfn main() {}\n```\nFim.";

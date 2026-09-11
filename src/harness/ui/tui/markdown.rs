@@ -29,8 +29,14 @@ pub fn render_text(text: &str, theme: &Theme, base: Style) -> Vec<Line<'static>>
         if trimmed.starts_with("```") {
             flush_table(&mut out, &mut table_buf);
             if in_fence {
-                // Closing fence — flush the buffered code lines.
-                out.extend(fence_lines(&fence_buf, &fence_lang, theme, false));
+                // Closing fence — flush the buffered code lines. If the
+                // content is a markdown table, render it as a grid instead
+                // of a code box (models often wrap tables in fences).
+                if is_table_block(&fence_buf) {
+                    out.extend(table_lines(&fence_buf, theme));
+                } else {
+                    out.extend(fence_lines(&fence_buf, &fence_lang, theme, false));
+                }
                 fence_buf.clear();
                 fence_lang.clear();
                 in_fence = false;
@@ -140,6 +146,30 @@ fn is_table_line(line: &str) -> bool {
         return true;
     }
     false
+}
+
+/// True if a block of lines (e.g. inside a code fence) is a markdown table:
+/// at least one header row and a separator row of dashes.
+fn is_table_block(buf: &[String]) -> bool {
+    if buf.is_empty() {
+        return false;
+    }
+    let mut saw_header = false;
+    let mut saw_separator = false;
+    for raw in buf {
+        let t = raw.trim();
+        if !t.starts_with('|') {
+            return false;
+        }
+        let inner = t.trim_matches('|');
+        let stripped: String = inner.chars().filter(|c| *c != '|').collect();
+        if !stripped.is_empty() && stripped.chars().all(|c| matches!(c, '-' | ':' | ' ')) {
+            saw_separator = true;
+        } else {
+            saw_header = true;
+        }
+    }
+    saw_header && saw_separator
 }
 
 /// Render a buffered markdown table as a styled grid with a header row.
@@ -556,5 +586,22 @@ mod tests {
         let joined = p.join("\n");
         assert!(p[0].contains("Tabela:"), "intro text:\n{}", joined);
         assert!(joined.contains("┌"), "table rendered:\n{}", joined);
+    }
+
+    #[test]
+    fn test_table_inside_code_fence() {
+        let t = Theme::cyberclaw();
+        // Models often wrap tables in code fences; we should render the grid
+        // directly instead of a code box.
+        let text = "```\n| A | B |\n|---|---|\n| 1 | 2 |\n```";
+        let out = render_text(text, &t, Style::default());
+        let p = plain(&out);
+        let joined = p.join("\n");
+        assert!(joined.contains("┌"), "grid top:\n{}", joined);
+        assert!(joined.contains("A"), "header:\n{}", joined);
+        assert!(joined.contains("└"), "grid bottom:\n{}", joined);
+        // No code box should wrap it.
+        assert!(!joined.contains("╭─"), "code box leaked:\n{}", joined);
+        assert!(!joined.contains("```"), "backticks leaked:\n{}", joined);
     }
 }
