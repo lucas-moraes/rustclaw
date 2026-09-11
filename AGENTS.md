@@ -85,7 +85,11 @@ src/
 └── harness/         # O harness em si
     ├── mod.rs
     ├── event.rs     # Event bus (HarnessEvent)
-    ├── runtime.rs   # SessionRuntime (facade) + build_default_registry + TaskRunner
+    ├── runtime/     # SessionRuntime (facade)
+    │   ├── mod.rs       # SessionRuntime + PromptResult + re-exports
+    │   ├── registry.rs  # build_default_registry
+    │   ├── task_runner.rs # TaskRunner (subagentes via tool::task)
+    │   └── context.rs   # frozen_summary_for + memory_block_for
     ├── auth.rs      # Auth token store (~/Library/.../rustclaw/auth.json)
     ├── budget.rs    # BudgetTracker (token usage + cost estimation)
     ├── hooks.rs     # Pre/post tool hooks (run_pre_tool, spawn_post_tool)
@@ -96,7 +100,9 @@ src/
     ├── session/
     │   ├── mod.rs       # Session, Message, Part, ToolPart, ToolStatus, preview()
     │   ├── store.rs     # SessionStore (SQLite)
-    │   ├── processor.rs # Loop central (native tool calling + paralelo)
+    │   ├── processor/   # Loop central (native tool calling + paralelo)
+    │   │   ├── mod.rs       # SessionProcessor + run_turn
+    │   │   └── stream_loop.rs # consume_stream + StreamOutcome
     │   ├── tool_exec.rs # Execução de tools (JoinSet + permissões + catch_unwind)
     │   ├── doom_loop.rs # DoomLoopDetector (detecção de ciclos de tool calls)
     │   ├── compaction.rs# Compactação de contexto em overflow
@@ -238,7 +244,7 @@ impl Tool for MyTool {
   OpenAI cached 0.5×)
 
 ### Loop do processor
-- `session/processor.rs::run_turn`: stream → tool_calls → execução paralela
+- `session/processor/mod.rs::run_turn`: stream → tool_calls → execução paralela
   (JoinSet) com `ctx.check_permission` → results → repete até resposta final
 - Tool execution extraída para `session/tool_exec.rs` (JoinSet + permissões +
   catch_unwind)

@@ -3,9 +3,9 @@
 pub mod apply_plan;
 pub mod export;
 pub mod memory;
-pub mod replay;
 pub(crate) mod permissions_cmd;
 pub(crate) mod provider_cmd;
+pub mod replay;
 pub(crate) mod session_cmd;
 
 use crate::harness::runtime::SessionRuntime;

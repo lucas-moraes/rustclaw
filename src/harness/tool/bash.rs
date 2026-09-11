@@ -504,7 +504,8 @@ impl Tool for BashTool {
             combined.push_str(&String::from_utf8_lossy(&stderr));
         }
         let code = status.code().unwrap_or(-1);
-        let full = format!("{}\n[exit: {}]", combined.trim_end(), code);
+        let combined = super::env::mask_secrets(combined.trim_end());
+        let full = format!("{}\n[exit: {}]", combined, code);
         let truncated = super::truncate::truncate_output(&full, MAX_OUTPUT_BYTES);
 
         Ok(ToolResult {

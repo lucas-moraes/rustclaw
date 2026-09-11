@@ -218,7 +218,7 @@ impl JobRegistry {
             combined.push_str("[stderr]\n");
             combined.push_str(&stderr);
         }
-        Ok(combined)
+        Ok(super::env::mask_secrets(&combined))
     }
 }
 
