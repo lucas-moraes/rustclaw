@@ -767,10 +767,7 @@ pub(crate) async fn submit_input(
             return Ok(false);
         }
         if text == "/model" {
-            app.add_system(&format!(
-                "current model: {} (provider {}) · usage: /model <name>",
-                app.runtime.config.model, app.runtime.config.provider
-            ));
+            app.open_model_picker_for_current();
             return Ok(false);
         }
         if let Some(rest) = text.strip_prefix("/provider ") {

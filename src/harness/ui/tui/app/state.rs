@@ -663,6 +663,27 @@ impl App {
         self.model_picker = Some(ModelPickerState::new());
     }
 
+    /// Opens the model picker directly at the model stage for the current
+    /// provider (used by `/model`), pre-selecting the active model. The
+    /// provider is kept as-is; only the model selection is shown.
+    pub fn open_model_picker_for_current(&mut self) {
+        if self.running {
+            self.add_system("[busy] cannot switch model while a turn is running");
+            return;
+        }
+        self.autocomplete = None;
+        let provider = self.runtime.config.provider.clone();
+        let mut picker = ModelPickerState::new();
+        picker.provider = provider;
+        picker.stage_models = true;
+        // Pre-select the active model when it is in the provider's list.
+        let current = self.runtime.config.model.clone();
+        if let Some(idx) = picker.items().iter().position(|m| m == &current) {
+            picker.selected = idx;
+        }
+        self.model_picker = Some(picker);
+    }
+
     /// Applies a provider/model selection and closes the picker.
     pub fn apply_model_choice(&mut self, provider: &str, model: &str) -> Result<()> {
         // Persist free-form ("custom…") models in the user store so they show

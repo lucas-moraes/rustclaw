@@ -517,3 +517,39 @@ mod modal_queue_tests {
         assert!(app.modal_queue.is_empty());
     }
 }
+
+mod model_picker_tests {
+    use super::*;
+
+    #[test]
+    fn test_open_model_picker_for_current_keeps_provider_and_preselects() {
+        let mut app = App::inline_for_tests("");
+        // RuntimeConfig::default() → provider "opencode-go", model "deepseek-v4-flash".
+        let provider = app.runtime.config.provider.clone();
+        let model = app.runtime.config.model.clone();
+        assert_eq!(provider, "opencode-go");
+        assert_eq!(model, "deepseek-v4-flash");
+
+        app.open_model_picker_for_current();
+
+        let picker = app.model_picker.as_ref().expect("picker should open");
+        // Directly at the model stage, keeping the current provider.
+        assert!(picker.stage_models, "should open at the model stage");
+        assert_eq!(picker.provider, provider);
+        // The active model is pre-selected in the provider's model list.
+        let items = picker.items();
+        let expected = items
+            .iter()
+            .position(|m| m == &model)
+            .expect("active model should be in the list");
+        assert_eq!(picker.selected, expected);
+    }
+
+    #[test]
+    fn test_open_model_picker_for_current_busy_does_not_open() {
+        let mut app = App::inline_for_tests("");
+        app.running = true;
+        app.open_model_picker_for_current();
+        assert!(app.model_picker.is_none());
+    }
+}
