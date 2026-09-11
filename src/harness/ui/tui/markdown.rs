@@ -198,9 +198,14 @@ fn inline_spans(s: &str, theme: &Theme, base: Style) -> Vec<Span<'static>> {
                 i += 1;
             }
             let code: String = chars[start..i].iter().collect();
+            // Render inline code without the backtick markers; use a subtle
+            // surface background + accent2 foreground to read as code.
             spans.push(Span::styled(
-                format!("`{}`", code),
-                Style::default().fg(theme.accent2),
+                code,
+                Style::default()
+                    .fg(theme.accent2)
+                    .bg(theme.surface)
+                    .add_modifier(Modifier::DIM),
             ));
             if i < chars.len() {
                 i += 1; // closing `
@@ -276,6 +281,7 @@ pub fn wrap_plain(text: &str, width: usize) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     fn plain(lines: &[Line]) -> Vec<String> {
@@ -347,6 +353,15 @@ mod tests {
         let out = render_text("hello **world** end", &t, Style::default());
         let p = plain(&out);
         assert_eq!(p[0], "hello world end");
+    }
+
+    #[test]
+    fn test_inline_code_strips_backticks() {
+        let t = Theme::cyberclaw();
+        let out = render_text("use `std::fs` here", &t, Style::default());
+        let p = plain(&out);
+        assert_eq!(p[0], "use std::fs here", "got {:?}", p);
+        assert!(!p[0].contains('`'), "backticks leaked: {:?}", p);
     }
 
     #[test]
