@@ -103,7 +103,7 @@ pub async fn handle(
         "/usage" | "/tokens" => {
             let ctx = session.approx_tokens();
             let max = runtime.config.max_context_tokens;
-            let pct = if max == 0 { 0 } else { (ctx * 100) / max };
+            let pct = (ctx * 100).checked_div(max).unwrap_or(0);
             out.push(format!("context · ~{} / {} tokens ({}%)", ctx, max, pct));
             out.push("full usage breakdown is shown in the TUI status bar".to_string());
         }

@@ -573,7 +573,7 @@ impl ProjectMemoryStore {
             }
             // Keep the most recent active fact; archive the rest.
             let mut sorted = group.clone();
-            sorted.sort_by(|a, b| b.id.cmp(&a.id));
+            sorted.sort_by_key(|f| std::cmp::Reverse(f.id));
             let keep = &sorted[0];
             let total_hits: i64 = group.iter().map(|f| f.hit_count).sum();
             for dup in &sorted[1..] {

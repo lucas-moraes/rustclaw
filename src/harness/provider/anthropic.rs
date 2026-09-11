@@ -59,17 +59,16 @@ pub fn to_anthropic_messages(messages: &[Message]) -> Vec<Value> {
                         }
                         Part::Reasoning { .. } => {}
                         Part::Image { .. } => {}
-                        Part::Tool(t) => {
-                            // Skip pending/running tool calls (no result yet).
-                            if t.is_terminal() {
-                                content.push(json!({
-                                    "type": "tool_use",
-                                    "id": t.id,
-                                    "name": t.name,
-                                    "input": t.input,
-                                }));
-                            }
+                        // Skip pending/running tool calls (no result yet).
+                        Part::Tool(t) if t.is_terminal() => {
+                            content.push(json!({
+                                "type": "tool_use",
+                                "id": t.id,
+                                "name": t.name,
+                                "input": t.input,
+                            }));
                         }
+                        Part::Tool(_) => {}
                         _ => {}
                     }
                 }

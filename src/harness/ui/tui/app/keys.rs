@@ -182,18 +182,16 @@ pub(crate) async fn handle_key(
             app.copy_last_code_block();
             return Ok(false);
         }
-        KeyCode::Char('x') => {
-            // Toggle collapsible thinking (reasoning) blocks — only when the
-            // prompt is empty so typing is never swallowed.
-            if app.input.is_empty() {
-                app.thinking_expanded = !app.thinking_expanded;
-                app.status_msg = Some(if app.thinking_expanded {
-                    "thinking blocks expanded (x to collapse)".to_string()
-                } else {
-                    "thinking blocks collapsed (x to expand)".to_string()
-                });
-                return Ok(false);
-            }
+        // Toggle collapsible thinking (reasoning) blocks — only when the
+        // prompt is empty so typing is never swallowed.
+        KeyCode::Char('x') if app.input.is_empty() => {
+            app.thinking_expanded = !app.thinking_expanded;
+            app.status_msg = Some(if app.thinking_expanded {
+                "thinking blocks expanded (x to collapse)".to_string()
+            } else {
+                "thinking blocks collapsed (x to expand)".to_string()
+            });
+            return Ok(false);
         }
         _ => {}
     }

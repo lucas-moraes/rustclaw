@@ -254,11 +254,7 @@ fn context_block(app: &App, t: &Theme, w: usize) -> Vec<Line<'static>> {
     let ctx = app.context_tokens() as u64;
     let max = app.max_context_tokens() as u64;
     let free = max.saturating_sub(ctx);
-    let pct = if max == 0 {
-        0u16
-    } else {
-        ((ctx * 100) / max).min(100) as u16
-    };
+    let pct = (ctx * 100).checked_div(max).unwrap_or(0).min(100) as u16;
     let bar_fg = context_color(pct, t);
 
     // Progress bar fills the usable width: "  ████░░░░  42%"

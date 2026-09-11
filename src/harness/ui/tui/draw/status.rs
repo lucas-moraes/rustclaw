@@ -40,7 +40,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
 
     let ctx = app.context_tokens() as u64;
     let max = app.max_context_tokens() as u64;
-    let ctx_pct = if max == 0 { 0 } else { (ctx * 100) / max };
+    let ctx_pct = (ctx * 100).checked_div(max).unwrap_or(0);
     let ctx_fg = if ctx_pct >= 90 {
         t.error
     } else if ctx_pct >= 70 {

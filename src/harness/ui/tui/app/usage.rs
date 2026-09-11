@@ -47,7 +47,7 @@ impl App {
     pub fn usage_report(&self) -> Vec<String> {
         let ctx = self.context_tokens();
         let max = self.max_context_tokens();
-        let pct = if max == 0 { 0 } else { (ctx * 100) / max };
+        let pct = (ctx * 100).checked_div(max).unwrap_or(0);
         let mut lines = vec![
             format!(
                 "last turn · in {} · out {} · total {} · {} iter(s)",
@@ -66,11 +66,9 @@ impl App {
         // Prompt-cache line (only when the provider reports cache activity).
         let cached = self.session_usage.cache_total();
         if cached > 0 {
-            let pct = if self.session_usage.input_tokens > 0 {
-                (self.session_usage.cache_read_tokens * 100) / self.session_usage.input_tokens
-            } else {
-                0
-            };
+            let pct = (self.session_usage.cache_read_tokens * 100)
+                .checked_div(self.session_usage.input_tokens)
+                .unwrap_or(0);
             lines.push(format!(
                 "cache    · read {} ({}% of in) · write {}",
                 format_tokens(self.session_usage.cache_read_tokens),
