@@ -1,6 +1,6 @@
 //! `/models` picker overlay (provider → model) and `/auth` token prompt.
 
-use crate::harness::ui::tui::app::{App, AuthPromptState, ModelPickerState};
+use crate::harness::ui::tui::app::{App, AuthPromptState};
 use crate::harness::ui::tui::draw::centered_rect_fixed;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -8,7 +8,10 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 
-pub fn draw_picker(frame: &mut Frame, app: &App, picker: &ModelPickerState, area: Rect) {
+pub fn draw_picker(frame: &mut Frame, app: &mut App, area: Rect) {
+    let Some(picker) = app.model_picker.as_mut() else {
+        return;
+    };
     let t = &app.theme;
     let items = picker.items();
     let n = items.len() as u16;
@@ -100,12 +103,14 @@ pub fn draw_picker(frame: &mut Frame, app: &App, picker: &ModelPickerState, area
         )));
     } else {
         let visible = inner.height.saturating_sub(3) as usize;
+        picker.ensure_selected_visible(visible);
         let current = if picker.stage_models {
             app.runtime.config.model.clone()
         } else {
             app.runtime.config.provider.clone()
         };
-        for (i, item) in items.iter().enumerate().take(visible) {
+        let start = picker.scroll_offset.min(items.len());
+        for (i, item) in items.iter().enumerate().skip(start).take(visible) {
             let sel = i == picker.selected;
             let bg = if sel { t.bg } else { t.surface };
             let arrow = if sel { "▸" } else { " " };

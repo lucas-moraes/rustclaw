@@ -194,6 +194,8 @@ pub struct SkillPickerState {
     pub checked: Vec<bool>,
     /// The catalog snapshot (id -> display) this picker was built from.
     pub ids: Vec<String>,
+    /// First visible row index in the scrollable list.
+    pub scroll_offset: usize,
 }
 
 impl SkillPickerState {
@@ -211,6 +213,7 @@ impl SkillPickerState {
             selected: 0,
             checked,
             ids,
+            scroll_offset: 0,
         })
     }
 
@@ -220,6 +223,30 @@ impl SkillPickerState {
         }
         let len = self.ids.len() as i32;
         self.selected = ((self.selected as i32 + delta).rem_euclid(len)) as usize;
+    }
+
+    /// Keeps the selected row within the visible window, scrolling as needed.
+    pub fn ensure_selected_visible(&mut self, visible: usize) {
+        if visible == 0 || self.ids.is_empty() {
+            return;
+        }
+        if self.selected < self.scroll_offset {
+            self.scroll_offset = self.selected;
+        } else if self.selected >= self.scroll_offset + visible {
+            self.scroll_offset = self.selected + 1 - visible;
+        }
+        let max_offset = self.ids.len().saturating_sub(visible);
+        self.scroll_offset = self.scroll_offset.min(max_offset);
+    }
+
+    /// Scrolls the list by `delta` rows (mouse wheel), keeping selection.
+    pub fn scroll_by(&mut self, delta: i32) {
+        if self.ids.is_empty() {
+            return;
+        }
+        let max_offset = self.ids.len().saturating_sub(1);
+        self.scroll_offset =
+            (self.scroll_offset as i32 + delta).clamp(0, max_offset as i32) as usize;
     }
 
     pub fn toggle(&mut self) {
@@ -264,6 +291,8 @@ pub struct ModelPickerState {
     /// When `Some`, a "add provider" form is being filled (name, base_url,
     /// default_model). Each entry is one field.
     pub add_provider: Option<AddProviderForm>,
+    /// First visible row index in the scrollable list.
+    pub scroll_offset: usize,
 }
 
 /// Multi-field form for adding a user-defined provider via the picker.
@@ -292,6 +321,7 @@ impl ModelPickerState {
             provider: String::new(),
             custom_input: None,
             add_provider: None,
+            scroll_offset: 0,
         }
     }
 
@@ -345,6 +375,38 @@ impl ModelPickerState {
             return None;
         }
         Some(picked)
+    }
+
+    /// Keeps the selected row within the visible window, scrolling as needed.
+    pub fn ensure_selected_visible(&mut self, visible: usize) {
+        if self.custom_input.is_some() || self.add_provider.is_some() {
+            return;
+        }
+        let len = self.items().len();
+        if visible == 0 || len == 0 {
+            return;
+        }
+        if self.selected < self.scroll_offset {
+            self.scroll_offset = self.selected;
+        } else if self.selected >= self.scroll_offset + visible {
+            self.scroll_offset = self.selected + 1 - visible;
+        }
+        let max_offset = len.saturating_sub(visible);
+        self.scroll_offset = self.scroll_offset.min(max_offset);
+    }
+
+    /// Scrolls the list by `delta` rows (mouse wheel), keeping selection.
+    pub fn scroll_by(&mut self, delta: i32) {
+        if self.custom_input.is_some() || self.add_provider.is_some() {
+            return;
+        }
+        let len = self.items().len();
+        if len == 0 {
+            return;
+        }
+        let max_offset = len.saturating_sub(1);
+        self.scroll_offset =
+            (self.scroll_offset as i32 + delta).clamp(0, max_offset as i32) as usize;
     }
 }
 
@@ -415,6 +477,16 @@ impl ResumePickerState {
         }
         let max_offset = self.sessions.len().saturating_sub(visible);
         self.scroll_offset = self.scroll_offset.min(max_offset);
+    }
+
+    /// Scrolls the list by `delta` rows (mouse wheel), keeping selection.
+    pub fn scroll_by(&mut self, delta: i32) {
+        if self.sessions.is_empty() {
+            return;
+        }
+        let max_offset = self.sessions.len().saturating_sub(1);
+        self.scroll_offset =
+            (self.scroll_offset as i32 + delta).clamp(0, max_offset as i32) as usize;
     }
 
     /// Human title for a session (no id).

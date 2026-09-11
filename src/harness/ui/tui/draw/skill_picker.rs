@@ -8,9 +8,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 
-pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
+pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     let t = &app.theme;
-    let Some(picker) = &app.skill_picker else {
+    let Some(picker) = &mut app.skill_picker else {
         return;
     };
 
@@ -44,7 +44,9 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
 
     let catalog = &app.runtime.skills;
     let visible = inner.height.saturating_sub(4) as usize;
-    for i in 0..picker.ids.len().min(visible) {
+    picker.ensure_selected_visible(visible);
+    let start = picker.scroll_offset.min(picker.ids.len());
+    for i in start..picker.ids.len().min(start + visible) {
         let id = &picker.ids[i];
         let checked = picker.checked[i];
         let sel = i == picker.selected;

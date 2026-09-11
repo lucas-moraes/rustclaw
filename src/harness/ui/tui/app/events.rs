@@ -222,6 +222,33 @@ impl App {
         self.scroll = new;
     }
 
+    /// Scrolls the active overlay (model/skill/resume picker, palette, search)
+    /// with the mouse wheel. Returns `true` when an overlay consumed the scroll
+    /// (so the transcript is left untouched); `false` to scroll the transcript.
+    pub fn mouse_scroll(&mut self, delta: i32) -> bool {
+        if let Some(p) = self.model_picker.as_mut() {
+            p.scroll_by(delta);
+            return true;
+        }
+        if let Some(p) = self.skill_picker.as_mut() {
+            p.scroll_by(delta);
+            return true;
+        }
+        if let Some(p) = self.resume_picker.as_mut() {
+            p.scroll_by(delta);
+            return true;
+        }
+        if let Some(p) = self.palette.as_mut() {
+            p.move_sel(delta);
+            return true;
+        }
+        if let Some(s) = self.search.as_mut() {
+            s.move_sel(delta);
+            return true;
+        }
+        false
+    }
+
     pub fn clamp_scroll(&mut self, total: usize, view_height: usize) {
         let max = total.saturating_sub(view_height);
         if self.stick_bottom {

@@ -125,8 +125,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         help::draw(frame, app, area);
     } else if let Some(pal) = &app.palette {
         palette_view::draw_palette(frame, pal, &app.theme, area);
-    } else if let Some(picker) = &app.model_picker {
-        model_picker::draw_picker(frame, app, picker, area);
+    } else if app.model_picker.is_some() {
+        model_picker::draw_picker(frame, app, area);
     } else if let Some(auth) = &app.auth_prompt {
         model_picker::draw_auth(frame, app, auth, area);
     } else if app.resume_picker.is_some() {

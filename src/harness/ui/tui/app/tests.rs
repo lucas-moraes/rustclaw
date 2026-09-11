@@ -553,3 +553,57 @@ mod model_picker_tests {
         assert!(app.model_picker.is_none());
     }
 }
+
+mod mouse_scroll_tests {
+    use super::*;
+
+    #[test]
+    fn test_mouse_scroll_returns_false_when_no_overlay() {
+        let mut app = App::inline_for_tests("");
+        app.scroll = 10;
+        // No overlay open → mouse_scroll reports "not consumed" (returns false)
+        // so the caller scrolls the transcript. It must not touch the transcript.
+        assert!(!app.mouse_scroll(3));
+        assert_eq!(app.scroll, 10);
+    }
+
+    #[test]
+    fn test_mouse_scroll_rolls_model_picker_not_transcript() {
+        let mut app = App::inline_for_tests("");
+        app.open_model_picker_for_current();
+        let picker = app.model_picker.as_mut().unwrap();
+        picker.scroll_offset = 0;
+        app.scroll = 10;
+
+        // Overlay open → mouse scroll is consumed by the picker.
+        assert!(app.mouse_scroll(3));
+        assert_eq!(app.model_picker.as_ref().unwrap().scroll_offset, 3);
+        // The transcript scroll is left untouched.
+        assert_eq!(app.scroll, 10);
+    }
+
+    #[test]
+    fn test_mouse_scroll_rolls_skill_picker() {
+        let mut app = App::inline_for_tests("");
+        // Build a skill picker with several entries.
+        let mut picker = SkillPickerState::open(&app).unwrap_or_else(|| {
+            // Fallback: construct one directly with fake ids.
+            SkillPickerState {
+                selected: 0,
+                checked: vec![false; 5],
+                ids: (0..5).map(|i| format!("skill-{i}")).collect(),
+                scroll_offset: 0,
+            }
+        });
+        if picker.ids.len() < 5 {
+            picker.ids = (0..5).map(|i| format!("skill-{i}")).collect();
+            picker.checked = vec![false; 5];
+        }
+        app.skill_picker = Some(picker);
+        app.scroll = 10;
+
+        assert!(app.mouse_scroll(2));
+        assert_eq!(app.skill_picker.as_ref().unwrap().scroll_offset, 2);
+        assert_eq!(app.scroll, 10);
+    }
+}

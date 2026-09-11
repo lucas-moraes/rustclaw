@@ -283,8 +283,18 @@ pub async fn run_tui(
                         || app.auth_prompt.is_some()
                         || app.resume_picker.is_some();
                     match m.kind {
-                        MouseEventKind::ScrollUp => app.scroll_by(-3),
-                        MouseEventKind::ScrollDown => app.scroll_by(3),
+                        MouseEventKind::ScrollUp => {
+                            // Scroll the active overlay (picker/modal) when one
+                            // is open; otherwise scroll the transcript.
+                            if !app.mouse_scroll(-3) {
+                                app.scroll_by(-3);
+                            }
+                        }
+                        MouseEventKind::ScrollDown => {
+                            if !app.mouse_scroll(3) {
+                                app.scroll_by(3);
+                            }
+                        }
                         MouseEventKind::Down(MouseButton::Left) => {
                             if overlays_open {
                                 continue;
