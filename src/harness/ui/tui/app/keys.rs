@@ -182,6 +182,32 @@ pub(crate) async fn handle_key(
             app.copy_last_code_block();
             return Ok(false);
         }
+        // Paste screenshot / image from clipboard (Ctrl+V or Cmd+V on macOS).
+        // When no image is available, fall back to pasting clipboard text.
+        KeyCode::Char('v')
+            if key.modifiers.contains(KeyModifiers::CONTROL)
+                || key.modifiers.contains(KeyModifiers::SUPER) =>
+        {
+            match app.try_paste_clipboard_image() {
+                Ok(true) => return Ok(false),
+                Ok(false) => return Ok(false),
+                Err(_) => {
+                    if let Ok(mut cb) = arboard::Clipboard::new() {
+                        if let Ok(text) = cb.get_text() {
+                            for c in text.chars() {
+                                if c == '\r' {
+                                    continue;
+                                }
+                                app.insert_char_fixed(c);
+                            }
+                            return Ok(false);
+                        }
+                    }
+                    app.status_msg = Some("clipboard has no image or text to paste".into());
+                    return Ok(false);
+                }
+            }
+        }
         // Toggle collapsible thinking (reasoning) blocks — only when the
         // prompt is empty so typing is never swallowed.
         KeyCode::Char('x') if app.input.is_empty() => {
@@ -305,13 +331,17 @@ pub(crate) async fn handle_key(
             // Priority: cancel whatever is in flight first.
             // 1) running turn / streaming → abort
             // 2) overlays / selection / autocomplete → close
-            // 3) draft prompt text → clear
+            // 3) pending image attachments → clear
+            // 4) draft prompt text → clear
             if app.running {
                 app.cancel_running_turn();
             } else if app.selection.is_some() || app.pending_click.is_some() {
                 app.clear_selection();
             } else if app.autocomplete.is_some() {
                 app.autocomplete = None;
+            } else if !app.pending_images.is_empty() {
+                app.clear_pending_images();
+                app.status_msg = Some("cleared pending images".into());
             } else if !app.input.is_empty() {
                 app.clear_prompt_input();
             }
@@ -641,15 +671,28 @@ pub(crate) async fn submit_input(
     prompt_task: &mut Option<tokio::task::JoinHandle<Result<(PromptResult, Session)>>>,
 ) -> Result<bool> {
     let text = app.input.trim().to_string();
-    if text.is_empty() {
+    let has_images = !app.pending_images.is_empty();
+    if text.is_empty() && !has_images {
         return Ok(false);
     }
     app.flush_streaming();
     app.input.clear();
     app.input_cursor = 0;
     app.autocomplete = None;
-    app.history.push(text.clone());
+    if !text.is_empty() {
+        app.history.push(text.clone());
+    }
     app.history_pos = None;
+
+    // /image [path] — queue attachment (native picker when path omitted).
+    if text == "/image" || text.starts_with("/image ") {
+        let arg = text.strip_prefix("/image").unwrap_or("").trim();
+        match app.attach_image_from_arg_or_picker(arg) {
+            Ok(()) => {}
+            Err(e) => app.add_system(&format!("[error] {e}")),
+        }
+        return Ok(false);
+    }
 
     if text.starts_with('/') {
         if text == "/theme" || text.starts_with("/theme ") {
@@ -838,7 +881,33 @@ pub(crate) async fn submit_input(
         return Ok(false);
     }
 
-    app.add_user_prompt(&text);
+    // Build multimodal parts: pending images + user text (default caption when
+    // the user only attached screenshots and hit Enter).
+    let images = std::mem::take(&mut app.pending_images);
+    let prompt_text = if text.is_empty() {
+        if images.len() == 1 {
+            "describe this image".to_string()
+        } else {
+            "describe these images".to_string()
+        }
+    } else {
+        text.clone()
+    };
+
+    let mut display = prompt_text.clone();
+    if !images.is_empty() {
+        let names: Vec<String> = images
+            .iter()
+            .map(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("image")
+                    .to_string()
+            })
+            .collect();
+        display = format!("[{}] {}", names.join(", "), prompt_text);
+    }
+    app.add_user_prompt(&display);
     app.running = true;
     app.turn_started_at = Some(std::time::Instant::now());
     app.abort = AbortSignal::new();
@@ -851,9 +920,15 @@ pub(crate) async fn submit_input(
     let enabled_skills = app.enabled_skill_ids();
     app.skills_focused = false;
 
+    let mut parts: Vec<crate::harness::session::Part> = images
+        .into_iter()
+        .map(|p| crate::harness::session::Part::image(p.to_string_lossy().into_owned()))
+        .collect();
+    parts.push(crate::harness::session::Part::text(prompt_text));
+
     let handle = tokio::spawn(async move {
         let result = runtime
-            .prompt(&mut task_session, &tx, &text, abort, Some(&enabled_skills))
+            .prompt_with_parts(&mut task_session, &tx, parts, abort, Some(&enabled_skills))
             .await;
         result.map(|r| (r, task_session))
     });

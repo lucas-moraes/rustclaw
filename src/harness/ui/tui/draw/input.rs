@@ -14,11 +14,16 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     let focused = !app.running && app.modal.is_none() && app.palette.is_none();
     let border = if focused { t.border_focus } else { t.border };
 
+    let title = if app.pending_images.is_empty() {
+        " prompt ".to_string()
+    } else {
+        format!(" prompt · {} img ", app.pending_images.len())
+    };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(border))
         .title(Span::styled(
-            " prompt ",
+            title,
             Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
         ))
         .style(Style::default().bg(t.surface));
@@ -148,4 +153,21 @@ fn row_chars(chars: &[char], idxs: &[usize], from: usize, to: usize) -> String {
     (from..end)
         .filter_map(|k| idxs.get(k).map(|i| chars[*i]))
         .collect()
+}
+
+/// Chip row listing images queued for the next prompt.
+pub fn draw_pending_images(frame: &mut Frame, app: &App, area: Rect) {
+    let t = &app.theme;
+    let label = match app.pending_images_label() {
+        Some(s) => s,
+        None => return,
+    };
+    let line = Line::from(vec![
+        Span::styled("  ", Style::default()),
+        Span::styled(
+            label,
+            Style::default().fg(t.accent2).add_modifier(Modifier::BOLD),
+        ),
+    ]);
+    frame.render_widget(Paragraph::new(line).style(Style::default().bg(t.bg)), area);
 }

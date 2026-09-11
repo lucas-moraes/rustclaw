@@ -35,11 +35,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // active agent mode (build=blue, plan=yellow, explore=orange, purple=general).
     app.theme = Theme::from_index(app.theme_id).with_mode(&app.session.agent);
 
-    let has_chips = app
+    let has_skill_chips = app
         .prompt_toggles
         .as_ref()
         .map(|t| !t.is_empty())
         .unwrap_or(false);
+    let has_image_chip = !app.pending_images.is_empty();
+    let has_chips = has_skill_chips || has_image_chip;
 
     // Left info panel + main content column.
     // Fixed-ish sidebar (~32 cols) so model names / modes stay readable;
@@ -64,7 +66,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     let footer_h: u16 = 1;
     let status_h: u16 = 1;
-    let chips_h: u16 = if has_chips { 1 } else { 0 };
+    let chips_h: u16 = match (has_skill_chips, has_image_chip) {
+        (true, true) => 2,
+        (true, false) | (false, true) => 1,
+        (false, false) => 0,
+    };
     // The input box grows with soft-wrapped visual rows (border + 1 text row
     // + up to 9 extra wrapped/newline rows), cap at 12 total.
     let est_inner = content.width.saturating_sub(2) as usize;
@@ -83,7 +89,16 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     transcript::draw(frame, app, rows[0]);
     status::draw(frame, app, rows[1]);
     if has_chips {
-        skill_picker::draw_chips(frame, app, rows[2]);
+        if has_skill_chips && has_image_chip {
+            let chip_rows =
+                Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).split(rows[2]);
+            skill_picker::draw_chips(frame, app, chip_rows[0]);
+            input::draw_pending_images(frame, app, chip_rows[1]);
+        } else if has_skill_chips {
+            skill_picker::draw_chips(frame, app, rows[2]);
+        } else {
+            input::draw_pending_images(frame, app, rows[2]);
+        }
     }
     // The prompt input stays hidden until provider/model/token are configured.
     if app.runtime.config.is_configured() {

@@ -241,9 +241,9 @@ pub fn all_items() -> Vec<PaletteItem> {
         item(
             "image",
             "/image",
-            "Attach an image (png/jpeg/gif/webp) to the next prompt",
+            "Attach an image — picker if no path; Ctrl/Cmd+V pastes screenshot",
             PaletteKind::Command,
-            "/image ",
+            "/image",
         ),
         item(
             "diff",

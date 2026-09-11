@@ -102,6 +102,8 @@ pub struct App {
     pub search: Option<SearchState>,
     /// Whether collapsible thinking (reasoning) blocks are expanded.
     pub thinking_expanded: bool,
+    /// Images queued for the next prompt (paste / file picker / `/image`).
+    pub pending_images: Vec<std::path::PathBuf>,
 }
 
 /// A modal dialog waiting for user input.
@@ -551,7 +553,81 @@ impl App {
             question_rx,
             search: None,
             thinking_expanded: false,
+            pending_images: Vec::new(),
         }
+    }
+
+    /// Queues an image path for the next user prompt. Deduplicates by path.
+    pub fn attach_pending_image(&mut self, path: std::path::PathBuf) {
+        if !self.pending_images.iter().any(|p| p == &path) {
+            self.pending_images.push(path);
+        }
+    }
+
+    /// Clears all pending image attachments.
+    pub fn clear_pending_images(&mut self) {
+        self.pending_images.clear();
+    }
+
+    /// Short label for the pending-image chip row.
+    pub fn pending_images_label(&self) -> Option<String> {
+        if self.pending_images.is_empty() {
+            return None;
+        }
+        let names: Vec<String> = self
+            .pending_images
+            .iter()
+            .map(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("image")
+                    .to_string()
+            })
+            .collect();
+        Some(format!("📎 {} · Esc clears", names.join(", ")))
+    }
+
+    /// Tries to paste an image from the system clipboard into pending attachments.
+    /// Returns `true` when an image was attached.
+    pub fn try_paste_clipboard_image(&mut self) -> Result<bool, String> {
+        let path = crate::harness::session::image::paste_clipboard_image()?;
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("paste.png")
+            .to_string();
+        self.attach_pending_image(path);
+        self.status_msg = Some(format!("image attached: {name} (send with next prompt)"));
+        Ok(true)
+    }
+
+    /// Opens a native file picker (or validates `arg`) and queues the image.
+    pub fn attach_image_from_arg_or_picker(&mut self, arg: &str) -> Result<(), String> {
+        let path = if arg.trim().is_empty() {
+            match crate::harness::session::image::pick_image_file(&self.cwd)? {
+                Some(p) => {
+                    let s = p.to_string_lossy().into_owned();
+                    crate::harness::session::image::resolve_and_validate(&s, &self.cwd)?
+                }
+                None => {
+                    self.status_msg = Some("image picker cancelled".into());
+                    return Ok(());
+                }
+            }
+        } else {
+            crate::harness::session::image::resolve_and_validate(arg.trim(), &self.cwd)?
+        };
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("image")
+            .to_string();
+        self.attach_pending_image(path);
+        self.status_msg = Some(format!("image attached: {name} (send with next prompt)"));
+        self.add_system(&format!(
+            "image attached: {name} — send your next prompt (or Ctrl+V to paste more)"
+        ));
+        Ok(())
     }
 
     pub fn needs_anim(&self) -> bool {

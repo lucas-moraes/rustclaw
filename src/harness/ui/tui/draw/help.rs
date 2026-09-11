@@ -76,11 +76,7 @@ fn keys(t: &crate::harness::ui::tui::theme::Theme) -> Vec<Line<'static>> {
         kv("Ctrl+A / E", "line start / end", t),
         kv("Ctrl+U / W", "kill to line start / kill word", t),
         kv("Ctrl+Z", "reset prompt input", t),
-        kv(
-            "Esc",
-            "cancel streaming/run · close overlay · clear draft",
-            t,
-        ),
+        kv("Esc", "cancel run · close overlay · clear images/draft", t),
         kv("Up/Down", "prompt history", t),
         kv("PgUp/PgDn", "scroll transcript", t),
         kv("x", "expand/collapse thinking blocks", t),
@@ -91,6 +87,7 @@ fn keys(t: &crate::harness::ui::tui::theme::Theme) -> Vec<Line<'static>> {
         kv("Ctrl+L", "clear local transcript", t),
         kv("Ctrl+Y", "copy last code block", t),
         kv("Ctrl+S", "save last code block to file", t),
+        kv("Ctrl/Cmd+V", "paste screenshot/image from clipboard", t),
         kv("? / F1", "this help", t),
         kv("Tab", "autocomplete (in /) · cycle mode", t),
         kv("y / n / a", "permission allow · deny · always", t),
@@ -130,6 +127,11 @@ fn commands(t: &crate::harness::ui::tui::theme::Theme) -> Vec<Line<'static>> {
         kv(
             "/export [md|json] [path]",
             "dump session transcript to file",
+            t,
+        ),
+        kv(
+            "/image [path]",
+            "attach image (picker / path); Ctrl+V pastes",
             t,
         ),
         kv("/diff [path]", "changes since the pre-agent snapshot", t),

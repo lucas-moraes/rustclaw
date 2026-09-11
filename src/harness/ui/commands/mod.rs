@@ -42,7 +42,7 @@ pub async fn handle(
                 "commands: /help /new /sessions /agent <name> /skills \
                   /compact /theme [name] /usage /memory /models /model <name> \
                   /provider <name> /provider add|rm|list /auth <provider> /settings \
-                  /undo /diff /restore /fork [N] /apply-plan /image <path> /permissions /allow-all-permissions /mcp /jobs /record on|off|status /replay <file> /exit"
+                  /undo /diff /restore /fork [N] /apply-plan /image [path] /permissions /allow-all-permissions /mcp /jobs /record on|off|status /replay <file> /exit"
                     .to_string(),
             );
             out.push("keys: Ctrl+P palette · Ctrl+T theme · ? help · Ctrl+L clear".to_string());
@@ -119,19 +119,22 @@ pub async fn handle(
             Err(e) => out.push(format!("[error] apply-plan failed: {e:#}")),
         },
         "/image" => {
+            // CLI path: persist a user message with the image so the next turn
+            // includes it. The TUI intercepts `/image` earlier for the native
+            // file picker + pending-attachment UX (Ctrl/Cmd+V paste).
             if arg.is_empty() {
                 out.push(
-                    "usage: /image <path> — attach an image (png/jpeg/gif/webp) \
-                          to the next prompt"
+                    "usage: /image [path] — attach an image (png/jpeg/gif/webp). In the TUI, `/image` opens a file picker and Ctrl/Cmd+V pastes a screenshot."
                         .to_string(),
                 );
             } else {
-                match crate::harness::session::image::load_image(arg) {
-                    Ok(_) => {
+                match crate::harness::session::image::resolve_and_validate(arg, &session.cwd) {
+                    Ok(path) => {
+                        let path_s = path.to_string_lossy().into_owned();
                         let msg = Message::new(
                             Role::User,
                             vec![
-                                crate::harness::session::Part::image(arg.to_string()),
+                                crate::harness::session::Part::image(path_s.clone()),
                                 crate::harness::session::Part::text("describe this image"),
                             ],
                         );
@@ -140,8 +143,8 @@ pub async fn handle(
                             .save_message(&session.id, &session.cwd, &msg)?;
                         session.push_message(msg);
                         out.push(format!(
-                            "image attached: {} — sent with your next prompt",
-                            arg
+                            "image attached: {} — included in session context",
+                            path_s
                         ));
                     }
                     Err(reason) => out.push(format!("[error] {}", reason)),

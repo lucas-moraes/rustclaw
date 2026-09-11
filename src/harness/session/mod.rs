@@ -117,7 +117,6 @@ impl Part {
         }
     }
 
-    #[allow(dead_code)] // in-progress /image feature; constructor not yet wired
     pub fn image(path: impl Into<String>) -> Self {
         Part::Image { path: path.into() }
     }
@@ -182,6 +181,19 @@ impl Message {
 
     pub fn has_tool_calls(&self) -> bool {
         !self.tool_parts().is_empty()
+    }
+
+    /// Whether this message carries any image attachment.
+    pub fn has_image(&self) -> bool {
+        self.parts.iter().any(|p| matches!(p, Part::Image { .. }))
+    }
+
+    /// Returns a copy of this message with all `Part::Image` parts removed
+    /// (used to degrade a vision request to text when the provider rejects it).
+    pub fn without_images(&self) -> Message {
+        let mut m = self.clone();
+        m.parts.retain(|p| !matches!(p, Part::Image { .. }));
+        m
     }
 }
 
@@ -357,6 +369,30 @@ pub fn preview(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_without_images_strips_only_images() {
+        let msg = Message::new(
+            Role::User,
+            vec![
+                Part::text("describe"),
+                Part::image("/tmp/a.png"),
+                Part::text("please"),
+            ],
+        );
+        assert!(msg.has_image());
+        let stripped = msg.without_images();
+        assert!(!stripped.has_image());
+        assert_eq!(stripped.text_content(), "describe\nplease");
+        // Original is untouched.
+        assert!(msg.has_image());
+    }
+
+    #[test]
+    fn test_has_image_false_when_no_image() {
+        let msg = Message::user("hello");
+        assert!(!msg.has_image());
+    }
 
     #[test]
     fn test_part_image_serde_roundtrip() {

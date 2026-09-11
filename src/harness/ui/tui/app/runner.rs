@@ -203,7 +203,20 @@ pub async fn run_tui(
                         }
                     }
                     Ok(Err(e)) => {
-                        app.push(LineKind::Error, format!("[error] {}", e));
+                        // Show the full cause chain so the real provider error
+                        // (e.g. xAI rejecting an image) is visible, not just
+                        // the outer "agent turn failed" context.
+                        let chain: Vec<String> = e.chain().map(|c| c.to_string()).collect();
+                        let msg = if chain.len() <= 1 {
+                            format!("[error] {}", chain[0])
+                        } else {
+                            format!(
+                                "[error] {} — root cause: {}",
+                                chain[0],
+                                chain[chain.len() - 1]
+                            )
+                        };
+                        app.push(LineKind::Error, msg);
                         app.running = false;
                         app.turn_started_at = None;
                         app.status_msg = None;

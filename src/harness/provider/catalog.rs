@@ -254,6 +254,40 @@ pub fn price_per_million(provider: &str, model: &str) -> (f64, f64) {
     };
     pdef
 }
+/// Whether the given `provider`/`model` accepts image (vision) inputs.
+///
+/// Best-effort static catalog lookup based on well-known models, mirroring the
+/// substring-match style of [`price_per_million`]. Models known to be text-only
+/// (e.g. DeepSeek, Devstral, grok-build) return `false`; everything else
+/// defaults to `true`, since most modern models are multimodal.
+///
+/// The caller should treat `true` as "image input is supported/attempted" —
+/// the processor's reactive fallback (`stream_with_image_fallback`) still
+/// protects against a provider that rejects images at runtime (e.g. some xAI
+/// grok PNG rejections).
+pub fn supports_image(provider: &str, model: &str) -> bool {
+    let provider = provider.to_lowercase();
+    let model_l = model.to_lowercase();
+
+    // Text-only overrides: models known NOT to accept image input.
+    const TEXT_ONLY: &[(&str, &str)] = &[
+        ("deepinfra", "deepseek"),
+        ("deepinfra", "devstral"),
+        ("opencode-go", "deepseek"),
+        ("openrouter", "deepseek"),
+        ("huggingface", "deepseek"),
+        ("moonshot", "moonshot-v1"),
+        ("xai", "grok-build"),
+    ];
+
+    for &(p, sub) in TEXT_ONLY {
+        if provider == p && model_l.contains(sub) {
+            return false;
+        }
+    }
+
+    true
+}
 
 /// Estimated cost in USD for the given token usage on `provider`/`model`.
 /// Kept for tests and simple callers; prefer [`estimate_cost_cached`].
@@ -464,5 +498,38 @@ mod tests {
             .abs()
                 < 1e-9
         );
+    }
+    #[test]
+    fn test_supports_image() {
+        // Vision-capable models → true.
+        assert!(supports_image("anthropic", "claude-sonnet-4-20250514"));
+        assert!(supports_image("anthropic", "claude-opus-4-20250514"));
+        assert!(supports_image("xai", "grok-4.5"));
+        assert!(supports_image("openrouter", "google/gemini-3-pro"));
+        assert!(supports_image(
+            "deepinfra",
+            "Qwen/Qwen3-Coder-480B-A35B-Instruct"
+        ));
+        // Text-only models → false.
+        assert!(!supports_image(
+            "deepinfra",
+            "deepseek-ai/DeepSeek-V4-Flash-0731"
+        ));
+        assert!(!supports_image(
+            "deepinfra",
+            "mistralai/Devstral-Small-2507"
+        ));
+        assert!(!supports_image("opencode-go", "deepseek-v4-flash"));
+        assert!(!supports_image(
+            "openrouter",
+            "deepseek-ai/DeepSeek-V4-Flash-0731"
+        ));
+        assert!(!supports_image(
+            "huggingface",
+            "deepseek-ai/DeepSeek-V4-0324"
+        ));
+        assert!(!supports_image("xai", "grok-build-0.1"));
+        // Unknown → default true.
+        assert!(supports_image("some-provider", "some-future-model"));
     }
 }

@@ -512,9 +512,10 @@ mod tests {
         session.messages = msgs(3);
 
         let provider = Arc::new(MockProvider::ok("summary"));
-        let summarized = compact_if_needed(&mut session, provider, &store, 1, false, None, "grok-4.5")
-            .await
-            .unwrap();
+        let summarized =
+            compact_if_needed(&mut session, provider, &store, 1, false, None, "grok-4.5")
+                .await
+                .unwrap();
         assert_eq!(summarized, 0);
         assert_eq!(session.messages.len(), 3);
     }
@@ -532,9 +533,17 @@ mod tests {
         let provider = Arc::new(MockProvider::ok("summary"));
         let (tx, mut rx) = event_channel();
 
-        let summarized = compact_if_needed(&mut session, provider, &store, 1, false, Some(&tx), "grok-4.5")
-            .await
-            .unwrap();
+        let summarized = compact_if_needed(
+            &mut session,
+            provider,
+            &store,
+            1,
+            false,
+            Some(&tx),
+            "grok-4.5",
+        )
+        .await
+        .unwrap();
 
         assert_eq!(summarized, 0);
         // No compaction -> no CompactionStarted/Finished spam on the TUI.

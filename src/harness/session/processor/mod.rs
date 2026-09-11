@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use crate::harness::agent::AgentSpec;
 use crate::harness::event::{EventSender, HarnessEvent};
+use crate::harness::provider::ProviderStream;
 use crate::harness::provider::{LlmRequest, Provider, ToolSpec, Usage};
 use crate::harness::session::{Message, Part, Role, Session};
 use crate::harness::tool::registry::ToolRegistry;
@@ -33,6 +34,21 @@ impl Default for ProcessorConfig {
             turn_timeout_secs: DEFAULT_TURN_TIMEOUT_SECS,
         }
     }
+}
+
+/// Returns a copy of `req.messages` with all `Part::Image` parts removed from
+/// user messages (degrading a vision request to text-only).
+fn strip_images(req: &LlmRequest) -> Vec<Message> {
+    req.messages
+        .iter()
+        .map(|m| {
+            if m.has_image() {
+                m.without_images()
+            } else {
+                m.clone()
+            }
+        })
+        .collect()
 }
 
 /// Deps the processor needs; all shared, cheap to clone.
@@ -210,26 +226,17 @@ impl SessionProcessor {
                     temperature: agent.turn_temperature(),
                 };
 
-                let retry_policy = crate::harness::provider::retry::RetryPolicy::default();
-                let provider = self.provider.clone();
-                let req_clone = req.clone();
-                let abort_flag = ctx.abort.clone();
-                let stream = crate::harness::provider::retry::retry_with_policy(
-                    &retry_policy,
-                    || {
-                        let provider = provider.clone();
-                        let req = req_clone.clone();
-                        let abort = abort_flag.clone();
-                        async move {
-                            if abort.is_aborted() {
-                                return Err(anyhow::anyhow!("aborted by user"));
-                            }
-                            provider.stream(&req).await
-                        }
-                    },
-                    || ctx.abort.is_aborted(),
-                )
-                .await?;
+                let stream = match self.stream_with_image_fallback(&req, &ctx.abort).await {
+                    Ok(s) => s,
+                    Err(e) => {
+                        tracing::info!(
+                            "turn stream aborted after image fallback (session={}): {}",
+                            session.id,
+                            e
+                        );
+                        return Err(e);
+                    }
+                };
                 let stream_loop::StreamOutcome {
                     assistant_id,
                     text,
@@ -528,6 +535,90 @@ impl SessionProcessor {
     ) {
         crate::harness::session::tool_exec::execute_tool_calls(self, session, assistant_id, ctx)
             .await;
+    }
+
+    /// Streams a request, degrading images to text when the provider rejects
+    /// them (e.g. xAI grok returns a permanent 400 "Invalid PNG image" that
+    /// would otherwise brick the session). The retry-with-policy handles
+    /// transient errors; this handles the permanent image-rejection case by
+    /// retrying once with the image parts stripped from the user message.
+    async fn stream_with_image_fallback(
+        &self,
+        req: &LlmRequest,
+        abort: &crate::harness::tool::context::AbortSignal,
+    ) -> anyhow::Result<ProviderStream> {
+        let retry_policy = crate::harness::provider::retry::RetryPolicy::default();
+        let provider = self.provider.clone();
+        let req_clone = req.clone();
+        let abort_flag = abort.clone();
+        let stream = crate::harness::provider::retry::retry_with_policy(
+            &retry_policy,
+            || {
+                let provider = provider.clone();
+                let req = req_clone.clone();
+                let abort = abort_flag.clone();
+                async move {
+                    if abort.is_aborted() {
+                        return Err(anyhow::anyhow!("aborted by user"));
+                    }
+                    provider.stream(&req).await
+                }
+            },
+            || abort.is_aborted(),
+        )
+        .await;
+
+        match stream {
+            Ok(s) => Ok(s),
+            Err(e) => {
+                // Only attempt image degradation when (a) the request actually
+                // carries image parts, and (b) the error mentions images/vision.
+                let has_image = req.messages.iter().any(|m| m.has_image());
+                let err_text = format!("{e:#}");
+                let looks_like_image_rejection = err_text.to_lowercase().contains("image")
+                    || err_text.to_lowercase().contains("picture")
+                    || err_text.to_lowercase().contains("vision")
+                    || err_text.to_lowercase().contains("multimodal");
+                if !has_image || !looks_like_image_rejection {
+                    return Err(e);
+                }
+
+                tracing::warn!(
+                    "provider rejected image(s), degrading to text and retrying: {}",
+                    err_text
+                );
+                let stripped = strip_images(req);
+                let req2 = LlmRequest {
+                    messages: Arc::new(stripped),
+                    ..req.clone()
+                };
+                let abort_flag2 = abort.clone();
+                let provider2 = provider.clone();
+                let req2c = req2.clone();
+                let stream2 = crate::harness::provider::retry::retry_with_policy(
+                    &retry_policy,
+                    || {
+                        let provider = provider2.clone();
+                        let req = req2c.clone();
+                        let abort = abort_flag2.clone();
+                        async move {
+                            if abort.is_aborted() {
+                                return Err(anyhow::anyhow!("aborted by user"));
+                            }
+                            provider.stream(&req).await
+                        }
+                    },
+                    || abort.is_aborted(),
+                )
+                .await;
+                match stream2 {
+                    Ok(s) => Ok(s),
+                    Err(e2) => Err(e2.context(format!(
+                        "image degraded to text, but provider still failed (original: {err_text})"
+                    ))),
+                }
+            }
+        }
     }
 
     async fn maybe_compact(&self, session: &mut Session) -> anyhow::Result<()> {
