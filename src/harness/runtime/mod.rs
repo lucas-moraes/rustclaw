@@ -437,6 +437,7 @@ impl SessionRuntime {
             self.config.max_context_tokens,
             force,
             events,
+            &self.config.model,
         )
         .await?;
         // Compaction rewrote the conversation context: drop the frozen

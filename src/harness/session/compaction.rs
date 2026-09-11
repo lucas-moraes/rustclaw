@@ -52,6 +52,7 @@ pub async fn should_compact_and_execute(
     messages: &[Message],
     provider: Arc<dyn Provider>,
     config: &CompactionConfig,
+    model: &str,
 ) -> Result<Option<Vec<Message>>> {
     if messages.len() < config.min_messages_to_compact {
         return Ok(None);
@@ -65,7 +66,7 @@ pub async fn should_compact_and_execute(
     let dropped: &[Message] = &messages[..cut];
     let recent: &[Message] = &messages[cut..];
 
-    let summary = summarize(dropped, provider, config.summary_timeout).await?;
+    let summary = summarize(dropped, provider, config.summary_timeout, model).await?;
     let summary_message = Message::new(
         Role::User,
         vec![Part::text(format!(
@@ -101,6 +102,7 @@ pub async fn compact_if_needed(
     max_context_tokens: usize,
     force: bool,
     events: Option<&EventSender>,
+    model: &str,
 ) -> Result<usize> {
     let config = CompactionConfig {
         max_context_tokens: if force { 0 } else { max_context_tokens },
@@ -113,7 +115,7 @@ pub async fn compact_if_needed(
     // Decide first: events must only fire when a compaction actually runs,
     // otherwise the TUI would show "[compacting context…]" on every turn tick.
     let Some(new_messages) =
-        should_compact_and_execute(&session.messages, provider, &config).await?
+        should_compact_and_execute(&session.messages, provider, &config, model).await?
     else {
         return Ok(0);
     };
@@ -156,6 +158,7 @@ async fn summarize(
     dropped: &[Message],
     provider: Arc<dyn Provider>,
     timeout: Duration,
+    model: &str,
 ) -> Result<String> {
     let transcript = build_summary_request(dropped)
         .into_iter()
@@ -164,7 +167,7 @@ async fn summarize(
         .join("\n");
 
     let summary_req = LlmRequest {
-        model: String::new(),
+        model: model.to_string(),
         system: "Summarize the following agent conversation in under 500 words, \
 preserving key decisions, file paths, and outcomes."
             .to_string(),
@@ -352,7 +355,7 @@ mod tests {
     #[tokio::test]
     async fn test_noop_below_min_messages() {
         let provider = Arc::new(MockProvider::ok("summary"));
-        let out = should_compact_and_execute(&msgs(3), provider, &cfg(0, 6, 10))
+        let out = should_compact_and_execute(&msgs(3), provider, &cfg(0, 6, 10), "grok-4.5")
             .await
             .unwrap();
         assert!(out.is_none());
@@ -361,7 +364,7 @@ mod tests {
     #[tokio::test]
     async fn test_noop_under_token_limit() {
         let provider = Arc::new(MockProvider::ok("summary"));
-        let out = should_compact_and_execute(&msgs(12), provider, &cfg(10_000, 6, 10))
+        let out = should_compact_and_execute(&msgs(12), provider, &cfg(10_000, 6, 10), "grok-4.5")
             .await
             .unwrap();
         assert!(out.is_none());
@@ -371,7 +374,7 @@ mod tests {
     async fn test_summarizes_and_keeps_recent() {
         let provider = Arc::new(MockProvider::ok("this is the summary"));
         let messages = msgs(12);
-        let out = should_compact_and_execute(&messages, provider, &cfg(1, 6, 10))
+        let out = should_compact_and_execute(&messages, provider, &cfg(1, 6, 10), "grok-4.5")
             .await
             .unwrap()
             .expect("expected compaction");
@@ -392,7 +395,7 @@ mod tests {
     async fn test_summary_failure_falls_back() {
         let provider = Arc::new(MockProvider::failing());
         let messages = msgs(12);
-        let out = should_compact_and_execute(&messages, provider, &cfg(1, 6, 10))
+        let out = should_compact_and_execute(&messages, provider, &cfg(1, 6, 10), "grok-4.5")
             .await
             .unwrap()
             .expect("expected compaction even on summary failure");
@@ -432,6 +435,7 @@ mod tests {
             &messages,
             provider,
             &cfg_with_timeout(1, 6, 10, Duration::from_millis(50)),
+            "grok-4.5",
         )
         .await
         .unwrap()
@@ -461,6 +465,7 @@ mod tests {
             1, // max_context_tokens: tiny so compaction triggers
             false,
             Some(&tx),
+            "grok-4.5",
         )
         .await
         .unwrap();
@@ -507,7 +512,7 @@ mod tests {
         session.messages = msgs(3);
 
         let provider = Arc::new(MockProvider::ok("summary"));
-        let summarized = compact_if_needed(&mut session, provider, &store, 1, false, None)
+        let summarized = compact_if_needed(&mut session, provider, &store, 1, false, None, "grok-4.5")
             .await
             .unwrap();
         assert_eq!(summarized, 0);
@@ -527,7 +532,7 @@ mod tests {
         let provider = Arc::new(MockProvider::ok("summary"));
         let (tx, mut rx) = event_channel();
 
-        let summarized = compact_if_needed(&mut session, provider, &store, 1, false, Some(&tx))
+        let summarized = compact_if_needed(&mut session, provider, &store, 1, false, Some(&tx), "grok-4.5")
             .await
             .unwrap();
 

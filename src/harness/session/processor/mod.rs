@@ -538,6 +538,7 @@ impl SessionProcessor {
             self.config.max_context_tokens,
             false,
             Some(&self.events),
+            &self.config.model,
         )
         .await?;
         Ok(())
