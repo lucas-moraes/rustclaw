@@ -99,6 +99,10 @@ pub(crate) fn handle_permissions_cmd(
             }
             Err(e) => out.push(format!("[error] {}", e)),
         },
+        // Invariant: the dispatcher in `ui/commands/mod.rs` only routes
+        // `/permissions` and `/allow-all-permissions` here (line ~276), so no
+        // other `cmd` can reach this match. If a new command is added to the
+        // help but not routed, this fires loudly instead of silently no-oping.
         _ => unreachable!("handle_permissions_cmd called with unknown cmd: {}", cmd),
     }
     Ok(())

@@ -49,6 +49,7 @@ pub(crate) fn undo_last_turn(app: &mut App) -> String {
     {
         Ok(()) => {
             app.session.messages.truncate(idx);
+            app.session.invalidate_messages_cache();
             match app.runtime.store.save_session(&app.session) {
                 Ok(()) => {
                     app.tool_status = None;
@@ -93,6 +94,7 @@ pub(crate) fn revert_to_prompt(app: &mut App, line_idx: usize) -> Result<()> {
         .delete_messages_from(&app.session.id, &app.session.cwd, &msg_id)?;
     // Memory: drop messages from this prompt on.
     app.session.messages.truncate(msg_index);
+    app.session.invalidate_messages_cache();
     app.runtime.store.save_session(&app.session)?;
     app.tool_status = None;
     // Rebuild the on-screen transcript so removed messages disappear.

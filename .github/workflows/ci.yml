@@ -30,10 +30,22 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-ci-
 
       - name: Test
-        run: cargo test
+        run: cargo test --all-targets
 
       - name: Clippy
-        run: cargo clippy -- -D warnings
+        run: cargo clippy --all-targets -- -D warnings
 
       - name: Format
         run: cargo fmt --check
+
+  deny:
+    name: cargo-deny (licenses + advisories)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run cargo-deny
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check all
+          arguments: --workspace

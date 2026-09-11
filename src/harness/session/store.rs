@@ -436,6 +436,7 @@ impl SessionStore {
             created_at: parse_ts(&created_at),
             updated_at: parse_ts(&updated_at),
             messages,
+            messages_arc: None,
             todos,
             skills,
             title,
@@ -480,11 +481,16 @@ impl SessionStore {
             let preview = first_user
                 .and_then(|pj| serde_json::from_str::<Vec<Part>>(&pj).ok())
                 .and_then(|parts| {
-                    parts
-                        .iter()
-                        .find_map(|p| p.as_text().map(|s| s.to_string()))
-                        // Skip the injected `<project-memory>` prefix part.
-                        .filter(|t| !crate::harness::project::memory::is_memory_block(t))
+                    parts.iter().find_map(|p| {
+                        let raw = p.as_text()?;
+                        let cleaned = crate::harness::project::memory::strip_memory_blocks(raw);
+                        let cleaned = cleaned.trim();
+                        if cleaned.is_empty() {
+                            None
+                        } else {
+                            Some(cleaned.to_string())
+                        }
+                    })
                 })
                 .unwrap_or_default();
             out.push(SessionSummary {

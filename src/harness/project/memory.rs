@@ -37,8 +37,9 @@ pub const CONFIDENCE_CONFIRMED: &str = "confirmed";
 use super::scoring::{fts_escape, normalize_fact, strip_timestamp_prefix};
 #[allow(unused_imports)]
 pub use super::scoring::{
-    is_memory_block, render_memory, render_memory_ranked, score_fact, score_fact_bm25, MemoryFact,
-    AUTO_PROMOTE_HITS, MAX_MEMORY_CHARS, MAX_SUMMARY_CHARS, MEMORY_BLOCK_END, MEMORY_BLOCK_START,
+    is_memory_block, render_memory, render_memory_ranked, score_fact, score_fact_bm25,
+    strip_memory_blocks, MemoryFact, AUTO_PROMOTE_HITS, MAX_MEMORY_CHARS, MAX_SUMMARY_CHARS,
+    MEMORY_BLOCK_END, MEMORY_BLOCK_START,
 };
 
 /// A persisted row of project memory.

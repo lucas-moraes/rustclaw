@@ -184,3 +184,233 @@ pub(crate) async fn consume_stream(
         aborted,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::harness::event::event_channel;
+    use crate::harness::provider::{LlmRequest, LlmResponse};
+    use crate::harness::session::processor::ProcessorConfig;
+    use crate::harness::session::store::SessionStore;
+    use crate::harness::tool::context::AbortSignal;
+    use crate::harness::tool::registry::ToolRegistry;
+    use std::sync::Arc as StdArc;
+
+    /// Minimal processor for driving `consume_stream` directly.
+    fn test_processor() -> SessionProcessor {
+        let dir = tempfile::tempdir().unwrap();
+        let store = StdArc::new(SessionStore::open(&dir.path().join("test.db")).unwrap());
+        let (tx, _rx) = event_channel();
+        SessionProcessor {
+            provider: StdArc::new(StalledProvider),
+            registry: ToolRegistry::builder().build(),
+            events: tx,
+            store,
+            config: ProcessorConfig {
+                model: "m".into(),
+                max_iterations: 10,
+                max_context_tokens: 100_000,
+                turn_timeout_secs: 60,
+            },
+        }
+    }
+
+    struct StalledProvider;
+    #[async_trait::async_trait]
+    impl crate::harness::provider::Provider for StalledProvider {
+        fn name(&self) -> &str {
+            "stalled"
+        }
+        async fn stream(&self, _req: &LlmRequest) -> anyhow::Result<ProviderStream> {
+            Ok(futures_util::stream::pending::<anyhow::Result<ProviderEvent>>().boxed())
+        }
+        async fn complete(&self, _req: &LlmRequest) -> anyhow::Result<LlmResponse> {
+            unreachable!()
+        }
+    }
+
+    fn session() -> Session {
+        Session::new("build", std::path::PathBuf::from("/tmp"))
+    }
+
+    fn stream_of(events: Vec<ProviderEvent>) -> ProviderStream {
+        futures_util::stream::iter(events.into_iter().map(Ok)).boxed()
+    }
+
+    #[tokio::test]
+    async fn test_clean_finish_accumulates_text_and_tools() {
+        let p = test_processor();
+        let s = session();
+        let abort = AbortSignal::new();
+        let stream = stream_of(vec![
+            ProviderEvent::TextDelta("Hello ".into()),
+            ProviderEvent::TextDelta("world".into()),
+            ProviderEvent::ToolCallStart {
+                id: "t1".into(),
+                name: "bash".into(),
+            },
+            ProviderEvent::ToolCallEnd {
+                id: "t1".into(),
+                arguments: r#"{"command":"ls"}"#.into(),
+            },
+            ProviderEvent::End {
+                stop_reason: None,
+                usage: Some(Usage {
+                    input_tokens: 10,
+                    output_tokens: 5,
+                    cache_read_tokens: 0,
+                    cache_write_tokens: 0,
+                }),
+            },
+        ]);
+        let out = consume_stream(
+            &p,
+            &s,
+            stream,
+            tokio::time::Instant::now() + Duration::from_secs(60),
+            60,
+            &abort,
+        )
+        .await;
+        assert_eq!(out.text, "Hello world");
+        assert_eq!(out.tool_calls.len(), 1);
+        assert_eq!(out.tool_calls[0].name, "bash");
+        assert_eq!(
+            out.tool_calls[0].input,
+            serde_json::json!({"command": "ls"})
+        );
+        assert_eq!(out.usage.input_tokens, 10);
+        assert_eq!(out.usage.output_tokens, 5);
+        assert!(out.stop_reason.is_none());
+        assert!(!out.aborted);
+    }
+
+    #[tokio::test]
+    async fn test_abort_mid_stream() {
+        let p = test_processor();
+        let s = session();
+        let abort = AbortSignal::new();
+        // Stream that yields one delta then stays pending forever.
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        tx.send(Ok(ProviderEvent::TextDelta("partial".into())))
+            .unwrap();
+        let stream =
+            futures_util::stream::unfold(
+                rx,
+                |mut rx| async move { rx.recv().await.map(|ev| (ev, rx)) },
+            )
+            .boxed();
+        let abort_for_task = abort.clone();
+        let handle = tokio::spawn(async move {
+            consume_stream(
+                &p,
+                &s,
+                stream,
+                tokio::time::Instant::now() + Duration::from_secs(60),
+                60,
+                &abort_for_task,
+            )
+            .await
+        });
+        // Let the first delta be consumed, then abort.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        abort.abort();
+        let out = handle.await.unwrap();
+        assert!(out.aborted, "abort must be reflected in outcome");
+        assert_eq!(out.text, "partial");
+    }
+
+    #[tokio::test]
+    async fn test_stream_error_sets_stop_reason() {
+        let p = test_processor();
+        let s = session();
+        let abort = AbortSignal::new();
+        let stream = futures_util::stream::iter(vec![
+            Ok(ProviderEvent::TextDelta("before".into())),
+            Err(anyhow::anyhow!("connection reset")),
+        ])
+        .boxed();
+        let out = consume_stream(
+            &p,
+            &s,
+            stream,
+            tokio::time::Instant::now() + Duration::from_secs(60),
+            60,
+            &abort,
+        )
+        .await;
+        assert_eq!(out.text, "before");
+        let reason = out.stop_reason.expect("stop_reason set on stream error");
+        assert!(reason.contains("stream error"), "reason: {reason}");
+        assert!(!out.aborted);
+    }
+
+    #[tokio::test]
+    async fn test_tool_call_end_without_start_recovers() {
+        let p = test_processor();
+        let s = session();
+        let abort = AbortSignal::new();
+        let stream = stream_of(vec![
+            ProviderEvent::ToolCallEnd {
+                id: "orphan".into(),
+                arguments: r#"{"x":1}"#.into(),
+            },
+            ProviderEvent::End {
+                stop_reason: None,
+                usage: None,
+            },
+        ]);
+        let out = consume_stream(
+            &p,
+            &s,
+            stream,
+            tokio::time::Instant::now() + Duration::from_secs(60),
+            60,
+            &abort,
+        )
+        .await;
+        assert_eq!(
+            out.tool_calls.len(),
+            1,
+            "orphan ToolCallEnd must be recovered"
+        );
+        assert_eq!(out.tool_calls[0].id, "orphan");
+        assert_eq!(out.tool_calls[0].input, serde_json::json!({"x": 1}));
+    }
+
+    #[tokio::test]
+    async fn test_invalid_tool_arguments_marks_error() {
+        let p = test_processor();
+        let s = session();
+        let abort = AbortSignal::new();
+        let stream = stream_of(vec![
+            ProviderEvent::ToolCallStart {
+                id: "t1".into(),
+                name: "bash".into(),
+            },
+            ProviderEvent::ToolCallEnd {
+                id: "t1".into(),
+                arguments: "not json".into(),
+            },
+            ProviderEvent::End {
+                stop_reason: None,
+                usage: None,
+            },
+        ]);
+        let out = consume_stream(
+            &p,
+            &s,
+            stream,
+            tokio::time::Instant::now() + Duration::from_secs(60),
+            60,
+            &abort,
+        )
+        .await;
+        assert_eq!(out.tool_calls.len(), 1);
+        assert_eq!(
+            out.tool_calls[0].status,
+            crate::harness::event::ToolStatus::Error
+        );
+        assert!(out.tool_calls[0].error.is_some());
+    }
+}

@@ -222,6 +222,10 @@ pub(crate) async fn handle_provider_cmd(
                 }
             }
         }
+        // Invariant: the dispatcher in `ui/commands/mod.rs` only routes
+        // `/provider` here (line ~203), so no other `cmd` can reach this
+        // match. Fires loudly if a new provider command is added to the help
+        // but not routed.
         _ => unreachable!("handle_provider_cmd called with unknown cmd: {}", cmd),
     }
     Ok(())

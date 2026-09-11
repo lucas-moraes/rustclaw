@@ -265,14 +265,23 @@ impl App {
                             self.push(LineKind::System, format!("[image: {}]", path));
                         }
                     }
+                    // Skip runtime-injected `<project-memory>` parts; keep the
+                    // real user prompt (may live in a later text part).
                     let text = msg
                         .parts
                         .iter()
-                        .find_map(|p| p.as_text().map(str::to_string))
-                        // Skip the injected `<project-memory>` prefix part.
-                        .filter(|t| !crate::harness::project::memory::is_memory_block(t))
+                        .find_map(|p| {
+                            let raw = p.as_text()?;
+                            let cleaned = crate::harness::project::memory::strip_memory_blocks(raw);
+                            let cleaned = cleaned.trim();
+                            if cleaned.is_empty() {
+                                None
+                            } else {
+                                Some(cleaned.to_string())
+                            }
+                        })
                         .unwrap_or_default();
-                    if !text.trim().is_empty() {
+                    if !text.is_empty() {
                         self.push(LineKind::User, text);
                     }
                 }

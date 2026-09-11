@@ -273,7 +273,7 @@ mod tests {
         let e = anyhow::Error::new(io);
         assert_eq!(error_retry_kind(&e), RetryKind::Retryable);
         // A plain io error (not a timeout) is permanent.
-        let io2 = std::io::Error::new(std::io::ErrorKind::Other, "disk error");
+        let io2 = std::io::Error::other("disk error");
         assert_eq!(
             error_retry_kind(&anyhow::Error::new(io2)),
             RetryKind::Permanent

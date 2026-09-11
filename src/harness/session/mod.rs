@@ -14,6 +14,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -192,6 +193,13 @@ pub struct Session {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub messages: Vec<Message>,
+    /// Cached `Arc<Vec<Message>>` snapshot of `messages`, invalidated on any
+    /// mutation. Lets the processor build `LlmRequest.messages` (an
+    /// `Arc<Vec<Message>>`) with a cheap refcount clone instead of a deep
+    /// `Vec<Message>` clone every iteration — O(n²) over a long turn.
+    #[serde(skip)]
+    #[allow(dead_code)] // read via `messages_arc()`; kept private
+    pub(crate) messages_arc: Option<Arc<Vec<Message>>>,
     #[serde(default)]
     pub todos: Vec<TodoItem>,
     /// Skills (this session's "memory"). Chosen at session start, editable.
@@ -213,13 +221,15 @@ impl Session {
             created_at: now,
             updated_at: now,
             messages: Vec::new(),
+            messages_arc: None,
             todos: Vec::new(),
             skills: Vec::new(),
             title: None,
         }
     }
 
-    /// Display title: custom title if set, else first user message preview.
+    /// Display title: custom title if set, else first user-visible prompt
+    /// (skips runtime-injected `<project-memory>` parts).
     pub fn display_title(&self) -> String {
         if let Some(t) = &self.title {
             let t = t.trim();
@@ -229,16 +239,45 @@ impl Session {
         }
         self.messages
             .iter()
-            .find(|m| m.role.as_str() == "user")
-            .and_then(|m| m.parts.iter().find_map(|p| p.as_text().map(str::to_string)))
-            .map(|s| s.replace('\n', " ").trim().to_string())
-            .filter(|s| !s.is_empty())
+            .filter(|m| m.role.as_str() == "user")
+            .find_map(|m| {
+                m.parts.iter().find_map(|p| {
+                    let raw = p.as_text()?;
+                    let cleaned = crate::harness::project::memory::strip_memory_blocks(raw);
+                    let cleaned = cleaned.replace('\n', " ").trim().to_string();
+                    if cleaned.is_empty() {
+                        None
+                    } else {
+                        Some(cleaned)
+                    }
+                })
+            })
             .unwrap_or_else(|| "untitled".to_string())
     }
 
     pub fn push_message(&mut self, msg: Message) {
         self.messages.push(msg);
+        self.messages_arc = None; // invalidate cache
         self.updated_at = Utc::now();
+    }
+
+    /// Cheap `Arc` snapshot of the message history. Reuses a cached snapshot
+    /// when the history hasn't changed since the last call, so the processor
+    /// can build `LlmRequest.messages` without deep-cloning the whole history
+    /// on every iteration.
+    pub fn messages_arc(&mut self) -> Arc<Vec<Message>> {
+        if let Some(arc) = &self.messages_arc {
+            return arc.clone();
+        }
+        let arc = Arc::new(self.messages.clone());
+        self.messages_arc = Some(arc.clone());
+        arc
+    }
+
+    /// Invalidates the cached snapshot after a direct mutation of `messages`
+    /// (e.g. `truncate`/`pop` outside `push_message`).
+    pub fn invalidate_messages_cache(&mut self) {
+        self.messages_arc = None;
     }
 
     /// Last message in the session, if any. Public convenience; kept for API
@@ -379,12 +418,73 @@ mod tests {
     }
 
     #[test]
+    fn test_display_title_skips_project_memory() {
+        use crate::harness::project::memory::{MEMORY_BLOCK_END, MEMORY_BLOCK_START};
+        let mut session = Session::new("build", PathBuf::from("/tmp"));
+        let mut msg = Message::user("real user question");
+        // Runtime injects memory as a leading text part.
+        msg.parts.insert(
+            0,
+            Part::text(format!(
+                "{MEMORY_BLOCK_START}\n- [x] fact\n{MEMORY_BLOCK_END}"
+            )),
+        );
+        session.push_message(msg);
+        assert_eq!(session.display_title(), "real user question");
+        // Combined single part (memory prefix + prompt).
+        let mut session2 = Session::new("build", PathBuf::from("/tmp"));
+        session2.push_message(Message::user(format!(
+            "{MEMORY_BLOCK_START}\n- fact\n{MEMORY_BLOCK_END}\n\nfix the sidebar"
+        )));
+        assert_eq!(session2.display_title(), "fix the sidebar");
+    }
+
+    #[test]
     fn test_preview_truncates() {
         assert_eq!(preview("hello", 10), "hello");
         let long = "x".repeat(50);
         let p = preview(&long, 10);
         assert!(p.ends_with('…'));
         assert_eq!(p.chars().count(), 11);
+    }
+
+    #[test]
+    fn test_messages_arc_cache_invalidates_on_push() {
+        let mut session = Session::new("build", PathBuf::from("/tmp"));
+        session.push_message(Message::user("first"));
+        let a1 = session.messages_arc();
+        // Same snapshot reused (no deep clone) while history is unchanged.
+        let a2 = session.messages_arc();
+        assert!(Arc::ptr_eq(&a1, &a2), "cache should be reused");
+        assert_eq!(a1.len(), 1);
+
+        // A push invalidates the cache and produces a fresh snapshot.
+        session.push_message(Message::user("second"));
+        let b = session.messages_arc();
+        assert!(!Arc::ptr_eq(&a1, &b), "cache must be invalidated on push");
+        assert_eq!(b.len(), 2);
+
+        // Direct mutation + explicit invalidation also refreshes.
+        session.messages.truncate(1);
+        session.invalidate_messages_cache();
+        let c = session.messages_arc();
+        assert_eq!(c.len(), 1);
+        assert!(!Arc::ptr_eq(&b, &c));
+    }
+
+    #[test]
+    fn test_messages_arc_not_serialized() {
+        let mut session = Session::new("build", PathBuf::from("/tmp"));
+        session.push_message(Message::user("hi"));
+        let _ = session.messages_arc(); // populate cache
+        let json = serde_json::to_string(&session).unwrap();
+        assert!(
+            !json.contains("messages_arc"),
+            "cache must not be serialized"
+        );
+        let back: Session = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.messages.len(), 1);
+        assert!(back.messages_arc.is_none());
     }
 
     #[test]

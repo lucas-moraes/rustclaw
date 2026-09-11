@@ -293,6 +293,7 @@ pub async fn handle(
                     {
                         Ok(()) => {
                             session.messages.truncate(idx);
+                            session.invalidate_messages_cache();
                             match runtime.store.save_session(session) {
                                 Ok(()) => {
                                     out.push("session reverted to before last prompt".to_string());

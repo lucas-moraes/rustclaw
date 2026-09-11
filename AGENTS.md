@@ -221,10 +221,11 @@ impl Tool for MyTool {
 ```
 
 ### ast_search (Tree-Sitter)
-- `tool/ast_search.rs` usa `tree-sitter` 0.22 + `tree-sitter-rust` 0.21 para
+- `tool/ast_search.rs` usa `tree-sitter` 0.25 + `tree-sitter-rust` 0.24 para
   busca sintática em `.rs` (structs/enums/traits/functions/impls) sem regex.
-- API da crate: `tree_sitter_rust::language()` (função, NÃO a constante
-  `LANGUAGE`); `Parser::set_language(&Language)` recebe referência.
+- API da crate: `tree_sitter_rust::LANGUAGE` (constante `Language`); cria-se
+  `tree_sitter::Language::new(LANGUAGE)` e `Parser::set_language(&language)`
+  recebe referência.
 - Nó `impl_item` NÃO tem campo `name` — o nome é montado dos fields `trait`
   e `type` ("Trait for Type"). `child_by_field_name("name")` vale para
   function/struct/enum/trait items.

@@ -326,31 +326,34 @@ fn bubble(
     } else {
         t.border
     };
-    // "  │ " prefix = 4 cols; keep body readable.
-    let pad = 4usize;
+    // Bubble body prefix is "│ " (2 cols). Size markdown to that inner width
+    // so tables/fences already fit — never re-wrap them (that destroys grids).
+    let pad = 2usize;
     let inner_w = width.saturating_sub(pad).max(8);
-    let body = markdown::render_text(text, t, Style::default().fg(body_fg));
+    let body = markdown::render_text(text, t, Style::default().fg(body_fg), inner_w);
 
     let mut body_lines: Vec<Line<'static>> = Vec::new();
     if body.len() == 1 && text.lines().count() <= 1 {
+        // Single plain line: soft-wrap, then style each chunk.
         for w in markdown::wrap_plain(text, inner_w) {
-            body_lines.push(Line::from(
-                markdown::render_text(&w, t, Style::default().fg(body_fg))
-                    .into_iter()
-                    .next()
-                    .map(|l| l.spans)
-                    .unwrap_or_default(),
+            body_lines.extend(markdown::render_text(
+                &w,
+                t,
+                Style::default().fg(body_fg),
+                inner_w,
             ));
         }
     } else {
         for bl in body {
             let plain: String = bl.spans.iter().map(|s| s.content.as_ref()).collect();
-            if plain.chars().count() > inner_w {
-                for w in markdown::wrap_plain(&plain, inner_w) {
-                    body_lines.extend(markdown::render_text(&w, t, Style::default().fg(body_fg)));
-                }
-            } else {
+            if is_structured_line(&plain) || plain.chars().count() <= inner_w {
                 body_lines.push(bl);
+            } else {
+                // Long prose only — wrap without re-parsing as markdown
+                // (re-render would invent phantom tables from partial "|").
+                for w in markdown::wrap_plain(&plain, inner_w) {
+                    body_lines.push(Line::from(Span::styled(w, Style::default().fg(body_fg))));
+                }
             }
         }
     }
@@ -398,6 +401,28 @@ fn bubble(
         Style::default().fg(border),
     )));
     out
+}
+
+/// True if a rendered line is a markdown table/fence box-drawing row.
+/// These must not be soft-wrapped or re-parsed — that destroys the grid.
+fn is_structured_line(plain: &str) -> bool {
+    plain.chars().any(|c| {
+        matches!(
+            c,
+            '┌' | '┬'
+                | '┐'
+                | '├'
+                | '┼'
+                | '┤'
+                | '└'
+                | '┴'
+                | '┘'
+                | '╭'
+                | '╰'
+                | '─'
+                | '│'
+        )
+    })
 }
 
 pub(crate) fn draw_scrollbar(
@@ -560,5 +585,61 @@ mod tests {
         assert!(joined.contains("╰"), "fence bottom bar lost:\n{}", joined);
         // No raw backticks should leak.
         assert!(!joined.contains("```"), "backticks leaked:\n{}", joined);
+    }
+
+    #[test]
+    fn test_bubble_table_keeps_column_separators() {
+        // Regression: bubble used to re-wrap grid lines (plain > inner_w) and
+        // re-render fragments, destroying │ separators between columns.
+        let t = Theme::cyberclaw();
+        let text = "Aqui está uma tabela markdown:\n\n\
+| Linguagem | Uso | Popularidade |\n\
+|---|---|---|\n\
+| Rust | Sistemas, WebAssembly | Alta |\n\
+| Python | Data science, IA | Muito alta |\n\
+| TypeScript | Web frontend/backend | Alta |\n\
+\n\
+| Ferramenta | Função | Status |\n\
+|---|---|---|\n\
+| `cargo build` | Compilar | ✅ |\n\
+| `cargo test` | Testar | ✅ |";
+        let out = bubble(
+            "claw",
+            "✦",
+            text,
+            t.accent,
+            t.assistant_fg,
+            &t,
+            70,
+            false,
+            0,
+        );
+        let plain = plain_lines(&out);
+        let joined = plain.join("\n");
+        // Grid chrome present.
+        assert!(joined.contains('┌'), "missing top border:\n{joined}");
+        assert!(joined.contains('└'), "missing bottom border:\n{joined}");
+        assert!(joined.contains('├'), "missing header sep:\n{joined}");
+        // Body rows must keep column separators (not collapsed plain text).
+        assert!(
+            plain
+                .iter()
+                .any(|p| p.contains("│ Rust") && p.contains("│ Sistemas")),
+            "body col separators lost:\n{joined}"
+        );
+        assert!(
+            plain
+                .iter()
+                .any(|p| p.contains("│ Python") && p.contains("│ Data science")),
+            "body col separators lost:\n{joined}"
+        );
+        // Inline-code backticks stripped from cells.
+        assert!(!joined.contains('`'), "backticks leaked:\n{joined}");
+        assert!(joined.contains("cargo build"), "cell text lost:\n{joined}");
+        // No raw markdown pipes.
+        assert!(
+            !joined.contains("| Rust |"),
+            "raw markdown pipes leaked:\n{joined}"
+        );
     }
 }

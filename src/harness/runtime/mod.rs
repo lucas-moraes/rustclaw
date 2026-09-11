@@ -636,6 +636,7 @@ impl SessionRuntime {
                 })
                 .await;
                 session.messages.pop();
+                session.invalidate_messages_cache();
             }
         }
 

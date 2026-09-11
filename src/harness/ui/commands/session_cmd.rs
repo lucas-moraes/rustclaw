@@ -130,6 +130,10 @@ pub(crate) async fn handle_session_cmd(
             Ok(n) => out.push(format!("compacted {} message(s)", n)),
             Err(e) => out.push(format!("[error] compact failed: {e}")),
         },
+        // Invariant: the dispatcher in `ui/commands/mod.rs` only routes
+        // `/new`, `/sessions`, `/agent`, `/skills` and `/compact` here
+        // (line ~110), so no other `cmd` can reach this match. Fires loudly
+        // if a new session command is added to the help but not routed.
         _ => unreachable!("handle_session_cmd called with unknown cmd: {}", cmd),
     }
     Ok(())

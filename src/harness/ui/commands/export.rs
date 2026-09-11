@@ -1,6 +1,5 @@
 //! `/export md|json [path]` — dump the current session transcript to disk.
 
-use crate::harness::project::memory::is_memory_block;
 use crate::harness::runtime::SessionRuntime;
 use crate::harness::session::{preview, Part, Session};
 use anyhow::{Context, Result};
@@ -33,16 +32,7 @@ fn parse_args(session: &Session, arg: &str) -> (String, PathBuf) {
 /// Removes `<project-memory>...</project-memory>` blocks (runtime-injected
 /// memory) from message text before export.
 fn strip_memory_blocks(text: &str) -> String {
-    if !is_memory_block(text) {
-        return text.to_string();
-    }
-    match text.find(crate::harness::project::memory::MEMORY_BLOCK_END) {
-        Some(end) => {
-            let rest = &text[end + crate::harness::project::memory::MEMORY_BLOCK_END.len()..];
-            rest.trim().to_string()
-        }
-        None => String::new(),
-    }
+    crate::harness::project::memory::strip_memory_blocks(text)
 }
 
 /// Removes `<system-reminder>...</system-reminder>` blocks (runtime-injected

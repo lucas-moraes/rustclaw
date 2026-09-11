@@ -33,6 +33,20 @@ pub fn is_memory_block(text: &str) -> bool {
     t.starts_with(MEMORY_BLOCK_START) && t.contains(MEMORY_BLOCK_END)
 }
 
+/// Strips a leading `<project-memory>...</project-memory>` block (runtime
+/// injection) from message text. Returns the remaining user-visible content
+/// (empty when the whole part was just the memory block).
+pub fn strip_memory_blocks(text: &str) -> String {
+    let t = text.trim_start();
+    if !is_memory_block(t) {
+        return text.to_string();
+    }
+    match t.find(MEMORY_BLOCK_END) {
+        Some(end) => t[end + MEMORY_BLOCK_END.len()..].trim().to_string(),
+        None => String::new(),
+    }
+}
+
 /// Max bytes for the active structural `summary` before compaction rolls
 /// lower-priority facts into the `archive` column.
 pub const MAX_SUMMARY_CHARS: usize = 4096;

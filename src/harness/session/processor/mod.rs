@@ -204,7 +204,7 @@ impl SessionProcessor {
                         .clone()
                         .unwrap_or_else(|| self.config.model.clone()),
                     system: system_prompt.to_string(),
-                    messages: std::sync::Arc::new(session.messages.clone()),
+                    messages: session.messages_arc(),
                     tools: tool_specs.clone(),
                     max_tokens: None,
                     temperature: agent.turn_temperature(),

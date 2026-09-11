@@ -1,0 +1,43 @@
+# cargo-deny configuration for rustclaw.
+# Docs: https://embarkstudios.github.io/cargo-deny/
+
+[advisories]
+version = 2
+# Ignore advisories that are unmaintained/unsound but not security-critical
+# for a local CLI tool. Add explicit `ignore` entries only after review.
+yanked = "warn"
+ignore = []
+
+[bans]
+multiple-versions = "warn"
+# Known intentional duplicates (transitive, not directly controllable):
+#   base64 0.22 (via reqwest/hyper-util) + 0.23 (direct + rmcp)
+skip = [
+    { name = "base64", version = "0.22.1" },
+]
+skip-tree = []
+
+[licenses]
+version = 2
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "CC0-1.0",
+    "MPL-2.0",
+]
+# Fail on any license not in the allow list.
+unlicensed = "deny"
+copyleft = "deny"
+allow-osi-fsf-free = "neither"
+default = "deny"
+confidence = 0.8
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
