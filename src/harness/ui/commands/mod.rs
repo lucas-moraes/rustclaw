@@ -42,7 +42,7 @@ pub async fn handle(
                 "commands: /help /new /sessions /agent <name> /skills \
                   /compact /theme [name] /usage /memory /models /model <name> \
                   /provider <name> /provider add|rm|list /auth <provider> /settings \
-                  /undo /diff /restore /fork [N] /apply-plan /image [path] /permissions /allow-all-permissions /mcp /jobs /record on|off|status /replay <file> /exit"
+                  /undo /diff /restore /fork [N] /apply-plan /image [path] /permissions /allow-all-permissions /mcp /record on|off|status /replay <file> /exit"
                     .to_string(),
             );
             out.push("keys: Ctrl+P palette · Ctrl+T theme · ? help · Ctrl+L clear".to_string());

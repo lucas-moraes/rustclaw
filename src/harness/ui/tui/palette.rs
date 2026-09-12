@@ -316,13 +316,6 @@ pub fn all_items() -> Vec<PaletteItem> {
             "/allow-all-permissions",
         ),
         item(
-            "jobs",
-            "/jobs",
-            "Background bash jobs: list / show output",
-            PaletteKind::Command,
-            "/jobs ",
-        ),
-        item(
             "undo",
             "/undo",
             "Revert to before the last prompt",

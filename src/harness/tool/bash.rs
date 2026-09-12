@@ -334,7 +334,7 @@ impl BashTool {
         Ok(ToolResult {
             title: preview(&format!("[bg] {}", command), 60),
             output: format!(
-                "started background job {}: {}\ncheck status with /jobs (or /jobs {} for output)",
+                "started background job {}: {}\noutput is written to temp files (job id {})",
                 job_id, command, job_id
             ),
             metadata: json!({"background": true, "job_id": job_id}),
@@ -368,7 +368,7 @@ impl Tool for BashTool {
                 "background": {
                     "type": "boolean",
                     "description": "Run in background: returns a job id immediately; \
-                     check with /jobs (or `bash --background <cmd>`)"
+                     output goes to temp files (or `bash --background <cmd>`)"
                 }
             },
             "required": ["command"]

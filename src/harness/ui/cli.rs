@@ -216,13 +216,12 @@ pub async fn print_events(mut rx: EventReceiver, recorder: Option<Arc<EventRecor
                 job_id, exit_code, ..
             } => {
                 println!(
-                    "\n{}[background job {} finished · exit {}] — /jobs {} for output",
+                    "\n{}[background job {} finished · exit {}]",
                     child_prefix,
                     job_id,
                     exit_code
                         .map(|c| c.to_string())
-                        .unwrap_or_else(|| "signal".into()),
-                    job_id
+                        .unwrap_or_else(|| "signal".into())
                 );
                 flush_stdout();
             }

@@ -163,12 +163,11 @@ impl App {
                 self.push(
                     LineKind::System,
                     format!(
-                        "[background job {} finished · exit {}] — /jobs {} for output",
+                        "[background job {} finished · exit {}]",
                         job_id,
                         exit_code
                             .map(|c| c.to_string())
-                            .unwrap_or_else(|| "signal".into()),
-                        job_id
+                            .unwrap_or_else(|| "signal".into())
                     ),
                 );
             }
