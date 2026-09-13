@@ -1,9 +1,11 @@
 //! `web_search` tool: public DuckDuckGo HTML search (no API key required).
 
+use scraper::{Html, Selector};
+use serde_json::{json, Value};
+
 use super::{Tool, ToolResult};
 use crate::harness::session::preview;
 use crate::harness::tool::context::ToolContext;
-use serde_json::{json, Value};
 
 const DDG_ENDPOINT: &str = "https://html.duckduckgo.com/html/";
 const USER_AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 \
@@ -77,6 +79,14 @@ técnicos ou resoluções de erros de compilação."
             return Err("aborted".to_string());
         }
 
+        if is_blocked(&html) {
+            return Err(
+                "DuckDuckGo bloqueou a requisição (possível detecção de bot/CAPTCHA). \
+Tente novamente em alguns instantes ou reformule a consulta."
+                    .to_string(),
+            );
+        }
+
         let results = parse_results(&html);
         if results.is_empty() {
             return Ok(ToolResult::simple(
@@ -109,44 +119,48 @@ struct SearchResult {
     snippet: String,
 }
 
-/// Extracts up to MAX_RESULTS results from the DuckDuckGo HTML page.
+/// Extracts up to MAX_RESULTS results from the DuckDuckGo HTML page using
+/// CSS selectors.
 fn parse_results(html: &str) -> Vec<SearchResult> {
-    let mut out = Vec::new();
-    // Each result block: a `result__a` link followed by a `result__snippet`.
-    let re = regex::Regex::new(
-        r#"(?s)<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>(.*?)</a>.*?<a[^>]*class="result__snippet"[^>]*>(.*?)</a>"#,
-    )
-    .unwrap_or_else(|e| {
-        tracing::error!("failed to compile search regex: {}", e);
-        regex::Regex::new(r"").unwrap()
-    });
-    for cap in re.captures_iter(html) {
-        if out.len() >= MAX_RESULTS {
-            break;
-        }
-        let url = clean_url(&cap[1]);
-        let title = strip_tags(&cap[2]);
-        let snippet = strip_tags(&cap[3]);
-        if title.is_empty() || url.is_empty() {
-            continue;
-        }
-        out.push(SearchResult {
-            title,
-            url,
-            snippet,
-        });
-    }
-    out
+    let document = Html::parse_document(html);
+    let Ok(result_selector) = Selector::parse("div.result") else {
+        return Vec::new();
+    };
+    let Ok(title_selector) = Selector::parse("a.result__a") else {
+        return Vec::new();
+    };
+    let Ok(snippet_selector) = Selector::parse("a.result__snippet") else {
+        return Vec::new();
+    };
+
+    document
+        .select(&result_selector)
+        .filter_map(|result| {
+            let title_el = result.select(&title_selector).next()?;
+            let title = clean_text(&title_el.text().collect::<Vec<_>>().join(" "));
+            let url = title_el.value().attr("href").unwrap_or("").to_string();
+            let url = clean_url(&url);
+            if title.is_empty() || url.is_empty() {
+                return None;
+            }
+            let snippet = result
+                .select(&snippet_selector)
+                .next()
+                .map(|s| clean_text(&s.text().collect::<Vec<_>>().join(" ")))
+                .unwrap_or_default();
+            Some(SearchResult {
+                title,
+                url,
+                snippet,
+            })
+        })
+        .take(MAX_RESULTS)
+        .collect()
 }
 
-fn strip_tags(s: &str) -> String {
-    // Strip HTML tags and collapse whitespace.
-    let re = regex::Regex::new(r"<[^>]+>").unwrap_or_else(|e| {
-        tracing::error!("failed to compile tag-strip regex: {}", e);
-        regex::Regex::new(r"").unwrap()
-    });
-    let cleaned = re.replace_all(s, " ");
-    cleaned.split_whitespace().collect::<Vec<_>>().join(" ")
+/// Collapses whitespace in text extracted from the DOM.
+fn clean_text(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// DuckDuckGo wraps result URLs in a redirect; unwrap the real target.
@@ -158,6 +172,15 @@ fn clean_url(href: &str) -> String {
     } else {
         href.to_string()
     }
+}
+
+/// Detects whether DuckDuckGo served a bot-detection / CAPTCHA page instead
+/// of search results.
+fn is_blocked(html: &str) -> bool {
+    let lower = html.to_lowercase();
+    ["anomaly-detected", "captcha", "bot-detected"]
+        .iter()
+        .any(|term| lower.contains(term))
 }
 
 #[cfg(test)]
@@ -207,7 +230,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_results_extracts_links_and_snippets() {
+    fn test_parse_results_with_scraper() {
         let html = r#"
         <div class="result">
           <a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fdocs.rs%2Ftokio">Tokio docs</a>
@@ -238,6 +261,23 @@ mod tests {
     #[test]
     fn test_parse_results_empty_on_no_matches() {
         assert!(parse_results("<html><body>nothing here</body></html>").is_empty());
+    }
+
+    #[test]
+    fn test_is_blocked_detects_captcha() {
+        assert!(is_blocked("<html>Anomaly-Detected! please verify</html>"));
+        assert!(is_blocked(
+            "<html>please solve the Captcha to continue</html>"
+        ));
+        assert!(is_blocked("<html>bot-detected request blocked</html>"));
+    }
+
+    #[test]
+    fn test_is_blocked_false_for_normal() {
+        assert!(!is_blocked("<html>normal search results here</html>"));
+        assert!(!is_blocked(
+            "<html>normal search results with relevant links</html>"
+        ));
     }
 
     #[tokio::test]
