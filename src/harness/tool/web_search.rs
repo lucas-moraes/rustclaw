@@ -38,6 +38,16 @@ const USER_AGENTS: &[&str] = &[
      (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36 Edg/119.0.0.0",
 ];
 
+/// F9.1: cache TTL (1 hour).
+const CACHE_TTL: Duration = Duration::from_secs(3600);
+/// F9.2: maximum number of cache entries.
+const CACHE_MAX_ENTRIES: usize = 100;
+
+/// F7.1: default and bounds for `max_results`.
+const DEFAULT_MAX_RESULTS: usize = 8;
+const MAX_RESULTS_MIN: usize = 1;
+const MAX_RESULTS_MAX: usize = 20;
+
 /// Shared state for the web search tool, kept across calls within a runtime.
 pub struct WebSearchTool {
     /// F1.1: timestamp of the last completed request (for dynamic min-delay).
@@ -46,6 +56,14 @@ pub struct WebSearchTool {
     semaphore: Arc<tokio::sync::Semaphore>,
     /// F5.1: rotating index into `USER_AGENTS`.
     ua_index: Arc<AtomicUsize>,
+    /// F9: in-memory result cache (query key → results + timestamp).
+    cache: Arc<tokio::sync::Mutex<std::collections::HashMap<String, CacheEntry>>>,
+}
+
+/// A cached search result set with its insertion timestamp (for TTL).
+struct CacheEntry {
+    inserted: Instant,
+    results: Vec<SearchResult>,
 }
 
 impl WebSearchTool {
@@ -54,6 +72,7 @@ impl WebSearchTool {
             last_request: Arc::new(tokio::sync::Mutex::new(None)),
             semaphore: Arc::new(tokio::sync::Semaphore::new(1)),
             ua_index: Arc::new(AtomicUsize::new(0)),
+            cache: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         }
     }
 }
@@ -82,6 +101,17 @@ técnicos ou resoluções de erros de compilação."
                 "query": {
                     "type": "string",
                     "description": "A consulta de busca (ex: \"rust tokio select macro docs.rs\")"
+                },
+                "max_results": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 20,
+                    "default": 8,
+                    "description": "Número máximo de resultados (1–20, default 8)"
+                },
+                "site": {
+                    "type": "string",
+                    "description": "Restringe a busca a um domínio (ex: \"docs.rs\")"
                 }
             },
             "required": ["query"]
@@ -97,6 +127,29 @@ técnicos ou resoluções de erros de compilação."
             .map(str::trim)
             .filter(|q| !q.is_empty())
             .ok_or_else(|| "missing required argument: query".to_string())?;
+
+        // F7: parse and clamp max_results (1–20, default 8).
+        let max_results = args["max_results"]
+            .as_u64()
+            .map(|v| v as usize)
+            .unwrap_or(DEFAULT_MAX_RESULTS)
+            .clamp(MAX_RESULTS_MIN, MAX_RESULTS_MAX);
+
+        // F8: optional site restriction → "query site:domain".
+        let site = args["site"].as_str().map(str::trim).filter(|s| !s.is_empty());
+        let full_query = match site {
+            Some(s) => format!("{} site:{}", query, s),
+            None => query.to_string(),
+        };
+
+        // F9: normalized cache key (lowercase + trim) including site/max_results.
+        let cache_key = normalize_cache_key(&full_query, max_results);
+
+        // F9: check cache before hitting the network.
+        if let Some(results) = self.cache_get(&cache_key).await {
+            tracing::debug!(query = %preview(query, 40), "web_search cache hit");
+            return Ok(render_results(&full_query, &results, max_results));
+        }
 
         // F1.2: acquire the concurrency permit (serializes concurrent searches).
         let _permit = self
@@ -121,12 +174,12 @@ técnicos ou resoluções de erros de compilação."
                 return Err("aborted".to_string());
             }
             let ua = self.next_user_agent();
-            let url = reqwest::Url::parse_with_params(DDG_ENDPOINT, &[("q", query)])
+            let url = reqwest::Url::parse_with_params(DDG_ENDPOINT, &[("q", &full_query)])
                 .map_err(|e| format!("failed to build search URL: {}", e))?;
 
             tracing::debug!(
                 endpoint = DDG_ENDPOINT,
-                query = %preview(query, 40),
+                query = %preview(&full_query, 40),
                 attempt,
                 "web_search request"
             );
@@ -210,27 +263,18 @@ Tente novamente em alguns instantes."
             }
 
             if results.is_empty() {
+                // F9: never cache empty responses (avoids propagating a
+                // temporary block for 1h).
                 return Ok(ToolResult::simple(
-                    format!("web_search {}", preview(query, 40)),
+                    format!("web_search {}", preview(&full_query, 40)),
                     "(no results found)".to_string(),
                 ));
             }
 
-            let mut body = String::new();
-            for (i, r) in results.iter().enumerate() {
-                body.push_str(&format!(
-                    "{}. **{}**\n   URL: {}\n   {}\n\n",
-                    i + 1,
-                    r.title,
-                    r.url,
-                    r.snippet
-                ));
-            }
+            // F9: cache only successful, non-empty results.
+            self.cache_put(&cache_key, results.clone()).await;
 
-            return Ok(ToolResult::simple(
-                format!("web_search {}", preview(query, 40)),
-                body,
-            ));
+            return Ok(render_results(&full_query, &results, max_results));
         }
     }
 }
@@ -279,6 +323,43 @@ impl WebSearchTool {
         }
         Ok(())
     }
+
+    /// F9: returns cached results for `key` if present and not expired.
+    /// Lazily removes expired entries.
+    async fn cache_get(&self, key: &str) -> Option<Vec<SearchResult>> {
+        let mut cache = self.cache.lock().await;
+        // F9.2: lazy cleanup of expired entries.
+        cache.retain(|_, e| e.inserted.elapsed() < CACHE_TTL);
+        let entry = cache.get(key)?;
+        if entry.inserted.elapsed() >= CACHE_TTL {
+            cache.remove(key);
+            return None;
+        }
+        Some(entry.results.clone())
+    }
+
+    /// F9: stores results under `key` (only non-empty results are cached by
+    /// the caller). Enforces the max entry count.
+    async fn cache_put(&self, key: &str, results: Vec<SearchResult>) {
+        let mut cache = self.cache.lock().await;
+        // F9.2: cap the cache size (drop oldest by insertion order).
+        if cache.len() >= CACHE_MAX_ENTRIES && !cache.contains_key(key) {
+            if let Some(oldest) = cache
+                .iter()
+                .min_by_key(|(_, e)| e.inserted)
+                .map(|(k, _)| k.clone())
+            {
+                cache.remove(&oldest);
+            }
+        }
+        cache.insert(
+            key.to_string(),
+            CacheEntry {
+                inserted: Instant::now(),
+                results,
+            },
+        );
+    }
 }
 
 /// Sleeps for `dur`, returning false if aborted during the wait.
@@ -291,10 +372,13 @@ async fn sleep_abortable(ctx: &ToolContext, dur: Duration) -> bool {
     }
 }
 
+#[derive(Clone)]
 struct SearchResult {
     title: String,
     url: String,
     snippet: String,
+    /// F6.1: host/domain extracted from the URL.
+    domain: String,
 }
 
 /// Extracts up to MAX_RESULTS results from the DuckDuckGo HTML page using
@@ -326,14 +410,49 @@ fn parse_results(html: &str) -> Vec<SearchResult> {
                 .next()
                 .map(|s| clean_text(&s.text().collect::<Vec<_>>().join(" ")))
                 .unwrap_or_default();
+            let domain = extract_domain(&url);
             Some(SearchResult {
                 title,
                 url,
                 snippet,
+                domain,
             })
         })
         .take(MAX_RESULTS)
         .collect()
+}
+
+/// F6.1: extracts the host/domain from a URL (e.g. "https://docs.rs/tokio"
+/// → "docs.rs"). Returns empty string on parse failure.
+fn extract_domain(url: &str) -> String {
+    reqwest::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.to_string()))
+        .unwrap_or_default()
+}
+
+/// F9.1: normalizes a cache key (lowercase + trim) including max_results.
+fn normalize_cache_key(query: &str, max_results: usize) -> String {
+    format!("{}|{}", query.trim().to_lowercase(), max_results)
+}
+
+/// Renders results as the model-facing text output, including the domain.
+fn render_results(query: &str, results: &[SearchResult], max_results: usize) -> ToolResult {
+    let mut body = String::new();
+    for (i, r) in results.iter().take(max_results).enumerate() {
+        body.push_str(&format!(
+            "{}. **{}**\n   URL: {}\n   Domínio: {}\n   {}\n\n",
+            i + 1,
+            r.title,
+            r.url,
+            r.domain,
+            r.snippet
+        ));
+    }
+    ToolResult::simple(
+        format!("web_search {}", preview(query, 40)),
+        body,
+    )
 }
 
 /// Collapses whitespace in text extracted from the DOM.
@@ -569,5 +688,98 @@ mod tests {
         drop(permit);
         // After release, acquisition succeeds again.
         assert!(tool.semaphore.try_acquire().is_ok());
+    }
+
+    #[test]
+    fn test_extract_domain() {
+        // F6.1
+        assert_eq!(extract_domain("https://docs.rs/tokio"), "docs.rs");
+        assert_eq!(extract_domain("https://crates.io"), "crates.io");
+        assert_eq!(extract_domain("https://www.example.com/path?q=1"), "www.example.com");
+        assert_eq!(extract_domain("not a url"), "");
+    }
+
+    #[test]
+    fn test_render_results_includes_domain() {
+        // F6.1: rendered output includes the domain line.
+        let results = vec![SearchResult {
+            title: "Tokio".into(),
+            url: "https://docs.rs/tokio".into(),
+            snippet: "Async runtime".into(),
+            domain: "docs.rs".into(),
+        }];
+        let out = render_results("tokio", &results, 8);
+        assert!(out.output.contains("docs.rs"));
+        assert!(out.output.contains("Tokio"));
+        assert!(out.output.contains("Domínio"));
+    }
+
+    #[test]
+    fn test_render_results_respects_max_results() {
+        // F7: render only up to max_results.
+        let results: Vec<SearchResult> = (0..5)
+            .map(|i| SearchResult {
+                title: format!("T{}", i),
+                url: format!("https://example.com/{}", i),
+                snippet: "s".into(),
+                domain: "example.com".into(),
+            })
+            .collect();
+        let out = render_results("q", &results, 3);
+        assert!(out.output.contains("1. **T0**"));
+        assert!(out.output.contains("3. **T2**"));
+        assert!(!out.output.contains("4. **T3**"));
+    }
+
+    #[test]
+    fn test_normalize_cache_key() {
+        // F9.1: lowercase + trim + max_results.
+        assert_eq!(
+            normalize_cache_key("  Rust Tokio  ", 8),
+            "rust tokio|8"
+        );
+        assert_eq!(
+            normalize_cache_key("Rust Tokio", 8),
+            "rust tokio|8"
+        );
+        // Different max_results → different key.
+        assert_ne!(
+            normalize_cache_key("rust", 3),
+            normalize_cache_key("rust", 8)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_cache_put_get() {
+        // F9: put then get returns the same results.
+        let tool = WebSearchTool::new();
+        let results = vec![SearchResult {
+            title: "T".into(),
+            url: "https://example.com".into(),
+            snippet: "s".into(),
+            domain: "example.com".into(),
+        }];
+        tool.cache_put("key", results.clone()).await;
+        let got = tool.cache_get("key").await;
+        assert!(got.is_some());
+        assert_eq!(got.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_cache_miss_returns_none() {
+        // F9: unknown key → None.
+        let tool = WebSearchTool::new();
+        assert!(tool.cache_get("missing").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_cache_evicts_oldest_when_full() {
+        // F9.2: cache is capped at CACHE_MAX_ENTRIES.
+        let tool = WebSearchTool::new();
+        for i in 0..(CACHE_MAX_ENTRIES + 5) {
+            tool.cache_put(&format!("k{}", i), vec![]).await;
+        }
+        let cache = tool.cache.lock().await;
+        assert!(cache.len() <= CACHE_MAX_ENTRIES);
     }
 }
