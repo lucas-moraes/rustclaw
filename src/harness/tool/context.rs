@@ -11,19 +11,42 @@ use std::sync::Arc;
 
 /// Cooperative cancellation flag checked between tool/loop steps.
 #[derive(Clone, Default)]
-pub struct AbortSignal(Arc<AtomicBool>);
+pub struct AbortSignal {
+    flag: Arc<AtomicBool>,
+    notify: Arc<tokio::sync::Notify>,
+}
 
 impl AbortSignal {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            flag: Arc::new(AtomicBool::new(false)),
+            notify: Arc::new(tokio::sync::Notify::new()),
+        }
     }
 
     pub fn abort(&self) {
-        self.0.store(true, Ordering::SeqCst);
+        self.flag.store(true, Ordering::SeqCst);
+        self.notify.notify_waiters();
     }
 
     pub fn is_aborted(&self) -> bool {
-        self.0.load(Ordering::SeqCst)
+        self.flag.load(Ordering::SeqCst)
+    }
+
+    /// Resolves when the signal is aborted. If already aborted, resolves
+    /// immediately. Used to make sleeps/waits abort-aware.
+    pub async fn wait(&self) {
+        if self.is_aborted() {
+            return;
+        }
+        let notified = self.notify.notified();
+        tokio::pin!(notified);
+        // Re-check to avoid a lost-wakeup race between the check above and
+        // registering the notification.
+        if self.is_aborted() {
+            return;
+        }
+        notified.await;
     }
 }
 
