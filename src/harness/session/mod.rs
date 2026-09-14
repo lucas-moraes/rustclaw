@@ -7,6 +7,7 @@ pub mod compaction;
 pub mod doom_loop;
 pub mod image;
 pub mod ledger;
+pub mod metrics;
 pub mod processor;
 pub mod store;
 pub mod tool_exec;
@@ -234,6 +235,10 @@ pub struct Session {
     /// [`crate::harness::session::compaction::MAX_SUMMARY_CHAIN`].
     #[serde(default)]
     pub summary_chain: Vec<String>,
+    /// Cumulative per-session metrics (turns, iterations, tool calls, tokens,
+    /// cost, wall time). Persisted so `/stats` can aggregate across a project.
+    #[serde(default)]
+    pub metrics: crate::harness::session::metrics::SessionMetrics,
 }
 
 impl Session {
@@ -252,6 +257,7 @@ impl Session {
             title: None,
             ledger: crate::harness::session::ledger::ContextLedger::new(),
             summary_chain: Vec::new(),
+            metrics: crate::harness::session::metrics::SessionMetrics::new(),
         }
     }
 

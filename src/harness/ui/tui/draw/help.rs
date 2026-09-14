@@ -106,6 +106,11 @@ fn commands(t: &crate::harness::ui::tui::theme::Theme) -> Vec<Line<'static>> {
         kv("/theme name", "cyberclaw · aurora · ember · mono", t),
         kv("/usage", "tokens in/out + context window", t),
         kv(
+            "/stats",
+            "session + project metrics (turns, tools, cost)",
+            t,
+        ),
+        kv(
             "/memory",
             "list · search <q> · rm <id> · clear project memory",
             t,

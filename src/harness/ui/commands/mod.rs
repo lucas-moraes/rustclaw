@@ -7,6 +7,7 @@ pub(crate) mod permissions_cmd;
 pub(crate) mod provider_cmd;
 pub mod replay;
 pub(crate) mod session_cmd;
+pub mod stats;
 
 use crate::harness::runtime::SessionRuntime;
 use crate::harness::session::{Message, Role, Session};
@@ -40,7 +41,7 @@ pub async fn handle(
         "/help" => {
             out.push(
                 "commands: /help /new /sessions /agent <name> /skills \
-                  /compact /theme [name] /usage /memory /models /model <name> \
+                  /compact /theme [name] /usage /stats /memory /models /model <name> \
                   /provider <name> /provider add|rm|list /auth <provider> /settings \
                   /undo /diff /restore /fork [N] /apply-plan /image [path] /permissions /allow-all-permissions /mcp /record on|off|status /replay <file> /exit"
                     .to_string(),
@@ -106,6 +107,9 @@ pub async fn handle(
             let pct = (ctx * 100).checked_div(max).unwrap_or(0);
             out.push(format!("context · ~{} / {} tokens ({}%)", ctx, max, pct));
             out.push("full usage breakdown is shown in the TUI status bar".to_string());
+        }
+        "/stats" => {
+            out.extend(stats::handle_stats_command(runtime, session)?);
         }
         "/new" | "/sessions" | "/agent" | "/skills" | "/compact" => {
             session_cmd::handle_session_cmd(runtime, session, cmd, arg, &mut out).await?;

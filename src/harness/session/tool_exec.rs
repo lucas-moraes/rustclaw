@@ -62,6 +62,7 @@ pub async fn execute_tool_calls(
         if name == "task" {
             let agent = input["agent"].as_str().unwrap_or("explore");
             session.ledger.record_subagent(agent);
+            session.metrics.record_subagent();
         }
         if name == "bash" {
             if let Some(cmd) = input["command"].as_str() {
@@ -230,6 +231,7 @@ pub async fn execute_tool_calls(
         match result {
             Ok(r) => {
                 tracing::debug!("tool call completed: {} (session={})", name, session.id);
+                session.metrics.record_tool_call(&name, false);
                 if let Some(msg) = session.messages.iter_mut().find(|m| m.id == *assistant_id) {
                     if let Some(t) = found_tool(msg, &tool_id) {
                         t.status = ToolStatus::Completed;
@@ -261,6 +263,7 @@ pub async fn execute_tool_calls(
             }
             Err(e) => {
                 tracing::warn!("tool call failed: {} (session={}): {}", name, session.id, e);
+                session.metrics.record_tool_call(&name, true);
                 if let Some(msg) = session.messages.iter_mut().find(|m| m.id == *assistant_id) {
                     if let Some(t) = found_tool(msg, &tool_id) {
                         t.status = ToolStatus::Error;

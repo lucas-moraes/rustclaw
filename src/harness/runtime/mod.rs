@@ -620,6 +620,7 @@ impl SessionRuntime {
         };
 
         // 4. Run the processor turn.
+        let turn_started = std::time::Instant::now();
         let processor = SessionProcessor {
             provider: self.provider.clone(),
             registry: self.registry.clone(),
@@ -676,6 +677,26 @@ impl SessionRuntime {
 
         // 5. Sync todos back and persist session.
         session.todos = ctx.todos.read().await.clone();
+
+        // Per-session metrics: record the turn (iterations, tokens, cost, wall
+        // time) before persisting, so `/stats` can report and aggregate them.
+        let turn_cost_usd = if usage.input_tokens + usage.output_tokens > 0 {
+            crate::harness::budget::turn_cost(&self.config.provider, &self.config.model, &usage)
+        } else {
+            0.0
+        };
+        session.metrics.record_turn(
+            iterations,
+            crate::harness::session::metrics::TurnTokens {
+                input: usage.input_tokens,
+                output: usage.output_tokens,
+                cache_read: usage.cache_read_tokens,
+                cache_write: usage.cache_write_tokens,
+            },
+            turn_cost_usd,
+            turn_started.elapsed().as_millis() as u64,
+        );
+
         {
             let store = self.store.clone();
             let snapshot = session.clone();
@@ -686,12 +707,7 @@ impl SessionRuntime {
 
         // Daily budget: accumulate the turn cost and warn at 80%/100%.
         // Never breaks the turn; warn is emitted as a system event.
-        if usage.input_tokens + usage.output_tokens > 0 {
-            let cost = crate::harness::budget::turn_cost(
-                &self.config.provider,
-                &self.config.model,
-                &usage,
-            );
+        if turn_cost_usd > 0.0 {
             let limit = self.config.daily_budget_usd;
             // `record` does disk I/O (persist); run it on a blocking thread so
             // the async executor isn't stalled, and treat a poisoned lock by
@@ -699,7 +715,7 @@ impl SessionRuntime {
             let budget = self.budget.clone();
             let (warn, spent) = tokio::task::spawn_blocking(move || {
                 let mut t = budget.blocking_lock();
-                let w = t.record(cost, limit);
+                let w = t.record(turn_cost_usd, limit);
                 (w, t.spent_today())
             })
             .await

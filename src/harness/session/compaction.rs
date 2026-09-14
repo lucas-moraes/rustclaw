@@ -264,6 +264,7 @@ pub async fn compact_if_needed(
     let n = before.saturating_sub(outcome.messages.len()) + 1;
     session.messages = outcome.messages;
     session.summary_chain = outcome.summary_chain;
+    session.metrics.record_compaction();
     session.invalidate_messages_cache();
     session.updated_at = chrono::Utc::now();
     // Persist immediately so orphaned pre-summary messages are dropped

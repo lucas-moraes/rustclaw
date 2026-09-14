@@ -151,6 +151,25 @@ impl SessionStore {
             )
             .context("failed to add summary_chain_json column")?;
         }
+        // Add the optional metrics_json column (per-session metrics).
+        let has_metrics: i64 = conn
+            .query_row(
+                &format!(
+                    "SELECT COUNT(*) FROM pragma_table_info('{sessions}') WHERE name='metrics_json'"
+                ),
+                [],
+                |r| r.get(0),
+            )
+            .context("failed to check metrics_json column")?;
+        if has_metrics == 0 {
+            conn.execute(
+                &format!(
+                    "ALTER TABLE {sessions} ADD COLUMN metrics_json TEXT NOT NULL DEFAULT '{{}}'"
+                ),
+                [],
+            )
+            .context("failed to add metrics_json column")?;
+        }
         Ok(())
     }
 
@@ -394,7 +413,7 @@ impl SessionStore {
         let row = conn
             .query_row(
                 &format!(
-                    "SELECT id, agent, cwd, created_at, updated_at, todos_json, skills_json, title, ledger_json, summary_chain_json
+                    "SELECT id, agent, cwd, created_at, updated_at, todos_json, skills_json, title, ledger_json, summary_chain_json, metrics_json
                      FROM {sessions_t} WHERE id = ?1"
                 ),
                 params![id],
@@ -410,6 +429,7 @@ impl SessionStore {
                         r.get::<_, Option<String>>(7)?,
                         r.get::<_, Option<String>>(8)?,
                         r.get::<_, Option<String>>(9)?,
+                        r.get::<_, Option<String>>(10)?,
                     ))
                 },
             )
@@ -427,6 +447,7 @@ impl SessionStore {
             title,
             ledger_json,
             summary_chain_json,
+            metrics_json,
         )) = row
         else {
             return Ok(None);
@@ -478,6 +499,10 @@ impl SessionStore {
             .as_deref()
             .and_then(|s| serde_json::from_str(s).ok())
             .unwrap_or_default();
+        let metrics: crate::harness::session::metrics::SessionMetrics = metrics_json
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default();
 
         // Normalize empty DB titles to None so display falls back to preview.
         let title = title.and_then(|t| {
@@ -502,6 +527,7 @@ impl SessionStore {
             title,
             ledger,
             summary_chain,
+            metrics,
         }))
     }
 
@@ -568,6 +594,36 @@ impl SessionStore {
             });
         }
         Ok(out)
+    }
+
+    /// Aggregates the persisted metrics of every session in the project.
+    ///
+    /// Reads only the `metrics_json` column (no message loading), so it is
+    /// cheap even for a project with many sessions. Rows with a missing or
+    /// malformed payload are skipped rather than failing the whole query.
+    pub fn aggregate_metrics(
+        &self,
+        cwd: &Path,
+    ) -> Result<crate::harness::session::metrics::ProjectMetrics> {
+        self.ensure_project(cwd)?;
+        let sessions_t = table_name(cwd, "sessions");
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn
+            .prepare(&format!("SELECT metrics_json FROM {sessions_t}"))
+            .context("failed to prepare metrics query")?;
+        let rows = stmt
+            .query_map([], |r| r.get::<_, Option<String>>(0))
+            .context("failed to query metrics")?;
+        let mut agg = crate::harness::session::metrics::ProjectMetrics::default();
+        for row in rows {
+            let json = row.context("failed to read metrics row")?;
+            if let Some(m) = json.as_deref().and_then(|s| {
+                serde_json::from_str::<crate::harness::session::metrics::SessionMetrics>(s).ok()
+            }) {
+                agg.add(&m);
+            }
+        }
+        Ok(agg)
     }
 
     /// Sets a user-defined title for a session (mirrors opencode titles).
@@ -682,7 +738,7 @@ impl SessionStore {
             &format!(
                 "UPDATE {sessions_t} SET agent = ?2, cwd = ?3, updated_at = ?4,
                         todos_json = ?5, skills_json = ?6, ledger_json = ?7,
-                        summary_chain_json = ?8
+                        summary_chain_json = ?8, metrics_json = ?9
                  WHERE id = ?1"
             ),
             params![
@@ -694,6 +750,7 @@ impl SessionStore {
                 serde_json::to_string(&session.skills).unwrap_or_else(|_| "[]".into()),
                 serde_json::to_string(&session.ledger).unwrap_or_else(|_| "{}".into()),
                 serde_json::to_string(&session.summary_chain).unwrap_or_else(|_| "[]".into()),
+                serde_json::to_string(&session.metrics).unwrap_or_else(|_| "{}".into()),
             ],
         )
         .context("failed to update session")?;
@@ -827,6 +884,7 @@ fn parse_ts(s: &str) -> chrono::DateTime<chrono::Utc> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::harness::session::metrics::TurnTokens;
     use crate::harness::session::{Part, ToolPart, ToolStatus};
 
     fn temp_store() -> (tempfile::TempDir, SessionStore) {
@@ -1004,6 +1062,91 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(loaded.summary_chain.is_empty());
+    }
+
+    #[test]
+    fn test_persist_metrics_roundtrip() {
+        let (_dir, store) = temp_store();
+        let mut session = store.create_session("build", Path::new("/tmp")).unwrap();
+        session.metrics.record_turn(
+            3,
+            TurnTokens {
+                input: 100,
+                output: 50,
+                cache_read: 10,
+                cache_write: 5,
+            },
+            0.02,
+            1500,
+        );
+        session.metrics.record_tool_call("bash", false);
+        session.metrics.record_tool_call("bash", true);
+        session.metrics.record_compaction();
+        session.metrics.record_subagent();
+        store.save_session(&session).unwrap();
+
+        let loaded = store
+            .load_session(&session.id, Path::new("/tmp"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.metrics.turns, 1);
+        assert_eq!(loaded.metrics.iterations, 3);
+        assert_eq!(loaded.metrics.tool_calls["bash"], 2);
+        assert_eq!(loaded.metrics.tool_errors, 1);
+        assert_eq!(loaded.metrics.compactions, 1);
+        assert_eq!(loaded.metrics.subagents, 1);
+        assert!((loaded.metrics.cost_usd - 0.02).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_aggregate_metrics_across_sessions() {
+        let (_dir, store) = temp_store();
+        let mut a = store.create_session("build", Path::new("/tmp")).unwrap();
+        a.metrics.record_turn(
+            2,
+            TurnTokens {
+                input: 10,
+                output: 20,
+                cache_read: 0,
+                cache_write: 0,
+            },
+            0.01,
+            100,
+        );
+        a.metrics.record_tool_call("bash", false);
+        store.save_session(&a).unwrap();
+
+        let mut b = store.create_session("build", Path::new("/tmp")).unwrap();
+        b.metrics.record_turn(
+            3,
+            TurnTokens {
+                input: 30,
+                output: 40,
+                cache_read: 0,
+                cache_write: 0,
+            },
+            0.02,
+            200,
+        );
+        b.metrics.record_tool_call("read", true);
+        store.save_session(&b).unwrap();
+
+        let agg = store.aggregate_metrics(Path::new("/tmp")).unwrap();
+        assert_eq!(agg.sessions, 2);
+        assert_eq!(agg.turns, 2);
+        assert_eq!(agg.iterations, 5);
+        assert_eq!(agg.tool_calls, 2);
+        assert_eq!(agg.tool_errors, 1);
+        assert_eq!(agg.total_tokens, 100);
+        assert!((agg.cost_usd - 0.03).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_aggregate_metrics_empty_project() {
+        let (_dir, store) = temp_store();
+        let agg = store.aggregate_metrics(Path::new("/tmp")).unwrap();
+        assert_eq!(agg.sessions, 0);
+        assert_eq!(agg.turns, 0);
     }
 
     #[test]

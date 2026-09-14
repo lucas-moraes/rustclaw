@@ -331,6 +331,13 @@ pub fn all_items() -> Vec<PaletteItem> {
             PaletteKind::Command,
             "/usage",
         ),
+        item(
+            "stats",
+            "/stats",
+            "Session + project metrics (turns, tools, cost)",
+            PaletteKind::Command,
+            "/stats",
+        ),
         // ── Agents ──────────────────────────────────────────────────
         item(
             "agent-build",
