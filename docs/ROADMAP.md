@@ -19,7 +19,7 @@ O RustClaw já implementa o núcleo de um coding agent moderno:
 - Memória de projeto persistente (SQLite, scoring recência+uso+BM25)
 - Multi-provider (Anthropic / OpenAI / opencode-go / custom)
 
-**Métricas atuais:** ~37.600 linhas, 113 arquivos `.rs`, 539 testes, CI + release.
+**Métricas atuais:** ~42.300 linhas, 126 arquivos `.rs`, 621 testes, CI + release.
 
 As lacunas abaixo são o que separa o projeto de "equivalente" — não de "bom".
 
@@ -34,6 +34,10 @@ As lacunas abaixo são o que separa o projeto de "equivalente" — não de "bom"
 | 5 | Sandbox de execução | ⬜ pendente |
 | 6 | Render JS | ⬜ pendente |
 | 7 | Provider/ecossistema | ⬜ contínuo |
+
+> Nota: a numeração desta tabela segue a **ordem de execução** (ver seção
+> "Ordem sugerida de execução"). As seções P0/P1/P2 abaixo usam numeração
+> própria por prioridade — os títulos são a referência canônica.
 
 ---
 
@@ -208,7 +212,7 @@ harness solo. Priorizar apenas se houver demanda real de usuários.
 
 ### 9. Qualidade de código / dívida
 
-- Cobertura de testes por módulo (hoje 539 testes, mas distribuição desigual —
+- Cobertura de testes por módulo (hoje 621 testes, mas distribuição desigual —
   `ui/` tem 13k linhas e provavelmente menos cobertura relativa).
 - `cargo clippy -- -D warnings` já no CI ✅.
 - Documentar invariantes do loop agêntico (o que pode/não pode acontecer entre
