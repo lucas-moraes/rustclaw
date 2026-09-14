@@ -24,6 +24,10 @@ pub(crate) struct StreamOutcome {
     /// Set when the attempt ended early due to the turn watchdog, a stalled
     /// stream or a transient stream error. `None` on a clean finish.
     pub stop_reason: Option<String>,
+    /// The provider's own stop reason from `ProviderEvent::End` (e.g.
+    /// `end_turn`, `max_tokens`, `tool_use`). `None` when the stream ended
+    /// without an `End` event. Used to detect truncated responses (R3).
+    pub provider_stop: Option<String>,
     /// The user abort signal fired mid-stream.
     pub aborted: bool,
 }
@@ -49,6 +53,7 @@ pub(crate) async fn consume_stream(
     let mut tool_calls: Vec<ToolPart> = Vec::new();
     let mut usage = Usage::default();
     let mut stop_reason: Option<String> = None;
+    let mut provider_stop: Option<String> = None;
     let mut aborted = false;
 
     loop {
@@ -161,9 +166,12 @@ pub(crate) async fn consume_stream(
                 }
             }
             ProviderEvent::End {
-                stop_reason: _,
+                stop_reason: sr,
                 usage: u,
             } => {
+                if sr.is_some() {
+                    provider_stop = sr;
+                }
                 if let Some(u) = u {
                     usage.input_tokens += u.input_tokens;
                     usage.output_tokens += u.output_tokens;
@@ -181,6 +189,7 @@ pub(crate) async fn consume_stream(
         tool_calls,
         usage,
         stop_reason,
+        provider_stop,
         aborted,
     }
 }
@@ -211,6 +220,7 @@ mod tests {
                 max_iterations: 10,
                 max_context_tokens: 100_000,
                 turn_timeout_secs: 60,
+                max_total_iterations: None,
             },
         }
     }

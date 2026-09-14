@@ -30,6 +30,10 @@ pub struct GlobalSettings {
     pub base_url: String,
     #[serde(default, skip_serializing_if = "usize_is_zero")]
     pub max_iterations: usize,
+    /// Hard cap on total iterations across all continuations of a single turn
+    /// (0 = conservative default of `max_iterations * 3`).
+    #[serde(default, skip_serializing_if = "usize_is_zero")]
+    pub max_total_iterations: usize,
     #[serde(default, skip_serializing_if = "usize_is_zero")]
     pub max_context_tokens: usize,
     /// Wall-clock limit per turn, in seconds (0 = keep default).
@@ -67,6 +71,7 @@ impl Default for GlobalSettings {
             model: String::new(),
             base_url: String::new(),
             max_iterations: 0,
+            max_total_iterations: 0,
             max_context_tokens: 0,
             turn_timeout_secs: 0,
             theme: String::new(),
@@ -152,6 +157,9 @@ pub struct RuntimeConfig {
     pub model: String,
     pub provider: String,
     pub max_iterations: usize,
+    /// Hard cap on total iterations across all continuations of a single turn
+    /// (0 = conservative default of `max_iterations * 3`).
+    pub max_total_iterations: usize,
     pub max_context_tokens: usize,
     /// Wall-clock limit per turn, in seconds.
     pub turn_timeout_secs: usize,
@@ -190,6 +198,7 @@ impl RuntimeConfig {
             model: p.default_model.to_string(),
             provider: p.name.to_string(),
             max_iterations: 50,
+            max_total_iterations: 0,
             max_context_tokens: 100_000,
             turn_timeout_secs: 1200,
             default_agent: "build".to_string(),
@@ -233,6 +242,9 @@ impl RuntimeConfig {
         // 3. Limits: 0 = keep catalog default.
         if settings.max_iterations != 0 {
             cfg.max_iterations = settings.max_iterations;
+        }
+        if settings.max_total_iterations != 0 {
+            cfg.max_total_iterations = settings.max_total_iterations;
         }
         if settings.max_context_tokens != 0 {
             cfg.max_context_tokens = settings.max_context_tokens;

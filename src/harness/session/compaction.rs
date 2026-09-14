@@ -42,6 +42,63 @@ impl Default for CompactionConfig {
     }
 }
 
+/// How many new messages must accumulate before the tracker re-checks the
+/// context size. Avoids an O(n) `approx_tokens` scan on every single loop
+/// iteration (the processor used to call `compact_if_needed` per iteration).
+const COMPACT_CHECK_EVERY: usize = 4;
+/// Token growth (since the last check) that forces a re-check even when fewer
+/// than `COMPACT_CHECK_EVERY` messages were added — e.g. one huge tool output.
+const COMPACT_TOKEN_DELTA: usize = 8_000;
+
+/// Decides *when* to re-evaluate compaction, so the caller can skip the
+/// (O(n)) token scan on most iterations. Owned by the processor and reset per
+/// turn. This is purely an optimization: the actual decision still lives in
+/// `should_compact_and_execute` / `compact_if_needed`.
+#[derive(Debug, Default)]
+pub struct CompactionTracker {
+    /// Message count at the last evaluation.
+    last_len: usize,
+    /// Whether we have ever evaluated (the first call must always run).
+    initialized: bool,
+}
+
+impl CompactionTracker {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Returns `true` when the context has grown enough since the last check to
+    /// justify another (O(n)) evaluation. The caller then runs the real
+    /// compaction and calls [`Self::record`] with the resulting state.
+    ///
+    /// The token-delta path only scans the *new* messages (O(new)), never the
+    /// whole list, so a turn that grows by a few messages per iteration does
+    /// not pay an O(n) scan every tick.
+    pub fn should_check(&self, messages: &[Message]) -> bool {
+        if !self.initialized {
+            return true;
+        }
+        if messages.len() >= self.last_len + COMPACT_CHECK_EVERY {
+            return true;
+        }
+        // Even without many new messages, a large token jump (big tool output)
+        // warrants a check. Only pay the (small) scan when the list grew.
+        if messages.len() > self.last_len {
+            let new_tokens = crate::harness::session::approx_tokens(&messages[self.last_len..]);
+            return new_tokens >= COMPACT_TOKEN_DELTA;
+        }
+        false
+    }
+
+    /// Records the post-evaluation state. Call after running compaction
+    /// (whether or not it actually compacted) so the next `should_check` is
+    /// relative to the current context.
+    pub fn record(&mut self, messages: &[Message]) {
+        self.last_len = messages.len();
+        self.initialized = true;
+    }
+}
+
 /// Compacts `messages` when the approximate token count exceeds the configured
 /// budget and there are enough messages to bother summarizing.
 ///
@@ -350,6 +407,83 @@ mod tests {
         assert_eq!(c.max_context_tokens, 80_000);
         assert_eq!(c.keep_recent_messages, 6);
         assert_eq!(c.min_messages_to_compact, 10);
+    }
+
+    #[test]
+    fn test_tracker_first_check_always_runs() {
+        let t = CompactionTracker::new();
+        assert!(t.should_check(&msgs(3)), "first check must always run");
+    }
+
+    #[test]
+    fn test_tracker_skips_until_enough_new_messages() {
+        let mut t = CompactionTracker::new();
+        let mut messages = msgs(10);
+        assert!(t.should_check(&messages));
+        t.record(&messages);
+
+        // Fewer than COMPACT_CHECK_EVERY new messages → skip.
+        messages.push(Message::user("one"));
+        assert!(!t.should_check(&messages));
+        messages.push(Message::user("two"));
+        assert!(!t.should_check(&messages));
+        messages.push(Message::user("three"));
+        assert!(!t.should_check(&messages));
+
+        // Reaching the threshold → check again.
+        messages.push(Message::user("four"));
+        assert!(t.should_check(&messages));
+    }
+
+    #[test]
+    fn test_tracker_checks_on_large_token_jump() {
+        let mut t = CompactionTracker::new();
+        let mut messages = msgs(10);
+        t.record(&messages);
+
+        // A single huge message (well over COMPACT_TOKEN_DELTA tokens) forces
+        // a re-check even though only one message was added.
+        messages.push(Message::user("x".repeat(COMPACT_TOKEN_DELTA * 4 + 100)));
+        assert!(t.should_check(&messages));
+    }
+
+    #[test]
+    fn test_tracker_token_delta_is_incremental() {
+        // The delta is measured over the *new* messages only, so a small
+        // addition to a large context does not trigger a re-check (and does
+        // not pay an O(n) scan of the whole list).
+        let mut t = CompactionTracker::new();
+        let mut messages = msgs(50); // large baseline
+        t.record(&messages);
+
+        // One small message: below both the count threshold and the delta.
+        messages.push(Message::user("tiny"));
+        assert!(
+            !t.should_check(&messages),
+            "a small addition must not trigger a re-check"
+        );
+    }
+
+    #[test]
+    fn test_tracker_no_check_when_nothing_changed() {
+        let mut t = CompactionTracker::new();
+        let messages = msgs(10);
+        t.record(&messages);
+        // Same list, no growth → no re-check.
+        assert!(!t.should_check(&messages));
+    }
+
+    #[test]
+    fn test_tracker_record_after_compaction_resets_baseline() {
+        let mut t = CompactionTracker::new();
+        let mut messages = msgs(20);
+        t.record(&messages);
+        // Simulate compaction shrinking the list.
+        messages.truncate(7);
+        t.record(&messages);
+        // After recording the smaller list, a few new messages still skip.
+        messages.push(Message::user("a"));
+        assert!(!t.should_check(&messages));
     }
 
     #[tokio::test]

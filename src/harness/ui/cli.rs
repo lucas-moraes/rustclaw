@@ -192,6 +192,15 @@ pub async fn print_events(mut rx: EventReceiver, recorder: Option<Arc<EventRecor
             HarnessEvent::Error { message, .. } => {
                 println!("\n{}[error] {}", child_prefix, message);
             }
+            HarnessEvent::Rollback { paths, .. } => {
+                println!(
+                    "\n{}[rollback] restored {} file(s): {}",
+                    child_prefix,
+                    paths.len(),
+                    paths.join(", ")
+                );
+                flush_stdout();
+            }
             HarnessEvent::PermissionAsk { .. } | HarnessEvent::PermissionResolved { .. } => {}
             HarnessEvent::BudgetWarn { message, .. } => {
                 println!("\n[budget] {}", message);

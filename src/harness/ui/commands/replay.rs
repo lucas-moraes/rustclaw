@@ -189,6 +189,11 @@ pub fn render_event_lines(event: &HarnessEvent) -> Vec<String> {
         )],
         HarnessEvent::PermissionAsk { .. } | HarnessEvent::PermissionResolved { .. } => vec![],
         HarnessEvent::BudgetWarn { message, .. } => vec![format!("[budget] {}", message)],
+        HarnessEvent::Rollback { paths, .. } => vec![format!(
+            "[rollback] restored {} file(s): {}",
+            paths.len(),
+            paths.join(", ")
+        )],
     }
 }
 

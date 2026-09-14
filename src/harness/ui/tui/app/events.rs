@@ -176,6 +176,17 @@ impl App {
                 self.flush_streaming();
                 self.push(LineKind::System, format!("[budget] {}", message));
             }
+            HarnessEvent::Rollback { paths, .. } => {
+                self.flush_streaming();
+                self.push(
+                    LineKind::System,
+                    format!(
+                        "[rollback] restored {} file(s): {}",
+                        paths.len(),
+                        paths.join(", ")
+                    ),
+                );
+            }
         }
     }
 

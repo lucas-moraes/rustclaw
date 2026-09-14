@@ -131,9 +131,9 @@ pub enum ProviderEvent {
         arguments: String,
     },
     End {
-        /// Stop reason reported by the provider; informational, not consumed
-        /// by the processor yet.
-        #[allow(dead_code)]
+        /// Stop reason reported by the provider (e.g. `end_turn`, `max_tokens`,
+        /// `tool_use`, `stop`, `length`). Consumed by the processor to detect a
+        /// truncated response and continue it instead of ending the turn.
         stop_reason: Option<String>,
         usage: Option<Usage>,
     },
@@ -141,6 +141,22 @@ pub enum ProviderEvent {
 
 pub type ProviderStream =
     Pin<Box<dyn futures_util::Stream<Item = Result<ProviderEvent, anyhow::Error>> + Send>>;
+
+/// Returns `true` when a provider stop reason means the response was cut off by
+/// the output-token limit (rather than the model finishing or asking for a
+/// tool). Normalizes across providers:
+///
+/// - Anthropic: `max_tokens`
+/// - OpenAI: `length`
+/// - Google/others: `max_tokens` / `length` / `MAX_TOKENS`
+///
+/// `end_turn`/`stop`/`tool_use`/`tool_calls`/`None` are *not* truncation.
+pub fn is_truncated(stop: Option<&str>) -> bool {
+    matches!(
+        stop.map(|s| s.trim().to_ascii_lowercase()).as_deref(),
+        Some("max_tokens") | Some("length") | Some("max_output_tokens")
+    )
+}
 
 use std::pin::Pin;
 use std::sync::Arc;

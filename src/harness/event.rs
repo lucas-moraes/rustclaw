@@ -96,6 +96,13 @@ pub enum HarnessEvent {
         job_id: u64,
         exit_code: Option<i32>,
     },
+    /// An iteration's file mutations were rolled back because every mutable
+    /// tool call in the batch failed (R6). `paths` are the restored files.
+    Rollback {
+        session_id: String,
+        paths: Vec<String>,
+        parent_session_id: Option<String>,
+    },
     /// Daily budget warning (80% or exceeded). Surfaced as a system line.
     BudgetWarn {
         session_id: String,
@@ -124,6 +131,7 @@ impl HarnessEvent {
             | HarnessEvent::AutoContinue { session_id, .. }
             | HarnessEvent::Error { session_id, .. }
             | HarnessEvent::BudgetWarn { session_id, .. }
+            | HarnessEvent::Rollback { session_id, .. }
             | HarnessEvent::JobFinished { session_id, .. } => Some(session_id),
             HarnessEvent::PermissionAsk { request } => Some(&request.session_id),
             HarnessEvent::PermissionResolved { .. } => None,
@@ -158,6 +166,9 @@ impl HarnessEvent {
                 parent_session_id, ..
             }
             | HarnessEvent::Error {
+                parent_session_id, ..
+            }
+            | HarnessEvent::Rollback {
                 parent_session_id, ..
             } => parent_session_id.as_deref(),
             _ => None,

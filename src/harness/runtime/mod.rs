@@ -602,6 +602,8 @@ impl SessionRuntime {
                 max_iterations: self.config.max_iterations,
                 max_context_tokens: self.config.max_context_tokens,
                 turn_timeout_secs: self.config.turn_timeout_secs as u64,
+                max_total_iterations: (self.config.max_total_iterations != 0)
+                    .then_some(self.config.max_total_iterations),
             },
         };
 

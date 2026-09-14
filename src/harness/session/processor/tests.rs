@@ -78,6 +78,7 @@ async fn test_turn_timeout_stops_run() {
             max_iterations: 50,
             max_context_tokens: 100_000,
             turn_timeout_secs: 1, // 1s so the test is fast
+            max_total_iterations: None,
         },
     };
     let mut session = store.create_session("build", dir.path()).unwrap();
@@ -162,6 +163,9 @@ async fn test_auto_continuation_resumes_after_max_iterations() {
             max_iterations: 1,
             max_context_tokens: 100_000,
             turn_timeout_secs: 5, // generous: no watchdog interference
+            // Explicit budget so the continuation cap (10), not the budget,
+            // ends the turn — this test is about auto-continuation.
+            max_total_iterations: Some(11),
         },
     };
     let mut session = store.create_session("build", dir.path()).unwrap();
@@ -329,6 +333,17 @@ fn test_processor(
     registry: crate::harness::tool::registry::ToolRegistry,
     max_iterations: usize,
 ) -> (SessionProcessor, tempfile::TempDir) {
+    test_processor_with_budget(provider, registry, max_iterations, None)
+}
+
+/// Like [`test_processor`] but with an explicit per-turn iteration budget
+/// (`None` = the conservative default of `max_iterations * 3`).
+fn test_processor_with_budget(
+    provider: MockProvider,
+    registry: crate::harness::tool::registry::ToolRegistry,
+    max_iterations: usize,
+    max_total_iterations: Option<usize>,
+) -> (SessionProcessor, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let store = StdArc::new(
         crate::harness::session::store::SessionStore::open(&dir.path().join("test.db")).unwrap(),
@@ -344,6 +359,7 @@ fn test_processor(
             max_iterations,
             max_context_tokens: 100_000,
             turn_timeout_secs: 30, // generous: no watchdog interference
+            max_total_iterations,
         },
     };
     (processor, dir)
@@ -601,7 +617,9 @@ async fn test_iteration_budget_exhausts_turn() {
         .map(|i| tool_call_events(&format!("i{}", i), "fake_ok", "{}"))
         .collect();
     let provider = MockProvider::new(script);
-    let (processor, dir) = test_processor(provider, registry, 1);
+    // Explicit budget high enough that the doom-loop detector (not the budget)
+    // ends the turn — this test is about the doom-loop, not the budget.
+    let (processor, dir) = test_processor_with_budget(provider, registry, 1, Some(11));
     let mut session = processor.store.create_session("build", dir.path()).unwrap();
     session.messages.push(Message::user("loop forever"));
     let agent = agent_with_tools(vec!["fake_ok".to_string()]);
@@ -815,4 +833,479 @@ async fn test_doom_loop_detects_multi_call_cycle() {
         "unexpected final_text: {}",
         outcome.final_text
     );
+}
+
+// --- decide_turn_end: pure decision table (R2) ---
+
+#[test]
+fn test_decide_turn_end_clean_finish_continues() {
+    // No stop_reason, budget left, continuations left -> auto-continue.
+    let d = super::decide_turn_end(None, 0, 1, 11);
+    match d {
+        super::TurnDecision::Continue { label, reason, .. } => {
+            assert_eq!(label, "auto-continue");
+            assert_eq!(reason, "iteration limit reached");
+        }
+        other => panic!("expected Continue, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_decide_turn_end_stop_reason_restarts() {
+    let d = super::decide_turn_end(Some("turn exceeded the 5s time limit".into()), 0, 1, 11);
+    match d {
+        super::TurnDecision::Continue {
+            label,
+            reason,
+            note,
+        } => {
+            assert_eq!(label, "turn restart");
+            assert!(reason.contains("time limit"));
+            assert!(note.contains("turn restart 1/10"));
+        }
+        other => panic!("expected Continue, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_decide_turn_end_continuations_exhausted_stops() {
+    let d = super::decide_turn_end(None, 10, 11, 11);
+    match d {
+        super::TurnDecision::Stop(t) => assert!(t.contains("after 10 continuation(s)")),
+        other => panic!("expected Stop, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_decide_turn_end_budget_reason_is_hard_stop() {
+    let d = super::decide_turn_end(
+        Some("iteration budget exhausted for this turn".into()),
+        0,
+        11,
+        11,
+    );
+    match d {
+        super::TurnDecision::Stop(t) => assert!(t.contains("iteration budget exhausted")),
+        other => panic!("expected Stop, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_decide_turn_end_global_budget_stops() {
+    // No stop_reason, continuations left, but the global budget is spent.
+    let d = super::decide_turn_end(None, 3, 11, 11);
+    match d {
+        super::TurnDecision::Stop(t) => assert!(t.contains("iteration budget exhausted")),
+        other => panic!("expected Stop, got {other:?}"),
+    }
+}
+
+// --- R3: honor provider stop_reason (truncation) ---
+
+/// Provider that emits a text response truncated at the output-token limit
+/// (`stop_reason = max_tokens`) for the first `truncations` calls, then a
+/// clean `end_turn` final answer.
+struct TruncatingProvider {
+    truncations: usize,
+    n: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl Provider for TruncatingProvider {
+    fn name(&self) -> &str {
+        "truncating"
+    }
+    async fn stream(&self, _req: &LlmRequest) -> anyhow::Result<ProviderStream> {
+        let i = self.n.fetch_add(1, Ordering::SeqCst);
+        let evs: Vec<anyhow::Result<ProviderEvent>> = if i < self.truncations {
+            vec![
+                Ok(ProviderEvent::TextDelta(format!("partial {i}"))),
+                Ok(ProviderEvent::End {
+                    stop_reason: Some("max_tokens".into()),
+                    usage: None,
+                }),
+            ]
+        } else {
+            vec![
+                Ok(ProviderEvent::TextDelta("final answer".into())),
+                Ok(ProviderEvent::End {
+                    stop_reason: Some("end_turn".into()),
+                    usage: None,
+                }),
+            ]
+        };
+        Ok(futures_util::stream::iter(evs).boxed())
+    }
+    async fn complete(&self, _req: &LlmRequest) -> anyhow::Result<LlmResponse> {
+        unreachable!()
+    }
+}
+
+fn processor_with(provider: StdArc<dyn Provider>, max_iterations: usize) -> SessionProcessor {
+    let dir = tempfile::tempdir().unwrap();
+    let store = StdArc::new(
+        crate::harness::session::store::SessionStore::open(&dir.path().join("test.db")).unwrap(),
+    );
+    let (tx, _rx) = crate::harness::event::event_channel();
+    SessionProcessor {
+        provider,
+        registry: crate::harness::tool::registry::ToolRegistry::builder().build(),
+        events: tx,
+        store,
+        config: ProcessorConfig {
+            model: "m".into(),
+            max_iterations,
+            max_context_tokens: 100_000,
+            turn_timeout_secs: 60,
+            max_total_iterations: None,
+        },
+    }
+}
+
+fn agent_no_tools() -> AgentSpec {
+    AgentSpec {
+        name: "build".into(),
+        description: String::new(),
+        tools: vec![],
+        system_prompt: String::new(),
+        model: None,
+        temperature: None,
+        permission_overrides: Default::default(),
+    }
+}
+
+#[tokio::test]
+async fn test_truncated_response_continues_instead_of_ending() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = StdArc::new(
+        crate::harness::session::store::SessionStore::open(&dir.path().join("test.db")).unwrap(),
+    );
+    let processor = processor_with(
+        StdArc::new(TruncatingProvider {
+            truncations: 2,
+            n: AtomicUsize::new(0),
+        }),
+        10,
+    );
+    let mut session = store.create_session("build", dir.path()).unwrap();
+    session.messages.push(Message::user("write a long essay"));
+    let ctx = test_ctx();
+    let outcome = processor
+        .run_turn(&mut session, &agent_no_tools(), "sys", &ctx)
+        .await
+        .unwrap();
+    // Two truncations -> two continuations, then the clean final answer.
+    assert_eq!(
+        outcome.continuations, 2,
+        "expected 2 truncation continuations"
+    );
+    assert_eq!(outcome.final_text, "final answer");
+    // The truncation notes were persisted.
+    let notes = session
+        .messages
+        .iter()
+        .filter(|m| m.role.as_str() == "user" && m.text_content().contains("[truncated"))
+        .count();
+    assert_eq!(notes, 2, "expected 2 truncation notes");
+}
+
+#[tokio::test]
+async fn test_end_turn_finishes_without_continuation() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = StdArc::new(
+        crate::harness::session::store::SessionStore::open(&dir.path().join("test.db")).unwrap(),
+    );
+    let processor = processor_with(
+        StdArc::new(TruncatingProvider {
+            truncations: 0,
+            n: AtomicUsize::new(0),
+        }),
+        10,
+    );
+    let mut session = store.create_session("build", dir.path()).unwrap();
+    session.messages.push(Message::user("hi"));
+    let ctx = test_ctx();
+    let outcome = processor
+        .run_turn(&mut session, &agent_no_tools(), "sys", &ctx)
+        .await
+        .unwrap();
+    assert_eq!(outcome.continuations, 0);
+    assert_eq!(outcome.final_text, "final answer");
+}
+
+#[test]
+fn test_is_truncated_normalizes_providers() {
+    use crate::harness::provider::is_truncated;
+    // Truncation reasons across providers.
+    assert!(is_truncated(Some("max_tokens"))); // Anthropic
+    assert!(is_truncated(Some("length"))); // OpenAI
+    assert!(is_truncated(Some("MAX_TOKENS"))); // case-insensitive
+    assert!(is_truncated(Some(" max_tokens "))); // trimmed
+                                                 // Clean finishes are not truncation.
+    assert!(!is_truncated(Some("end_turn")));
+    assert!(!is_truncated(Some("stop")));
+    assert!(!is_truncated(Some("tool_use")));
+    assert!(!is_truncated(Some("tool_calls")));
+    assert!(!is_truncated(None));
+}
+
+#[test]
+fn test_truncation_decision_respects_caps() {
+    // Budget left -> continue.
+    match super::truncation_decision(0, 1, 11) {
+        super::TurnDecision::Continue { label, .. } => assert_eq!(label, "truncation continue"),
+        other => panic!("expected Continue, got {other:?}"),
+    }
+    // Continuations exhausted -> stop.
+    match super::truncation_decision(10, 11, 11) {
+        super::TurnDecision::Stop(t) => assert!(t.contains("output-token limit")),
+        other => panic!("expected Stop, got {other:?}"),
+    }
+    // Global budget exhausted -> stop.
+    match super::truncation_decision(3, 11, 11) {
+        super::TurnDecision::Stop(t) => assert!(t.contains("iteration budget exhausted")),
+        other => panic!("expected Stop, got {other:?}"),
+    }
+}
+
+// --- R4: explicit, conservative iteration budget ---
+
+#[test]
+fn test_default_total_iterations_is_conservative() {
+    // Default is 3× the per-segment limit, not the old 11×.
+    assert_eq!(super::default_total_iterations(50), 150);
+    assert_eq!(super::default_total_iterations(1), 3);
+    // Never zero (a zero budget would stop every turn immediately).
+    assert_eq!(super::default_total_iterations(0), 1);
+}
+
+#[tokio::test]
+async fn test_explicit_budget_caps_turn() {
+    // A provider that never finishes (distinct tool names so the doom-loop
+    // detector never fires). With an explicit budget of 4, the turn must stop
+    // after 4 iterations regardless of continuations.
+    let registry = crate::harness::tool::registry::ToolRegistry::builder()
+        .register(StdArc::new(FakeTool {
+            name: "fake_ok",
+            output: "ok",
+            sleep_ms: 0,
+            abort: None,
+        }))
+        .build();
+    let script: Vec<Vec<ProviderEvent>> = (0..20)
+        .map(|i| tool_call_events(&format!("i{}", i), "fake_ok", &format!(r#"{{"n":{}}}"#, i)))
+        .collect();
+    let provider = MockProvider::new(script);
+    let (processor, dir) = test_processor_with_budget(provider, registry, 1, Some(4));
+    let mut session = processor.store.create_session("build", dir.path()).unwrap();
+    session.messages.push(Message::user("loop forever"));
+    let agent = agent_with_tools(vec!["fake_ok".to_string()]);
+    let ctx = test_ctx();
+
+    let outcome = processor
+        .run_turn(&mut session, &agent, "sys", &ctx)
+        .await
+        .unwrap();
+
+    assert!(
+        outcome.final_text.contains("iteration budget exhausted"),
+        "unexpected final: {}",
+        outcome.final_text
+    );
+    assert_eq!(outcome.iterations, 4, "budget must cap total iterations");
+}
+
+#[tokio::test]
+async fn test_default_budget_caps_turn() {
+    // No explicit budget: the default (max_iterations * 3) caps the turn.
+    let registry = crate::harness::tool::registry::ToolRegistry::builder()
+        .register(StdArc::new(FakeTool {
+            name: "fake_ok",
+            output: "ok",
+            sleep_ms: 0,
+            abort: None,
+        }))
+        .build();
+    let script: Vec<Vec<ProviderEvent>> = (0..20)
+        .map(|i| tool_call_events(&format!("i{}", i), "fake_ok", &format!(r#"{{"n":{}}}"#, i)))
+        .collect();
+    let provider = MockProvider::new(script);
+    // max_iterations = 2 -> default budget = 6.
+    let (processor, dir) = test_processor(provider, registry, 2);
+    let mut session = processor.store.create_session("build", dir.path()).unwrap();
+    session.messages.push(Message::user("loop forever"));
+    let agent = agent_with_tools(vec!["fake_ok".to_string()]);
+    let ctx = test_ctx();
+
+    let outcome = processor
+        .run_turn(&mut session, &agent, "sys", &ctx)
+        .await
+        .unwrap();
+
+    assert!(
+        outcome.final_text.contains("iteration budget exhausted"),
+        "unexpected final: {}",
+        outcome.final_text
+    );
+    assert_eq!(outcome.iterations, 6, "default budget = max_iterations * 3");
+}
+
+// --- R6: iteration rollback (end-to-end) ---
+
+/// A mutable tool (`write`) that always fails, after touching the file.
+struct FailingWriteTool;
+#[async_trait::async_trait]
+impl Tool for FailingWriteTool {
+    fn name(&self) -> &str {
+        "write"
+    }
+    fn description(&self) -> &str {
+        "failing write"
+    }
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({"type": "object"})
+    }
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        _ctx: &ToolContext,
+    ) -> Result<crate::harness::tool::ToolResult, String> {
+        // Simulate a partial write that then fails.
+        if let Some(p) = args.get("path").and_then(|v| v.as_str()) {
+            let _ = std::fs::write(p, "corrupted");
+        }
+        Err("write failed".to_string())
+    }
+}
+
+/// A mutable tool (`edit`) that succeeds.
+struct OkEditTool;
+#[async_trait::async_trait]
+impl Tool for OkEditTool {
+    fn name(&self) -> &str {
+        "edit"
+    }
+    fn description(&self) -> &str {
+        "ok edit"
+    }
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({"type": "object"})
+    }
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        _ctx: &ToolContext,
+    ) -> Result<crate::harness::tool::ToolResult, String> {
+        if let Some(p) = args.get("path").and_then(|v| v.as_str()) {
+            let _ = std::fs::write(p, "edited");
+        }
+        Ok(crate::harness::tool::ToolResult::simple("edit", "ok"))
+    }
+}
+
+#[tokio::test]
+async fn test_all_failed_edits_are_rolled_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("a.rs");
+    std::fs::write(&file, "original").unwrap();
+
+    let registry = crate::harness::tool::registry::ToolRegistry::builder()
+        .register(StdArc::new(FailingWriteTool))
+        .build();
+    let script = vec![
+        tool_call_events(
+            "t1",
+            "write",
+            &format!(r#"{{"path":"{}"}}"#, file.display()),
+        ),
+        final_text_events("done"),
+    ];
+    let provider = MockProvider::new(script);
+    let (processor, _dir) = test_processor(provider, registry, 10);
+    let mut session = processor.store.create_session("build", dir.path()).unwrap();
+    session.messages.push(Message::user("edit the file"));
+    let agent = agent_with_tools(vec!["write".to_string()]);
+    let ctx = test_ctx();
+
+    let _ = processor
+        .run_turn(&mut session, &agent, "sys", &ctx)
+        .await
+        .unwrap();
+
+    // The failed write was rolled back to the pre-iteration content.
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        "original",
+        "failed edit must be rolled back"
+    );
+    // A rollback note was injected for the model.
+    let notes = session
+        .messages
+        .iter()
+        .filter(|m| m.role.as_str() == "user" && m.text_content().contains("rolled back"))
+        .count();
+    assert_eq!(notes, 1, "expected a rollback note");
+}
+
+#[tokio::test]
+async fn test_successful_edit_prevents_rollback() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("a.rs");
+    std::fs::write(&file, "original").unwrap();
+
+    let registry = crate::harness::tool::registry::ToolRegistry::builder()
+        .register(StdArc::new(FailingWriteTool))
+        .register(StdArc::new(OkEditTool))
+        .build();
+    // One failing `write` and one succeeding `edit` in the *same* iteration
+    // (a single assistant message with two tool calls).
+    let script = vec![
+        vec![
+            ProviderEvent::ToolCallStart {
+                id: "t1".into(),
+                name: "write".into(),
+            },
+            ProviderEvent::ToolCallEnd {
+                id: "t1".into(),
+                arguments: format!(r#"{{"path":"{}"}}"#, file.display()),
+            },
+            ProviderEvent::ToolCallStart {
+                id: "t2".into(),
+                name: "edit".into(),
+            },
+            ProviderEvent::ToolCallEnd {
+                id: "t2".into(),
+                arguments: format!(r#"{{"path":"{}"}}"#, file.display()),
+            },
+            ProviderEvent::End {
+                stop_reason: None,
+                usage: Some(Usage::default()),
+            },
+        ],
+        final_text_events("done"),
+    ];
+    let provider = MockProvider::new(script);
+    let (processor, _dir) = test_processor(provider, registry, 10);
+    let mut session = processor.store.create_session("build", dir.path()).unwrap();
+    session.messages.push(Message::user("edit the file"));
+    let agent = agent_with_tools(vec!["write".to_string(), "edit".to_string()]);
+    let ctx = test_ctx();
+
+    let _ = processor
+        .run_turn(&mut session, &agent, "sys", &ctx)
+        .await
+        .unwrap();
+
+    // A successful mutation disables the rollback: the good edit is kept.
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        "edited",
+        "successful edit must not be reverted"
+    );
+    let notes = session
+        .messages
+        .iter()
+        .filter(|m| m.role.as_str() == "user" && m.text_content().contains("rolled back"))
+        .count();
+    assert_eq!(notes, 0, "no rollback when something succeeded");
 }

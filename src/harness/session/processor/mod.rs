@@ -22,6 +22,11 @@ pub struct ProcessorConfig {
     pub max_context_tokens: usize,
     /// Wall-clock limit per turn, in seconds (0 = default).
     pub turn_timeout_secs: u64,
+    /// Hard cap on total iterations across all continuations of a single turn
+    /// (R4). `None` = conservative default of `max_iterations * 3`. This is the
+    /// outer safety net: even if every continuation resets the per-segment
+    /// `max_iterations`, the turn cannot exceed this many iterations.
+    pub max_total_iterations: Option<usize>,
     // Temperature is agent-calibrated: see AgentSpec::turn_temperature.
 }
 
@@ -32,8 +37,16 @@ impl Default for ProcessorConfig {
             max_iterations: 100,
             max_context_tokens: 100_000,
             turn_timeout_secs: DEFAULT_TURN_TIMEOUT_SECS,
+            max_total_iterations: None,
         }
     }
+}
+
+/// Conservative default for the per-turn iteration budget (R4): three segments
+/// worth of `max_iterations`, instead of the old implicit
+/// `max_iterations * (DEFAULT_MAX_CONTINUATIONS + 1)` (= 11×).
+pub fn default_total_iterations(max_iterations: usize) -> usize {
+    max_iterations.saturating_mul(3).max(1)
 }
 
 /// Returns a copy of `req.messages` with all `Part::Image` parts removed from
@@ -86,6 +99,120 @@ const STREAM_TIMEOUT_SECS: u64 = 300;
 /// and tool call stays under its own timeout, a turn that keeps going for
 /// this long is stopped instead of hanging forever. 0 = use the default.
 const DEFAULT_TURN_TIMEOUT_SECS: u64 = 1800;
+
+/// The single decision point for how a turn ends. Produced by
+/// [`decide_turn_end`] and applied by `SessionProcessor::apply_turn_decision`.
+#[derive(Debug, PartialEq, Eq)]
+enum TurnDecision {
+    /// Stop the turn, surfacing this text as the final answer.
+    Stop(String),
+    /// Continue the turn: push `note` to the session, restart the watchdog and
+    /// loop again. `reason`/`label` are for logging and the `AutoContinue` event.
+    Continue {
+        note: String,
+        reason: String,
+        label: &'static str,
+    },
+}
+
+/// Decides how a turn ends, given the current state. This is the *only* place
+/// the three former code paths (watchdog restart, stop_reason restart,
+/// iteration-limit auto-continue) are expressed, so they cannot drift apart.
+///
+/// - `stop_reason`: set when the attempt ended early (watchdog, stalled stream,
+///   transient stream error). `None` on a clean finish.
+/// - `continuations`: how many times the turn already auto-continued.
+/// - `total_iterations` / `iteration_budget`: the hard global cap that cannot
+///   be restarted out of.
+fn decide_turn_end(
+    stop_reason: Option<String>,
+    continuations: usize,
+    total_iterations: usize,
+    iteration_budget: usize,
+) -> TurnDecision {
+    if let Some(reason) = stop_reason {
+        // The budget-exhausted reason is a hard stop, not a restartable one.
+        if reason == "iteration budget exhausted for this turn" {
+            return TurnDecision::Stop(format!("Stopped: {}.", reason));
+        }
+        if continuations >= DEFAULT_MAX_CONTINUATIONS {
+            return TurnDecision::Stop(format!(
+                "Stopped: {} after {} continuation(s).",
+                reason, continuations
+            ));
+        }
+        let next = continuations + 1;
+        return TurnDecision::Continue {
+            note: format!(
+                "[turn restart {}/{}] The turn was interrupted: {}. Review the state \
+                 so far, identify what happened, and decide whether to continue the \
+                 task from where it stopped or report the blocker.",
+                next, DEFAULT_MAX_CONTINUATIONS, reason
+            ),
+            reason,
+            label: "turn restart",
+        };
+    }
+
+    // No stop_reason: the iteration limit was reached with work still pending.
+    // Continuations are checked before the global budget so the exhaustion
+    // message reflects the continuation cap (the budget is the outer safety
+    // net, hit only if continuations somehow outlive it).
+    if continuations >= DEFAULT_MAX_CONTINUATIONS {
+        return TurnDecision::Stop(format!(
+            "Stopped: reached the iteration limit after {} continuation(s).",
+            continuations
+        ));
+    }
+    if total_iterations >= iteration_budget {
+        return TurnDecision::Stop(
+            "Stopped: iteration budget exhausted for this turn.".to_string(),
+        );
+    }
+    let next = continuations + 1;
+    TurnDecision::Continue {
+        note: format!(
+            "[auto-continue {}/{}] iteration limit reached — resuming the task \
+             exactly where it stopped.",
+            next, DEFAULT_MAX_CONTINUATIONS
+        ),
+        reason: "iteration limit reached".to_string(),
+        label: "auto-continue",
+    }
+}
+
+/// Decides how to handle a response the provider truncated at the output-token
+/// limit (R3). A truncated response with no tool calls is *not* a final answer:
+/// the model was cut off mid-thought, so we continue it. Respects the same
+/// continuation/budget caps as [`decide_turn_end`].
+fn truncation_decision(
+    continuations: usize,
+    total_iterations: usize,
+    iteration_budget: usize,
+) -> TurnDecision {
+    if continuations >= DEFAULT_MAX_CONTINUATIONS {
+        return TurnDecision::Stop(format!(
+            "Stopped: response kept hitting the output-token limit after {} continuation(s).",
+            continuations
+        ));
+    }
+    if total_iterations >= iteration_budget {
+        return TurnDecision::Stop(
+            "Stopped: iteration budget exhausted for this turn.".to_string(),
+        );
+    }
+    let next = continuations + 1;
+    TurnDecision::Continue {
+        note: format!(
+            "[truncated {}/{}] Your previous response was cut off by the output-token \
+             limit. Continue exactly where you stopped — do not repeat what you already \
+             wrote.",
+            next, DEFAULT_MAX_CONTINUATIONS
+        ),
+        reason: "response truncated by the output-token limit".to_string(),
+        label: "truncation continue",
+    }
+}
 
 impl SessionProcessor {
     /// Persists a message to the store, logging a warning on failure instead
@@ -152,6 +279,58 @@ impl SessionProcessor {
         true
     }
 
+    /// Applies a [`TurnDecision`] at the single point where the turn either
+    /// stops or continues. On `Continue` it pushes/persists the note, restarts
+    /// the turn (usage accumulation + watchdog reset) and returns `true` so the
+    /// caller can `continue 'turn`. On `Stop` it sets `final_text` and returns
+    /// `false`.
+    ///
+    /// This is the *only* place that mutates `final_text`/`continuations` for
+    /// turn-end decisions, so the three former code paths (watchdog restart,
+    /// stop_reason restart, iteration-limit auto-continue) can no longer drift.
+    #[allow(clippy::too_many_arguments)]
+    async fn apply_turn_decision(
+        &self,
+        decision: TurnDecision,
+        session: &mut Session,
+        final_text: &mut String,
+        continuations: &mut usize,
+        usage: &Usage,
+        total_usage: &mut Usage,
+        iterations: &mut usize,
+        turn_deadline: &mut tokio::time::Instant,
+        turn_secs: u64,
+    ) -> bool {
+        match decision {
+            TurnDecision::Stop(text) => {
+                *final_text = text;
+                false
+            }
+            TurnDecision::Continue {
+                note,
+                reason,
+                label,
+            } => {
+                *continuations += 1;
+                let note = Message::user(note);
+                session.push_message(note.clone());
+                self.persist(&session.id, &session.cwd, &note).await;
+                self.restart_turn(
+                    session,
+                    &reason,
+                    label,
+                    *continuations,
+                    usage,
+                    total_usage,
+                    iterations,
+                    turn_deadline,
+                    turn_secs,
+                );
+                true
+            }
+        }
+    }
+
     /// Runs one user turn: loops stream -> tool exec until the model answers
     /// without tool calls, hits max iterations, or is aborted.
     pub async fn run_turn(
@@ -168,6 +347,8 @@ impl SessionProcessor {
         let mut aborted = false;
         let mut doom = crate::harness::session::doom_loop::DoomLoopDetector::new();
         let mut text_loop = crate::harness::session::doom_loop::TextLoopDetector::new();
+        let mut semantic = crate::harness::session::doom_loop::SemanticLoopDetector::new();
+        let mut compact_tracker = crate::harness::session::compaction::CompactionTracker::new();
         let mut continuations = 0usize;
         let mut total_iterations = 0usize;
         let mut stop_reason: Option<String> = None;
@@ -186,9 +367,20 @@ impl SessionProcessor {
             self.config.turn_timeout_secs
         };
         let mut turn_deadline = tokio::time::Instant::now() + Duration::from_secs(turn_secs);
-        // Global cap across all continuations so restarts cannot pile up
-        // unbounded work (e.g. 74 iterations / million-token turns).
-        let iteration_budget = self.config.max_iterations * (DEFAULT_MAX_CONTINUATIONS + 1);
+        // R4: explicit, conservative global cap across all continuations so
+        // restarts cannot pile up unbounded work. Defaults to 3× the per-segment
+        // limit (was implicitly 11× via DEFAULT_MAX_CONTINUATIONS + 1).
+        let iteration_budget = self
+            .config
+            .max_total_iterations
+            .unwrap_or_else(|| default_total_iterations(self.config.max_iterations));
+        tracing::info!(
+            "turn start: session={} max_iterations={} iteration_budget={} turn_timeout_secs={}",
+            session.id,
+            self.config.max_iterations,
+            iteration_budget,
+            turn_secs
+        );
 
         'turn: loop {
             while iterations < self.config.max_iterations {
@@ -207,8 +399,8 @@ impl SessionProcessor {
                 iterations += 1;
                 total_iterations += 1;
 
-                // Compaction on overflow.
-                self.maybe_compact(session).await?;
+                // Compaction on overflow (R1: only when the context grew).
+                self.maybe_compact(session, &mut compact_tracker).await?;
                 if ctx.abort.is_aborted() {
                     aborted = true;
                     break;
@@ -244,6 +436,7 @@ impl SessionProcessor {
                     tool_calls,
                     usage,
                     stop_reason: stream_stop,
+                    provider_stop,
                     aborted: stream_aborted,
                 } = stream_loop::consume_stream(
                     self,
@@ -272,33 +465,28 @@ impl SessionProcessor {
                     break;
                 }
                 if let Some(reason) = stop_reason.take() {
-                    if continuations >= DEFAULT_MAX_CONTINUATIONS {
-                        final_text = format!(
-                            "Stopped: {} after {} continuation(s).",
-                            reason, continuations
-                        );
+                    let decision = decide_turn_end(
+                        Some(reason),
+                        continuations,
+                        total_iterations,
+                        iteration_budget,
+                    );
+                    if !self
+                        .apply_turn_decision(
+                            decision,
+                            session,
+                            &mut final_text,
+                            &mut continuations,
+                            &usage,
+                            &mut total_usage,
+                            &mut iterations,
+                            &mut turn_deadline,
+                            turn_secs,
+                        )
+                        .await
+                    {
                         break;
                     }
-                    continuations += 1;
-                    let note = Message::user(format!(
-                        "[turn restart {}/{}] The turn was interrupted: {}. Review the state \
-                         so far, identify what happened, and decide whether to continue the \
-                         task from where it stopped or report the blocker.",
-                        continuations, DEFAULT_MAX_CONTINUATIONS, reason
-                    ));
-                    session.push_message(note.clone());
-                    self.persist(&session.id, &session.cwd, &note).await;
-                    self.restart_turn(
-                        session,
-                        &reason,
-                        "turn restart",
-                        continuations,
-                        &usage,
-                        &mut total_usage,
-                        &mut iterations,
-                        &mut turn_deadline,
-                        turn_secs,
-                    );
                     continue 'turn;
                 }
 
@@ -331,6 +519,34 @@ impl SessionProcessor {
                 }
 
                 if !assistant.has_tool_calls() {
+                    // R3: a response truncated at the output-token limit is not
+                    // a final answer — continue it instead of ending the turn.
+                    if crate::harness::provider::is_truncated(provider_stop.as_deref()) {
+                        tracing::info!(
+                            "response truncated (stop_reason={:?}), continuing (session={})",
+                            provider_stop,
+                            session.id
+                        );
+                        let decision =
+                            truncation_decision(continuations, total_iterations, iteration_budget);
+                        if !self
+                            .apply_turn_decision(
+                                decision,
+                                session,
+                                &mut final_text,
+                                &mut continuations,
+                                &usage,
+                                &mut total_usage,
+                                &mut iterations,
+                                &mut turn_deadline,
+                                turn_secs,
+                            )
+                            .await
+                        {
+                            break;
+                        }
+                        continue 'turn;
+                    }
                     final_text = text;
                     break;
                 }
@@ -384,9 +600,58 @@ impl SessionProcessor {
                     crate::harness::session::doom_loop::DoomAction::Continue => {}
                 }
 
-                // Text-loop detection across iterations: the same (or
-                // alternating) assistant text with no real progress. Warns
-                // once, then hard-stops the turn.
+                // Semantic loop check (R5): the same tool aimed at the same
+                // target with no progress (empty/error/identical output). This
+                // catches inputs that vary harmlessly (`ls`, `ls .`, `ls ./`)
+                // and repeated failures, which the byte-identical detector
+                // above misses. Reads the *updated* tool parts (with outputs)
+                // from the session, not the pre-execution clone.
+                let outcomes = session
+                    .messages
+                    .iter()
+                    .find(|m| m.id == assistant_id)
+                    .map(|m| {
+                        m.tool_parts()
+                            .iter()
+                            .map(|t| crate::harness::session::doom_loop::ToolOutcome {
+                                name: t.name.clone(),
+                                target: crate::harness::session::doom_loop::tool_target(
+                                    &t.name, &t.input,
+                                ),
+                                output: t.output.clone(),
+                                is_error: t.status == crate::harness::event::ToolStatus::Error,
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                match semantic.record(outcomes) {
+                    crate::harness::session::doom_loop::DoomAction::Stop => {
+                        tracing::warn!(
+                            "semantic loop detected: same tool/target repeated {} times \
+                             without progress (session={})",
+                            crate::harness::session::doom_loop::DOOM_LOOP_STOP,
+                            session.id
+                        );
+                        final_text = "Stopped: the same tool was called repeatedly on the same \
+                                      target without progress."
+                            .to_string();
+                        self.emit(HarnessEvent::Error {
+                            session_id: session.id.clone(),
+                            message: final_text.clone(),
+                            parent_session_id: None,
+                        });
+                        break;
+                    }
+                    crate::harness::session::doom_loop::DoomAction::Warn => {
+                        let warn = Message::user(
+                            "System note: you are calling the same tool on the same target \
+                             repeatedly without progress. Change the target or approach.",
+                        );
+                        session.push_message(warn.clone());
+                        self.persist(&session.id, &session.cwd, &warn).await;
+                    }
+                    crate::harness::session::doom_loop::DoomAction::Continue => {}
+                }
                 let text_sig = crate::harness::session::doom_loop::normalize_text(&text);
                 match text_loop.record(text_sig) {
                     crate::harness::session::doom_loop::DoomAction::Stop => {
@@ -424,77 +689,28 @@ impl SessionProcessor {
             if aborted || !final_text.is_empty() {
                 break 'turn;
             }
-            if let Some(reason) = stop_reason.take() {
-                // A hard global budget cannot be restarted out of.
-                if reason == "iteration budget exhausted for this turn" {
-                    final_text = format!("Stopped: {}.", reason);
-                    break 'turn;
-                }
-                // Watchdog stop (e.g. time limit): let the model review what
-                // happened and decide whether to continue, budget permitting.
-                if continuations >= DEFAULT_MAX_CONTINUATIONS {
-                    final_text = format!(
-                        "Stopped: {} after {} continuation(s).",
-                        reason, continuations
-                    );
-                    break 'turn;
-                }
-                continuations += 1;
-                let note = Message::user(format!(
-                    "[turn restart {}/{}] The turn was interrupted: {}. Review the state \
-                     so far, identify what happened, and decide whether to continue the \
-                     task from where it stopped or report the blocker.",
-                    continuations, DEFAULT_MAX_CONTINUATIONS, reason
-                ));
-                session.push_message(note.clone());
-                self.persist(&session.id, &session.cwd, &note).await;
-                self.restart_turn(
+            let decision = decide_turn_end(
+                stop_reason.take(),
+                continuations,
+                total_iterations,
+                iteration_budget,
+            );
+            if !self
+                .apply_turn_decision(
+                    decision,
                     session,
-                    &reason,
-                    "turn restart",
-                    continuations,
+                    &mut final_text,
+                    &mut continuations,
                     &Usage::default(),
                     &mut total_usage,
                     &mut iterations,
                     &mut turn_deadline,
                     turn_secs,
-                );
-                continue 'turn;
-            }
-            if continuations >= DEFAULT_MAX_CONTINUATIONS {
-                final_text = format!(
-                    "Stopped: reached the iteration limit after {} continuation(s).",
-                    continuations
-                );
+                )
+                .await
+            {
                 break 'turn;
             }
-            if total_iterations >= iteration_budget {
-                final_text = "Stopped: iteration budget exhausted for this turn.".to_string();
-                break 'turn;
-            }
-            continuations += 1;
-            let note = Message::user(format!(
-                "[auto-continue {}/{}] iteration limit reached — resuming the task \
-                 exactly where it stopped.",
-                continuations, DEFAULT_MAX_CONTINUATIONS
-            ));
-            session.push_message(note.clone());
-            self.persist(&session.id, &session.cwd, &note).await;
-            tracing::info!(
-                "auto-continue {}/{}: iteration limit reached (session={})",
-                continuations,
-                DEFAULT_MAX_CONTINUATIONS,
-                session.id
-            );
-            self.emit(HarnessEvent::AutoContinue {
-                session_id: session.id.clone(),
-                round: continuations,
-                total: DEFAULT_MAX_CONTINUATIONS,
-                reason: "iteration limit reached".to_string(),
-                parent_session_id: None,
-            });
-            iterations = 0;
-            turn_deadline = tokio::time::Instant::now() + Duration::from_secs(turn_secs);
         }
 
         if ctx.abort.is_aborted() && final_text.is_empty() {
@@ -642,7 +858,16 @@ impl SessionProcessor {
         }
     }
 
-    async fn maybe_compact(&self, session: &mut Session) -> anyhow::Result<()> {
+    async fn maybe_compact(
+        &self,
+        session: &mut Session,
+        tracker: &mut crate::harness::session::compaction::CompactionTracker,
+    ) -> anyhow::Result<()> {
+        // R1: only re-evaluate when the context grew enough since the last
+        // check — avoids an O(n) token scan on every loop iteration.
+        if !tracker.should_check(&session.messages) {
+            return Ok(());
+        }
         crate::harness::session::compaction::compact_if_needed(
             session,
             self.provider.clone(),
@@ -653,6 +878,7 @@ impl SessionProcessor {
             &self.config.model,
         )
         .await?;
+        tracker.record(&session.messages);
         Ok(())
     }
 }
