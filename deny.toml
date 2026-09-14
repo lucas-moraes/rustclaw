@@ -36,7 +36,7 @@ unlicensed = "deny"
 copyleft = "deny"
 allow-osi-fsf-free = "neither"
 default = "deny"
-confidence = 0.8
+confidence-threshold = 0.8
 
 [sources]
 unknown-registry = "deny"
