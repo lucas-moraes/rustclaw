@@ -32,6 +32,9 @@ jobs:
       - name: Test
         run: cargo test --all-targets
 
+      - name: Evals (offline regression gate)
+        run: cargo run --quiet -- evals
+
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
 

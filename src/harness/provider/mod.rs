@@ -8,6 +8,7 @@ pub mod catalog;
 pub mod openai;
 pub mod opencode_go;
 pub mod retry;
+pub mod scripted;
 pub mod user_store;
 
 use crate::harness::session::{Message, Part};

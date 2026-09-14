@@ -1,7 +1,7 @@
 mod config;
 mod harness;
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -9,15 +9,36 @@ use clap::Parser;
     about = "RustClaw - Coding agent harness (OpenCode/Claude Code style)",
     version = "0.2.0"
 )]
-struct Args {}
+struct Args {
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Subcommand, Debug)]
+enum Command {
+    /// Run the built-in eval suite (offline, deterministic) and exit.
+    ///
+    /// Exits non-zero if any eval fails, so it can gate CI.
+    Evals,
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    Args::parse();
+    let args = Args::parse();
 
     // Set up tracing subscriber. Default: pretty format at INFO level.
     // RUSTCLAW_LOG=json enables JSON output; RUSTCLAW_LOG=debug|trace changes level.
     init_tracing();
+
+    // `rustclaw evals` runs the offline eval suite and exits (no token needed).
+    if let Some(Command::Evals) = args.command {
+        let (report, all_ok) = harness::eval::report(&harness::eval::suite()).await;
+        print!("{report}");
+        if !all_ok {
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
 
     // File-based config only (auth.json + config.json + rustclaw.json).
     // A missing API key is tolerated: the TUI handles onboarding.

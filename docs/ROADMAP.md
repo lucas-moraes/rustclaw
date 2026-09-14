@@ -23,6 +23,18 @@ O RustClaw já implementa o núcleo de um coding agent moderno:
 
 As lacunas abaixo são o que separa o projeto de "equivalente" — não de "bom".
 
+## Status de execução
+
+| # | Item | Estado |
+|---|------|--------|
+| 1 | Subagents aninhados | ✅ concluído |
+| 2 | Compactação proativa / incremental | ✅ concluído (2a trigger 70%, 2b ledger durável, 2c cadeia de resumos) |
+| 3 | Evals / observabilidade | ✅ concluído (métricas por sessão + `/stats` + suite de evals offline + gate no CI) |
+| 4 | Busca semântica | ⬜ pendente |
+| 5 | Sandbox de execução | ⬜ pendente |
+| 6 | Render JS | ⬜ pendente |
+| 7 | Provider/ecossistema | ⬜ contínuo |
+
 ---
 
 ## P0 — Alto impacto, esforço baixo/médio
@@ -160,6 +172,19 @@ ou piorou o agente. Claude Code/Codex têm pipelines internos de avaliação.
 - Rodar evals no CI (subset rápido) para detectar regressões de comportamento.
 
 **Esforço:** ~1 semana. **Risco:** baixo.
+
+**Implementado:**
+- `session/metrics.rs`: `SessionMetrics` (turnos, iterações, tools por nome,
+  erros, tokens in/out/cache, custo, wall time, compactações, subagents) +
+  `ProjectMetrics`; persistido em `metrics_json` (SQLite).
+- `/stats`: relatório da sessão + agregado do projeto.
+- `provider/scripted.rs`: `ScriptedProvider` — replay determinístico de turnos
+  (texto + tool calls) para exercitar o loop inteiro sem rede.
+- `harness/eval.rs`: suite de evals offline com critérios automáticos
+  (`plain_answer_no_tools`, `single_tool_then_answer`, `parallel_tool_calls`,
+  `metrics_recorded`, `tool_error_is_surfaced`).
+- `rustclaw evals`: roda a suite e sai com código != 0 em falha; passo dedicado
+  no CI (`cargo run --quiet -- evals`).
 
 ---
 
