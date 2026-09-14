@@ -30,6 +30,11 @@ allow = [
     "Unicode-DFS-2016",
     "CC0-1.0",
     "MPL-2.0",
+    # Permissive licenses pulled in transitively (rustls/aws-lc, clipboard-win,
+    # error-code, webpki-root-certs).
+    "BSL-1.0",
+    "OpenSSL",
+    "CDLA-Permissive-2.0",
 ]
 # Licenses not in the allow list are denied by default (cargo-deny >= 0.16).
 confidence-threshold = 0.8
