@@ -23,6 +23,20 @@ use std::time::Duration;
 const MAX_OUTPUT_BYTES: usize = 20_000;
 const DEFAULT_TIMEOUT_SECS: u64 = 120;
 
+/// Resolves the sandbox policy for this session: `rustclaw.json` `sandbox`
+/// field (`"off" | "landlock"`), defaulting to `off`. Invalid values fall
+/// back to `off` (a warning is logged).
+fn sandbox_policy_for(ctx: &ToolContext) -> crate::harness::tool::sandbox::SandboxPolicy {
+    let raw = ctx.sandbox_policy.as_deref().unwrap_or("off");
+    match crate::harness::tool::sandbox::SandboxPolicy::parse(raw) {
+        Some(p) => p,
+        None => {
+            tracing::warn!("invalid sandbox policy `{raw}` in rustclaw.json; using off");
+            crate::harness::tool::sandbox::SandboxPolicy::Off
+        }
+    }
+}
+
 pub struct BashTool;
 
 /// Result of the security check for a bash command.
@@ -308,7 +322,8 @@ impl BashTool {
         let _ = std::fs::set_permissions(&out_path, std::fs::Permissions::from_mode(0o600));
         let _ = std::fs::set_permissions(&err_path, std::fs::Permissions::from_mode(0o600));
 
-        let child = tokio::process::Command::new("sh")
+        let mut child = tokio::process::Command::new("sh");
+        child
             .arg("-c")
             .arg(&command)
             .current_dir(&cwd)
@@ -317,7 +332,9 @@ impl BashTool {
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::from(out_file))
             .stderr(std::process::Stdio::from(err_file))
-            .kill_on_drop(false)
+            .kill_on_drop(false);
+        let _sandbox_status = super::sandbox::apply(&mut child, sandbox_policy_for(ctx), &cwd);
+        let child = child
             .spawn()
             .map_err(|e| format!("failed to spawn command: {}", e))?;
 
@@ -429,8 +446,10 @@ impl Tool for BashTool {
         }
 
         let cwd = ctx.cwd.path().to_path_buf();
+        let sandbox = sandbox_policy_for(ctx);
 
-        let mut child = tokio::process::Command::new("sh")
+        let mut child = tokio::process::Command::new("sh");
+        child
             .arg("-c")
             .arg(&command)
             .current_dir(&cwd)
@@ -439,7 +458,9 @@ impl Tool for BashTool {
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true)
+            .kill_on_drop(true);
+        let _sandbox_status = super::sandbox::apply(&mut child, sandbox, &cwd);
+        let mut child = child
             .spawn()
             .map_err(|e| format!("failed to spawn command: {}", e))?;
 
@@ -652,6 +673,7 @@ mod tests {
             jobs: std::sync::Arc::new(crate::harness::tool::jobs::JobRegistry::new()),
             semantic_index: None,
             embedder: None,
+            sandbox_policy: None,
         };
 
         // Abort after a short delay while a long sleep is running.
@@ -718,6 +740,7 @@ mod tests {
             jobs: std::sync::Arc::new(crate::harness::tool::jobs::JobRegistry::new()),
             semantic_index: None,
             embedder: None,
+            sandbox_policy: None,
         };
 
         // Set a secret in the parent env; the bash tool must not see it.

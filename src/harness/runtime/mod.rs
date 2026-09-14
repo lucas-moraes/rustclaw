@@ -92,6 +92,8 @@ pub struct SessionRuntime {
     /// Embeddings backend for semantic search (from `rustclaw.json`). `None`
     /// degrades search to BM25-only.
     pub embedder: Option<Arc<dyn crate::harness::index::Embedder>>,
+    /// Sandbox policy for the `bash` tool (from `rustclaw.json` `sandbox`).
+    pub sandbox_policy: Option<String>,
     /// Daily USD budget tracker (per-day cost, persisted to usage-*.json).
     pub budget: Arc<tokio::sync::Mutex<crate::harness::budget::BudgetTracker>>,
     /// Event recording (`/record`): shared tee target for the UI event loops.
@@ -196,6 +198,7 @@ impl SessionRuntime {
             jobs: Arc::new(crate::harness::tool::jobs::JobRegistry::new()),
             semantic_index,
             embedder,
+            sandbox_policy: proj.sandbox.clone(),
             event_recorder: Arc::new(crate::harness::ui::commands::replay::EventRecorder::new()),
             budget: Arc::new(tokio::sync::Mutex::new(
                 crate::harness::budget::BudgetTracker::default(),
@@ -645,6 +648,7 @@ impl SessionRuntime {
             depth,
             semantic_index: self.semantic_index.clone(),
             embedder: self.embedder.clone(),
+            sandbox_policy: self.sandbox_policy.clone(),
         };
 
         // 4. Run the processor turn.
@@ -812,6 +816,7 @@ impl SessionRuntime {
             jobs: self.jobs.clone(),
             semantic_index: self.semantic_index.clone(),
             embedder: self.embedder.clone(),
+            sandbox_policy: self.sandbox_policy.clone(),
             budget: self.budget.clone(),
             event_recorder: self.event_recorder.clone(),
         }

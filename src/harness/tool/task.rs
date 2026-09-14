@@ -292,6 +292,7 @@ mod tests {
             jobs: std::sync::Arc::new(crate::harness::tool::jobs::JobRegistry::new()),
             semantic_index: None,
             embedder: None,
+            sandbox_policy: None,
             depth: 0,
         };
         (ctx, tx, rx)

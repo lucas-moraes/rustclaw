@@ -56,3 +56,9 @@ strip = true
 
 [profile.release.package."*"]
 opt-level = "z"
+
+# ROADMAP item 5: bash sandbox. Landlock is Linux-only; on other targets the
+# sandbox module compiles to a no-op stub.
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock = "0.4"
+libc = "0.2"

@@ -61,6 +61,7 @@ fn test_ctx() -> ToolContext {
         jobs: std::sync::Arc::new(crate::harness::tool::jobs::JobRegistry::new()),
         semantic_index: None,
         embedder: None,
+        sandbox_policy: None,
     }
 }
 

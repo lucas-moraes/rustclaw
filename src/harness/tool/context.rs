@@ -137,6 +137,9 @@ pub struct ToolContext {
     pub semantic_index: Option<Arc<crate::harness::index::SemanticIndex>>,
     /// Embeddings backend for semantic search. `None` degrades to BM25-only.
     pub embedder: Option<Arc<dyn crate::harness::index::Embedder>>,
+    /// Sandbox policy for the `bash` tool, from `rustclaw.json` (`"off" |
+    /// "landlock"`). `None` = off.
+    pub sandbox_policy: Option<String>,
 }
 
 /// Working directory guard: all path resolution goes through this.

@@ -31,7 +31,7 @@ As lacunas abaixo são o que separa o projeto de "equivalente" — não de "bom"
 | 2 | Compactação proativa / incremental | ✅ concluído (2a trigger 70%, 2b ledger durável, 2c cadeia de resumos) |
 | 3 | Evals / observabilidade | ✅ concluído (métricas por sessão + `/stats` + suite de evals offline + gate no CI) |
 | 4 | Busca semântica | ✅ concluído (chunking por símbolo + índice SQLite/FTS5 + busca híbrida + tool `semantic_search` + `/index`) |
-| 5 | Sandbox de execução | ⬜ pendente |
+| 5 | Sandbox de execução | ✅ concluído (Landlock via `pre_exec` no Linux + `sandbox = "off"\|"landlock"` em `rustclaw.json`; no-op em outros SOs) |
 | 6 | Render JS | ✅ concluído (headless Chrome via `chromiumoxide` no binário default + `render: auto\|http\|browser` + `rustclaw doctor`) |
 | 7 | Provider/ecossistema | ⬜ contínuo |
 
@@ -92,8 +92,12 @@ longas; exige testes de regressão com sessões sintéticas).
 
 ### 3. Sandbox de execução para `bash`
 
-**Estado atual:** `BashTool` executa direto no host. Há permissões
-(allow/ask/deny) e guard de path, mas **nenhum isolamento de processo**.
+**Estado atual:** ✅ **Implementado** — `src/harness/tool/sandbox.rs` aplica
+Landlock no processo filho via `pre_exec` (antes do `exec`), configurável com
+`sandbox = "off" | "landlock"` em `rustclaw.json`. Regras: leitura de `/usr`,
+`/bin`, `/etc`, `/dev` e toolchains do `PATH`; leitura+escrita do cwd e `/tmp`.
+Best-effort: kernels sem Landlock rodam sem restrição (status reportado).
+macOS/Windows: no-op.
 
 **Lacuna:** é a diferença de **segurança** mais séria. Codex e Claude Code
 oferecem execução isolada (container/seccomp/landlock). Sem isso, não dá para

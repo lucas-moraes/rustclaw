@@ -24,6 +24,10 @@ pub struct ProjectConfig {
     /// degrades to BM25 (FTS5) over symbol chunks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub embeddings: Option<crate::harness::index::EmbedConfig>,
+    /// Sandbox mode for the `bash` tool: `"off"` (default) or `"landlock"`
+    /// (Linux filesystem sandbox applied to spawned shell processes).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<String>,
 }
 
 impl ProjectConfig {
@@ -91,6 +95,24 @@ mod tests {
         let back = ProjectConfig::load_from(&ProjectConfig::path(d.path())).unwrap();
         assert_eq!(back.permission.tools.get("bash"), Some(&Rule::Allow));
         assert!(!back.is_empty());
+    }
+
+    #[test]
+    fn test_sandbox_field_roundtrip() {
+        let d = tempfile::tempdir().unwrap();
+        let c = ProjectConfig {
+            sandbox: Some("landlock".to_string()),
+            ..Default::default()
+        };
+        c.save(d.path()).unwrap();
+
+        let back = ProjectConfig::load_from(&ProjectConfig::path(d.path())).unwrap();
+        assert_eq!(back.sandbox.as_deref(), Some("landlock"));
+
+        // Default config must not serialize the field.
+        let empty = ProjectConfig::default();
+        let raw = serde_json::to_string(&empty).unwrap();
+        assert!(!raw.contains("sandbox"), "got: {}", raw);
     }
 
     #[test]
