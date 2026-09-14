@@ -20,6 +20,10 @@ const KEEP_RECENT: usize = 6;
 const MIN_MESSAGES: usize = 10;
 /// Max time to wait for the LLM summary before falling back to a placeholder.
 const SUMMARY_TIMEOUT: Duration = Duration::from_secs(120);
+/// Max chained summaries retained (oldest folded away first). Bounds the
+/// "summary of summaries" chain so it cannot grow without limit over a very
+/// long session.
+pub const MAX_SUMMARY_CHAIN: usize = 8;
 
 /// Tunables for context-window compaction.
 #[derive(Clone, Debug)]
@@ -119,13 +123,21 @@ impl CompactionTracker {
 /// `ledger` (when provided and non-empty) is rendered as a structured block and
 /// prepended to the summary, so durable facts (files, commands, decisions)
 /// survive the lossy LLM summary.
+///
+/// `prior_summaries` is the session's existing summary chain (oldest first).
+/// When non-empty, the new summary is produced as a **summary of summaries**:
+/// the previous summaries are folded into the new one instead of being dropped,
+/// so decisions from the start of a long session survive repeated compactions.
+/// The returned chain (via [`CompactionOutcome`]) is bounded by
+/// [`MAX_SUMMARY_CHAIN`].
 pub async fn should_compact_and_execute(
     messages: &[Message],
     provider: Arc<dyn Provider>,
     config: &CompactionConfig,
     model: &str,
     ledger: Option<&crate::harness::session::ledger::ContextLedger>,
-) -> Result<Option<Vec<Message>>> {
+    prior_summaries: &[String],
+) -> Result<Option<CompactionOutcome>> {
     if messages.len() < config.min_messages_to_compact {
         return Ok(None);
     }
@@ -141,11 +153,20 @@ pub async fn should_compact_and_execute(
     let dropped: &[Message] = &messages[..cut];
     let recent: &[Message] = &messages[cut..];
 
-    let summary = summarize(dropped, provider, config.summary_timeout, model).await?;
+    // Chained summary: fold the previous summaries into the new one so the
+    // chain is a "summary of summaries" rather than a single lossy snapshot.
+    let summary = summarize(
+        dropped,
+        prior_summaries,
+        provider,
+        config.summary_timeout,
+        model,
+    )
+    .await?;
     let ledger_block = ledger.and_then(|l| l.render());
     let body = match ledger_block {
         Some(block) => format!("{block}\n{summary}"),
-        None => summary,
+        None => summary.clone(),
     };
     let summary_message = Message::new(
         Role::User,
@@ -159,7 +180,27 @@ pub async fn should_compact_and_execute(
     let mut new_messages = Vec::with_capacity(recent.len() + 1);
     new_messages.push(summary_message);
     new_messages.extend_from_slice(recent);
-    Ok(Some(new_messages))
+
+    // Extend the chain with the freshly produced summary, then bound it.
+    let mut chain: Vec<String> = prior_summaries.to_vec();
+    chain.push(summary);
+    if chain.len() > MAX_SUMMARY_CHAIN {
+        let excess = chain.len() - MAX_SUMMARY_CHAIN;
+        chain.drain(0..excess);
+    }
+
+    Ok(Some(CompactionOutcome {
+        messages: new_messages,
+        summary_chain: chain,
+    }))
+}
+
+/// Result of a successful compaction: the replacement message list plus the
+/// updated (bounded) summary chain to store on the session.
+#[derive(Clone, Debug)]
+pub struct CompactionOutcome {
+    pub messages: Vec<Message>,
+    pub summary_chain: Vec<String>,
 }
 
 /// Runs compaction on a session in place: decides whether the message list
@@ -197,12 +238,13 @@ pub async fn compact_if_needed(
 
     // Decide first: events must only fire when a compaction actually runs,
     // otherwise the TUI would show "[compacting context…]" on every turn tick.
-    let Some(new_messages) = should_compact_and_execute(
+    let Some(outcome) = should_compact_and_execute(
         &session.messages,
         provider,
         &config,
         model,
         Some(&session.ledger),
+        &session.summary_chain,
     )
     .await?
     else {
@@ -219,8 +261,10 @@ pub async fn compact_if_needed(
     let before = session.messages.len();
     // The summary message adds one to the new list, so the number of
     // messages summarized away is before - new.len() + 1.
-    let n = before.saturating_sub(new_messages.len()) + 1;
-    session.messages = new_messages;
+    let n = before.saturating_sub(outcome.messages.len()) + 1;
+    session.messages = outcome.messages;
+    session.summary_chain = outcome.summary_chain;
+    session.invalidate_messages_cache();
     session.updated_at = chrono::Utc::now();
     // Persist immediately so orphaned pre-summary messages are dropped
     // from SQLite even if the turn aborts later.
@@ -243,8 +287,14 @@ pub async fn compact_if_needed(
 
 /// Requests an LLM summary of the dropped messages, falling back to a plain
 /// placeholder when the provider fails, times out, or returns no text.
+///
+/// When `prior_summaries` is non-empty, the request is a **summary of
+/// summaries**: the previous summaries are included as context and the model is
+/// asked to fold them into the new summary, so the chain preserves decisions
+/// from earlier in the session instead of dropping them.
 async fn summarize(
     dropped: &[Message],
+    prior_summaries: &[String],
     provider: Arc<dyn Provider>,
     timeout: Duration,
     model: &str,
@@ -255,12 +305,32 @@ async fn summarize(
         .collect::<Vec<_>>()
         .join("\n");
 
+    let (system, user) = if prior_summaries.is_empty() {
+        (
+            "Summarize the following agent conversation in under 500 words, \
+             preserving key decisions, file paths, and outcomes."
+                .to_string(),
+            transcript,
+        )
+    } else {
+        // Fold the previous summaries into the new one (summary of summaries).
+        let prior = prior_summaries.join("\n---\n");
+        (
+            "You are maintaining a rolling summary of a long agent session. \
+             You are given the PREVIOUS SUMMARY (older context) and a NEW \
+             TRANSCRIPT (recent messages). Produce a single updated summary in \
+             under 500 words that folds the previous summary into the new one, \
+             preserving key decisions, file paths, and outcomes from BOTH. Do \
+             not lose facts from the previous summary."
+                .to_string(),
+            format!("PREVIOUS SUMMARY:\n{prior}\n\nNEW TRANSCRIPT:\n{transcript}"),
+        )
+    };
+
     let summary_req = LlmRequest {
         model: model.to_string(),
-        system: "Summarize the following agent conversation in under 500 words, \
-preserving key decisions, file paths, and outcomes."
-            .to_string(),
-        messages: std::sync::Arc::new(vec![Message::user(transcript)]),
+        system,
+        messages: std::sync::Arc::new(vec![Message::user(user)]),
         tools: vec![],
         max_tokens: None,
         temperature: 0.2,
@@ -453,15 +523,16 @@ mod tests {
         let provider = Arc::new(MockProvider::ok("summary"));
         let mut c = cfg(1_000, 6, 10);
         c.trigger_ratio = 0.7;
-        let out = should_compact_and_execute(&msgs(12), provider.clone(), &c, "grok-4.5", None)
-            .await
-            .unwrap();
+        let out =
+            should_compact_and_execute(&msgs(12), provider.clone(), &c, "grok-4.5", None, &[])
+                .await
+                .unwrap();
         assert!(out.is_none(), "below 70% of budget must not compact");
 
         // A 300-token budget → trigger at 210 tokens → compaction fires.
         let mut c2 = cfg(300, 6, 10);
         c2.trigger_ratio = 0.7;
-        let out = should_compact_and_execute(&msgs(12), provider, &c2, "grok-4.5", None)
+        let out = should_compact_and_execute(&msgs(12), provider, &c2, "grok-4.5", None, &[])
             .await
             .unwrap();
         assert!(out.is_some(), "above 70% of budget must compact");
@@ -482,11 +553,12 @@ mod tests {
             &cfg(1, 6, 10),
             "grok-4.5",
             Some(&ledger),
+            &[],
         )
         .await
         .unwrap()
         .expect("expected compaction");
-        let head = out[0].text_content();
+        let head = out.messages[0].text_content();
         assert!(head.contains("[Session ledger"), "ledger block missing");
         assert!(head.contains("src/main.rs (w)"));
         assert!(head.contains("`cargo test`"));
@@ -506,11 +578,123 @@ mod tests {
             &cfg(1, 6, 10),
             "grok-4.5",
             Some(&ledger),
+            &[],
         )
         .await
         .unwrap()
         .expect("expected compaction");
-        assert!(!out[0].text_content().contains("[Session ledger"));
+        assert!(!out.messages[0].text_content().contains("[Session ledger"));
+    }
+
+    #[tokio::test]
+    async fn test_first_compaction_seeds_summary_chain() {
+        let provider = Arc::new(MockProvider::ok("first summary"));
+        let out =
+            should_compact_and_execute(&msgs(12), provider, &cfg(1, 6, 10), "grok-4.5", None, &[])
+                .await
+                .unwrap()
+                .expect("expected compaction");
+        // The chain starts with the freshly produced summary.
+        assert_eq!(out.summary_chain, vec!["first summary".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn test_chain_folds_prior_summaries_into_request() {
+        // A provider that echoes the user prompt lets us assert the previous
+        // summary was folded into the request (summary of summaries).
+        struct EchoProvider;
+        #[async_trait::async_trait]
+        impl Provider for EchoProvider {
+            fn name(&self) -> &str {
+                "echo"
+            }
+            async fn stream(&self, _req: &LlmRequest) -> anyhow::Result<ProviderStream> {
+                Ok(futures_util::stream::empty().boxed())
+            }
+            async fn complete(
+                &self,
+                req: &LlmRequest,
+            ) -> anyhow::Result<crate::harness::provider::LlmResponse> {
+                let user = req.messages[0].text_content();
+                Ok(crate::harness::provider::LlmResponse {
+                    parts: vec![Part::text(user)],
+                    usage: Some(Usage::default()),
+                    stop_reason: None,
+                })
+            }
+        }
+
+        let prior = vec!["OLD DECISION: use BTreeMap".to_string()];
+        let out = should_compact_and_execute(
+            &msgs(12),
+            Arc::new(EchoProvider),
+            &cfg(1, 6, 10),
+            "grok-4.5",
+            None,
+            &prior,
+        )
+        .await
+        .unwrap()
+        .expect("expected compaction");
+
+        // The new summary (echoed request) contains the previous summary.
+        let new_summary = out.summary_chain.last().unwrap();
+        assert!(
+            new_summary.contains("OLD DECISION: use BTreeMap"),
+            "prior summary must be folded into the new one: {new_summary}"
+        );
+        assert!(new_summary.contains("PREVIOUS SUMMARY"));
+        assert!(new_summary.contains("NEW TRANSCRIPT"));
+        // Chain = prior + new.
+        assert_eq!(out.summary_chain.len(), 2);
+        assert_eq!(out.summary_chain[0], "OLD DECISION: use BTreeMap");
+    }
+
+    #[tokio::test]
+    async fn test_chain_is_bounded_by_max() {
+        let provider = Arc::new(MockProvider::ok("newest"));
+        // Seed a chain already at the cap.
+        let prior: Vec<String> = (0..MAX_SUMMARY_CHAIN)
+            .map(|i| format!("summary {i}"))
+            .collect();
+        let out = should_compact_and_execute(
+            &msgs(12),
+            provider,
+            &cfg(1, 6, 10),
+            "grok-4.5",
+            None,
+            &prior,
+        )
+        .await
+        .unwrap()
+        .expect("expected compaction");
+        assert_eq!(out.summary_chain.len(), MAX_SUMMARY_CHAIN);
+        // Oldest dropped, newest appended.
+        assert_eq!(out.summary_chain[0], "summary 1");
+        assert_eq!(out.summary_chain.last().unwrap(), "newest");
+    }
+
+    #[tokio::test]
+    async fn test_chain_survives_repeated_compactions() {
+        // Regression: after N compactions the chain must still carry the very
+        // first summary (until the cap), not just the most recent one.
+        let provider = Arc::new(MockProvider::ok("s"));
+        let mut chain: Vec<String> = Vec::new();
+        for _ in 0..3 {
+            let out = should_compact_and_execute(
+                &msgs(12),
+                provider.clone(),
+                &cfg(1, 6, 10),
+                "grok-4.5",
+                None,
+                &chain,
+            )
+            .await
+            .unwrap()
+            .expect("expected compaction");
+            chain = out.summary_chain;
+        }
+        assert_eq!(chain.len(), 3, "one summary per compaction");
     }
 
     #[test]
@@ -593,19 +777,26 @@ mod tests {
     #[tokio::test]
     async fn test_noop_below_min_messages() {
         let provider = Arc::new(MockProvider::ok("summary"));
-        let out = should_compact_and_execute(&msgs(3), provider, &cfg(0, 6, 10), "grok-4.5", None)
-            .await
-            .unwrap();
+        let out =
+            should_compact_and_execute(&msgs(3), provider, &cfg(0, 6, 10), "grok-4.5", None, &[])
+                .await
+                .unwrap();
         assert!(out.is_none());
     }
 
     #[tokio::test]
     async fn test_noop_under_token_limit() {
         let provider = Arc::new(MockProvider::ok("summary"));
-        let out =
-            should_compact_and_execute(&msgs(12), provider, &cfg(10_000, 6, 10), "grok-4.5", None)
-                .await
-                .unwrap();
+        let out = should_compact_and_execute(
+            &msgs(12),
+            provider,
+            &cfg(10_000, 6, 10),
+            "grok-4.5",
+            None,
+            &[],
+        )
+        .await
+        .unwrap();
         assert!(out.is_none());
     }
 
@@ -613,13 +804,14 @@ mod tests {
     async fn test_summarizes_and_keeps_recent() {
         let provider = Arc::new(MockProvider::ok("this is the summary"));
         let messages = msgs(12);
-        let out = should_compact_and_execute(&messages, provider, &cfg(1, 6, 10), "grok-4.5", None)
-            .await
-            .unwrap()
-            .expect("expected compaction");
+        let out =
+            should_compact_and_execute(&messages, provider, &cfg(1, 6, 10), "grok-4.5", None, &[])
+                .await
+                .unwrap()
+                .expect("expected compaction");
         // Summary at front + 6 recent = 7 total.
-        assert_eq!(out.len(), 7);
-        let first = &out[0];
+        assert_eq!(out.messages.len(), 7);
+        let first = &out.messages[0];
         assert_eq!(first.role, Role::User);
         assert!(first.text_content().contains("[Context compacted]"));
         assert!(first
@@ -627,19 +819,22 @@ mod tests {
             .contains("Summary of 6 earlier messages"));
         assert!(first.text_content().contains("this is the summary"));
         // Recent messages preserved in order (original indices 6..12 -> 0..6).
-        assert!(out[6].text_content().contains("message 11"));
+        assert!(out.messages[6].text_content().contains("message 11"));
     }
 
     #[tokio::test]
     async fn test_summary_failure_falls_back() {
         let provider = Arc::new(MockProvider::failing());
         let messages = msgs(12);
-        let out = should_compact_and_execute(&messages, provider, &cfg(1, 6, 10), "grok-4.5", None)
-            .await
-            .unwrap()
-            .expect("expected compaction even on summary failure");
-        assert_eq!(out.len(), 7);
-        assert!(out[0].text_content().contains("(summary unavailable)"));
+        let out =
+            should_compact_and_execute(&messages, provider, &cfg(1, 6, 10), "grok-4.5", None, &[])
+                .await
+                .unwrap()
+                .expect("expected compaction even on summary failure");
+        assert_eq!(out.messages.len(), 7);
+        assert!(out.messages[0]
+            .text_content()
+            .contains("(summary unavailable)"));
     }
 
     #[test]
@@ -676,12 +871,15 @@ mod tests {
             &cfg_with_timeout(1, 6, 10, Duration::from_millis(50)),
             "grok-4.5",
             None,
+            &[],
         )
         .await
         .unwrap()
         .expect("expected compaction even on summary timeout");
-        assert_eq!(out.len(), 7);
-        assert!(out[0].text_content().contains("(summary unavailable)"));
+        assert_eq!(out.messages.len(), 7);
+        assert!(out.messages[0]
+            .text_content()
+            .contains("(summary unavailable)"));
     }
 
     #[tokio::test]

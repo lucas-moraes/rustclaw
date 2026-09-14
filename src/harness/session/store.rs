@@ -131,6 +131,26 @@ impl SessionStore {
             )
             .context("failed to add ledger_json column")?;
         }
+        // Add the optional summary_chain_json column (chained compaction
+        // summaries, oldest first).
+        let has_chain: i64 = conn
+            .query_row(
+                &format!(
+                    "SELECT COUNT(*) FROM pragma_table_info('{sessions}') WHERE name='summary_chain_json'"
+                ),
+                [],
+                |r| r.get(0),
+            )
+            .context("failed to check summary_chain_json column")?;
+        if has_chain == 0 {
+            conn.execute(
+                &format!(
+                    "ALTER TABLE {sessions} ADD COLUMN summary_chain_json TEXT NOT NULL DEFAULT '[]'"
+                ),
+                [],
+            )
+            .context("failed to add summary_chain_json column")?;
+        }
         Ok(())
     }
 
@@ -374,7 +394,7 @@ impl SessionStore {
         let row = conn
             .query_row(
                 &format!(
-                    "SELECT id, agent, cwd, created_at, updated_at, todos_json, skills_json, title, ledger_json
+                    "SELECT id, agent, cwd, created_at, updated_at, todos_json, skills_json, title, ledger_json, summary_chain_json
                      FROM {sessions_t} WHERE id = ?1"
                 ),
                 params![id],
@@ -389,6 +409,7 @@ impl SessionStore {
                         r.get::<_, String>(6)?,
                         r.get::<_, Option<String>>(7)?,
                         r.get::<_, Option<String>>(8)?,
+                        r.get::<_, Option<String>>(9)?,
                     ))
                 },
             )
@@ -405,6 +426,7 @@ impl SessionStore {
             skills_json,
             title,
             ledger_json,
+            summary_chain_json,
         )) = row
         else {
             return Ok(None);
@@ -452,6 +474,10 @@ impl SessionStore {
             .as_deref()
             .and_then(|s| serde_json::from_str(s).ok())
             .unwrap_or_default();
+        let summary_chain: Vec<String> = summary_chain_json
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default();
 
         // Normalize empty DB titles to None so display falls back to preview.
         let title = title.and_then(|t| {
@@ -475,6 +501,7 @@ impl SessionStore {
             skills,
             title,
             ledger,
+            summary_chain,
         }))
     }
 
@@ -654,7 +681,8 @@ impl SessionStore {
         tx.execute(
             &format!(
                 "UPDATE {sessions_t} SET agent = ?2, cwd = ?3, updated_at = ?4,
-                        todos_json = ?5, skills_json = ?6, ledger_json = ?7
+                        todos_json = ?5, skills_json = ?6, ledger_json = ?7,
+                        summary_chain_json = ?8
                  WHERE id = ?1"
             ),
             params![
@@ -665,6 +693,7 @@ impl SessionStore {
                 serde_json::to_string(&session.todos).unwrap_or_else(|_| "[]".into()),
                 serde_json::to_string(&session.skills).unwrap_or_else(|_| "[]".into()),
                 serde_json::to_string(&session.ledger).unwrap_or_else(|_| "{}".into()),
+                serde_json::to_string(&session.summary_chain).unwrap_or_else(|_| "[]".into()),
             ],
         )
         .context("failed to update session")?;
@@ -947,6 +976,34 @@ mod tests {
         assert_eq!(loaded.ledger.commands, vec!["cargo test"]);
         assert_eq!(loaded.ledger.subagents, vec!["explore"]);
         assert_eq!(loaded.ledger.decisions, vec!["chose BTreeMap"]);
+    }
+
+    #[test]
+    fn test_persist_summary_chain_roundtrip() {
+        let (_dir, store) = temp_store();
+        let mut session = store.create_session("build", Path::new("/tmp")).unwrap();
+        session.summary_chain = vec!["first".to_string(), "second".to_string()];
+        store.save_session(&session).unwrap();
+
+        let loaded = store
+            .load_session(&session.id, Path::new("/tmp"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.summary_chain, vec!["first", "second"]);
+    }
+
+    #[test]
+    fn test_summary_chain_defaults_empty_for_legacy_rows() {
+        // A session created without a chain loads with an empty chain (the
+        // column default is '[]'), so old installs stay compatible.
+        let (_dir, store) = temp_store();
+        let session = store.create_session("build", Path::new("/tmp")).unwrap();
+        store.save_session(&session).unwrap();
+        let loaded = store
+            .load_session(&session.id, Path::new("/tmp"))
+            .unwrap()
+            .unwrap();
+        assert!(loaded.summary_chain.is_empty());
     }
 
     #[test]

@@ -227,6 +227,13 @@ pub struct Session {
     /// context after each summary.
     #[serde(default)]
     pub ledger: crate::harness::session::ledger::ContextLedger,
+    /// Chain of compaction summaries, oldest first. Each compaction folds the
+    /// previous summary into the new one (a "summary of summaries") instead of
+    /// discarding it, so decisions from the very start of a long session are
+    /// not lost after repeated compactions. Bounded by
+    /// [`crate::harness::session::compaction::MAX_SUMMARY_CHAIN`].
+    #[serde(default)]
+    pub summary_chain: Vec<String>,
 }
 
 impl Session {
@@ -244,6 +251,7 @@ impl Session {
             skills: Vec::new(),
             title: None,
             ledger: crate::harness::session::ledger::ContextLedger::new(),
+            summary_chain: Vec::new(),
         }
     }
 
