@@ -71,12 +71,6 @@ pub fn draw(frame: &mut Frame, splash: &mut SplashState, theme: &Theme, area: Re
         .collect();
 
     lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        "RUSTCLAW",
-        Style::default()
-            .fg(theme.accent)
-            .add_modifier(Modifier::BOLD),
-    )));
 
     let sub = anim::splash_subtitle(splash.frame, theme.name);
     if !sub.is_empty() {

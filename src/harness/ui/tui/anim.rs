@@ -190,18 +190,15 @@ impl SplashState {
     }
 }
 
-/// ASCII claw logo frames (reveal).
+/// ASCII "RUSTCLAW" wordmark frames (reveal).
 pub fn claw_logo(frame: u64) -> Vec<&'static str> {
     let full = [
-        r"        ▄▄▄▄▄▄▄▄▄          ",
-        r"     ▄██▀▀░░░░░▀▀██▄       ",
-        r"   ▄█▀░▄▄█████▄▄░░▀█▄      ",
-        r"  █▀░███  CLAW  ███░▀█     ",
-        r"  █░██▀  ▀███▀  ▀██░█      ",
-        r"  ▀█░█  ╔═════╗  █░█▀      ",
-        r"   ▀█▄  ║ RUST║  ▄█▀       ",
-        r"     ▀██╗═════╔██▀         ",
-        r"        ▀▀███▀▀            ",
+        r"██████╗ ██╗   ██╗███████╗████████╗ ██████╗ ██╗      █████╗ ██╗    ██╗",
+        r"██╔══██╗██║   ██║██╔════╝╚══██╔══╝██╔════╝ ██║     ██╔══██╗██║    ██║",
+        r"██████╔╝██║   ██║███████╗   ██║   ██║      ██║     ███████║██║ █╗ ██║",
+        r"██╔══██╗██║   ██║╚════██║   ██║   ██║      ██║     ██╔══██║██║███╗██║",
+        r"██║  ██║╚██████╔╝███████║   ██║   ╚██████╗ ███████╗██║  ██║╚███╔███╔╝",
+        r"╚═╝  ╚═╝ ╚═════╝ ╚══════╝   ╚═╝    ╚═════╝ ╚══════╝╚═╝  ╚═╝ ╚══╝╚══╝ ",
     ];
     let reveal = ((frame as usize * full.len()) / 12).min(full.len());
     if frame < 12 {
@@ -239,4 +236,30 @@ pub fn placeholder(tick: u64) -> &'static str {
         "build · plan · explore",
     ];
     PHRASES[((tick / 40) as usize) % PHRASES.len()]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn claw_logo_rows_are_aligned() {
+        // Every row of the wordmark must have the same display width, otherwise
+        // the ASCII art shears. Guards against future edits that drop a space.
+        let logo = claw_logo(100);
+        assert!(!logo.is_empty());
+        let widths: Vec<usize> = logo.iter().map(|r| r.chars().count()).collect();
+        let first = widths[0];
+        assert!(
+            widths.iter().all(|w| *w == first),
+            "logo rows must share one width, got {widths:?}"
+        );
+    }
+
+    #[test]
+    fn claw_logo_reveals_progressively() {
+        // Early frames show fewer rows; by frame 12 the full art is visible.
+        assert!(claw_logo(0).len() < claw_logo(100).len());
+        assert_eq!(claw_logo(12).len(), claw_logo(100).len());
+    }
 }
