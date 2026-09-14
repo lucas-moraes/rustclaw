@@ -153,8 +153,10 @@ um buraco visível.
 
 **Proposta:**
 - Opção `render: "auto" | "http" | "browser"` na tool.
-- `browser` via `chromiumoxide` (headless Chrome) — **feature flag opcional**,
-  nunca no binário default (adiciona ~150 MB e dependência de Chrome).
+- `browser` via `chromiumoxide` (headless Chrome) — **dependência do binário
+  default**. Decisão revista: o render JS passa a ser um recurso de primeira
+  classe, não um extra opcional. Custo aceito: ~150 MB no binário e dependência
+  de um Chrome/Chromium instalado na máquina do usuário.
 - Detecção de "conteúdo vazio" → sugerir retry com `render: "browser"`.
 - Alternativa mais leve: avaliar `spider` (crate Rust, MIT) para crawling em
   profundidade, caso surja necessidade de um tool `crawl`.
@@ -245,5 +247,6 @@ dá para validar se a indexação realmente ajudou.
   único e sobreposto ao `fetch_webpage` existente.
 - **Não** perseguir paridade de ecossistema (IDE/mobile/marketplace) — custo
   desproporcional para um harness solo.
-- **Não** adicionar headless Chrome ao binário default — manter como feature
-  flag opcional.
+- **Sim** embarcar `chromiumoxide` (headless Chrome) no binário default — decisão
+  revista: o render JS é recurso de primeira classe. Aceita-se o custo de
+  ~150 MB e a dependência de Chrome instalado.
