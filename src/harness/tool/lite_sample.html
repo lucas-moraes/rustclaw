@@ -1,0 +1,729 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN" "http://www.w3.org/TR/html4/loose.dtd">
+<html>
+
+<head>
+  <meta http-equiv="content-type" content="text/html; charset=UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=3.0, user-scalable=1;">
+  <meta name="referrer" content="origin">
+  <meta name="HandheldFriendly" content="true" />
+  <meta name="robots" content="noindex, nofollow" />
+  <title>rust tokio at DuckDuckGo</title>
+  <link title="DuckDuckGo (Lite)" type="application/opensearchdescription+xml" rel="search" href="//duckduckgo.com/opensearch_lite_v2.xml">
+  <link href="//duckduckgo.com/favicon.ico" rel="shortcut icon" />
+  <link rel="icon" href="//duckduckgo.com/favicon.ico" type="image/x-icon" />
+  <link id="icon60" rel="apple-touch-icon" href="//duckduckgo.com/assets/icons/meta/DDG-iOS-icon_60x60.png?v=2"/>
+  <link id="icon76" rel="apple-touch-icon" sizes="76x76" href="//duckduckgo.com/assets/icons/meta/DDG-iOS-icon_76x76.png?v=2"/>
+  <link id="icon120" rel="apple-touch-icon" sizes="120x120" href="//duckduckgo.com/assets/icons/meta/DDG-iOS-icon_120x120.png?v=2"/>
+  <link id="icon152" rel="apple-touch-icon" sizes="152x152" href="//duckduckgo.com/assets/icons/meta/DDG-iOS-icon_152x152.png?v=2"/>
+  <link rel="image_src" href="//duckduckgo.com/assets/icons/meta/DDG-icon_256x256.png">
+  <link rel="stylesheet" media="handheld, all" href="//duckduckgo.com/dist/lr.48ddfe4eadf6a534e93f.css" type="text/css"/>
+</head>
+
+<body>
+  <p class='extra'>&nbsp;</p>
+  <div class="header">
+    DuckDuckGo
+  </div>
+  <p class='extra'>&nbsp;</p>
+
+  <form action="/lite/" method="post">
+      <input class='query' type="text" size="40" name="q" value="rust tokio">
+      <input class='submit' type="submit" value="Search">
+      
+      
+      
+      
+
+      <div class="filters">
+        <select class="submit" name="kl">
+          
+            <option value="" >All Regions</option>
+          
+            <option value="ar-es" >Argentina</option>
+          
+            <option value="au-en" >Australia</option>
+          
+            <option value="at-de" >Austria</option>
+          
+            <option value="be-fr" >Belgium (fr)</option>
+          
+            <option value="be-nl" >Belgium (nl)</option>
+          
+            <option value="br-pt" >Brazil</option>
+          
+            <option value="bg-bg" >Bulgaria</option>
+          
+            <option value="ca-en" >Canada (en)</option>
+          
+            <option value="ca-fr" >Canada (fr)</option>
+          
+            <option value="ct-ca" >Catalonia</option>
+          
+            <option value="cl-es" >Chile</option>
+          
+            <option value="cn-zh" >China</option>
+          
+            <option value="co-es" >Colombia</option>
+          
+            <option value="hr-hr" >Croatia</option>
+          
+            <option value="cz-cs" >Czech Republic</option>
+          
+            <option value="dk-da" >Denmark</option>
+          
+            <option value="ee-et" >Estonia</option>
+          
+            <option value="fi-fi" >Finland</option>
+          
+            <option value="fr-fr" >France</option>
+          
+            <option value="de-de" >Germany</option>
+          
+            <option value="gr-el" >Greece</option>
+          
+            <option value="hk-tzh" >Hong Kong</option>
+          
+            <option value="hu-hu" >Hungary</option>
+          
+            <option value="is-is" >Iceland</option>
+          
+            <option value="in-en" >India (en)</option>
+          
+            <option value="id-en" >Indonesia (en)</option>
+          
+            <option value="ie-en" >Ireland</option>
+          
+            <option value="il-en" >Israel (en)</option>
+          
+            <option value="it-it" >Italy</option>
+          
+            <option value="jp-jp" >Japan</option>
+          
+            <option value="kr-kr" >Korea</option>
+          
+            <option value="lv-lv" >Latvia</option>
+          
+            <option value="lt-lt" >Lithuania</option>
+          
+            <option value="my-en" >Malaysia (en)</option>
+          
+            <option value="mx-es" >Mexico</option>
+          
+            <option value="nl-nl" >Netherlands</option>
+          
+            <option value="nz-en" >New Zealand</option>
+          
+            <option value="no-no" >Norway</option>
+          
+            <option value="pk-en" >Pakistan (en)</option>
+          
+            <option value="pe-es" >Peru</option>
+          
+            <option value="ph-en" >Philippines (en)</option>
+          
+            <option value="pl-pl" >Poland</option>
+          
+            <option value="pt-pt" >Portugal</option>
+          
+            <option value="ro-ro" >Romania</option>
+          
+            <option value="ru-ru" >Russia</option>
+          
+            <option value="xa-ar" >Saudi Arabia</option>
+          
+            <option value="sg-en" >Singapore</option>
+          
+            <option value="sk-sk" >Slovakia</option>
+          
+            <option value="sl-sl" >Slovenia</option>
+          
+            <option value="za-en" >South Africa</option>
+          
+            <option value="es-ca" >Spain (ca)</option>
+          
+            <option value="es-es" >Spain (es)</option>
+          
+            <option value="se-sv" >Sweden</option>
+          
+            <option value="ch-de" >Switzerland (de)</option>
+          
+            <option value="ch-fr" >Switzerland (fr)</option>
+          
+            <option value="tw-tzh" >Taiwan</option>
+          
+            <option value="th-en" >Thailand (en)</option>
+          
+            <option value="tr-tr" >Turkey</option>
+          
+            <option value="us-en" >US (English)</option>
+          
+            <option value="us-es" >US (Spanish)</option>
+          
+            <option value="ua-uk" >Ukraine</option>
+          
+            <option value="uk-en" >United Kingdom</option>
+          
+            <option value="vn-en" >Vietnam (en)</option>
+          
+        </select>
+
+        <select class="submit" name="df">
+          
+            <option value="" selected>Any Time</option>
+          
+            <option value="d" >Past Day</option>
+          
+            <option value="w" >Past Week</option>
+          
+            <option value="m" >Past Month</option>
+          
+            <option value="y" >Past Year</option>
+          
+        </select>
+      </div>
+  </form>
+
+  
+    <p class="extra">&nbsp;</p>
+    <table border="0">
+      <tr>
+        <td>
+          
+        </td>
+        <td>
+          
+            <!-- Next Page Button Sub-template -->
+<form class="next_form" action="/lite/" method="post">
+    <input type="submit" class='navbutton' value="Next Page &gt;">
+    <input type="hidden" name="q" value="rust tokio">
+    <input type="hidden" name="s" value="10">
+    <input type="hidden" name="nextParams" value="">
+    <input type="hidden" name="v" value="l">
+    <input type="hidden" name="o" value="json">
+    <input type="hidden" name="dc" value="11">
+    <input type="hidden" name="api" value="d.js">
+    <input type="hidden" name="vqd" value="4-22394356175540020102869171708809969241">
+    &nbsp;&nbsp;&nbsp;&nbsp;
+    
+    
+    
+      <input name="kl" value="wt-wt" type="hidden">
+    
+    
+    
+    
+</form>
+          
+        </td>
+      </tr>
+    </table>
+  
+
+  
+
+  <p class='extra'>&nbsp;</p>
+
+  <table border="0">
+    
+  </table>
+
+  <table border="0">
+    
+      
+      <!-- Web results are present -->
+      
+        
+            <tr>
+              
+                <td valign="top">
+                  
+                    1.&nbsp;
+                  
+                </td>
+                <td>
+                  <a rel="nofollow" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Ftokio.rs%2F&amp;rut=200258f7727cdbee79ee0199b0bcd013bfd7a69b01fde5c2818ec519c360b16d" class='result-link'>Tokio - An asynchronous Rust runtime</a>
+                </td>
+                
+            </tr>
+
+            
+              
+                <!-- Only show abstract separately if there's a click URL (not EOF) -->
+                <tr>
+                  <td>&nbsp;&nbsp;&nbsp;</td>
+                  <td class='result-snippet'>
+                    <b>Tokio</b> is a library for writing fast, reliable, and easy network applications with <b>Rust</b>. It offers a runtime, an HTTP client and server, a gRPC library, a modular stack, a tracing tool, and a byte utility.
+                  </td>
+                </tr>
+              
+            
+
+            
+              <tr>
+                <td>&nbsp;&nbsp;&nbsp;</td>
+                <td>
+                  <span class='link-text'>tokio.rs</span>
+                  
+                </td>
+              </tr>
+            
+
+            <tr>
+              <td>&nbsp;</td>
+              <td>&nbsp;</td>
+            </tr>
+
+        
+      
+        
+            <tr>
+              
+                <td valign="top">
+                  
+                    2.&nbsp;
+                  
+                </td>
+                <td>
+                  <a rel="nofollow" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fdocs.rs%2Ftokio%2Flatest%2Ftokio%2F&amp;rut=a5e847bdcce74bde166317ed96c0bba4dc0de80c811ec54926a1aea0567e2c6d" class='result-link'>tokio - Rust - Docs.rs</a>
+                </td>
+                
+            </tr>
+
+            
+              
+                <!-- Only show abstract separately if there's a click URL (not EOF) -->
+                <tr>
+                  <td>&nbsp;&nbsp;&nbsp;</td>
+                  <td class='result-snippet'>
+                    <b>Tokio</b> is an event-driven, non-blocking I/O platform for writing asynchronous applications with the <b>Rust</b> programming language. At a high level, it provides a few major components: Tools for working with asynchronous tasks, including synchronization primitives and channels and timeouts, sleeps, and intervals.
+                  </td>
+                </tr>
+              
+            
+
+            
+              <tr>
+                <td>&nbsp;&nbsp;&nbsp;</td>
+                <td>
+                  <span class='link-text'>docs.rs/tokio/latest/tokio/</span>
+                  
+                </td>
+              </tr>
+            
+
+            <tr>
+              <td>&nbsp;</td>
+              <td>&nbsp;</td>
+            </tr>
+
+        
+      
+        
+            <tr>
+              
+                <td valign="top">
+                  
+                    3.&nbsp;
+                  
+                </td>
+                <td>
+                  <a rel="nofollow" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fgithub.com%2Ftokio%2Drs%2Ftokio&amp;rut=65fec2ca9ed63183539a55d8e5e35799ae112b6e7c955789ba2f1ab1a318cf52" class='result-link'>GitHub - tokio-rs/tokio: A runtime for writing reliable asynchronous ...</a>
+                </td>
+                
+            </tr>
+
+            
+              
+                <!-- Only show abstract separately if there's a click URL (not EOF) -->
+                <tr>
+                  <td>&nbsp;&nbsp;&nbsp;</td>
+                  <td class='result-snippet'>
+                    <b>Tokio</b> is an event-driven, non-blocking I/O platform for writing asynchronous applications with the <b>Rust</b> programming language. At a high level, it provides a few major components: A multithreaded, work-stealing based task scheduler. A reactor backed by the operating system&#x27;s event queue (epoll, kqueue, IOCP, etc.). Asynchronous TCP and UDP sockets. These components provide the runtime ...
+                  </td>
+                </tr>
+              
+            
+
+            
+              <tr>
+                <td>&nbsp;&nbsp;&nbsp;</td>
+                <td>
+                  <span class='link-text'>github.com/tokio-rs/tokio</span>
+                  
+                    &nbsp;&nbsp;&nbsp;
+                    <span class='timestamp'>2025-10-12T00:00:00.0000000</span>
+                  
+                </td>
+              </tr>
+            
+
+            <tr>
+              <td>&nbsp;</td>
+              <td>&nbsp;</td>
+            </tr>
+
+        
+      
+        
+            <tr>
+              
+                <td valign="top">
+                  
+                    4.&nbsp;
+                  
+                </td>
+                <td>
+                  <a rel="nofollow" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Ftokio.rs%2Ftokio%2Ftutorial&amp;rut=ee2737c7dcfcde765583fcd6415d6f4b7e412d50689608bc43f7868efc08d036" class='result-link'>Tutorial | Tokio - An asynchronous Rust runtime</a>
+                </td>
+                
+            </tr>
+
+            
+              
+                <!-- Only show abstract separately if there's a click URL (not EOF) -->
+                <tr>
+                  <td>&nbsp;&nbsp;&nbsp;</td>
+                  <td class='result-snippet'>
+                    Learn how to use <b>Tokio</b>, the most widely used runtime for writing asynchronous <b>Rust</b> applications. <b>Tokio</b> provides a multi-threaded runtime, an asynchronous standard library, and a large ecosystem of libraries for networking, I/O, and more.
+                  </td>
+                </tr>
+              
+            
+
+            
+              <tr>
+                <td>&nbsp;&nbsp;&nbsp;</td>
+                <td>
+                  <span class='link-text'>tokio.rs/tokio/tutorial</span>
+                  
+                </td>
+              </tr>
+            
+
+            <tr>
+              <td>&nbsp;</td>
+              <td>&nbsp;</td>
+            </tr>
+
+        
+      
+        
+            <tr>
+              
+                <td valign="top">
+                  
+                    5.&nbsp;
+                  
+                </td>
+                <td>
+                  <a rel="nofollow" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fhid%2Dio.github.io%2Ftokio%2F&amp;rut=c8071f52fdc4f1151380a0ef99dfc5935502cae49f9390a7256e301122fbcf01" class='result-link'>tokio - Rust</a>
+                </td>
+                
+            </tr>
+
+            
+              
+                <!-- Only show abstract separately if there's a click URL (not EOF) -->
+                <tr>
+                  <td>&nbsp;&nbsp;&nbsp;</td>
+                  <td class='result-snippet'>
+                    <b>Tokio</b> is an event-driven, non-blocking I/O platform for writing asynchronous applications with the <b>Rust</b> programming language. At a high level, it provides a few major components: A multi threaded, work-stealing based task scheduler. A reactor backed by the operating system&#x27;s event queue (epoll, kqueue, IOCP, etc...). Asynchronous TCP and UDP ...
+                  </td>
+                </tr>
+              
+            
+
+            
+              <tr>
+                <td>&nbsp;&nbsp;&nbsp;</td>
+                <td>
+                  <span class='link-text'>hid-io.github.io/tokio/</span>
+                  
+                </td>
+              </tr>
+            
+
+            <tr>
+              <td>&nbsp;</td>
+              <td>&nbsp;</td>
+            </tr>
+
+        
+      
+        
+            <tr>
+              
+                <td valign="top">
+                  
+                    6.&nbsp;
+                  
+                </td>
+                <td>
+                  <a rel="nofollow" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fen.wikipedia.org%2Fwiki%2FTokio_(software)&amp;rut=84a9e526d79ff4974104c7236cb0b9fa52223575baa09ae870e0aafbf5b3cfc9" class='result-link'>Tokio (software) - Wikipedia</a>
+                </td>
+                
+            </tr>
+
+            
+              
+                <!-- Only show abstract separately if there's a click URL (not EOF) -->
+                <tr>
+                  <td>&nbsp;&nbsp;&nbsp;</td>
+                  <td class='result-snippet'>
+                    <b>Tokio</b> is a software library for <b>Rust</b> that enables asynchronous I/O and concurrency. It supports features such as socket listening, broadcasting, and io_uring, and is used by projects like Deno and AWS Lambda.
+                  </td>
+                </tr>
+              
+            
+
+            
+              <tr>
+                <td>&nbsp;&nbsp;&nbsp;</td>
+                <td>
+                  <span class='link-text'>en.wikipedia.org/wiki/Tokio_(software)</span>
+                  
+                </td>
+              </tr>
+            
+
+            <tr>
+              <td>&nbsp;</td>
+              <td>&nbsp;</td>
+            </tr>
+
+        
+      
+        
+            <tr>
+              
+                <td valign="top">
+                  
+                    7.&nbsp;
+                  
+                </td>
+                <td>
+                  <a rel="nofollow" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fgithub.com%2Ftokio%2Drs&amp;rut=f8618dfc5388bc05d105c1c6724eb71d6513121f905cccc7f82b5e904c50a40c" class='result-link'>Tokio · GitHub</a>
+                </td>
+                
+            </tr>
+
+            
+              
+                <!-- Only show abstract separately if there's a click URL (not EOF) -->
+                <tr>
+                  <td>&nbsp;&nbsp;&nbsp;</td>
+                  <td class='result-snippet'>
+                    <b>Rust</b> 3,084 MIT 136 89 21 Updated 4 hours ago <b>tokio</b> Public A runtime for writing reliable asynchronous applications with <b>Rust</b>. Provides I/O, networking, scheduling, timers, ...
+                  </td>
+                </tr>
+              
+            
+
+            
+              <tr>
+                <td>&nbsp;&nbsp;&nbsp;</td>
+                <td>
+                  <span class='link-text'>github.com/tokio-rs</span>
+                  
+                </td>
+              </tr>
+            
+
+            <tr>
+              <td>&nbsp;</td>
+              <td>&nbsp;</td>
+            </tr>
+
+        
+      
+        
+            <tr>
+              
+                <td valign="top">
+                  
+                    8.&nbsp;
+                  
+                </td>
+                <td>
+                  <a rel="nofollow" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fdocs.rs%2Fcrate%2Ftokio%2Flatest&amp;rut=6401211f899772d422034518147a4fe19a2259fd7ae63ec2d4bf99bf679b23e2" class='result-link'>tokio 1.53.1 - Docs.rs</a>
+                </td>
+                
+            </tr>
+
+            
+              
+                <!-- Only show abstract separately if there's a click URL (not EOF) -->
+                <tr>
+                  <td>&nbsp;&nbsp;&nbsp;</td>
+                  <td class='result-snippet'>
+                    <b>Tokio</b> is a runtime for writing asynchronous applications with <b>Rust</b>. It provides a task scheduler, a reactor, and asynchronous sockets, among other components. See examples, guides, API docs, and related projects.
+                  </td>
+                </tr>
+              
+            
+
+            
+              <tr>
+                <td>&nbsp;&nbsp;&nbsp;</td>
+                <td>
+                  <span class='link-text'>docs.rs/crate/tokio/latest</span>
+                  
+                </td>
+              </tr>
+            
+
+            <tr>
+              <td>&nbsp;</td>
+              <td>&nbsp;</td>
+            </tr>
+
+        
+      
+        
+            <tr>
+              
+                <td valign="top">
+                  
+                    9.&nbsp;
+                  
+                </td>
+                <td>
+                  <a rel="nofollow" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Freintech.io%2Fblog%2Ftokio%2Dtutorial%2D2026%2Dbuilding%2Dasync%2Dapplications%2Drust&amp;rut=acb8412d5fb61db044f11a173d3bb80d8f7f1a630d1ff9107ffd60dc57765460" class='result-link'>Tokio Tutorial 2026: Building Async Applications in Rust</a>
+                </td>
+                
+            </tr>
+
+            
+              
+                <!-- Only show abstract separately if there's a click URL (not EOF) -->
+                <tr>
+                  <td>&nbsp;&nbsp;&nbsp;</td>
+                  <td class='result-snippet'>
+                    This tutorial will walk you through building async applications in <b>Rust</b> using <b>Tokio</b>, from the fundamentals to practical patterns you&#x27;ll use in production. Whether you&#x27;re migrating from synchronous code or starting fresh, you&#x27;ll learn how to leverage <b>Tokio&#x27;s</b> runtime to build efficient, scalable applications.
+                  </td>
+                </tr>
+              
+            
+
+            
+              <tr>
+                <td>&nbsp;&nbsp;&nbsp;</td>
+                <td>
+                  <span class='link-text'>reintech.io/blog/tokio-tutorial-2026-building-async-applications-rust</span>
+                  
+                    &nbsp;&nbsp;&nbsp;
+                    <span class='timestamp'>2026-02-08T00:00:00.0000000</span>
+                  
+                </td>
+              </tr>
+            
+
+            <tr>
+              <td>&nbsp;</td>
+              <td>&nbsp;</td>
+            </tr>
+
+        
+      
+        
+            <tr>
+              
+                <td valign="top">
+                  
+                    10.&nbsp;
+                  
+                </td>
+                <td>
+                  <a rel="nofollow" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Frelm4.org%2Fdocs%2Fstable%2Ftokio%2Findex.html&amp;rut=4f735fdf8cd18a6769df79b84bda90c1ed40a037cf6bc0b6e7889a242209a2db" class='result-link'>tokio - Rust</a>
+                </td>
+                
+            </tr>
+
+            
+              
+                <!-- Only show abstract separately if there's a click URL (not EOF) -->
+                <tr>
+                  <td>&nbsp;&nbsp;&nbsp;</td>
+                  <td class='result-snippet'>
+                    <b>Tokio</b> is an event-driven, non-blocking I/O platform for writing asynchronous applications with the <b>Rust</b> programming language. At a high level, it provides a few major components: Tools for working with asynchronous tasks, including synchronization primitives and channels and timeouts, sleeps, and intervals.
+                  </td>
+                </tr>
+              
+            
+
+            
+              <tr>
+                <td>&nbsp;&nbsp;&nbsp;</td>
+                <td>
+                  <span class='link-text'>relm4.org/docs/stable/tokio/index.html</span>
+                  
+                </td>
+              </tr>
+            
+
+            <tr>
+              <td>&nbsp;</td>
+              <td>&nbsp;</td>
+            </tr>
+
+        
+      
+    
+
+    
+      
+      <tr>
+        <td colspan=2>
+          
+          
+            <!-- Next Page Button Sub-template -->
+<form class="next_form" action="/lite/" method="post">
+    <input type="submit" class='navbutton' value="Next Page &gt;">
+    <input type="hidden" name="q" value="rust tokio">
+    <input type="hidden" name="s" value="10">
+    <input type="hidden" name="nextParams" value="">
+    <input type="hidden" name="v" value="l">
+    <input type="hidden" name="o" value="json">
+    <input type="hidden" name="dc" value="11">
+    <input type="hidden" name="api" value="d.js">
+    <input type="hidden" name="vqd" value="4-22394356175540020102869171708809969241">
+    &nbsp;&nbsp;&nbsp;&nbsp;
+    
+    
+    
+      <input name="kl" value="wt-wt" type="hidden">
+    
+    
+    
+    
+</form>
+          
+          
+        </td>
+      </tr>
+    
+  </table>
+
+  <p class='extra'>&nbsp;</p>
+
+  <form action="/lite/" method="post">
+      <input class='query' type="text" size="40" name="q" value="rust tokio" >
+      <input class='submit' type="submit" value="Search">
+      
+      
+      
+      
+      
+        <input name="kl" value="wt-wt" type="hidden">
+      
+  </form>
+
+  <p class='extra'>&nbsp;</p>
+
+  
+    <img src="//duckduckgo.com/t/sl_l"/>
+  
+  <div id='end-spacer'>&nbsp;</div>
+
+</body>
+</html>

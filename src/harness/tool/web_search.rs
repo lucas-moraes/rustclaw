@@ -1,14 +1,23 @@
-//! `web_search` tool: public DuckDuckGo HTML search (no API key required).
+//! `web_search` tool: web search via pluggable HTML providers (no API key).
 //!
-//! Robustness features (see TODO.md):
+//! Architecture (see TODO.md F11): the tool is a facade over a list of
+//! `SearchProvider` implementations, tried in order with automatic fallback.
+//!
+//! Robustness features:
 //! - F1: internal rate limiting (min delay between searches + concurrency semaphore)
 //! - F2: retry with backoff on blocking / suspicious empty responses
 //! - F3: silent rate-limit detection (HTTP 200 with empty page)
+//! - F4: fallback to the DDG Lite endpoint when `/html/` fails
 //! - F5: User-Agent rotation (modern desktop browsers only)
+//! - F9: in-memory result cache (never caches empty/error responses)
 //! - F10: diagnostic logging of failures/blocks
+//! - F11: multiple providers (DDG HTML, DDG Lite, Mojeek) with wide fallback
+//!   (HTTP error, block detection, or 0 parsed results) and per-provider
+//!   cooldown after rate-limit failures.
 
 use scraper::{Html, Selector};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -18,6 +27,11 @@ use crate::harness::session::preview;
 use crate::harness::tool::context::ToolContext;
 
 const DDG_ENDPOINT: &str = "https://html.duckduckgo.com/html/";
+/// F4.2: alternative (less rate-limited) DDG endpoint.
+const DDG_LITE_ENDPOINT: &str = "https://lite.duckduckgo.com/lite/";
+/// F11.1: Mojeek HTML endpoint (no API key required).
+const MOJEEK_ENDPOINT: &str = "https://www.mojeek.com/search";
+
 const MAX_RESULTS: usize = 8;
 const TIMEOUT_SECS: u64 = 10;
 
@@ -48,6 +62,164 @@ const DEFAULT_MAX_RESULTS: usize = 8;
 const MAX_RESULTS_MIN: usize = 1;
 const MAX_RESULTS_MAX: usize = 20;
 
+/// F11.4: cooldown applied to a provider after a rate-limit/block failure.
+const COOLDOWN_SECS: u64 = 120;
+
+/// F11.1: identifier of a search provider.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ProviderId {
+    DdgHtml,
+    DdgLite,
+    Mojeek,
+}
+
+impl ProviderId {
+    fn name(self) -> &'static str {
+        match self {
+            ProviderId::DdgHtml => "ddg_html",
+            ProviderId::DdgLite => "ddg_lite",
+            ProviderId::Mojeek => "mojeek",
+        }
+    }
+
+    fn endpoint(self) -> &'static str {
+        match self {
+            ProviderId::DdgHtml => DDG_ENDPOINT,
+            ProviderId::DdgLite => DDG_LITE_ENDPOINT,
+            ProviderId::Mojeek => MOJEEK_ENDPOINT,
+        }
+    }
+
+    /// F11.2: default order of preference.
+    #[cfg(test)]
+    fn all() -> [ProviderId; 3] {
+        [ProviderId::DdgHtml, ProviderId::DdgLite, ProviderId::Mojeek]
+    }
+}
+
+/// F11.1: why a provider attempt failed (drives fallback + cooldown).
+#[derive(Debug, Clone, PartialEq)]
+enum FailureKind {
+    /// HTTP error (non-2xx) or network/timeout failure.
+    Http,
+    /// Bot detection / CAPTCHA / silent rate-limit page.
+    Blocked,
+    /// Page fetched fine but the parser extracted 0 results.
+    Empty,
+}
+
+/// F11.1: a single search provider (HTML scraping, no API key).
+#[async_trait::async_trait]
+trait SearchProvider: Send + Sync {
+    fn id(&self) -> ProviderId;
+
+    /// Fetches and parses results for `query`. Returns the parsed results or
+    /// the failure kind (which drives fallback/cooldown in the facade).
+    async fn search(
+        &self,
+        client: &reqwest::Client,
+        query: &str,
+        ua: &str,
+    ) -> Result<Vec<SearchResult>, FailureKind>;
+}
+
+/// F11.1: DuckDuckGo provider — shared fetch logic, two parsers (HTML + Lite).
+struct DuckDuckGoProvider {
+    id: ProviderId,
+}
+
+#[async_trait::async_trait]
+impl SearchProvider for DuckDuckGoProvider {
+    fn id(&self) -> ProviderId {
+        self.id
+    }
+
+    async fn search(
+        &self,
+        client: &reqwest::Client,
+        query: &str,
+        ua: &str,
+    ) -> Result<Vec<SearchResult>, FailureKind> {
+        let url = reqwest::Url::parse_with_params(self.id.endpoint(), &[("q", query)])
+            .map_err(|_| FailureKind::Http)?;
+
+        let resp = client
+            .get(url)
+            .header(reqwest::header::USER_AGENT, ua)
+            .send()
+            .await
+            .map_err(|_| FailureKind::Http)?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(FailureKind::Http);
+        }
+
+        let html = resp.text().await.map_err(|_| FailureKind::Http)?;
+
+        if is_blocked(&html) || looks_rate_limited(&html) {
+            return Err(FailureKind::Blocked);
+        }
+
+        let results = match self.id {
+            ProviderId::DdgHtml => parse_results(&html),
+            ProviderId::DdgLite => parse_results_lite(&html),
+            _ => return Err(FailureKind::Empty),
+        };
+
+        if results.is_empty() {
+            Err(FailureKind::Empty)
+        } else {
+            Ok(results)
+        }
+    }
+}
+
+/// F11.1: Mojeek provider (plain HTML results, no API key).
+struct MojeekProvider;
+
+#[async_trait::async_trait]
+impl SearchProvider for MojeekProvider {
+    fn id(&self) -> ProviderId {
+        ProviderId::Mojeek
+    }
+
+    async fn search(
+        &self,
+        client: &reqwest::Client,
+        query: &str,
+        ua: &str,
+    ) -> Result<Vec<SearchResult>, FailureKind> {
+        let url = reqwest::Url::parse_with_params(MOJEEK_ENDPOINT, &[("q", query)])
+            .map_err(|_| FailureKind::Http)?;
+
+        let resp = client
+            .get(url)
+            .header(reqwest::header::USER_AGENT, ua)
+            .send()
+            .await
+            .map_err(|_| FailureKind::Http)?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(FailureKind::Http);
+        }
+
+        let html = resp.text().await.map_err(|_| FailureKind::Http)?;
+
+        if is_blocked(&html) || looks_rate_limited(&html) {
+            return Err(FailureKind::Blocked);
+        }
+
+        let results = parse_results_mojeek(&html);
+        if results.is_empty() {
+            Err(FailureKind::Empty)
+        } else {
+            Ok(results)
+        }
+    }
+}
+
 /// Shared state for the web search tool, kept across calls within a runtime.
 pub struct WebSearchTool {
     /// F1.1: timestamp of the last completed request (for dynamic min-delay).
@@ -57,7 +229,11 @@ pub struct WebSearchTool {
     /// F5.1: rotating index into `USER_AGENTS`.
     ua_index: Arc<AtomicUsize>,
     /// F9: in-memory result cache (query key → results + timestamp).
-    cache: Arc<tokio::sync::Mutex<std::collections::HashMap<String, CacheEntry>>>,
+    cache: Arc<tokio::sync::Mutex<HashMap<String, CacheEntry>>>,
+    /// F11.1: providers in preference order.
+    providers: Vec<Box<dyn SearchProvider>>,
+    /// F11.4: per-provider cooldown (provider → instant until which it is skipped).
+    cooldowns: Arc<tokio::sync::Mutex<HashMap<ProviderId, Instant>>>,
 }
 
 /// A cached search result set with its insertion timestamp (for TTL).
@@ -72,7 +248,17 @@ impl WebSearchTool {
             last_request: Arc::new(tokio::sync::Mutex::new(None)),
             semaphore: Arc::new(tokio::sync::Semaphore::new(1)),
             ua_index: Arc::new(AtomicUsize::new(0)),
-            cache: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+            cache: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            providers: vec![
+                Box::new(DuckDuckGoProvider {
+                    id: ProviderId::DdgHtml,
+                }),
+                Box::new(DuckDuckGoProvider {
+                    id: ProviderId::DdgLite,
+                }),
+                Box::new(MojeekProvider),
+            ],
+            cooldowns: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         }
     }
 }
@@ -136,7 +322,10 @@ técnicos ou resoluções de erros de compilação."
             .clamp(MAX_RESULTS_MIN, MAX_RESULTS_MAX);
 
         // F8: optional site restriction → "query site:domain".
-        let site = args["site"].as_str().map(str::trim).filter(|s| !s.is_empty());
+        let site = args["site"]
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
         let full_query = match site {
             Some(s) => format!("{} site:{}", query, s),
             None => query.to_string(),
@@ -166,115 +355,119 @@ técnicos ou resoluções de erros de compilação."
             .build()
             .map_err(|e| format!("failed to build HTTP client: {}", e))?;
 
-        // F5.1: pick a UA (rotating). On retry we rotate again so identical
-        // requests use different UAs.
-        let mut attempt = 0usize;
-        loop {
-            if ctx.abort.is_aborted() {
-                return Err("aborted".to_string());
-            }
-            let ua = self.next_user_agent();
-            let url = reqwest::Url::parse_with_params(DDG_ENDPOINT, &[("q", &full_query)])
-                .map_err(|e| format!("failed to build search URL: {}", e))?;
+        // F11: iterate providers in order, with per-provider retry/backoff.
+        // Fallback triggers on: HTTP error, block detection, or 0 results.
+        let mut last_failure: Option<(ProviderId, FailureKind)> = None;
 
-            tracing::debug!(
-                endpoint = DDG_ENDPOINT,
-                query = %preview(&full_query, 40),
-                attempt,
-                "web_search request"
-            );
-
-            let resp = client
-                .get(url)
-                .header(reqwest::header::USER_AGENT, ua)
-                .send()
-                .await
-                .map_err(|e| format!("web search request failed: {}", e))?;
-
+        for provider in &self.providers {
             if ctx.abort.is_aborted() {
                 return Err("aborted".to_string());
             }
 
-            let status = resp.status();
-            if !status.is_success() {
-                tracing::warn!(%status, attempt, "web_search non-success status");
-                if attempt < RETRY_DELAYS.len() {
-                    attempt += 1;
-                    self.sleep_retry(ctx, attempt).await?;
-                    continue;
+            // F11.4: skip providers in cooldown (lazy expiry).
+            if self.provider_in_cooldown(provider.id()).await {
+                tracing::debug!(
+                    provider = provider.id().name(),
+                    "web_search skipping provider in cooldown"
+                );
+                continue;
+            }
+
+            let mut attempt = 0usize;
+            let outcome: Result<Vec<SearchResult>, FailureKind> = loop {
+                if ctx.abort.is_aborted() {
+                    return Err("aborted".to_string());
                 }
-                return Err(format!("DuckDuckGo returned HTTP {}", status));
-            }
 
-            let html = resp
-                .text()
-                .await
-                .map_err(|e| format!("failed to read search response: {}", e))?;
+                // F5.1: rotate UA on every attempt (retries use different UAs).
+                let ua = self.next_user_agent();
 
-            // F1.1: record the end of this request so the next one waits.
-            self.mark_request_done().await;
-
-            if ctx.abort.is_aborted() {
-                return Err("aborted".to_string());
-            }
-
-            // F3: silent rate-limit detection (HTTP 200 with empty/suspicious page).
-            let blocked = is_blocked(&html);
-            let rate_limited = looks_rate_limited(&html);
-
-            if blocked || rate_limited {
-                tracing::warn!(
-                    blocked,
-                    rate_limited,
-                    html_len = html.len(),
+                tracing::debug!(
+                    endpoint = provider.id().endpoint(),
+                    provider = provider.id().name(),
+                    query = %preview(&full_query, 40),
                     attempt,
-                    "web_search detected blocking/rate-limit"
+                    "web_search request"
                 );
-                if attempt < RETRY_DELAYS.len() {
-                    attempt += 1;
-                    self.sleep_retry(ctx, attempt).await?;
-                    continue;
+
+                let result = provider.search(&client, &full_query, ua).await;
+
+                // F1.1: record the end of this request so the next one waits.
+                self.mark_request_done().await;
+
+                if ctx.abort.is_aborted() {
+                    return Err("aborted".to_string());
                 }
-                return Err(
-                    "DuckDuckGo bloqueou a requisição (possível detecção de bot/CAPTCHA ou \
-rate limiting). Tente novamente em alguns instantes ou reformule a consulta."
-                        .to_string(),
-                );
-            }
 
-            let results = parse_results(&html);
-
-            // F2.2: empty + suspicious → treat as blocking and retry.
-            if results.is_empty() && looks_rate_limited(&html) {
-                tracing::warn!(
-                    attempt,
-                    "web_search empty results with rate-limit indicators; retrying"
-                );
-                if attempt < RETRY_DELAYS.len() {
-                    attempt += 1;
-                    self.sleep_retry(ctx, attempt).await?;
-                    continue;
+                match result {
+                    Ok(results) => {
+                        // F9: cache only successful, non-empty results.
+                        self.cache_put(&cache_key, results.clone()).await;
+                        break Ok(results);
+                    }
+                    Err(kind) => {
+                        tracing::warn!(
+                            provider = provider.id().name(),
+                            ?kind,
+                            attempt,
+                            "web_search provider attempt failed"
+                        );
+                        // F2: retry with backoff (except for hard HTTP errors
+                        // on the last attempt — retrying an HTTP 403/5xx
+                        // immediately rarely helps, but backoff is cheap).
+                        if attempt < RETRY_DELAYS.len() {
+                            attempt += 1;
+                            self.sleep_retry(ctx, attempt).await?;
+                            continue;
+                        }
+                        break Err(kind);
+                    }
                 }
-                return Err(
-                    "DuckDuckGo retornou uma página vazia com indícios de rate limiting. \
-Tente novamente em alguns instantes."
-                        .to_string(),
-                );
-            }
+            };
 
-            if results.is_empty() {
-                // F9: never cache empty responses (avoids propagating a
-                // temporary block for 1h).
-                return Ok(ToolResult::simple(
+            match outcome {
+                Ok(results) => {
+                    return Ok(render_results(&full_query, &results, max_results));
+                }
+                Err(kind) => {
+                    // F11.4: rate-limit/block failures put the provider in
+                    // cooldown so subsequent searches skip it.
+                    let blocked = matches!(kind, FailureKind::Blocked);
+                    if blocked {
+                        self.set_cooldown(provider.id()).await;
+                    }
+                    tracing::warn!(
+                        from = provider.id().name(),
+                        ?kind,
+                        "web_search falling back to next provider"
+                    );
+                    last_failure = Some((provider.id(), kind));
+                }
+            }
+        }
+
+        // All providers failed (or returned 0 results).
+        let (pid, kind) = last_failure.unwrap_or((ProviderId::DdgHtml, FailureKind::Empty));
+        match kind {
+            FailureKind::Empty => {
+                // F11.3: only report "no results" when every provider was
+                // tried and all returned empty.
+                Ok(ToolResult::simple(
                     format!("web_search {}", preview(&full_query, 40)),
                     "(no results found)".to_string(),
-                ));
+                ))
             }
-
-            // F9: cache only successful, non-empty results.
-            self.cache_put(&cache_key, results.clone()).await;
-
-            return Ok(render_results(&full_query, &results, max_results));
+            FailureKind::Blocked => Err(format!(
+                "Todos os provedores de busca bloquearam a requisição (último: {}, \
+possível detecção de bot/CAPTCHA ou rate limiting). Tente novamente em \
+alguns instantes ou reformule a consulta.",
+                pid.name()
+            )),
+            FailureKind::Http => Err(format!(
+                "Falha na busca web: todos os provedores retornaram erro HTTP \
+(último: {}). Verifique a conexão e tente novamente.",
+                pid.name()
+            )),
         }
     }
 }
@@ -360,6 +553,26 @@ impl WebSearchTool {
             },
         );
     }
+
+    /// F11.4: whether the provider is currently in cooldown (lazy expiry).
+    async fn provider_in_cooldown(&self, id: ProviderId) -> bool {
+        let mut cooldowns = self.cooldowns.lock().await;
+        // Lazy expiry: drop entries whose cooldown has passed.
+        cooldowns.retain(|_, until| *until > Instant::now());
+        cooldowns.contains_key(&id)
+    }
+
+    /// F11.4: puts a provider in cooldown for `COOLDOWN_SECS`.
+    async fn set_cooldown(&self, id: ProviderId) {
+        let mut cooldowns = self.cooldowns.lock().await;
+        let until = Instant::now() + Duration::from_secs(COOLDOWN_SECS);
+        tracing::warn!(
+            provider = id.name(),
+            cooldown_secs = COOLDOWN_SECS,
+            "web_search provider placed in cooldown"
+        );
+        cooldowns.insert(id, until);
+    }
 }
 
 /// Sleeps for `dur`, returning false if aborted during the wait.
@@ -373,7 +586,7 @@ async fn sleep_abortable(ctx: &ToolContext, dur: Duration) -> bool {
 }
 
 #[derive(Clone)]
-struct SearchResult {
+pub(crate) struct SearchResult {
     title: String,
     url: String,
     snippet: String,
@@ -381,8 +594,7 @@ struct SearchResult {
     domain: String,
 }
 
-/// Extracts up to MAX_RESULTS results from the DuckDuckGo HTML page using
-/// CSS selectors.
+/// Extracts results from the DuckDuckGo `/html/` page using CSS selectors.
 fn parse_results(html: &str) -> Vec<SearchResult> {
     let document = Html::parse_document(html);
     let Ok(result_selector) = Selector::parse("div.result") else {
@@ -402,6 +614,87 @@ fn parse_results(html: &str) -> Vec<SearchResult> {
             let title = clean_text(&title_el.text().collect::<Vec<_>>().join(" "));
             let url = title_el.value().attr("href").unwrap_or("").to_string();
             let url = clean_url(&url);
+            if title.is_empty() || url.is_empty() {
+                return None;
+            }
+            let snippet = result
+                .select(&snippet_selector)
+                .next()
+                .map(|s| clean_text(&s.text().collect::<Vec<_>>().join(" ")))
+                .unwrap_or_default();
+            let domain = extract_domain(&url);
+            Some(SearchResult {
+                title,
+                url,
+                snippet,
+                domain,
+            })
+        })
+        .take(MAX_RESULTS)
+        .collect()
+}
+
+/// F4.1: extracts results from the DDG Lite page. The Lite layout is
+/// table-based: each result is a `<tr>` containing `a.result-link` (title +
+/// redirect href), optionally followed by a `td.result-snippet` row.
+fn parse_results_lite(html: &str) -> Vec<SearchResult> {
+    let document = Html::parse_document(html);
+    let Ok(link_selector) = Selector::parse("a.result-link") else {
+        return Vec::new();
+    };
+    let Ok(snippet_selector) = Selector::parse("td.result-snippet") else {
+        return Vec::new();
+    };
+
+    // Collect snippets in document order; each snippet row follows its
+    // result-link row, so we pair them positionally.
+    let snippets: Vec<String> = document
+        .select(&snippet_selector)
+        .map(|s| clean_text(&s.text().collect::<Vec<_>>().join(" ")))
+        .collect();
+
+    document
+        .select(&link_selector)
+        .enumerate()
+        .filter_map(|(i, link)| {
+            let title = clean_text(&link.text().collect::<Vec<_>>().join(" "));
+            let url = clean_url(link.value().attr("href").unwrap_or(""));
+            if title.is_empty() || url.is_empty() {
+                return None;
+            }
+            let snippet = snippets.get(i).cloned().unwrap_or_default();
+            let domain = extract_domain(&url);
+            Some(SearchResult {
+                title,
+                url,
+                snippet,
+                domain,
+            })
+        })
+        .take(MAX_RESULTS)
+        .collect()
+}
+
+/// F11.1: extracts results from the Mojeek HTML page. Results are
+/// `ul.results-standard > li` with `a.title` and `p.s` snippets.
+fn parse_results_mojeek(html: &str) -> Vec<SearchResult> {
+    let document = Html::parse_document(html);
+    let Ok(result_selector) = Selector::parse("ul.results-standard li") else {
+        return Vec::new();
+    };
+    let Ok(title_selector) = Selector::parse("a.title") else {
+        return Vec::new();
+    };
+    let Ok(snippet_selector) = Selector::parse("p.s") else {
+        return Vec::new();
+    };
+
+    document
+        .select(&result_selector)
+        .filter_map(|result| {
+            let title_el = result.select(&title_selector).next()?;
+            let title = clean_text(&title_el.text().collect::<Vec<_>>().join(" "));
+            let url = title_el.value().attr("href").unwrap_or("").to_string();
             if title.is_empty() || url.is_empty() {
                 return None;
             }
@@ -449,10 +742,7 @@ fn render_results(query: &str, results: &[SearchResult], max_results: usize) -> 
             r.snippet
         ));
     }
-    ToolResult::simple(
-        format!("web_search {}", preview(query, 40)),
-        body,
-    )
+    ToolResult::simple(format!("web_search {}", preview(query, 40)), body)
 }
 
 /// Collapses whitespace in text extracted from the DOM.
@@ -463,7 +753,9 @@ fn clean_text(s: &str) -> String {
 /// DuckDuckGo wraps result URLs in a redirect; unwrap the real target.
 fn clean_url(href: &str) -> String {
     if let Some((_, rest)) = href.split_once("uddg=") {
-        urlencoding::decode(rest)
+        let end = rest.find("&rut=").unwrap_or(rest.len());
+        let target = &rest[..end];
+        urlencoding::decode(target)
             .map(|d| d.into_owned())
             .unwrap_or_else(|_| href.to_string())
     } else {
@@ -490,6 +782,7 @@ fn looks_rate_limited(html: &str) -> bool {
         "anomaly",
         "rate limit",
         "rate-limited",
+        "automated queries",
     ]
     .iter()
     .any(|term| lower.contains(term))
@@ -541,6 +834,11 @@ mod tests {
         }
     }
 
+    /// Real DDG /html/ sample captured from production (10 results).
+    const DDG_SAMPLE: &str = include_str!("ddg_sample.html");
+    /// Real DDG Lite sample captured from production (10 results).
+    const LITE_SAMPLE: &str = include_str!("lite_sample.html");
+
     #[test]
     fn test_parse_results_with_scraper() {
         let html = r#"
@@ -550,7 +848,7 @@ mod tests {
         </div>
         <div class="result">
           <a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fcrates.io">crates.io</a>
-          <a class="result__snippet" href="...">Rust package registry</a>
+          <a class="result__snippet" href="...">crates registry</a>
         </div>
         "#;
         let results = parse_results(html);
@@ -561,11 +859,50 @@ mod tests {
         assert_eq!(results[1].url, "https://crates.io");
     }
 
+    // F4.1: parser for the Lite endpoint against a real captured page.
+    #[test]
+    fn test_parse_results_lite_real_sample() {
+        let results = parse_results_lite(LITE_SAMPLE);
+        // MAX_RESULTS caps at 8 even though the page has 10 results.
+        assert_eq!(
+            results.len(),
+            8,
+            "expected 8 (capped) results from Lite sample"
+        );
+        assert_eq!(results[0].title, "Tokio - An asynchronous Rust runtime");
+        assert_eq!(results[0].url, "https://tokio.rs/");
+        assert_eq!(results[0].domain, "tokio.rs");
+        assert!(
+            results[0].snippet.contains("Tokio"),
+            "snippet should be paired with its result"
+        );
+        assert_eq!(results[1].url, "https://docs.rs/tokio/latest/tokio/");
+        assert!(results.iter().all(|r| !r.url.is_empty()));
+    }
+
+    #[test]
+    fn test_parse_results_ddg_real_sample() {
+        let results = parse_results(DDG_SAMPLE);
+        // MAX_RESULTS caps at 8 even though the page has 10 results.
+        assert_eq!(
+            results.len(),
+            8,
+            "expected 8 (capped) results from /html/ sample"
+        );
+        assert_eq!(results[0].title, "Tokio - An asynchronous Rust runtime");
+        assert_eq!(results[0].url, "https://tokio.rs/");
+    }
+
     #[test]
     fn test_clean_url_unwraps_uddg() {
         assert_eq!(
             clean_url("//duckduckgo.com/l/?uddg=https%3A%2F%2Fdocs.rs%2Ftokio"),
             "https://docs.rs/tokio"
+        );
+        // With the `rut` tracking parameter appended (real Lite format).
+        assert_eq!(
+            clean_url("//duckduckgo.com/l/?uddg=https%3A%2F%2Ftokio.rs%2F&rut=abc123"),
+            "https://tokio.rs/"
         );
         assert_eq!(clean_url("https://plain.example"), "https://plain.example");
     }
@@ -573,6 +910,8 @@ mod tests {
     #[test]
     fn test_parse_results_empty_on_no_matches() {
         assert!(parse_results("<html><body>nothing here</body></html>").is_empty());
+        assert!(parse_results_lite("<html><body>nothing here</body></html>").is_empty());
+        assert!(parse_results_mojeek("<html><body>nothing here</body></html>").is_empty());
     }
 
     #[test]
@@ -581,15 +920,13 @@ mod tests {
         assert!(is_blocked(
             "<html>please solve the Captcha to continue</html>"
         ));
-        assert!(is_blocked("<html>bot-detected request blocked</html>"));
+        assert!(is_blocked("<html>bot-detected</html>"));
     }
 
     #[test]
     fn test_is_blocked_false_for_normal() {
-        assert!(!is_blocked("<html>normal search results here</html>"));
-        assert!(!is_blocked(
-            "<html>normal search results with relevant links</html>"
-        ));
+        assert!(!is_blocked(DDG_SAMPLE));
+        assert!(!is_blocked(LITE_SAMPLE));
     }
 
     #[test]
@@ -598,12 +935,17 @@ mod tests {
         assert!(looks_rate_limited("<html>unusual traffic detected</html>"));
         assert!(looks_rate_limited("<html>network anomaly</html>"));
         assert!(looks_rate_limited("<html>rate limit exceeded</html>"));
+        // Mojeek block page wording.
+        assert!(looks_rate_limited(
+            "<html>sending automated queries so we can't process</html>"
+        ));
     }
 
     #[test]
     fn test_looks_rate_limited_false_for_normal() {
+        assert!(!looks_rate_limited(DDG_SAMPLE));
+        assert!(!looks_rate_limited(LITE_SAMPLE));
         assert!(!looks_rate_limited("<html>normal search results</html>"));
-        assert!(!looks_rate_limited("<html>nothing here</html>"));
     }
 
     #[test]
@@ -614,7 +956,6 @@ mod tests {
         let c = tool.next_user_agent();
         assert_ne!(a, b);
         assert_ne!(b, c);
-        // All must be modern desktop browser UAs (no curl/Python).
         for ua in [a, b, c] {
             assert!(ua.contains("Mozilla/5.0"));
             assert!(!ua.contains("curl"));
@@ -625,6 +966,16 @@ mod tests {
     #[test]
     fn test_retry_delays_configured() {
         assert_eq!(RETRY_DELAYS, &[2, 4]);
+    }
+
+    #[test]
+    fn test_provider_order_and_cooldown_constant() {
+        // F11.2: preference order is DDG HTML → DDG Lite → Mojeek.
+        assert_eq!(
+            ProviderId::all(),
+            [ProviderId::DdgHtml, ProviderId::DdgLite, ProviderId::Mojeek]
+        );
+        assert_eq!(COOLDOWN_SECS, 120);
     }
 
     #[tokio::test]
@@ -646,8 +997,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_min_delay_between_requests() {
-        // F1.1: after marking a request done, the next wait_min_delay must
-        // sleep for at least the remaining gap.
         let tool = WebSearchTool::new();
         let ctx = test_ctx();
         tool.mark_request_done().await;
@@ -664,7 +1013,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_no_delay_when_no_prior_request() {
-        // F1.1: first call (no prior request) should not sleep.
         let tool = WebSearchTool::new();
         let ctx = test_ctx();
         let start = Instant::now();
@@ -679,29 +1027,52 @@ mod tests {
 
     #[tokio::test]
     async fn test_semaphore_serializes_concurrent() {
-        // F1.2: the semaphore has permit=1, so concurrent acquisitions are
-        // serialized. We verify the permit count is 1.
         let tool = WebSearchTool::new();
         let permit = tool.semaphore.try_acquire().unwrap();
-        // Second acquisition must fail (only 1 permit).
         assert!(tool.semaphore.try_acquire().is_err());
         drop(permit);
-        // After release, acquisition succeeds again.
         assert!(tool.semaphore.try_acquire().is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_cooldown_skips_provider() {
+        // F11.4: a provider in cooldown is skipped by provider_in_cooldown.
+        let tool = WebSearchTool::new();
+        assert!(!tool.provider_in_cooldown(ProviderId::DdgHtml).await);
+        tool.set_cooldown(ProviderId::DdgHtml).await;
+        assert!(tool.provider_in_cooldown(ProviderId::DdgHtml).await);
+        // Other providers are unaffected.
+        assert!(!tool.provider_in_cooldown(ProviderId::DdgLite).await);
+    }
+
+    #[tokio::test]
+    async fn test_cooldown_expires() {
+        // F11.4: cooldown expires (lazy) — simulate by inserting a past
+        // expiry directly.
+        let tool = WebSearchTool::new();
+        {
+            let mut cooldowns = tool.cooldowns.lock().await;
+            cooldowns.insert(ProviderId::Mojeek, Instant::now() - Duration::from_secs(1));
+        }
+        // Lazy expiry removes the stale entry and reports not-in-cooldown.
+        assert!(!tool.provider_in_cooldown(ProviderId::Mojeek).await);
+        let cooldowns = tool.cooldowns.lock().await;
+        assert!(!cooldowns.contains_key(&ProviderId::Mojeek));
     }
 
     #[test]
     fn test_extract_domain() {
-        // F6.1
         assert_eq!(extract_domain("https://docs.rs/tokio"), "docs.rs");
         assert_eq!(extract_domain("https://crates.io"), "crates.io");
-        assert_eq!(extract_domain("https://www.example.com/path?q=1"), "www.example.com");
+        assert_eq!(
+            extract_domain("https://www.example.com/path?q=1"),
+            "www.example.com"
+        );
         assert_eq!(extract_domain("not a url"), "");
     }
 
     #[test]
     fn test_render_results_includes_domain() {
-        // F6.1: rendered output includes the domain line.
         let results = vec![SearchResult {
             title: "Tokio".into(),
             url: "https://docs.rs/tokio".into(),
@@ -716,7 +1087,6 @@ mod tests {
 
     #[test]
     fn test_render_results_respects_max_results() {
-        // F7: render only up to max_results.
         let results: Vec<SearchResult> = (0..5)
             .map(|i| SearchResult {
                 title: format!("T{}", i),
@@ -733,16 +1103,8 @@ mod tests {
 
     #[test]
     fn test_normalize_cache_key() {
-        // F9.1: lowercase + trim + max_results.
-        assert_eq!(
-            normalize_cache_key("  Rust Tokio  ", 8),
-            "rust tokio|8"
-        );
-        assert_eq!(
-            normalize_cache_key("Rust Tokio", 8),
-            "rust tokio|8"
-        );
-        // Different max_results → different key.
+        assert_eq!(normalize_cache_key("  Rust Tokio  ", 8), "rust tokio|8");
+        assert_eq!(normalize_cache_key("Rust Tokio", 8), "rust tokio|8");
         assert_ne!(
             normalize_cache_key("rust", 3),
             normalize_cache_key("rust", 8)
@@ -751,7 +1113,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_cache_put_get() {
-        // F9: put then get returns the same results.
         let tool = WebSearchTool::new();
         let results = vec![SearchResult {
             title: "T".into(),
@@ -767,14 +1128,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_cache_miss_returns_none() {
-        // F9: unknown key → None.
         let tool = WebSearchTool::new();
         assert!(tool.cache_get("missing").await.is_none());
     }
 
     #[tokio::test]
     async fn test_cache_evicts_oldest_when_full() {
-        // F9.2: cache is capped at CACHE_MAX_ENTRIES.
         let tool = WebSearchTool::new();
         for i in 0..(CACHE_MAX_ENTRIES + 5) {
             tool.cache_put(&format!("k{}", i), vec![]).await;
