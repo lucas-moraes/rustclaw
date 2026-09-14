@@ -2,6 +2,7 @@
 
 pub mod ast_search;
 pub mod bash;
+pub mod browser;
 pub mod checkpoint;
 pub mod context;
 pub mod diagnostics;

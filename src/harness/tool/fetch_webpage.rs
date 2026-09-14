@@ -31,6 +31,13 @@ impl Tool for FetchWebpageTool {
                 "url": {
                     "type": "string",
                     "description": "A URL de destino (ex: https://docs.rs/tokio/latest/tokio/macro.select.html)"
+                },
+                "render": {
+                    "type": "string",
+                    "enum": ["auto", "http", "browser"],
+                    "description": "Como obter a página. `http` (padrão): HTTP puro, rápido. \
+        `browser`: renderiza com headless Chrome (executa JS) — necessário para SPAs. \
+        `auto`: tenta HTTP e, se o conteúdo vier vazio, refaz com o browser."
                 }
             },
             "required": ["url"]
@@ -47,6 +54,16 @@ impl Tool for FetchWebpageTool {
             .filter(|u| !u.is_empty())
             .ok_or_else(|| "missing required argument: url".to_string())?;
 
+        let render = args["render"].as_str().unwrap_or("http");
+        let render = match render {
+            "auto" | "http" | "browser" => render,
+            other => {
+                return Err(format!(
+                    "invalid render `{other}` (expected auto|http|browser)"
+                ))
+            }
+        };
+
         let parsed =
             reqwest::Url::parse(url).map_err(|e| format!("invalid URL `{}`: {}", url, e))?;
         if !matches!(parsed.scheme(), "http" | "https") {
@@ -56,32 +73,26 @@ impl Tool for FetchWebpageTool {
         // addresses (cloud metadata, internal services, localhost admin panels).
         validate_public_host(&parsed).await?;
 
-        let client = reqwest::Client::builder()
-            .user_agent(USER_AGENT)
-            .timeout(std::time::Duration::from_secs(TIMEOUT_SECS))
-            // No automatic redirects: a redirect to an internal host would
-            // bypass the initial host check above.
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|e| format!("failed to build HTTP client: {}", e))?;
+        // `browser` skips the HTTP path entirely; `auto`/`http` start with it.
+        let (html, via) = if render == "browser" {
+            let html = crate::harness::tool::browser::render(url).await?;
+            (html, "browser")
+        } else {
+            let html = fetch_http(&parsed, url, ctx).await?;
+            let markdown =
+                convert_html(&html).map_err(|e| format!("HTML->Markdown failed: {}", e))?;
 
-        let resp = client
-            .get(parsed.clone())
-            .send()
-            .await
-            .map_err(|e| format!("request failed for {}: {}", url, e))?;
-
-        if ctx.abort.is_aborted() {
-            return Err("aborted".to_string());
-        }
-
-        if !resp.status().is_success() {
-            return Err(format!("HTTP {} for {}", resp.status(), url));
-        }
-        let html = resp
-            .text()
-            .await
-            .map_err(|e| format!("failed to read response body: {}", e))?;
+            // `auto`: if plain HTTP returned an empty SPA shell, retry with the
+            // browser. A missing Chrome is not fatal — we keep the HTTP result.
+            if render == "auto" && crate::harness::tool::browser::looks_empty(&markdown) {
+                match crate::harness::tool::browser::render(url).await {
+                    Ok(rendered) => (rendered, "browser"),
+                    Err(_) => (html, "http"),
+                }
+            } else {
+                (html, "http")
+            }
+        };
 
         if ctx.abort.is_aborted() {
             return Err("aborted".to_string());
@@ -91,10 +102,39 @@ impl Tool for FetchWebpageTool {
         let output = truncate_output(&markdown, MAX_CONTENT_CHARS);
 
         Ok(ToolResult::simple(
-            format!("fetch_webpage {}", preview(url, 40)),
+            format!("fetch_webpage {} ({})", preview(url, 40), via),
             output,
         ))
     }
+}
+
+/// Fetches `url` over plain HTTP and returns the raw HTML body.
+async fn fetch_http(parsed: &reqwest::Url, url: &str, ctx: &ToolContext) -> Result<String, String> {
+    let client = reqwest::Client::builder()
+        .user_agent(USER_AGENT)
+        .timeout(std::time::Duration::from_secs(TIMEOUT_SECS))
+        // No automatic redirects: a redirect to an internal host would
+        // bypass the initial host check above.
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| format!("failed to build HTTP client: {}", e))?;
+
+    let resp = client
+        .get(parsed.clone())
+        .send()
+        .await
+        .map_err(|e| format!("request failed for {}: {}", url, e))?;
+
+    if ctx.abort.is_aborted() {
+        return Err("aborted".to_string());
+    }
+
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {} for {}", resp.status(), url));
+    }
+    resp.text()
+        .await
+        .map_err(|e| format!("failed to read response body: {}", e))
 }
 
 fn convert_html(html: &str) -> Result<String, String> {
@@ -248,6 +288,29 @@ mod tests {
         let tool = FetchWebpageTool;
         let err = tool.execute(json!({}), &test_ctx()).await.unwrap_err();
         assert!(err.contains("url"));
+    }
+
+    #[tokio::test]
+    async fn test_invalid_render_mode_errors() {
+        let tool = FetchWebpageTool;
+        let err = tool
+            .execute(
+                json!({"url": "https://example.com", "render": "nope"}),
+                &test_ctx(),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.contains("invalid render"), "{err}");
+    }
+
+    #[test]
+    fn test_schema_exposes_render_enum() {
+        let params = FetchWebpageTool.parameters();
+        let modes = params["properties"]["render"]["enum"]
+            .as_array()
+            .expect("render enum present");
+        let modes: Vec<&str> = modes.iter().filter_map(|v| v.as_str()).collect();
+        assert_eq!(modes, vec!["auto", "http", "browser"]);
     }
 
     #[test]

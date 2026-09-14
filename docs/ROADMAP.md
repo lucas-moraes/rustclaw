@@ -19,7 +19,7 @@ O RustClaw já implementa o núcleo de um coding agent moderno:
 - Memória de projeto persistente (SQLite, scoring recência+uso+BM25)
 - Multi-provider (Anthropic / OpenAI / opencode-go / custom)
 
-**Métricas atuais:** ~42.300 linhas, 126 arquivos `.rs`, 621 testes, CI + release.
+**Métricas atuais:** ~42.800 linhas, 128 arquivos `.rs`, 635 testes, CI + release.
 
 As lacunas abaixo são o que separa o projeto de "equivalente" — não de "bom".
 
@@ -32,7 +32,7 @@ As lacunas abaixo são o que separa o projeto de "equivalente" — não de "bom"
 | 3 | Evals / observabilidade | ✅ concluído (métricas por sessão + `/stats` + suite de evals offline + gate no CI) |
 | 4 | Busca semântica | ✅ concluído (chunking por símbolo + índice SQLite/FTS5 + busca híbrida + tool `semantic_search` + `/index`) |
 | 5 | Sandbox de execução | ⬜ pendente |
-| 6 | Render JS | ⬜ pendente |
+| 6 | Render JS | ✅ concluído (headless Chrome via `chromiumoxide` no binário default + `render: auto\|http\|browser` + `rustclaw doctor`) |
 | 7 | Provider/ecossistema | ⬜ contínuo |
 
 > Nota: a numeração desta tabela segue a **ordem de execução** (ver seção
@@ -145,29 +145,31 @@ test `#[ignore]` indexa o próprio repo (142 arquivos → 2867 chunks) e acha
 
 ### 5. Renderização web com JavaScript
 
-**Estado atual:** `fetch_webpage` faz HTTP puro + `scraper` + `htmd`. Sites SPA
-voltam vazios.
+**Estado atual:** ✅ **implementado**. `fetch_webpage` aceita
+`render: "auto" | "http" | "browser"`:
+- `http` (padrão) — HTTP puro + `htmd`, como antes.
+- `browser` — renderiza com headless Chrome via `chromiumoxide` (executa JS),
+  espera o DOM assentar e converte o HTML renderizado.
+- `auto` — tenta HTTP e, se o Markdown vier vazio (heurística `looks_empty`),
+  refaz com o browser; se o Chrome faltar, mantém o resultado HTTP.
 
-**Lacuna:** muitos docs modernos são SPA. Não é crítico para coding agent, mas é
-um buraco visível.
+**Decisão de arquitetura:** `chromiumoxide` é **dependência do binário default**
+(recurso de primeira classe, não feature flag). Custo aceito: ~150 MB no binário
+e dependência de um Chrome/Chromium instalado na máquina do usuário.
 
-**Proposta:**
-- Opção `render: "auto" | "http" | "browser"` na tool.
-- `browser` via `chromiumoxide` (headless Chrome) — **dependência do binário
-  default**. Decisão revista: o render JS passa a ser um recurso de primeira
-  classe, não um extra opcional. Custo aceito: ~150 MB no binário e dependência
-  de um Chrome/Chromium instalado na máquina do usuário.
-- Detecção de "conteúdo vazio" → sugerir retry com `render: "browser"`.
-- **Verificação de dependências do SO:** módulo `harness/deps.rs` sonda a
-  presença de Chrome/Chromium (PATH + caminhos conhecidos de macOS/Linux) e
-  reporta o que falta com dica de instalação. Exposto como `rustclaw doctor`
-  (subcomando, sai != 0 se faltar algo) e `/doctor` (slash command). No boot da
-  TUI, dependências ausentes geram aviso não-fatal — o harness roda e a feature
-  degrada para o fallback (`render: "http"`).
-- Alternativa mais leve: avaliar `spider` (crate Rust, MIT) para crawling em
-  profundidade, caso surja necessidade de um tool `crawl`.
+**Verificação de dependências do SO:** módulo `harness/deps.rs` sonda a presença
+de Chrome/Chromium (caminhos absolutos conhecidos de macOS/Linux **primeiro**,
+depois o PATH) e valida que o candidato é **executável** — evita falsos positivos
+como o shim quebrado do Homebrew. Exposto como `rustclaw doctor` (subcomando,
+sai != 0 se faltar algo) e `/doctor` (slash command). No boot da TUI,
+dependências ausentes geram aviso não-fatal — o harness roda e a feature degrada
+para o fallback (`render: "http"`).
 
-**Esforço:** ~3–5 dias (com feature flag). **Risco:** médio (distribuição).
+**Verificação:** 3 testes do módulo `browser` (heurística de vazio) + 2 novos da
+tool (`render` inválido, enum no schema) + 8 do `deps`; smoke test `#[ignore]`
+renderiza `example.com` em headless Chrome de verdade.
+
+**Esforço:** ~3–5 dias. **Risco:** médio (distribuição).
 
 ---
 
@@ -220,7 +222,7 @@ harness solo. Priorizar apenas se houver demanda real de usuários.
 
 ### 9. Qualidade de código / dívida
 
-- Cobertura de testes por módulo (hoje 621 testes, mas distribuição desigual —
+- Cobertura de testes por módulo (hoje 635 testes, mas distribuição desigual —
   `ui/` tem 13k linhas e provavelmente menos cobertura relativa).
 - `cargo clippy -- -D warnings` já no CI ✅.
 - Documentar invariantes do loop agêntico (o que pode/não pode acontecer entre

@@ -89,19 +89,45 @@ pub fn check(dep: SystemDep) -> DepStatus {
 }
 
 /// Resolves the executable for `dep`, or `None` when it is not installed.
+///
+/// Absolute well-known paths are probed first: a `PATH` entry can be a broken
+/// wrapper (e.g. a Homebrew shim pointing at a missing app bundle), whereas the
+/// absolute paths we list are the real binaries. Every candidate must be an
+/// executable file, not merely present.
 fn resolve(dep: SystemDep) -> Option<PathBuf> {
-    for bin in dep.binaries {
-        if let Some(path) = which(bin) {
-            return Some(path);
-        }
-    }
     for path in dep.extra_paths {
         let p = PathBuf::from(path);
-        if p.is_file() {
+        if is_executable_file(&p) {
             return Some(p);
         }
     }
+    for bin in dep.binaries {
+        if let Some(path) = which(bin) {
+            if is_executable_file(&path) {
+                return Some(path);
+            }
+        }
+    }
     None
+}
+
+/// True when `path` is a file the current user can execute.
+fn is_executable_file(path: &std::path::Path) -> bool {
+    if !path.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        match std::fs::metadata(path) {
+            Ok(md) => md.permissions().mode() & 0o111 != 0,
+            Err(_) => false,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
 }
 
 /// Looks up `bin` on `PATH` using the platform's `which`/`where`.
@@ -166,7 +192,6 @@ pub fn render_report() -> (Vec<String>, bool) {
 ///
 /// Used by the browser renderer to locate the executable; `None` means the
 /// caller should fall back to plain HTTP.
-#[allow(dead_code)] // consumed by the browser renderer (ROADMAP item 6)
 pub fn chrome_path() -> Option<PathBuf> {
     check(KNOWN_DEPS[0]).found_at
 }
@@ -250,5 +275,25 @@ mod tests {
         };
         let st = check(dep);
         assert!(!st.is_installed());
+    }
+
+    #[test]
+    fn test_is_executable_file_rejects_non_executable() {
+        let dir = tempfile::tempdir().unwrap();
+        let plain = dir.path().join("plain.txt");
+        std::fs::write(&plain, "not executable").unwrap();
+        assert!(!is_executable_file(&plain));
+        assert!(!is_executable_file(&dir.path().join("missing")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_is_executable_file_accepts_executable() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("run.sh");
+        std::fs::write(&exe, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(is_executable_file(&exe));
     }
 }
