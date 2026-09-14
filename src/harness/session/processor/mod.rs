@@ -549,8 +549,29 @@ impl SessionProcessor {
     ) -> anyhow::Result<ProviderStream> {
         let retry_policy = crate::harness::provider::retry::RetryPolicy::default();
         let provider = self.provider.clone();
-        let req_clone = req.clone();
         let abort_flag = abort.clone();
+
+        // Proactive degradation: if the catalog knows this provider/model is
+        // text-only and the request carries images, strip them up front instead
+        // of burning a request that is guaranteed to be rejected. The reactive
+        // fallback below still covers providers that reject images at runtime.
+        let has_image = req.messages.iter().any(|m| m.has_image());
+        let req = if has_image
+            && !crate::harness::provider::catalog::supports_image(provider.name(), &req.model)
+        {
+            tracing::warn!(
+                provider = provider.name(),
+                model = %req.model,
+                "model is text-only; stripping image parts before request"
+            );
+            LlmRequest {
+                messages: Arc::new(strip_images(req)),
+                ..req.clone()
+            }
+        } else {
+            req.clone()
+        };
+        let req_clone = req.clone();
         let stream = crate::harness::provider::retry::retry_with_policy(
             &retry_policy,
             || {
@@ -571,15 +592,15 @@ impl SessionProcessor {
         match stream {
             Ok(s) => Ok(s),
             Err(e) => {
-                // Only attempt image degradation when (a) the request actually
+                // Only attempt image degradation when (a) the request still
                 // carries image parts, and (b) the error mentions images/vision.
-                let has_image = req.messages.iter().any(|m| m.has_image());
+                let still_has_image = req.messages.iter().any(|m| m.has_image());
                 let err_text = format!("{e:#}");
                 let looks_like_image_rejection = err_text.to_lowercase().contains("image")
                     || err_text.to_lowercase().contains("picture")
                     || err_text.to_lowercase().contains("vision")
                     || err_text.to_lowercase().contains("multimodal");
-                if !has_image || !looks_like_image_rejection {
+                if !still_has_image || !looks_like_image_rejection {
                     return Err(e);
                 }
 
@@ -587,7 +608,7 @@ impl SessionProcessor {
                     "provider rejected image(s), degrading to text and retrying: {}",
                     err_text
                 );
-                let stripped = strip_images(req);
+                let stripped = strip_images(&req);
                 let req2 = LlmRequest {
                     messages: Arc::new(stripped),
                     ..req.clone()

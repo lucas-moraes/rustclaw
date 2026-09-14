@@ -1,5 +1,4 @@
 mod config;
-mod error;
 mod harness;
 
 use clap::Parser;

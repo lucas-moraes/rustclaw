@@ -592,6 +592,9 @@ pub(crate) struct SearchResult {
     snippet: String,
     /// F6.1: host/domain extracted from the URL.
     domain: String,
+    /// F6.1: publication date when the provider exposes one (e.g. DDG's
+    /// `span.result__timestamp`). `None` when unavailable.
+    date: Option<String>,
 }
 
 /// Extracts results from the DuckDuckGo `/html/` page using CSS selectors.
@@ -604,6 +607,11 @@ fn parse_results(html: &str) -> Vec<SearchResult> {
         return Vec::new();
     };
     let Ok(snippet_selector) = Selector::parse("a.result__snippet") else {
+        return Vec::new();
+    };
+    // F6.1: DDG exposes a publication date in `span.result__timestamp` when
+    // the result is dated (news/blog posts); absent for most pages.
+    let Ok(date_selector) = Selector::parse("span.result__timestamp") else {
         return Vec::new();
     };
 
@@ -623,11 +631,17 @@ fn parse_results(html: &str) -> Vec<SearchResult> {
                 .map(|s| clean_text(&s.text().collect::<Vec<_>>().join(" ")))
                 .unwrap_or_default();
             let domain = extract_domain(&url);
+            let date = result
+                .select(&date_selector)
+                .next()
+                .map(|d| clean_text(&d.text().collect::<Vec<_>>().join(" ")))
+                .filter(|d| !d.is_empty());
             Some(SearchResult {
                 title,
                 url,
                 snippet,
                 domain,
+                date,
             })
         })
         .take(MAX_RESULTS)
@@ -669,6 +683,7 @@ fn parse_results_lite(html: &str) -> Vec<SearchResult> {
                 url,
                 snippet,
                 domain,
+                date: None,
             })
         })
         .take(MAX_RESULTS)
@@ -709,6 +724,7 @@ fn parse_results_mojeek(html: &str) -> Vec<SearchResult> {
                 url,
                 snippet,
                 domain,
+                date: None,
             })
         })
         .take(MAX_RESULTS)
@@ -729,16 +745,23 @@ fn normalize_cache_key(query: &str, max_results: usize) -> String {
     format!("{}|{}", query.trim().to_lowercase(), max_results)
 }
 
-/// Renders results as the model-facing text output, including the domain.
+/// Renders results as the model-facing text output, including the domain and
+/// (when available) the publication date.
 fn render_results(query: &str, results: &[SearchResult], max_results: usize) -> ToolResult {
     let mut body = String::new();
     for (i, r) in results.iter().take(max_results).enumerate() {
+        let date = r
+            .date
+            .as_deref()
+            .map(|d| format!("   Data: {}\n", d))
+            .unwrap_or_default();
         body.push_str(&format!(
-            "{}. **{}**\n   URL: {}\n   Domínio: {}\n   {}\n\n",
+            "{}. **{}**\n   URL: {}\n   Domínio: {}\n{}   {}\n\n",
             i + 1,
             r.title,
             r.url,
             r.domain,
+            date,
             r.snippet
         ));
     }
@@ -1078,11 +1101,27 @@ mod tests {
             url: "https://docs.rs/tokio".into(),
             snippet: "Async runtime".into(),
             domain: "docs.rs".into(),
+            date: None,
         }];
         let out = render_results("tokio", &results, 8);
         assert!(out.output.contains("docs.rs"));
         assert!(out.output.contains("Tokio"));
         assert!(out.output.contains("Domínio"));
+        // No date → no "Data:" line.
+        assert!(!out.output.contains("Data:"));
+    }
+
+    #[test]
+    fn test_render_results_includes_date_when_present() {
+        let results = vec![SearchResult {
+            title: "Post".into(),
+            url: "https://example.com/post".into(),
+            snippet: "s".into(),
+            domain: "example.com".into(),
+            date: Some("2 de jan. de 2026".into()),
+        }];
+        let out = render_results("q", &results, 8);
+        assert!(out.output.contains("Data: 2 de jan. de 2026"));
     }
 
     #[test]
@@ -1093,6 +1132,7 @@ mod tests {
                 url: format!("https://example.com/{}", i),
                 snippet: "s".into(),
                 domain: "example.com".into(),
+                date: None,
             })
             .collect();
         let out = render_results("q", &results, 3);
@@ -1119,6 +1159,7 @@ mod tests {
             url: "https://example.com".into(),
             snippet: "s".into(),
             domain: "example.com".into(),
+            date: None,
         }];
         tool.cache_put("key", results.clone()).await;
         let got = tool.cache_get("key").await;

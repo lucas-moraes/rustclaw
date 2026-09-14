@@ -252,7 +252,7 @@ Canal: `tokio::sync::mpsc::UnboundedSender` (`event_channel()`).
 
 ## 14. Testes e qualidade
 
-- **219 testes** (`cargo test`), incluindo smoke test live
+- **505 testes** (`cargo test`), incluindo smoke test live
   (`smoke_native_tool_calling`, `--ignored`, usa token real de `auth.json`).
 - Testes no mesmo arquivo sob `#[cfg(test)]`; `tempfile` para DBs/arquivos temporários.
 - `cargo clippy` limpo; `cargo fmt` para formatação (100 colunas, 4 espaços).
