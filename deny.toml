@@ -31,11 +31,7 @@ allow = [
     "CC0-1.0",
     "MPL-2.0",
 ]
-# Fail on any license not in the allow list.
-unlicensed = "deny"
-copyleft = "deny"
-allow-osi-fsf-free = "neither"
-default = "deny"
+# Licenses not in the allow list are denied by default (cargo-deny >= 0.16).
 confidence-threshold = 0.8
 
 [sources]
