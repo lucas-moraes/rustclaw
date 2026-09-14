@@ -112,6 +112,25 @@ impl SessionStore {
             )
             .context("failed to add parent_id column")?;
         }
+        // Add the optional ledger_json column (structured context ledger).
+        let has_ledger: i64 = conn
+            .query_row(
+                &format!(
+                    "SELECT COUNT(*) FROM pragma_table_info('{sessions}') WHERE name='ledger_json'"
+                ),
+                [],
+                |r| r.get(0),
+            )
+            .context("failed to check ledger_json column")?;
+        if has_ledger == 0 {
+            conn.execute(
+                &format!(
+                    "ALTER TABLE {sessions} ADD COLUMN ledger_json TEXT NOT NULL DEFAULT '{{}}'"
+                ),
+                [],
+            )
+            .context("failed to add ledger_json column")?;
+        }
         Ok(())
     }
 
@@ -355,7 +374,7 @@ impl SessionStore {
         let row = conn
             .query_row(
                 &format!(
-                    "SELECT id, agent, cwd, created_at, updated_at, todos_json, skills_json, title
+                    "SELECT id, agent, cwd, created_at, updated_at, todos_json, skills_json, title, ledger_json
                      FROM {sessions_t} WHERE id = ?1"
                 ),
                 params![id],
@@ -369,13 +388,24 @@ impl SessionStore {
                         r.get::<_, String>(5)?,
                         r.get::<_, String>(6)?,
                         r.get::<_, Option<String>>(7)?,
+                        r.get::<_, Option<String>>(8)?,
                     ))
                 },
             )
             .optional()
             .context("failed to load session")?;
 
-        let Some((sid, agent, cwd, created_at, updated_at, todos_json, skills_json, title)) = row
+        let Some((
+            sid,
+            agent,
+            cwd,
+            created_at,
+            updated_at,
+            todos_json,
+            skills_json,
+            title,
+            ledger_json,
+        )) = row
         else {
             return Ok(None);
         };
@@ -418,6 +448,10 @@ impl SessionStore {
         let todos: Vec<TodoItem> = serde_json::from_str(&todos_json).unwrap_or_default();
         let skills: Vec<crate::harness::skill::SessionSkill> =
             serde_json::from_str(&skills_json).unwrap_or_default();
+        let ledger: crate::harness::session::ledger::ContextLedger = ledger_json
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default();
 
         // Normalize empty DB titles to None so display falls back to preview.
         let title = title.and_then(|t| {
@@ -440,6 +474,7 @@ impl SessionStore {
             todos,
             skills,
             title,
+            ledger,
         }))
     }
 
@@ -619,7 +654,7 @@ impl SessionStore {
         tx.execute(
             &format!(
                 "UPDATE {sessions_t} SET agent = ?2, cwd = ?3, updated_at = ?4,
-                        todos_json = ?5, skills_json = ?6
+                        todos_json = ?5, skills_json = ?6, ledger_json = ?7
                  WHERE id = ?1"
             ),
             params![
@@ -629,6 +664,7 @@ impl SessionStore {
                 now,
                 serde_json::to_string(&session.todos).unwrap_or_else(|_| "[]".into()),
                 serde_json::to_string(&session.skills).unwrap_or_else(|_| "[]".into()),
+                serde_json::to_string(&session.ledger).unwrap_or_else(|_| "{}".into()),
             ],
         )
         .context("failed to update session")?;
@@ -890,6 +926,27 @@ mod tests {
         assert_eq!(loaded.skills[0].skill_id, "frontend");
         assert!(loaded.skills[0].include_by_default);
         assert!(!loaded.skills[1].include_by_default);
+    }
+
+    #[test]
+    fn test_persist_ledger_roundtrip() {
+        use crate::harness::session::ledger::FileOp;
+        let (_dir, store) = temp_store();
+        let mut session = store.create_session("build", Path::new("/tmp")).unwrap();
+        session.ledger.touch_file("src/main.rs", FileOp::Write);
+        session.ledger.record_command("cargo test");
+        session.ledger.record_subagent("explore");
+        session.ledger.record_decision("chose BTreeMap");
+        store.save_session(&session).unwrap();
+
+        let loaded = store
+            .load_session(&session.id, Path::new("/tmp"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.ledger.files["src/main.rs"].writes, 1);
+        assert_eq!(loaded.ledger.commands, vec!["cargo test"]);
+        assert_eq!(loaded.ledger.subagents, vec!["explore"]);
+        assert_eq!(loaded.ledger.decisions, vec!["chose BTreeMap"]);
     }
 
     #[test]

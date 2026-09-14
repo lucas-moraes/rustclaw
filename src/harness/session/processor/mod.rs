@@ -502,6 +502,9 @@ impl SessionProcessor {
                 }
                 if !text.is_empty() {
                     parts.push(Part::text(text.clone()));
+                    // Ledger: keep a durable note of the agent's textual output
+                    // (decisions/notes) so it survives compaction.
+                    session.ledger.record_decision(&text);
                 }
                 for t in tool_calls {
                     parts.push(Part::Tool(t));

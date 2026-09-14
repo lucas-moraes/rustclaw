@@ -50,6 +50,25 @@ pub async fn execute_tool_calls(
             })
             .collect()
     };
+    // Ledger: record file touches and subagent spawns as soon as the calls are
+    // known (before execution), so the facts survive even if a tool fails.
+    for (_, name, input) in &pending {
+        if let (Some(path), Some(op)) = (
+            crate::harness::session::ledger::file_path_from_tool(name, input),
+            crate::harness::session::ledger::file_op_from_tool(name),
+        ) {
+            session.ledger.touch_file(&path, op);
+        }
+        if name == "task" {
+            let agent = input["agent"].as_str().unwrap_or("explore");
+            session.ledger.record_subagent(agent);
+        }
+        if name == "bash" {
+            if let Some(cmd) = input["command"].as_str() {
+                session.ledger.record_command(cmd);
+            }
+        }
+    }
     if let Some(msg) = session.messages.iter().find(|m| m.id == *assistant_id) {
         let snapshot = msg.clone();
         processor

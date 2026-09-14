@@ -6,6 +6,7 @@
 pub mod compaction;
 pub mod doom_loop;
 pub mod image;
+pub mod ledger;
 pub mod processor;
 pub mod store;
 pub mod tool_exec;
@@ -221,6 +222,11 @@ pub struct Session {
     /// the first user message when empty/None.
     #[serde(default)]
     pub title: Option<String>,
+    /// Structured, durable record of session activity (files, commands,
+    /// decisions, subagents). Survives compaction and is re-injected into the
+    /// context after each summary.
+    #[serde(default)]
+    pub ledger: crate::harness::session::ledger::ContextLedger,
 }
 
 impl Session {
@@ -237,6 +243,7 @@ impl Session {
             todos: Vec::new(),
             skills: Vec::new(),
             title: None,
+            ledger: crate::harness::session::ledger::ContextLedger::new(),
         }
     }
 

@@ -29,6 +29,11 @@ pub struct CompactionConfig {
     pub min_messages_to_compact: usize,
     /// Max time to wait for the LLM summary before falling back to a placeholder.
     pub summary_timeout: Duration,
+    /// Fraction of `max_context_tokens` at which compaction triggers (proactive
+    /// compaction). `0.7` means compact at 70% of the budget, so the context
+    /// never hits the hard limit mid-turn. `1.0` restores the old reactive
+    /// behavior (compact only on overflow).
+    pub trigger_ratio: f64,
 }
 
 impl Default for CompactionConfig {
@@ -38,9 +43,13 @@ impl Default for CompactionConfig {
             keep_recent_messages: 6,
             min_messages_to_compact: 10,
             summary_timeout: Duration::from_secs(120),
+            trigger_ratio: DEFAULT_TRIGGER_RATIO,
         }
     }
 }
+
+/// Default proactive trigger: compact at 70% of the budget.
+pub const DEFAULT_TRIGGER_RATIO: f64 = 0.7;
 
 /// How many new messages must accumulate before the tracker re-checks the
 /// context size. Avoids an O(n) `approx_tokens` scan on every single loop
@@ -100,21 +109,30 @@ impl CompactionTracker {
 }
 
 /// Compacts `messages` when the approximate token count exceeds the configured
-/// budget and there are enough messages to bother summarizing.
+/// budget (scaled by `trigger_ratio`) and there are enough messages to bother
+/// summarizing.
 ///
 /// Returns `Ok(None)` when no compaction is needed, or `Ok(Some(new_messages))`
 /// where `new_messages` is the replacement list: a single summary message at the
 /// front followed by the `keep_recent_messages` most recent messages.
+///
+/// `ledger` (when provided and non-empty) is rendered as a structured block and
+/// prepended to the summary, so durable facts (files, commands, decisions)
+/// survive the lossy LLM summary.
 pub async fn should_compact_and_execute(
     messages: &[Message],
     provider: Arc<dyn Provider>,
     config: &CompactionConfig,
     model: &str,
+    ledger: Option<&crate::harness::session::ledger::ContextLedger>,
 ) -> Result<Option<Vec<Message>>> {
     if messages.len() < config.min_messages_to_compact {
         return Ok(None);
     }
-    if crate::harness::session::approx_tokens(messages) <= config.max_context_tokens {
+    // Proactive trigger: compact at `trigger_ratio` of the budget (default 70%)
+    // so the context never reaches the hard limit in the middle of a turn.
+    let budget = ((config.max_context_tokens as f64) * config.trigger_ratio) as usize;
+    if crate::harness::session::approx_tokens(messages) <= budget {
         return Ok(None);
     }
 
@@ -124,12 +142,17 @@ pub async fn should_compact_and_execute(
     let recent: &[Message] = &messages[cut..];
 
     let summary = summarize(dropped, provider, config.summary_timeout, model).await?;
+    let ledger_block = ledger.and_then(|l| l.render());
+    let body = match ledger_block {
+        Some(block) => format!("{block}\n{summary}"),
+        None => summary,
+    };
     let summary_message = Message::new(
         Role::User,
         vec![Part::text(format!(
             "[Context compacted] Summary of {} earlier messages:\n{}",
             dropped.len(),
-            summary
+            body
         ))],
     );
 
@@ -167,12 +190,21 @@ pub async fn compact_if_needed(
         // Force still needs at least 2 messages (summary target + keep).
         min_messages_to_compact: if force { 2 } else { MIN_MESSAGES },
         summary_timeout: SUMMARY_TIMEOUT,
+        // Force ignores the ratio (budget is already 0); otherwise compact
+        // proactively at 70% of the budget.
+        trigger_ratio: if force { 1.0 } else { DEFAULT_TRIGGER_RATIO },
     };
 
     // Decide first: events must only fire when a compaction actually runs,
     // otherwise the TUI would show "[compacting context…]" on every turn tick.
-    let Some(new_messages) =
-        should_compact_and_execute(&session.messages, provider, &config, model).await?
+    let Some(new_messages) = should_compact_and_execute(
+        &session.messages,
+        provider,
+        &config,
+        model,
+        Some(&session.ledger),
+    )
+    .await?
     else {
         return Ok(0);
     };
@@ -384,6 +416,8 @@ mod tests {
             keep_recent_messages: keep,
             min_messages_to_compact: min,
             summary_timeout: Duration::from_secs(120),
+            // Tests use a 1.0 ratio so the budget is the literal `max` value.
+            trigger_ratio: 1.0,
         }
     }
 
@@ -398,6 +432,7 @@ mod tests {
             keep_recent_messages: keep,
             min_messages_to_compact: min,
             summary_timeout: timeout,
+            trigger_ratio: 1.0,
         }
     }
 
@@ -407,6 +442,75 @@ mod tests {
         assert_eq!(c.max_context_tokens, 80_000);
         assert_eq!(c.keep_recent_messages, 6);
         assert_eq!(c.min_messages_to_compact, 10);
+        assert_eq!(c.trigger_ratio, DEFAULT_TRIGGER_RATIO);
+        assert_eq!(DEFAULT_TRIGGER_RATIO, 0.7);
+    }
+
+    #[tokio::test]
+    async fn test_proactive_trigger_at_ratio() {
+        // 12 messages ≈ 300 tokens. With a 1000-token budget and a 0.7 ratio,
+        // the effective trigger is 700 tokens → no compaction yet.
+        let provider = Arc::new(MockProvider::ok("summary"));
+        let mut c = cfg(1_000, 6, 10);
+        c.trigger_ratio = 0.7;
+        let out = should_compact_and_execute(&msgs(12), provider.clone(), &c, "grok-4.5", None)
+            .await
+            .unwrap();
+        assert!(out.is_none(), "below 70% of budget must not compact");
+
+        // A 300-token budget → trigger at 210 tokens → compaction fires.
+        let mut c2 = cfg(300, 6, 10);
+        c2.trigger_ratio = 0.7;
+        let out = should_compact_and_execute(&msgs(12), provider, &c2, "grok-4.5", None)
+            .await
+            .unwrap();
+        assert!(out.is_some(), "above 70% of budget must compact");
+    }
+
+    #[tokio::test]
+    async fn test_ledger_injected_into_summary() {
+        use crate::harness::session::ledger::{ContextLedger, FileOp};
+        let provider = Arc::new(MockProvider::ok("the summary"));
+        let mut ledger = ContextLedger::new();
+        ledger.touch_file("src/main.rs", FileOp::Write);
+        ledger.record_command("cargo test");
+        ledger.record_decision("chose BTreeMap");
+
+        let out = should_compact_and_execute(
+            &msgs(12),
+            provider,
+            &cfg(1, 6, 10),
+            "grok-4.5",
+            Some(&ledger),
+        )
+        .await
+        .unwrap()
+        .expect("expected compaction");
+        let head = out[0].text_content();
+        assert!(head.contains("[Session ledger"), "ledger block missing");
+        assert!(head.contains("src/main.rs (w)"));
+        assert!(head.contains("`cargo test`"));
+        assert!(head.contains("chose BTreeMap"));
+        // The LLM summary is still present after the ledger block.
+        assert!(head.contains("the summary"));
+    }
+
+    #[tokio::test]
+    async fn test_empty_ledger_not_injected() {
+        use crate::harness::session::ledger::ContextLedger;
+        let provider = Arc::new(MockProvider::ok("the summary"));
+        let ledger = ContextLedger::new();
+        let out = should_compact_and_execute(
+            &msgs(12),
+            provider,
+            &cfg(1, 6, 10),
+            "grok-4.5",
+            Some(&ledger),
+        )
+        .await
+        .unwrap()
+        .expect("expected compaction");
+        assert!(!out[0].text_content().contains("[Session ledger"));
     }
 
     #[test]
@@ -489,7 +593,7 @@ mod tests {
     #[tokio::test]
     async fn test_noop_below_min_messages() {
         let provider = Arc::new(MockProvider::ok("summary"));
-        let out = should_compact_and_execute(&msgs(3), provider, &cfg(0, 6, 10), "grok-4.5")
+        let out = should_compact_and_execute(&msgs(3), provider, &cfg(0, 6, 10), "grok-4.5", None)
             .await
             .unwrap();
         assert!(out.is_none());
@@ -498,9 +602,10 @@ mod tests {
     #[tokio::test]
     async fn test_noop_under_token_limit() {
         let provider = Arc::new(MockProvider::ok("summary"));
-        let out = should_compact_and_execute(&msgs(12), provider, &cfg(10_000, 6, 10), "grok-4.5")
-            .await
-            .unwrap();
+        let out =
+            should_compact_and_execute(&msgs(12), provider, &cfg(10_000, 6, 10), "grok-4.5", None)
+                .await
+                .unwrap();
         assert!(out.is_none());
     }
 
@@ -508,7 +613,7 @@ mod tests {
     async fn test_summarizes_and_keeps_recent() {
         let provider = Arc::new(MockProvider::ok("this is the summary"));
         let messages = msgs(12);
-        let out = should_compact_and_execute(&messages, provider, &cfg(1, 6, 10), "grok-4.5")
+        let out = should_compact_and_execute(&messages, provider, &cfg(1, 6, 10), "grok-4.5", None)
             .await
             .unwrap()
             .expect("expected compaction");
@@ -529,7 +634,7 @@ mod tests {
     async fn test_summary_failure_falls_back() {
         let provider = Arc::new(MockProvider::failing());
         let messages = msgs(12);
-        let out = should_compact_and_execute(&messages, provider, &cfg(1, 6, 10), "grok-4.5")
+        let out = should_compact_and_execute(&messages, provider, &cfg(1, 6, 10), "grok-4.5", None)
             .await
             .unwrap()
             .expect("expected compaction even on summary failure");
@@ -570,6 +675,7 @@ mod tests {
             provider,
             &cfg_with_timeout(1, 6, 10, Duration::from_millis(50)),
             "grok-4.5",
+            None,
         )
         .await
         .unwrap()
