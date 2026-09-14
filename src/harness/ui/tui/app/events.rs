@@ -43,13 +43,16 @@ impl App {
             HarnessEvent::MessageUpdated { .. } => {
                 self.flush_streaming();
             }
-            HarnessEvent::ToolStart { name, input, .. } => {
+            HarnessEvent::ToolStart {
+                name, input, depth, ..
+            } => {
                 self.flush_streaming();
                 self.status_msg = Some(format!("running: {}", name));
                 self.active_tools.push(ActiveTool { name: name.clone() });
                 let batch = self.tool_status.get_or_insert_with(ToolBatch::default);
                 batch.start(&name, tool_arg_label(&name, &input));
-                // A `task` call opens a live subagent panel.
+                // A `task` call opens a live subagent panel. The spawned
+                // subagent runs one level deeper than the caller.
                 if name == "task" {
                     let agent = input["agent"].as_str().unwrap_or("explore").to_string();
                     self.subagent_panels.push((
@@ -57,6 +60,7 @@ impl App {
                         SubagentPanel {
                             child_session_id: String::new(),
                             agent,
+                            depth: depth + 1,
                             lines: Vec::new(),
                             done: 0,
                             failed: 0,

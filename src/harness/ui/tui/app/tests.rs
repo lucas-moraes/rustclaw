@@ -149,6 +149,7 @@ mod input_tests {
             name: "task".into(),
             input: serde_json::json!({"agent": "explore", "prompt": "p"}),
             parent_session_id: None,
+            depth: 0,
         });
         assert_eq!(app.subagent_panels.len(), 1);
         assert_eq!(app.subagent_panels[0].1.agent, "explore");
@@ -161,6 +162,7 @@ mod input_tests {
             name: "grep".into(),
             input: serde_json::json!({}),
             parent_session_id: Some("parent".into()),
+            depth: 1,
         });
         app.apply_event(HarnessEvent::ToolEnd {
             session_id: "child-1".into(),
@@ -172,6 +174,7 @@ mod input_tests {
             output_preview: String::new(),
             diff: None,
             parent_session_id: Some("parent".into()),
+            depth: 1,
         });
         // Child text deltas must NOT stream into the transcript.
         app.apply_event(HarnessEvent::TextDelta {
@@ -203,12 +206,13 @@ mod input_tests {
             output_preview: "Subagent `explore` result:\nfound 3 files".into(),
             diff: None,
             parent_session_id: None,
+            depth: 0,
         });
         let panel = &app.subagent_panels[0].1;
         assert!(panel.finished);
         assert!(panel.summary.as_deref().unwrap().contains("found 3 files"));
         let label = App::subagent_panel_label(panel);
-        assert!(label.starts_with("✓ explore"));
+        assert!(label.starts_with("└─ ✓L1 explore"), "got: {label}");
         assert!(label.contains("found 3 files"));
     }
 
@@ -217,6 +221,7 @@ mod input_tests {
         let panel = SubagentPanel {
             child_session_id: "c".into(),
             agent: "explore".into(),
+            depth: 0,
             lines: vec!["· grep".into(), "✓ grep: 2".into()],
             done: 1,
             failed: 0,
@@ -225,6 +230,66 @@ mod input_tests {
         };
         let label = App::subagent_panel_label(&panel);
         assert_eq!(label, "⏳ explore — 1 tools");
+    }
+
+    #[test]
+    fn test_subagent_panel_label_nested_shows_tree_and_level() {
+        let panel = SubagentPanel {
+            child_session_id: "c".into(),
+            agent: "build".into(),
+            depth: 2,
+            lines: Vec::new(),
+            done: 0,
+            failed: 0,
+            finished: false,
+            summary: None,
+        };
+        let label = App::subagent_panel_label(&panel);
+        // Depth 2 → one `│  ` segment then `└─ `, plus the `L2` level tag.
+        assert_eq!(label, "│  └─ ⏳L2 build — 0 tools");
+    }
+
+    #[test]
+    fn test_subagent_tree_prefix() {
+        assert_eq!(App::subagent_tree_prefix(0), "");
+        assert_eq!(App::subagent_tree_prefix(1), "└─ ");
+        assert_eq!(App::subagent_tree_prefix(2), "│  └─ ");
+        assert_eq!(App::subagent_tree_prefix(3), "│  │  └─ ");
+    }
+
+    #[test]
+    fn test_nested_task_opens_panel_at_child_depth() {
+        let mut app = App::inline_for_tests("");
+        // A `task` call issued by a depth-1 subagent spawns a depth-2 panel.
+        app.apply_event(HarnessEvent::ToolStart {
+            session_id: "child-1".into(),
+            message_id: "m".into(),
+            tool_id: "t2".into(),
+            name: "task".into(),
+            input: serde_json::json!({"agent": "build", "prompt": "p"}),
+            parent_session_id: Some("parent".into()),
+            depth: 1,
+        });
+        assert_eq!(app.subagent_panels.len(), 1);
+        assert_eq!(app.subagent_panels[0].1.depth, 2);
+        assert!(!app.subagent_panels[0].1.finished);
+
+        // The subagent's `task` ToolEnd finalizes the nested panel.
+        app.apply_event(HarnessEvent::ToolEnd {
+            session_id: "child-1".into(),
+            message_id: "m".into(),
+            tool_id: "t2".into(),
+            name: "task".into(),
+            status: ToolStatus::Completed,
+            title: "task (build)".into(),
+            output_preview: "nested result".into(),
+            diff: None,
+            parent_session_id: Some("parent".into()),
+            depth: 1,
+        });
+        let nested = &app.subagent_panels[0].1;
+        assert!(nested.finished);
+        assert_eq!(nested.summary.as_deref(), Some("nested result"));
     }
 }
 

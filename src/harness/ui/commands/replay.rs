@@ -217,6 +217,7 @@ mod tests {
                 output_preview: "main.rs".to_string(),
                 diff: None,
                 parent_session_id: None,
+                depth: 0,
             },
             HarnessEvent::Error {
                 session_id: "sess-12345678".to_string(),
@@ -272,6 +273,7 @@ mod tests {
             output_preview: String::new(),
             diff: None,
             parent_session_id: None,
+            depth: 0,
         };
         assert_eq!(render_event_lines(&ev), vec!["✗ bash"]);
         assert!(render_event_lines(&HarnessEvent::RunFinished {

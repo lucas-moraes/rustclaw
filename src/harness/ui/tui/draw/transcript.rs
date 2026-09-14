@@ -74,10 +74,12 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
         }
     }
     // Live subagent panels: one compact block per running/finished `task` call.
+    // Nested subagents are indented by depth so the composition reads as a tree.
     for (_, panel) in app.subagent_panels.iter().rev().take(3) {
         let base = rows.len();
+        let indent = "  ".repeat(panel.depth);
         rows.push(Line::from(vec![
-            Span::styled("  ┊ ".to_string(), Style::default().fg(theme.border)),
+            Span::styled(format!("{indent}  ┊ "), Style::default().fg(theme.border)),
             Span::styled(
                 App::subagent_panel_label(panel),
                 Style::default().fg(if panel.finished {
@@ -91,7 +93,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
         if !panel.finished {
             for l in panel.lines.iter().rev().take(3).rev() {
                 rows.push(Line::from(vec![
-                    Span::styled("  ┊   ".to_string(), Style::default().fg(theme.border)),
+                    Span::styled(format!("{indent}  ┊   "), Style::default().fg(theme.border)),
                     Span::styled(l.clone(), Style::default().fg(theme.text_dim)),
                 ]));
             }

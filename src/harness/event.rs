@@ -50,6 +50,10 @@ pub enum HarnessEvent {
         name: String,
         input: Value,
         parent_session_id: Option<String>,
+        /// Subagent nesting depth of the agent running this tool call
+        /// (root agent = 0, its subagents = 1, ...). Lets the UI render the
+        /// subagent tree.
+        depth: usize,
     },
     ToolEnd {
         session_id: String,
@@ -62,6 +66,9 @@ pub enum HarnessEvent {
         /// Optional unified diff from tools that mutate files (edit/write).
         diff: Option<String>,
         parent_session_id: Option<String>,
+        /// Subagent nesting depth of the agent running this tool call
+        /// (root agent = 0, its subagents = 1, ...).
+        depth: usize,
     },
     PermissionAsk {
         request: PermissionRequest,

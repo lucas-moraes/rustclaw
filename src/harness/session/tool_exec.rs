@@ -44,6 +44,7 @@ pub async fn execute_tool_calls(
                     name: t.name.clone(),
                     input: t.input.clone(),
                     parent_session_id: None,
+                    depth: ctx.depth,
                 });
                 (t.id.clone(), t.name.clone(), t.input.clone())
             })
@@ -164,6 +165,7 @@ pub async fn execute_tool_calls(
                                 output_preview: "aborted".to_string(),
                                 diff: None,
                                 parent_session_id: None,
+                                depth: ctx.depth,
                             });
                         }
                     }
@@ -235,6 +237,7 @@ pub async fn execute_tool_calls(
                         .and_then(|v| v.as_str())
                         .map(|s| s.to_string()),
                     parent_session_id: None,
+                    depth: ctx.depth,
                 });
             }
             Err(e) => {
@@ -257,6 +260,7 @@ pub async fn execute_tool_calls(
                     output_preview: crate::harness::session::preview(&e, 160),
                     diff: None,
                     parent_session_id: None,
+                    depth: ctx.depth,
                 });
             }
         }

@@ -99,6 +99,7 @@ Then use the read tool to read src/main.rs. Report what tools you used.";
                 name: "grep".into(),
                 input: serde_json::json!({}),
                 parent_session_id: Some(self.parent_session_id.clone()),
+                depth: 1,
             });
             self.seen
                 .lock()
