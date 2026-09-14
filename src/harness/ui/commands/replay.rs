@@ -206,6 +206,7 @@ mod tests {
         vec![
             HarnessEvent::RunStarted {
                 session_id: "sess-12345678".to_string(),
+                parent_session_id: None,
             },
             HarnessEvent::ToolEnd {
                 session_id: "sess-12345678".to_string(),
@@ -277,7 +278,8 @@ mod tests {
         };
         assert_eq!(render_event_lines(&ev), vec!["✗ bash"]);
         assert!(render_event_lines(&HarnessEvent::RunFinished {
-            session_id: "s".into()
+            session_id: "s".into(),
+            parent_session_id: None,
         })
         .is_empty());
     }

@@ -551,6 +551,7 @@ impl SessionRuntime {
             .join("\n");
         let _ = events.send(HarnessEvent::RunStarted {
             session_id: session.id.clone(),
+            parent_session_id: None,
         });
 
         // 1. Append + persist user message. The per-turn project memory block
@@ -730,6 +731,7 @@ impl SessionRuntime {
 
         let _ = events.send(HarnessEvent::RunFinished {
             session_id: session.id.clone(),
+            parent_session_id: None,
         });
 
         Ok(PromptResult {

@@ -51,6 +51,7 @@ Then use the read tool to read src/main.rs. Report what tools you used.";
             .expect("prompt");
         let _ = tx.send(crate::harness::event::HarnessEvent::RunFinished {
             session_id: session.id.clone(),
+            parent_session_id: None,
         });
         printer.abort();
         let _ = std::io::stdout().flush();
@@ -149,6 +150,7 @@ Then use the read tool to read src/main.rs. Report what tools you used.";
         assert_eq!(ev.parent_session_id(), Some("p"));
         let ev = HarnessEvent::RunStarted {
             session_id: "s".into(),
+            parent_session_id: None,
         };
         assert_eq!(ev.parent_session_id(), None);
     }

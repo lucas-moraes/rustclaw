@@ -13,9 +13,14 @@ pub use crate::harness::session::ToolStatus;
 pub enum HarnessEvent {
     RunStarted {
         session_id: String,
+        /// Set when the event comes from a subagent (child session).
+        parent_session_id: Option<String>,
     },
     RunFinished {
         session_id: String,
+        /// Set when the event comes from a subagent (child session). The UI
+        /// must NOT treat a child's `RunFinished` as the parent turn ending.
+        parent_session_id: Option<String>,
     },
     /// User message accepted.
     UserMessage {
@@ -125,8 +130,8 @@ pub enum HarnessEvent {
 impl HarnessEvent {
     pub fn session_id(&self) -> Option<&str> {
         match self {
-            HarnessEvent::RunStarted { session_id }
-            | HarnessEvent::RunFinished { session_id }
+            HarnessEvent::RunStarted { session_id, .. }
+            | HarnessEvent::RunFinished { session_id, .. }
             | HarnessEvent::UserMessage { session_id, .. }
             | HarnessEvent::TextDelta { session_id, .. }
             | HarnessEvent::ReasoningDelta { session_id, .. }
@@ -148,7 +153,13 @@ impl HarnessEvent {
     /// The parent session when this event comes from a subagent (child session).
     pub fn parent_session_id(&self) -> Option<&str> {
         match self {
-            HarnessEvent::TextDelta {
+            HarnessEvent::RunStarted {
+                parent_session_id, ..
+            }
+            | HarnessEvent::RunFinished {
+                parent_session_id, ..
+            }
+            | HarnessEvent::TextDelta {
                 parent_session_id, ..
             }
             | HarnessEvent::ReasoningDelta {
@@ -181,6 +192,67 @@ impl HarnessEvent {
             _ => None,
         }
     }
+
+    /// Tags an event as coming from a subagent: sets `parent_session_id` on the
+    /// variants that carry it, and bumps `depth` on tool events so the UI can
+    /// render the subagent tree.
+    ///
+    /// Used by the subagent runner to wrap the child's event stream. Events
+    /// without a `parent_session_id` field (e.g. `PermissionAsk`) are returned
+    /// unchanged.
+    pub fn tag_child(mut self, parent: &str, depth: usize) -> Self {
+        match &mut self {
+            HarnessEvent::RunStarted {
+                parent_session_id, ..
+            }
+            | HarnessEvent::RunFinished {
+                parent_session_id, ..
+            }
+            | HarnessEvent::TextDelta {
+                parent_session_id, ..
+            }
+            | HarnessEvent::ReasoningDelta {
+                parent_session_id, ..
+            }
+            | HarnessEvent::MessageUpdated {
+                parent_session_id, ..
+            }
+            | HarnessEvent::ToolStart {
+                parent_session_id, ..
+            }
+            | HarnessEvent::ToolEnd {
+                parent_session_id, ..
+            }
+            | HarnessEvent::CompactionStarted {
+                parent_session_id, ..
+            }
+            | HarnessEvent::CompactionFinished {
+                parent_session_id, ..
+            }
+            | HarnessEvent::AutoContinue {
+                parent_session_id, ..
+            }
+            | HarnessEvent::Error {
+                parent_session_id, ..
+            }
+            | HarnessEvent::Rollback {
+                parent_session_id, ..
+            } => {
+                if parent_session_id.is_none() {
+                    *parent_session_id = Some(parent.to_string());
+                }
+            }
+            _ => {}
+        }
+        // Tool events carry the nesting depth of the agent that ran the call.
+        match &mut self {
+            HarnessEvent::ToolStart { depth: d, .. } | HarnessEvent::ToolEnd { depth: d, .. } => {
+                *d = depth;
+            }
+            _ => {}
+        }
+        self
+    }
 }
 
 /// Unbounded sender half used by the runtime; consumers own the receiver.
@@ -201,6 +273,7 @@ mod tests {
         let (tx, mut rx) = event_channel();
         let event = HarnessEvent::RunStarted {
             session_id: "s1".to_string(),
+            parent_session_id: None,
         };
         tx.send(event).unwrap();
         let received = rx.recv().await.unwrap();
@@ -212,10 +285,12 @@ mod tests {
         let (tx, mut rx) = event_channel();
         tx.send(HarnessEvent::RunStarted {
             session_id: "a".into(),
+            parent_session_id: None,
         })
         .unwrap();
         tx.send(HarnessEvent::RunFinished {
             session_id: "a".into(),
+            parent_session_id: None,
         })
         .unwrap();
         assert!(matches!(

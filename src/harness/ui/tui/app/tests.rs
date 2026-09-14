@@ -216,6 +216,38 @@ mod input_tests {
         assert!(label.contains("found 3 files"));
     }
 
+    /// Regression: a subagent's `RunFinished` must NOT end the parent turn.
+    /// Before the fix, child events arrived untagged, so the child's
+    /// `RunFinished` was applied to the parent and flipped the UI to "idle"
+    /// while the parent (and other subagents) were still running.
+    #[test]
+    fn test_child_run_finished_does_not_stop_parent() {
+        let mut app = App::inline_for_tests("");
+        // Parent turn starts.
+        app.apply_event(HarnessEvent::RunStarted {
+            session_id: "parent".into(),
+            parent_session_id: None,
+        });
+        assert!(app.running);
+
+        // A subagent finishes mid-turn (tagged with the parent id).
+        app.apply_event(HarnessEvent::RunFinished {
+            session_id: "child-1".into(),
+            parent_session_id: Some("parent".into()),
+        });
+        assert!(
+            app.running,
+            "child RunFinished must not stop the parent turn"
+        );
+
+        // Only the parent's own RunFinished ends the turn.
+        app.apply_event(HarnessEvent::RunFinished {
+            session_id: "parent".into(),
+            parent_session_id: None,
+        });
+        assert!(!app.running);
+    }
+
     #[test]
     fn test_subagent_panel_label_running() {
         let panel = SubagentPanel {

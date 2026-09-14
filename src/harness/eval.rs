@@ -120,6 +120,7 @@ pub async fn run(eval: &Eval) -> Result<EvalOutcome> {
         .await?;
     let _ = tx.send(crate::harness::event::HarnessEvent::RunFinished {
         session_id: session.id.clone(),
+        parent_session_id: None,
     });
     drain.abort();
 

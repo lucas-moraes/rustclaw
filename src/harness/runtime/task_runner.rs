@@ -57,19 +57,40 @@ impl SubagentRunner for TaskRunner {
             .set_session_parent(&child.id, &child_cwd, Some(&self.parent_session_id))
             .map_err(|e| e.to_string())?;
 
+        // Tag every child event with the parent session id and the child's
+        // nesting depth, so UIs route it into a subagent panel instead of the
+        // parent transcript (and never mistake a child's `RunFinished` for the
+        // parent turn ending). A relay task forwards tagged events to the real
+        // channel; it ends when the child's sender is dropped.
+        let (child_tx, mut child_rx) = crate::harness::event::event_channel();
+        let parent_id = self.parent_session_id.clone();
+        let relay = tokio::spawn(async move {
+            while let Some(ev) = child_rx.recv().await {
+                if events.send(ev.tag_child(&parent_id, depth)).is_err() {
+                    break;
+                }
+            }
+        });
+
         let result = self
             .runtime
             .prompt_at_depth(
                 &mut child,
-                &events,
+                &child_tx,
                 &prompt,
                 crate::harness::tool::context::AbortSignal::new(),
                 None,
                 depth,
             )
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| e.to_string());
 
+        // Drop the child sender so the relay drains and exits, then wait for it
+        // so no tagged event is lost after the task returns.
+        drop(child_tx);
+        let _ = relay.await;
+
+        let result = result?;
         Ok(TaskOutcome {
             final_text: result.final_text,
             session_id: child.id.clone(),
@@ -81,5 +102,152 @@ impl SubagentRunner for TaskRunner {
 impl TaskRunner {
     fn runtime_current_cwd(&self) -> PathBuf {
         self.runtime.project_root.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::harness::event::{event_channel, HarnessEvent};
+    use crate::harness::permission::PermissionEngine;
+    use crate::harness::provider::scripted::{ScriptedProvider, ScriptedTurn};
+    use crate::harness::runtime::registry::build_default_registry;
+    use crate::harness::tool::context::{
+        AbortSignal, PermissionAskInput, PermissionAsker, UserAsker,
+    };
+
+    struct AllowAsker;
+    #[async_trait::async_trait]
+    impl PermissionAsker for AllowAsker {
+        async fn ask(&self, _req: PermissionAskInput) -> bool {
+            true
+        }
+    }
+
+    struct NoUserAsker;
+    #[async_trait::async_trait]
+    impl UserAsker for NoUserAsker {
+        async fn ask(&self, _q: String, _o: Vec<String>) -> Option<String> {
+            None
+        }
+    }
+
+    /// Regression: the `TaskRunner` must tag every child event with the parent
+    /// session id (and the child's depth). Before the fix, child events arrived
+    /// untagged, so a subagent's `RunFinished` was mistaken for the parent turn
+    /// ending and the UI flipped to "idle" mid-turn.
+    #[tokio::test]
+    async fn test_child_events_are_tagged_with_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("test.db");
+        // Turn 1: parent calls `task`. Turn 2: child answers. Turn 3: parent
+        // answers. The provider is shared, so turns are consumed in that order.
+        let provider = Arc::new(ScriptedProvider::new(vec![
+            ScriptedTurn::tool(
+                "task",
+                serde_json::json!({"description": "child", "prompt": "do it"}),
+            ),
+            ScriptedTurn::text("child done"),
+            ScriptedTurn::text("parent done"),
+        ]));
+        let runtime = Arc::new(
+            SessionRuntime::new_in(
+                dir.path(),
+                provider,
+                build_default_registry(),
+                crate::config::RuntimeConfig {
+                    model: "scripted".into(),
+                    provider: "scripted".into(),
+                    base_url: String::new(),
+                    api_key: "test".into(),
+                    ..Default::default()
+                },
+                &db,
+                Arc::new(PermissionEngine::default()),
+                Arc::new(AllowAsker),
+                Arc::new(NoUserAsker),
+            )
+            .unwrap(),
+        );
+        let mut parent = runtime.create_session("build").await.unwrap();
+        let parent_id = parent.id.clone();
+
+        let (tx, mut rx) = event_channel();
+        let collector = tokio::spawn(async move {
+            let mut events = Vec::new();
+            while let Some(ev) = rx.recv().await {
+                events.push(ev);
+            }
+            events
+        });
+
+        runtime
+            .prompt(
+                &mut parent,
+                &tx,
+                "spawn a subagent",
+                AbortSignal::new(),
+                None,
+            )
+            .await
+            .unwrap();
+        drop(tx);
+        let events = collector.await.unwrap();
+
+        // Every child event that carries a `parent_session_id` field must be
+        // tagged with the parent id. (`UserMessage` has no such field, so it is
+        // skipped — it is an internal event the UI does not route by parent.)
+        let child_events: Vec<_> = events
+            .iter()
+            .filter(|e| e.session_id() != Some(parent_id.as_str()))
+            .filter(|e| {
+                matches!(
+                    e,
+                    HarnessEvent::RunStarted { .. }
+                        | HarnessEvent::RunFinished { .. }
+                        | HarnessEvent::TextDelta { .. }
+                        | HarnessEvent::ReasoningDelta { .. }
+                        | HarnessEvent::MessageUpdated { .. }
+                        | HarnessEvent::ToolStart { .. }
+                        | HarnessEvent::ToolEnd { .. }
+                        | HarnessEvent::CompactionStarted { .. }
+                        | HarnessEvent::CompactionFinished { .. }
+                        | HarnessEvent::AutoContinue { .. }
+                        | HarnessEvent::Error { .. }
+                        | HarnessEvent::Rollback { .. }
+                )
+            })
+            .collect();
+        assert!(
+            !child_events.is_empty(),
+            "expected child events, got none: {events:?}"
+        );
+        for ev in &child_events {
+            assert_eq!(
+                ev.parent_session_id(),
+                Some(parent_id.as_str()),
+                "child event not tagged with parent: {ev:?}"
+            );
+        }
+
+        // The child's `RunFinished` must be tagged, so the UI does not treat it
+        // as the parent turn ending.
+        let child_finished = events.iter().find(|e| {
+            matches!(e, HarnessEvent::RunFinished { parent_session_id, .. } if parent_session_id.is_some())
+        });
+        assert!(
+            child_finished.is_some(),
+            "child RunFinished was not tagged: {events:?}"
+        );
+
+        // The parent's own `RunFinished` stays untagged.
+        let parent_finished = events.iter().find(|e| {
+            matches!(e, HarnessEvent::RunFinished { session_id, parent_session_id }
+                if session_id == &parent_id && parent_session_id.is_none())
+        });
+        assert!(
+            parent_finished.is_some(),
+            "parent RunFinished missing/incorrectly tagged: {events:?}"
+        );
     }
 }
