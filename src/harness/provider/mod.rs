@@ -5,6 +5,8 @@
 
 pub mod anthropic;
 pub mod catalog;
+#[cfg(test)]
+pub mod contract_tests;
 pub mod openai;
 pub mod opencode_go;
 pub mod retry;

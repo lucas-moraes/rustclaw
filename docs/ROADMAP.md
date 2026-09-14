@@ -33,7 +33,7 @@ As lacunas abaixo são o que separa o projeto de "equivalente" — não de "bom"
 | 4 | Busca semântica | ✅ concluído (chunking por símbolo + índice SQLite/FTS5 + busca híbrida + tool `semantic_search` + `/index`) |
 | 5 | Sandbox de execução | ✅ concluído (Landlock via `pre_exec` no Linux + `sandbox = "off"\|"landlock"` em `rustclaw.json`; no-op em outros SOs) |
 | 6 | Render JS | ✅ concluído (headless Chrome via `chromiumoxide` no binário default + `render: auto\|http\|browser` + `rustclaw doctor`) |
-| 7 | Provider/ecossistema | ⬜ contínuo |
+| 7 | Provider/ecossistema | ✅ testes de contrato implementados (C1–C8); manutenção contínua |
 
 > Nota: a numeração desta tabela segue a **ordem de execução** (ver seção
 > "Ordem sugerida de execução"). As seções P0/P1/P2 abaixo usam numeração
@@ -214,9 +214,14 @@ ou piorou o agente. Claude Code/Codex têm pipelines internos de avaliação.
 
 ### 7. Maturidade de provider
 
-3 adaptadores + custom. Claude Code/Codex são monolíticos e afinados para 1
-modelo. O RustClaw é mais flexível, menos otimizado. Ação: manter, mas adicionar
-testes de contrato por provider (paridade de eventos, tool calling, caching).
+**Estado atual:** ✅ **Testes de contrato implementados** (2026-09-14,
+`src/harness/provider/contract_tests.rs`, via `wiremock`): C1 paridade de
+eventos de texto, C2 paridade de tool calling (id/name/args idênticos entre
+adaptadores), C3 usage no `End`, C4 vocabulário de truncamento normalizado
+(`max_tokens`/`length`), C5 shape do request (system + JSON Schema na wire),
+C6 mapeamento de erro (429 → retryable), C7 prompt caching (breakpoints na
+wire + cache usage parseado), C8 roteamento do opencode-go por modelo.
+Manutenção contínua: novos adaptadores devem passar na mesma suíte.
 
 ### 8. Integrações de ecossistema
 
