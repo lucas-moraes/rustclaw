@@ -20,6 +20,10 @@ enum Command {
     ///
     /// Exits non-zero if any eval fails, so it can gate CI.
     Evals,
+    /// Check for required system dependencies (e.g. Chrome for JS rendering).
+    ///
+    /// Exits non-zero when a dependency is missing, so it can gate installs.
+    Doctor,
 }
 
 #[tokio::main]
@@ -34,6 +38,19 @@ async fn main() -> anyhow::Result<()> {
     if let Some(Command::Evals) = args.command {
         let (report, all_ok) = harness::eval::report(&harness::eval::suite()).await;
         print!("{report}");
+        if !all_ok {
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+
+    // `rustclaw doctor` checks system dependencies and exits (no token needed).
+    // Useful right after install, or when a feature silently degrades.
+    if let Some(Command::Doctor) = args.command {
+        let (lines, all_ok) = harness::deps::render_report();
+        for line in lines {
+            println!("{line}");
+        }
         if !all_ok {
             std::process::exit(1);
         }

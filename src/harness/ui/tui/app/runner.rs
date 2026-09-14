@@ -51,6 +51,22 @@ pub async fn run_tui(
 
     let mut app = App::new(runtime, session, cwd, permission_rx, question_rx);
 
+    // Warn (non-fatally) about missing system dependencies, e.g. a Chrome
+    // binary for `fetch_webpage`'s browser render mode. The harness still runs;
+    // the affected feature degrades to its fallback. `/doctor` shows details.
+    {
+        let (lines, all_ok) = crate::harness::deps::render_report();
+        if !all_ok {
+            for line in lines
+                .iter()
+                .filter(|l| l.contains('✗') || l.contains("install:"))
+            {
+                app.add_system(&format!("[warn] {line}"));
+            }
+            app.add_system("[warn] run /doctor for the full dependency report");
+        }
+    }
+
     // Auto-compact oversized sessions on open so the first turn doesn't start
     // already over the context budget (and so resume stays snappy).
     if app.runtime.config.is_configured() {

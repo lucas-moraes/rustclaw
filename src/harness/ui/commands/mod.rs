@@ -44,10 +44,14 @@ pub async fn handle(
                 "commands: /help /new /sessions /agent <name> /skills \
                   /compact /theme [name] /usage /stats /memory /index /models /model <name> \
                   /provider <name> /provider add|rm|list /auth <provider> /settings \
-                  /undo /diff /restore /fork [N] /apply-plan /image [path] /permissions /allow-all-permissions /mcp /record on|off|status /replay <file> /exit"
+                  /undo /diff /restore /fork [N] /apply-plan /image [path] /permissions /allow-all-permissions /mcp /record on|off|status /replay <file> /doctor /exit"
                     .to_string(),
             );
             out.push("keys: Ctrl+P palette · Ctrl+T theme · ? help · Ctrl+L clear".to_string());
+        }
+        "/doctor" => {
+            let (lines, _all_ok) = crate::harness::deps::render_report();
+            out.extend(lines);
         }
         "/settings" => {
             let c = &runtime.config;
@@ -750,5 +754,26 @@ mod tests {
             panic!("expected Continue");
         };
         assert!(lines.iter().any(|l| l.contains("must be a number")));
+    }
+
+    #[tokio::test]
+    async fn test_doctor_reports_system_dependencies() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut rt = test_runtime(dir.path()).unwrap();
+        let mut session = rt.create_session("build").await.unwrap();
+
+        let outcome = handle(&mut rt, &mut session, "/doctor").await.unwrap();
+        let CommandOutcome::Continue(lines) = outcome else {
+            panic!("expected Continue");
+        };
+        assert!(lines.iter().any(|l| l.contains("system dependencies")));
+        // Every known dep must be mentioned (installed or missing).
+        for dep in crate::harness::deps::KNOWN_DEPS {
+            assert!(
+                lines.iter().any(|l| l.contains(dep.name)),
+                "expected /doctor to mention {}",
+                dep.name
+            );
+        }
     }
 }

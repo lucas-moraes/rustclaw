@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod auth;
 pub mod budget;
+pub mod deps;
 pub mod eval;
 pub mod event;
 pub mod hooks;

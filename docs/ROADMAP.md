@@ -158,6 +158,12 @@ um buraco visível.
   classe, não um extra opcional. Custo aceito: ~150 MB no binário e dependência
   de um Chrome/Chromium instalado na máquina do usuário.
 - Detecção de "conteúdo vazio" → sugerir retry com `render: "browser"`.
+- **Verificação de dependências do SO:** módulo `harness/deps.rs` sonda a
+  presença de Chrome/Chromium (PATH + caminhos conhecidos de macOS/Linux) e
+  reporta o que falta com dica de instalação. Exposto como `rustclaw doctor`
+  (subcomando, sai != 0 se faltar algo) e `/doctor` (slash command). No boot da
+  TUI, dependências ausentes geram aviso não-fatal — o harness roda e a feature
+  degrada para o fallback (`render: "http"`).
 - Alternativa mais leve: avaliar `spider` (crate Rust, MIT) para crawling em
   profundidade, caso surja necessidade de um tool `crawl`.
 
