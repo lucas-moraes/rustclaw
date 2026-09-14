@@ -30,7 +30,7 @@ As lacunas abaixo são o que separa o projeto de "equivalente" — não de "bom"
 | 1 | Subagents aninhados | ✅ concluído |
 | 2 | Compactação proativa / incremental | ✅ concluído (2a trigger 70%, 2b ledger durável, 2c cadeia de resumos) |
 | 3 | Evals / observabilidade | ✅ concluído (métricas por sessão + `/stats` + suite de evals offline + gate no CI) |
-| 4 | Busca semântica | ⬜ pendente |
+| 4 | Busca semântica | ✅ concluído (chunking por símbolo + índice SQLite/FTS5 + busca híbrida + tool `semantic_search` + `/index`) |
 | 5 | Sandbox de execução | ⬜ pendente |
 | 6 | Render JS | ⬜ pendente |
 | 7 | Provider/ecossistema | ⬜ contínuo |
@@ -113,22 +113,26 @@ testes em kernels diferentes).
 
 ### 4. Busca semântica de código / indexação
 
-**Estado atual:** **não existe**. Zero embeddings, zero índice vetorial. A busca
-é `grep` (regex), `glob` (nomes) e `ast_search` (Tree-Sitter, sintática).
+**Estado atual:** ✅ **implementado**. Módulo `src/harness/index/`:
+- `chunk.rs` — chunking por símbolo (reusa o parser Tree-Sitter do `ast_search`)
+  com fallback por linhas para arquivos não-`.rs`.
+- `embed.rs` — trait `Embedder` + `ApiEmbedder` (endpoint OpenAI-compatível
+  configurável) + `NullEmbedder` (degradação graciosa para BM25-only).
+- `store.rs` — índice SQLite por projeto (tabela `project_<hash>_chunks` + FTS5
+  BM25 + coluna `embedding` BLOB), indexação incremental por hash SHA-256.
+- `search.rs` — busca híbrida (BM25 + cosseno, pesos 0.5/0.5).
+- `indexer.rs` — walk do repo (ignora `target`/`.git`/`node_modules`, limite de
+  tamanho/arquivos) + reindexação incremental.
+- Tool `semantic_search(query, k)` (read-only) e comando `/index [status|search]`.
 
-**Lacuna:** a maior lacuna funcional. Em repo grande, o agente gasta muitos
-turnos "procurando" porque não acha código por *significado*. Claude Code e
-Codex indexam o repositório.
+**Decisão de arquitetura:** embeddings **somente via API** (provider
+configurável em `rustclaw.json` → `embeddings`, ou env `RUSTCLAW_EMBED_*`).
+Evitou-se `fastembed-rs`/`candle` (deps pesadas, cold start, ~150 MB). Sem
+backend configurado, a busca continua funcionando em BM25 puro — nunca quebra.
 
-**Proposta:**
-- Índice local persistente (por projeto, em SQLite — já é dependência):
-  - **Chunking** por símbolo (reusar o parser do `ast_search`) em vez de por linha.
-  - **Embeddings** via provider configurável (API) ou modelo local leve
-    (`fastembed-rs` / `candle`) para não depender de rede.
-  - **Busca híbrida**: BM25 (já há scoring BM25 na memória de projeto) + vetorial.
-- Nova tool `semantic_search(query, k)` retornando trechos com path:linha.
-- Indexação incremental: reindexar só arquivos alterados (hash/mtime).
-- Comando `/index` para rebuild manual e status.
+**Verificação:** 28 testes do módulo `index` + 4 da tool + 5 do comando; smoke
+test `#[ignore]` indexa o próprio repo (142 arquivos → 2867 chunks) e acha
+`doom_loop` por consulta em linguagem natural.
 
 **Esforço:** ~1–2 semanas. **Risco:** médio (custo de embeddings, tamanho do
 índice, cold start).

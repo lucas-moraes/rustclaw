@@ -4,6 +4,7 @@ pub mod budget;
 pub mod eval;
 pub mod event;
 pub mod hooks;
+pub mod index;
 pub mod mcp;
 pub mod permission;
 pub mod project;

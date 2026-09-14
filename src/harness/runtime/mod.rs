@@ -85,6 +85,13 @@ pub struct SessionRuntime {
     pub checkpoints: Arc<crate::harness::tool::checkpoint::FileCheckpoints>,
     /// Background bash jobs (`bash --background`); shared across sessions.
     pub jobs: Arc<crate::harness::tool::jobs::JobRegistry>,
+    /// Semantic code index (SQLite + FTS5 + optional embeddings). `None` when
+    /// the index could not be opened; the `semantic_search` tool then reports
+    /// that the index is unavailable.
+    pub semantic_index: Option<Arc<crate::harness::index::SemanticIndex>>,
+    /// Embeddings backend for semantic search (from `rustclaw.json`). `None`
+    /// degrades search to BM25-only.
+    pub embedder: Option<Arc<dyn crate::harness::index::Embedder>>,
     /// Daily USD budget tracker (per-day cost, persisted to usage-*.json).
     pub budget: Arc<tokio::sync::Mutex<crate::harness::budget::BudgetTracker>>,
     /// Event recording (`/record`): shared tee target for the UI event loops.
@@ -141,6 +148,22 @@ impl SessionRuntime {
         // install a callback so "always allow" decisions are persisted too.
         let proj = crate::harness::project::config_file::ProjectConfig::load(&cwd);
         permission.apply_project_config(&proj.permission);
+
+        // Semantic code index: opened lazily (best-effort). A failure to open
+        // the index must not prevent the runtime from starting.
+        let semantic_index = match crate::harness::index::SemanticIndex::open(db_path) {
+            Ok(idx) => {
+                if let Err(e) = idx.ensure_project(&cwd) {
+                    tracing::warn!("semantic index migration failed: {e}");
+                }
+                Some(Arc::new(idx))
+            }
+            Err(e) => {
+                tracing::warn!("semantic index unavailable: {e}");
+                None
+            }
+        };
+        let embedder = Some(crate::harness::index::build_embedder(&cwd));
         let persist_root = cwd.clone();
         // Serialize load+save of rustclaw.json so concurrent "always allow"
         // decisions don't lose updates (read-modify-write race).
@@ -171,6 +194,8 @@ impl SessionRuntime {
             summary_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             checkpoints: Arc::new(crate::harness::tool::checkpoint::FileCheckpoints::new()),
             jobs: Arc::new(crate::harness::tool::jobs::JobRegistry::new()),
+            semantic_index,
+            embedder,
             event_recorder: Arc::new(crate::harness::ui::commands::replay::EventRecorder::new()),
             budget: Arc::new(tokio::sync::Mutex::new(
                 crate::harness::budget::BudgetTracker::default(),
@@ -618,6 +643,8 @@ impl SessionRuntime {
             hooks: crate::harness::hooks::HooksConfig::load_for_cwd(&session.cwd),
             checkpoints: self.checkpoints.clone(),
             depth,
+            semantic_index: self.semantic_index.clone(),
+            embedder: self.embedder.clone(),
         };
 
         // 4. Run the processor turn.
@@ -783,6 +810,8 @@ impl SessionRuntime {
             summary_cache: self.summary_cache.clone(),
             checkpoints: self.checkpoints.clone(),
             jobs: self.jobs.clone(),
+            semantic_index: self.semantic_index.clone(),
+            embedder: self.embedder.clone(),
             budget: self.budget.clone(),
             event_recorder: self.event_recorder.clone(),
         }

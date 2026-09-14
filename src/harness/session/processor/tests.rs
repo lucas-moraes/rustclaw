@@ -59,6 +59,8 @@ fn test_ctx() -> ToolContext {
         hooks: Default::default(),
         checkpoints: std::sync::Arc::new(crate::harness::tool::checkpoint::FileCheckpoints::new()),
         jobs: std::sync::Arc::new(crate::harness::tool::jobs::JobRegistry::new()),
+        semantic_index: None,
+        embedder: None,
     }
 }
 

@@ -2,6 +2,7 @@
 
 pub mod apply_plan;
 pub mod export;
+pub mod index_cmd;
 pub mod memory;
 pub(crate) mod permissions_cmd;
 pub(crate) mod provider_cmd;
@@ -41,7 +42,7 @@ pub async fn handle(
         "/help" => {
             out.push(
                 "commands: /help /new /sessions /agent <name> /skills \
-                  /compact /theme [name] /usage /stats /memory /models /model <name> \
+                  /compact /theme [name] /usage /stats /memory /index /models /model <name> \
                   /provider <name> /provider add|rm|list /auth <provider> /settings \
                   /undo /diff /restore /fork [N] /apply-plan /image [path] /permissions /allow-all-permissions /mcp /record on|off|status /replay <file> /exit"
                     .to_string(),
@@ -117,6 +118,13 @@ pub async fn handle(
         "/memory" => {
             let args: Vec<&str> = arg.split_whitespace().collect();
             out.push(memory::handle_memory_command(runtime, &args)?);
+        }
+        "/index" => {
+            let args: Vec<&str> = arg.split_whitespace().collect();
+            match index_cmd::handle_index_command(runtime, &args).await {
+                Ok(line) => out.push(line),
+                Err(e) => out.push(format!("[error] index failed: {e:#}")),
+            }
         }
         "/apply-plan" => match apply_plan::handle_apply_plan_command(runtime, session) {
             Ok(lines) => out.extend(lines),

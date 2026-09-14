@@ -132,6 +132,11 @@ pub struct ToolContext {
     /// Subagent nesting depth. `0` for the root agent; incremented by one for
     /// each nested `task` spawn. Used to enforce `MAX_SUBAGENT_DEPTH`.
     pub depth: usize,
+    /// Semantic code index (SQLite + FTS5 + optional embeddings) used by the
+    /// `semantic_search` tool. `None` when the index is unavailable.
+    pub semantic_index: Option<Arc<crate::harness::index::SemanticIndex>>,
+    /// Embeddings backend for semantic search. `None` degrades to BM25-only.
+    pub embedder: Option<Arc<dyn crate::harness::index::Embedder>>,
 }
 
 /// Working directory guard: all path resolution goes through this.

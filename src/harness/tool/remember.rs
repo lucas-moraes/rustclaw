@@ -117,6 +117,8 @@ mod tests {
             project_memory: Some(store),
             checkpoints: Arc::new(crate::harness::tool::checkpoint::FileCheckpoints::new()),
             jobs: std::sync::Arc::new(crate::harness::tool::jobs::JobRegistry::new()),
+            semantic_index: None,
+            embedder: None,
             hooks: Default::default(),
         }
     }

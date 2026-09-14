@@ -20,6 +20,10 @@ pub struct ProjectConfig {
     /// Project hooks (pre_tool/post_tool/on_turn_end).
     #[serde(default, skip_serializing_if = "HooksConfig::is_empty")]
     pub hooks: HooksConfig,
+    /// Optional embeddings backend for semantic search. When absent, search
+    /// degrades to BM25 (FTS5) over symbol chunks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embeddings: Option<crate::harness::index::EmbedConfig>,
 }
 
 impl ProjectConfig {

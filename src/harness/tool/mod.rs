@@ -17,6 +17,7 @@ pub mod question;
 pub mod read;
 pub mod registry;
 pub mod remember;
+pub mod semantic_search;
 pub mod task;
 pub mod todo;
 pub mod truncate;
