@@ -12,6 +12,9 @@ use std::sync::Arc;
 
 /// Max subagents running concurrently within one batch tool call.
 const MAX_PARALLEL_TASKS: usize = 4;
+/// Maximum subagent nesting depth (root agent = 0). A subagent at this depth
+/// may not spawn further subagents, preventing unbounded recursion.
+pub const MAX_SUBAGENT_DEPTH: usize = 3;
 /// Per-task output budget (chars) in the aggregated result.
 const PER_TASK_CHARS: usize = 4000;
 /// Total output budget (chars) for the aggregated result.
@@ -90,6 +93,15 @@ single `prompt`."
         })
     }
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolResult, String> {
+        // Enforce the nesting cap: a subagent at max depth must finish the work
+        // itself rather than delegating further.
+        if ctx.depth >= MAX_SUBAGENT_DEPTH {
+            return Err(format!(
+                "Maximum subagent nesting depth ({MAX_SUBAGENT_DEPTH}) reached. \
+                 Complete this task directly instead of spawning another subagent."
+            ));
+        }
+
         let entries = parse_entries(&args)?;
 
         let runner = ctx
@@ -101,7 +113,12 @@ single `prompt`."
         if entries.len() == 1 {
             let e = &entries[0];
             let outcome = runner
-                .run_task(e.agent.clone(), e.prompt.clone(), ctx.events.clone())
+                .run_task(
+                    e.agent.clone(),
+                    e.prompt.clone(),
+                    ctx.events.clone(),
+                    ctx.depth + 1,
+                )
                 .await?;
             return Ok(ToolResult::simple(
                 format!("task ({})", preview(&e.agent, 20)),
@@ -123,12 +140,15 @@ single `prompt`."
             let prompt = e.prompt.clone();
             let sem = semaphore.clone();
             let abort = ctx.abort.clone();
+            let child_depth = ctx.depth + 1;
             join_set.spawn(async move {
                 let _permit = sem.acquire_owned().await;
                 if abort.is_aborted() {
                     return (idx, agent, Err("aborted".to_string()));
                 }
-                let result = runner.run_task(agent.clone(), prompt, events).await;
+                let result = runner
+                    .run_task(agent.clone(), prompt, events, child_depth)
+                    .await;
                 (idx, agent, result)
             });
         }
@@ -210,6 +230,7 @@ mod tests {
             agent: String,
             _prompt: String,
             _events: EventSender,
+            _depth: usize,
         ) -> Result<TaskOutcome, String> {
             let now = self
                 .concurrent
@@ -269,6 +290,7 @@ mod tests {
                 crate::harness::tool::checkpoint::FileCheckpoints::new(),
             ),
             jobs: std::sync::Arc::new(crate::harness::tool::jobs::JobRegistry::new()),
+            depth: 0,
         };
         (ctx, tx, rx)
     }
@@ -335,6 +357,7 @@ mod tests {
                 _agent: String,
                 _prompt: String,
                 _events: EventSender,
+                _depth: usize,
             ) -> Result<TaskOutcome, String> {
                 tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                 Ok(TaskOutcome {
@@ -369,6 +392,7 @@ mod tests {
                 agent: String,
                 _prompt: String,
                 _events: EventSender,
+                _depth: usize,
             ) -> Result<TaskOutcome, String> {
                 self.0
                     .lock()
@@ -393,5 +417,59 @@ mod tests {
         assert!(result.output.contains("Subagent `explore` result:"));
         assert!(result.output.contains("the answer"));
         assert_eq!(echo.0.lock().unwrap_or_else(|e| e.into_inner()).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_depth_cap_rejects_nested_spawn() {
+        struct NeverRunner;
+        #[async_trait::async_trait]
+        impl SubagentRunner for NeverRunner {
+            async fn run_task(
+                &self,
+                _agent: String,
+                _prompt: String,
+                _events: EventSender,
+                _depth: usize,
+            ) -> Result<TaskOutcome, String> {
+                panic!("runner must not be called at max depth");
+            }
+        }
+        let (mut ctx, _tx, _rx) = ctx_with(Arc::new(NeverRunner));
+        ctx.depth = MAX_SUBAGENT_DEPTH;
+        let err = TaskTool
+            .execute(json!({"description": "d", "prompt": "p"}), &ctx)
+            .await
+            .unwrap_err();
+        assert!(err.contains("Maximum subagent nesting depth"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn test_depth_propagates_to_child() {
+        struct DepthRunner(Arc<std::sync::Mutex<Vec<usize>>>);
+        #[async_trait::async_trait]
+        impl SubagentRunner for DepthRunner {
+            async fn run_task(
+                &self,
+                _agent: String,
+                _prompt: String,
+                _events: EventSender,
+                depth: usize,
+            ) -> Result<TaskOutcome, String> {
+                self.0.lock().unwrap_or_else(|e| e.into_inner()).push(depth);
+                Ok(TaskOutcome {
+                    final_text: "ok".into(),
+                    session_id: "c".into(),
+                    iterations: 1,
+                })
+            }
+        }
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (mut ctx, _tx, _rx) = ctx_with(Arc::new(DepthRunner(seen.clone())));
+        ctx.depth = 1;
+        TaskTool
+            .execute(json!({"description": "d", "prompt": "p"}), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(*seen.lock().unwrap_or_else(|e| e.into_inner()), vec![2]);
     }
 }

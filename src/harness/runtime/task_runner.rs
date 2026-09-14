@@ -37,6 +37,7 @@ impl SubagentRunner for TaskRunner {
         agent: String,
         prompt: String,
         events: crate::harness::event::EventSender,
+        depth: usize,
     ) -> Result<TaskOutcome, String> {
         // Resolve agent to allow "explore" by default.
         let agent = if agent.is_empty() { "explore" } else { &agent };
@@ -58,12 +59,13 @@ impl SubagentRunner for TaskRunner {
 
         let result = self
             .runtime
-            .prompt(
+            .prompt_at_depth(
                 &mut child,
                 &events,
                 &prompt,
                 crate::harness::tool::context::AbortSignal::new(),
                 None,
+                depth,
             )
             .await
             .map_err(|e| e.to_string())?;

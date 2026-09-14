@@ -494,12 +494,28 @@ impl SessionRuntime {
         abort: crate::harness::tool::context::AbortSignal,
         enabled_skills: Option<&[String]>,
     ) -> Result<PromptResult> {
-        self.prompt_with_parts(
+        self.prompt_at_depth(session, events, user_text, abort, enabled_skills, 0)
+            .await
+    }
+
+    /// Like `prompt`, but runs the turn at an explicit subagent nesting depth
+    /// (root agent = 0). Used by `TaskRunner` to propagate depth to children.
+    pub async fn prompt_at_depth(
+        &self,
+        session: &mut Session,
+        events: &EventSender,
+        user_text: &str,
+        abort: crate::harness::tool::context::AbortSignal,
+        enabled_skills: Option<&[String]>,
+        depth: usize,
+    ) -> Result<PromptResult> {
+        self.prompt_with_parts_at_depth(
             session,
             events,
             vec![crate::harness::session::Part::text(user_text)],
             abort,
             enabled_skills,
+            depth,
         )
         .await
     }
@@ -510,9 +526,23 @@ impl SessionRuntime {
         &self,
         session: &mut Session,
         events: &EventSender,
+        user_parts: Vec<crate::harness::session::Part>,
+        abort: crate::harness::tool::context::AbortSignal,
+        enabled_skills: Option<&[String]>,
+    ) -> Result<PromptResult> {
+        self.prompt_with_parts_at_depth(session, events, user_parts, abort, enabled_skills, 0)
+            .await
+    }
+
+    /// Like `prompt_with_parts`, but at an explicit subagent nesting depth.
+    pub async fn prompt_with_parts_at_depth(
+        &self,
+        session: &mut Session,
+        events: &EventSender,
         mut user_parts: Vec<crate::harness::session::Part>,
         abort: crate::harness::tool::context::AbortSignal,
         enabled_skills: Option<&[String]>,
+        depth: usize,
     ) -> Result<PromptResult> {
         let user_text = user_parts
             .iter()
@@ -586,6 +616,7 @@ impl SessionRuntime {
             project_memory: Some(self.project_memory.clone()),
             hooks: crate::harness::hooks::HooksConfig::load_for_cwd(&session.cwd),
             checkpoints: self.checkpoints.clone(),
+            depth,
         };
 
         // 4. Run the processor turn.

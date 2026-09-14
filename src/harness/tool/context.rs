@@ -76,11 +76,16 @@ pub trait UserAsker: Send + Sync {
 pub trait SubagentRunner: Send + Sync {
     /// Runs the task in a child session, forwarding its events to `events`
     /// (tagged with the child's `session_id` and the parent's id).
+    ///
+    /// `depth` is the nesting depth of the *child* (root agent = 0, its
+    /// subagents = 1, and so on). The runner propagates `depth + 1` to any
+    /// subagent the child itself spawns.
     async fn run_task(
         &self,
         agent: String,
         prompt: String,
         events: crate::harness::event::EventSender,
+        depth: usize,
     ) -> Result<TaskOutcome, String>;
 }
 
@@ -124,6 +129,9 @@ pub struct ToolContext {
     pub hooks: crate::harness::hooks::HooksConfig,
     /// Shared registry of background bash jobs (`bash --background`, `/jobs`).
     pub jobs: Arc<crate::harness::tool::jobs::JobRegistry>,
+    /// Subagent nesting depth. `0` for the root agent; incremented by one for
+    /// each nested `task` spawn. Used to enforce `MAX_SUBAGENT_DEPTH`.
+    pub depth: usize,
 }
 
 /// Working directory guard: all path resolution goes through this.

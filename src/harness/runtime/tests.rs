@@ -88,6 +88,7 @@ Then use the read tool to read src/main.rs. Report what tools you used.";
             _agent: String,
             _prompt: String,
             events: crate::harness::event::EventSender,
+            _depth: usize,
         ) -> Result<TaskOutcome, String> {
             // Emit a child event tagged with a fake child session id.
             let child_id = "child-1".to_string();
@@ -119,7 +120,7 @@ Then use the read tool to read src/main.rs. Report what tools you used.";
             seen: std::sync::Mutex::new(Vec::new()),
         };
         let outcome = runner
-            .run_task("explore".into(), "p".into(), tx.clone())
+            .run_task("explore".into(), "p".into(), tx.clone(), 1)
             .await
             .unwrap();
         assert_eq!(outcome.session_id, "child-1");
