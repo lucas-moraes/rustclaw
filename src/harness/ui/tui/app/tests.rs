@@ -704,3 +704,63 @@ mod mouse_scroll_tests {
         assert_eq!(app.scroll, 10);
     }
 }
+
+#[cfg(test)]
+mod scroll_tests {
+    use super::*;
+
+    #[test]
+    fn test_scroll_by_clamps_at_zero() {
+        let mut app = App::inline_for_tests("x");
+        app.scroll = 0;
+        app.scroll_by(-5);
+        assert_eq!(app.scroll, 0);
+        assert!(!app.stick_bottom);
+    }
+
+    #[test]
+    fn test_clamp_scroll_stick_bottom_follows_end() {
+        let mut app = App::inline_for_tests("x");
+        // stick_bottom: scroll pinned to max
+        app.stick_bottom = true;
+        app.clamp_scroll(100, 10);
+        assert_eq!(app.scroll, 90);
+        assert!(app.stick_bottom);
+
+        // scrolled up: clamped but not stuck
+        app.stick_bottom = false;
+        app.scroll = 500;
+        app.clamp_scroll(100, 10);
+        assert_eq!(app.scroll, 90);
+        assert!(app.stick_bottom, "reaching the end re-engages stick_bottom");
+
+        // mid-scroll: stays put
+        app.stick_bottom = false;
+        app.scroll = 40;
+        app.clamp_scroll(100, 10);
+        assert_eq!(app.scroll, 40);
+        assert!(!app.stick_bottom);
+    }
+
+    #[test]
+    fn test_clamp_scroll_total_smaller_than_view() {
+        let mut app = App::inline_for_tests("x");
+        app.stick_bottom = false;
+        app.scroll = 7;
+        app.clamp_scroll(5, 10);
+        assert_eq!(app.scroll, 0);
+        assert!(app.stick_bottom);
+    }
+
+    #[test]
+    fn test_clear_transcript_resets_scroll_state() {
+        let mut app = App::inline_for_tests("x");
+        app.scroll = 42;
+        app.stick_bottom = false;
+        app.clear_transcript();
+        assert_eq!(app.scroll, 0);
+        assert!(app.stick_bottom);
+        assert!(app.streaming.is_none());
+        assert!(app.tool_status.is_none());
+    }
+}

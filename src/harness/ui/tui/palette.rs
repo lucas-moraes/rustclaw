@@ -443,3 +443,121 @@ pub fn kind_label(k: PaletteKind) -> &'static str {
         PaletteKind::Action => "action",
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_open_filters_by_query() {
+        let p = PaletteState::open("mem");
+        assert!(!p.filtered.is_empty(), "expected /memory-like matches");
+        for i in &p.filtered {
+            let it = &p.items[*i];
+            let hay =
+                format!("{}{}{}{}", it.label, it.description, it.id, it.payload).to_lowercase();
+            assert!(
+                hay.contains("mem"),
+                "item `{}` does not match `mem`",
+                it.label
+            );
+        }
+    }
+
+    #[test]
+    fn test_open_empty_query_shows_all() {
+        let p = PaletteState::open("");
+        assert_eq!(p.filtered.len(), p.items.len());
+        assert_eq!(p.selected, 0);
+    }
+
+    #[test]
+    fn test_push_char_and_backspace_refilter() {
+        let mut p = PaletteState::open("");
+        let all = p.filtered.len();
+        p.push_char('z');
+        p.push_char('z');
+        p.push_char('z');
+        assert!(p.filtered.is_empty(), "no item should match `zzz`");
+        p.backspace();
+        p.backspace();
+        p.backspace();
+        assert_eq!(p.filtered.len(), all);
+        assert_eq!(p.query, "");
+    }
+
+    #[test]
+    fn test_move_sel_wraps_and_handles_empty() {
+        let mut p = PaletteState::open("mem");
+        let len = p.filtered.len();
+        p.move_sel(-1);
+        assert_eq!(p.selected, len - 1, "should wrap to last");
+        p.move_sel(1);
+        assert_eq!(p.selected, 0, "should wrap back to first");
+        // empty filtered list is a no-op
+        let mut q = PaletteState::open("zzz");
+        q.move_sel(1);
+        assert_eq!(q.selected, 0);
+    }
+
+    #[test]
+    fn test_current_returns_selected_item() {
+        let mut p = PaletteState::open("");
+        p.selected = 1;
+        let cur = p.current().expect("non-empty palette has a selection");
+        assert_eq!(cur.id, p.items[p.filtered[1]].id);
+    }
+
+    #[test]
+    fn test_extra_agents_appended_and_matchable() {
+        let p = PaletteState::open_with("", &[("reviewer".into(), "reviews diffs".into())]);
+        let agent = p
+            .items
+            .iter()
+            .find(|it| it.kind == PaletteKind::Agent && it.id == "agent-reviewer")
+            .expect("custom agent appended");
+        assert_eq!(agent.payload, "/agent reviewer");
+        // reachable via query
+        let mut q = PaletteState::open_with("", &[("reviewer".into(), "reviews diffs".into())]);
+        q.push_char('r');
+        q.push_char('e');
+        q.push_char('v');
+        assert!(q
+            .filtered
+            .iter()
+            .any(|&i| q.items[i].id == "agent-reviewer"));
+    }
+
+    #[test]
+    fn test_autocomplete_none_for_plain_text() {
+        assert!(AutoComplete::from_input("hello world").is_none());
+    }
+
+    #[test]
+    fn test_autocomplete_matches_slash_commands() {
+        let ac = AutoComplete::from_input("/me").expect("`/me` should match /memory");
+        assert!(!ac.matches.is_empty());
+        assert!(ac.matches.iter().all(|it| it.kind == PaletteKind::Command));
+        assert!(ac.matches.iter().any(|it| it.payload.starts_with("/me")));
+
+        // args mode: only the command part is matched
+        let ac2 = AutoComplete::from_input("/memory list").expect("command part still matches");
+        assert!(ac2
+            .matches
+            .iter()
+            .any(|it| it.payload.starts_with("/memory")));
+
+        // no match → None
+        assert!(AutoComplete::from_input("/zzz").is_none());
+    }
+
+    #[test]
+    fn test_autocomplete_move_sel_wraps() {
+        let mut ac = AutoComplete::from_input("/").expect("`/` matches commands");
+        let len = ac.matches.len();
+        ac.move_sel(-1);
+        assert_eq!(ac.selected, len - 1);
+        ac.move_sel(1);
+        assert_eq!(ac.selected, 0);
+    }
+}

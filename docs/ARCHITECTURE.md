@@ -146,3 +146,81 @@ cargo run                 # CLI harness
 cargo test                # testes unitários
 cargo test --bin rustclaw smoke_native_tool_calling -- --ignored --nocapture  # smoke live
 ```
+
+## Invariantes do loop agêntico
+
+Garantias que valem **entre iterações** do `run_turn` (e entre turnos). Ao
+mudar o processor, verifique cada uma delas — a maioria tem teste de
+regressão.
+
+### Iterações e limites
+
+- **I1 — Orçamento duplo de iterações.** Cada segmento de turno respeita
+  `max_iterations`; o turno inteiro (todas as continuações) respeita
+  `max_total_iterations` (default `max_iterations * 3`, ver
+  `default_total_iterations`). Continuações são limitadas por
+  `DEFAULT_MAX_CONTINUATIONS = 10`; ao exceder, o turno para com motivo
+  explícito — nunca silenciosamente.
+- **I2 — Deadline de turno.** Cada iteração verifica o wall-clock
+  (`turn_timeout_secs`) **antes** de chamar o provider; estourar o prazo
+  encerra o turno com `stop_reason`, não com erro.
+- **I3 — Compactação antes de cada chamada.** `maybe_compact` roda no topo de
+  cada iteração (R1: só quando o contexto cresceu desde a última). O trigger
+  proativo é 70% do budget (`DEFAULT_TRIGGER_RATIO = 0.7`); `force` usa 100%.
+  Após compactar, `invalidate_messages_cache()` é obrigatório — a próxima
+  iteração deve ler as mensagens compactadas, não as em cache.
+
+### Estado e persistência
+
+- **I4 — Mensagens persistem em ordem.** Toda mensagem (assistant, tool
+  result) é gravada no SQLite com `ord = MAX(ord)+1` **antes** da próxima
+  iteração; um crash nunca deixa o modelo ver mensagens que não estão no
+  store. A reconstrução (`rebuild_transcript_from_session`) lê por `ord`.
+- **I5 — Ledger sobrevive à compactação.** O `ContextLedger` vive em
+  `Session.ledger` (coluna `ledger_json`), não nas mensagens; o resumo de
+  compactação é sempre precedido do bloco
+  `[Session ledger — durable facts, survives compaction]`. A cadeia de
+  resumos (`summary_chain`, máx `MAX_SUMMARY_CHAIN = 8`, oldest-first) é
+  foldada no próximo resumo.
+- **I6 — Tool results casam com tool calls.** Cada `ToolCallEnd` gera
+  exatamente um `Part::Tool` na mensagem do assistant, com `ToolStatus`
+  (success/error/aborted) sempre preenchido — um tool abortado produz status
+  `aborted`, nunca é omitido. Os adaptadores de provider sintetizam os
+  resultados a partir desses parts (`tool_result_message` no OpenAI;
+  blocos `tool_result` no Anthropic), então um part faltando quebraria a
+  conversa com o modelo.
+
+### Execução de tools
+
+- **I7 — Paralelismo com aplicação em ordem de conclusão.** `execute_tool_calls`
+  roda as tools num `JoinSet` e aplica os resultados **na ordem de conclusão**
+  (cada resultado atualiza o `Part::Tool` correspondente por `tool_id`).
+  Permissão (allow/ask/deny) é checada antes do spawn; `catch_unwind` isola
+  panics de tools. R6: arquivos alvo de write/edit têm snapshot pré-iteração
+  para rollback se o batch inteiro falhar.
+- **I8 — Abort corta o batch.** Se o sinal de abort disparar no meio do
+  batch, as tools restantes recebem `Err("aborted")` e o turno termina; o
+  loop principal também checa o abort no topo de cada iteração (I2/I3 valem
+  mesmo abortado — nada é executado depois do abort).
+
+### Loops e repetição
+
+- **I9 — Doom loop.** A mesma assinatura de tool call repetida
+  `DOOM_LOOP_WARN = 3` vezes emite aviso; em `DOOM_LOOP_STOP = 5` o turno
+  para (janela de `DOOM_LOOP_WINDOW = 5`). O mesmo vale para texto repetido
+  (`TEXT_LOOP_WARN/STOP`). A detecção roda **depois** de aplicar os tool
+  results e **antes** da próxima iteração.
+- **I10 — Continuação explícita.** Auto-continuação (ex.: truncamento de
+  tool args, limite de tokens) incrementa `continuations` e registra o
+  motivo; o transcript sempre mostra por que o turno continuou.
+
+### Eventos e UI
+
+- **I11 — Eventos ordenados por turno.** `RunStarted` precede todos os
+  eventos do turno; `RunFinished` é o último. Eventos de subagente carregam
+  `parent_session_id` e são roteados para painéis (`apply_subagent_event`),
+  nunca para o transcript do pai; a finalização do painel aninhado roda
+  antes da associação de `child_session_id`.
+- **I12 — Transcript reflete o store.** Após undo/revert/fork,
+  `rebuild_transcript_from_session` é chamado — a UI nunca exibe mensagens
+  que não existem mais no store.

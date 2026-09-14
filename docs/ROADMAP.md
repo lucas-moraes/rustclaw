@@ -226,11 +226,21 @@ harness solo. Priorizar apenas se houver demanda real de usuários.
 
 ### 9. Qualidade de código / dívida
 
-- Cobertura de testes por módulo (hoje 635 testes, mas distribuição desigual —
-  `ui/` tem 13k linhas e provavelmente menos cobertura relativa).
+**Estado atual:** ✅ **Implementado** (2026-09-14).
+
+- Cobertura de testes por módulo: auditada (ui/ 13.9k linhas / 126 testes,
+  session/ 7.7k / 130, tool/ 7.4k / 122, provider/ 3.7k / 70 — proporção
+  consistente). Gaps de maior risco fechados: `palette.rs` (0 → 9 testes:
+  filtro, wrap, autocomplete, agentes custom) e scroll/clamp do transcript
+  (`app/tests.rs`, +5 testes). Módulos de draw (render puro de widgets) e
+  handlers de tecla (I/O de terminal) permanecem sem testes unitários por
+  design — a lógica testável deles vive em `state.rs`/`input.rs`/`palette.rs`,
+  que têm cobertura.
 - `cargo clippy -- -D warnings` já no CI ✅.
-- Documentar invariantes do loop agêntico (o que pode/não pode acontecer entre
-  iterações).
+- Invariantes do loop agêntico documentados em `docs/ARCHITECTURE.md`
+  (seção "Invariantes do loop agêntico", I1–I12: orçamento de iterações,
+  deadline, compactação, persistência, ledger, tool results, abort,
+  doom loop, continuação, eventos, transcript).
 
 ---
 
