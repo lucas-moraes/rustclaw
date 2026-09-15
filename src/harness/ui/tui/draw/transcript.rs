@@ -27,11 +27,13 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     let inner = frame_block.inner(area);
     frame.render_widget(frame_block, area);
 
-    // Keep a 1-col gutter on the left and room for the scrollbar on the right.
+    // Horizontal margins: keep breathing room on both sides of the chat,
+    // plus room for the scrollbar on the right.
+    const H_MARGIN: u16 = 3;
     let content = Rect {
-        x: inner.x.saturating_add(1),
+        x: inner.x.saturating_add(H_MARGIN),
         y: inner.y,
-        width: inner.width.saturating_sub(2).max(1),
+        width: inner.width.saturating_sub(H_MARGIN * 2).max(1),
         height: inner.height,
     };
     let width = content.width as usize;

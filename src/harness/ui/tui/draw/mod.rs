@@ -73,7 +73,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     };
     // The input box grows with soft-wrapped visual rows (border + 1 text row
     // + up to 9 extra wrapped/newline rows), cap at 12 total.
-    let est_inner = content.width.saturating_sub(2) as usize;
+    // Horizontal margin for the prompt input area (matches the transcript).
+    const INPUT_H_MARGIN: u16 = 3;
+    let est_inner = content.width.saturating_sub(2 + INPUT_H_MARGIN * 2) as usize;
     let vis_rows = crate::harness::ui::tui::input::wrap_input_rows(&app.input, est_inner).len();
     let input_h: u16 = 3 + (vis_rows_extra(vis_rows)).min(9);
 
@@ -101,10 +103,16 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         }
     }
     // The prompt input stays hidden until provider/model/token are configured.
+    let input_area = Rect {
+        x: rows[3].x.saturating_add(INPUT_H_MARGIN),
+        y: rows[3].y,
+        width: rows[3].width.saturating_sub(INPUT_H_MARGIN * 2).max(1),
+        height: rows[3].height,
+    };
     if app.runtime.config.is_configured() {
-        input::draw(frame, app, rows[3]);
+        input::draw(frame, app, input_area);
     } else {
-        draw_unconfigured_hint(frame, app, rows[3]);
+        draw_unconfigured_hint(frame, app, input_area);
     }
     draw_footer(frame, app, rows[4]);
 
