@@ -238,9 +238,9 @@ impl HarnessEvent {
             | HarnessEvent::Rollback {
                 parent_session_id, ..
             } => {
-                if parent_session_id.is_none() {
-                    *parent_session_id = Some(parent.to_string());
-                }
+                *parent_session_id = parent_session_id
+                    .take()
+                    .or_else(|| Some(parent.to_string()));
             }
             _ => {}
         }

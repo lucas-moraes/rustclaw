@@ -21,8 +21,6 @@
 //! `SandboxPolicy::Off` is the only meaningful policy and `apply_pre_exec`
 //! always succeeds without restricting anything.
 
-#[cfg(target_os = "linux")]
-use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 
 /// Sandbox mode for shell commands.
@@ -66,6 +64,7 @@ pub enum SandboxStatus {
     /// with best-effort (possibly zero) restrictions.
     NotEnforced,
     /// Non-Linux target: sandboxing unavailable, child ran unrestricted.
+    #[cfg_attr(target_os = "linux", allow(dead_code))] // only built on non-Linux
     Unsupported,
 }
 
@@ -122,16 +121,13 @@ mod imp {
     use landlock::Access as _;
     use landlock::{path_beneath_rules, AccessFs, Ruleset, RulesetAttr, RulesetCreatedAttr, ABI};
     use std::io;
-    use std::os::unix::process::CommandExt;
-    #[cfg(target_os = "linux")]
-    use std::os::unix::process::CommandExt as _;
     use std::path::{Path, PathBuf};
 
     /// Builds the Landlock closure installed in the child via `pre_exec`.
     /// Runs after `fork`, before `exec`: the restrictions apply to the shell
     /// and everything it spawns.
     pub fn pre_exec_hook(paths: &SandboxPaths) -> io::Result<()> {
-        use std::io::ErrorKind;
+        use std::io;
         let abi = ABI::V1;
         let mut read_only: Vec<PathBuf> = READ_ONLY_PATHS.iter().map(PathBuf::from).collect();
         read_only.extend(toolchain_roots());
@@ -156,7 +152,7 @@ mod imp {
                 .restrict_self()
                 .map(|_| ())
         })();
-        result.map_err(|e: landlock::RulesetError| io::Error::new(ErrorKind::Other, e.to_string()))
+        result.map_err(|e: landlock::RulesetError| io::Error::other(e.to_string()))
     }
 
     /// Probes whether the running kernel supports and enables Landlock
@@ -271,7 +267,7 @@ mod tests {
     #[test]
     fn test_probe_returns_a_status() {
         // Just exercises the probe path; the value depends on the kernel.
-        let _ = probe();
+        let _ = imp::probe();
     }
 
     #[cfg(not(target_os = "linux"))]
