@@ -1,5 +1,5 @@
 //! User-defined provider store: providers/models added at runtime and
-//! persisted in `~/.local/share/rustclaw/providers.json`.
+//! persisted in `<base_dir>/providers.json` (see `harness::paths`).
 //!
 //! These are merged with the builtin catalog at runtime (see `catalog.rs`),
 //! so a user can add a provider/model without recompiling. A user provider
@@ -40,12 +40,9 @@ pub struct UserProviders {
 }
 
 impl UserProviders {
-    /// Default path: `<data_local_dir>/rustclaw/providers.json`.
+    /// Default path: `<base_dir>/providers.json` (see `harness::paths`).
     pub fn path() -> std::path::PathBuf {
-        dirs::data_local_dir()
-            .unwrap_or_else(|| std::path::PathBuf::from("."))
-            .join("rustclaw")
-            .join("providers.json")
+        crate::harness::paths::providers_json()
     }
 
     /// Loads the user providers; missing file = empty.

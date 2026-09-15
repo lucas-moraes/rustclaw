@@ -30,12 +30,9 @@ pub struct AuthStore {
 }
 
 impl AuthStore {
-    /// Default file path: `<data_local_dir>/rustclaw/auth.json`.
+    /// Default file path: `<base_dir>/auth.json` (see `harness::paths`).
     pub fn path() -> PathBuf {
-        dirs::data_local_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("rustclaw")
-            .join("auth.json")
+        crate::harness::paths::auth_json()
     }
 
     /// Loads the store from the default path; missing file = empty store.

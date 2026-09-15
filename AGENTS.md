@@ -12,7 +12,7 @@ cargo build
 # Run (CLI harness)
 cargo run
 
-# Run a live smoke test (uses the token in ~/.local/share/rustclaw/auth.json)
+# Run a live smoke test (uses the token in the auth store, see Configuration)
 cargo test --bin rustclaw smoke_native_tool_calling -- --ignored --nocapture
 ```
 
@@ -186,16 +186,30 @@ src/
 
 ## Configuration (file-based, no `.env`)
 
-- `~/.local/share/rustclaw/auth.json` — API token per provider (0600, via `/auth`)
-  (macOS: `~/Library/Application Support/rustclaw/auth.json`)
-- `~/.local/share/rustclaw/config.json` — provider/model, `max_iterations`,
+All system-level data lives under a single **base dir**, resolved by
+`harness::paths::base_dir()` in this order:
+
+1. `RUSTCLAW_HOME` env var (explicit override, also used by tests)
+2. `<dir-of-executable>/rustclaw-data/` — portable layout: data travels
+   with the binary; binary updates never touch it
+3. Fallback: `~/.local/share/rustclaw` (Linux) /
+   `~/Library/Application Support/rustclaw` (macOS)
+
+There is **no migration** from the old location; a fresh base dir starts
+empty. Files inside the base dir:
+
+- `auth.json` — API token per provider (0600, via `/auth`)
+- `config.json` — provider/model, `max_iterations`,
   `max_context_tokens`, theme (via `/settings`, `/models`)
-- `~/.local/share/rustclaw/providers.json` — user-defined providers/models
+- `providers.json` — user-defined providers/models
   (via `/provider add|rm|list`, `/models add`, or the `/models` picker
   "add provider…"). Merged with the builtin catalog at runtime; a user
   provider with the same name as a builtin overrides it.
-- `~/.local/share/rustclaw/mcp.json` — MCP servers (`mcpServers` format);
+- `mcp.json` — MCP servers (`mcpServers` format);
   merged with the `mcp` section of `rustclaw.json` (project wins by name)
+- `harness.db` — SQLite: sessions, messages, project memory
+- `usage-YYYY-MM.json` — monthly token/cost reports
+- `log.txt`, `attachments/` — app log and pasted images
 - `rustclaw.json` in the project root — per-project provider/model override
   + optional `mcp` section
 - Precedence: catalog (builtin + user) → config.json → rustclaw.json → auth token

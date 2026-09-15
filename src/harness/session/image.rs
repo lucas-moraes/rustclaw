@@ -70,10 +70,7 @@ pub fn image_fallback_text(path: &str, reason: &str) -> String {
 
 /// Directory used for pasted screenshots and other ephemeral image attachments.
 pub fn attachments_dir() -> std::path::PathBuf {
-    let base = dirs::data_local_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("rustclaw")
-        .join("attachments");
+    let base = crate::harness::paths::attachments_dir();
     let _ = std::fs::create_dir_all(&base);
     base
 }

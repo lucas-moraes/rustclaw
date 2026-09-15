@@ -4,8 +4,8 @@
 //! auth store):
 //!
 //! 1. Builtin provider catalog (defaults for provider/model/base_url)
-//! 2. Global settings — `~/.local/share/rustclaw/config.json`
-//! 3. Auth store — `~/.local/share/rustclaw/auth.json` (token per provider)
+//! 2. Global settings — `<base_dir>/config.json` (see `harness::paths`)
+//! 3. Auth store — `<base_dir>/auth.json` (token per provider)
 //!
 //! Provider/model/base_url are global-only. The project's `rustclaw.json`
 //! carries only persistent permission rules and does not influence the
@@ -86,12 +86,9 @@ fn usize_is_zero(v: &usize) -> bool {
 }
 
 impl GlobalSettings {
-    /// Default path: `<data_local_dir>/rustclaw/config.json`.
+    /// Default path: `<base_dir>/config.json` (see `harness::paths`).
     pub fn path() -> std::path::PathBuf {
-        dirs::data_local_dir()
-            .unwrap_or_else(|| std::path::PathBuf::from("."))
-            .join("rustclaw")
-            .join("config.json")
+        crate::harness::paths::config_json()
     }
 
     /// Loads the global settings; missing file = empty (catalog defaults).

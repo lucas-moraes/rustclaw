@@ -397,8 +397,5 @@ pub async fn run(config: crate::config::RuntimeConfig, cwd: std::path::PathBuf) 
 }
 
 fn data_db_path() -> std::path::PathBuf {
-    if let Some(dir) = dirs::data_local_dir() {
-        return dir.join("rustclaw").join("harness.db");
-    }
-    std::path::PathBuf::from("rustclaw-harness.db")
+    crate::harness::paths::harness_db()
 }

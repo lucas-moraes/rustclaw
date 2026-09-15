@@ -227,7 +227,7 @@ pub async fn handle(
             match runtime.mcp.as_ref() {
                 None => {
                     out.push(
-                        "no MCP servers configured (add ~/.local/share/rustclaw/mcp.json \
+                        "no MCP servers configured (add <base_dir>/mcp.json \
                          or `mcp` section in rustclaw.json)"
                             .to_string(),
                     );

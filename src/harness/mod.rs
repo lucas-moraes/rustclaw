@@ -7,6 +7,7 @@ pub mod event;
 pub mod hooks;
 pub mod index;
 pub mod mcp;
+pub mod paths;
 pub mod permission;
 pub mod project;
 pub mod provider;

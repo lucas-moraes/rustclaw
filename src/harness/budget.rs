@@ -75,7 +75,7 @@ pub struct BudgetTracker {
 
 impl Default for BudgetTracker {
     fn default() -> Self {
-        let root = dirs::data_local_dir().map(|d| d.join("rustclaw"));
+        let root = Some(crate::harness::paths::usage_dir());
         Self::with_root(root)
     }
 }
