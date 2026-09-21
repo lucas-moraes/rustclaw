@@ -148,7 +148,7 @@ pub const HELP: &str = "\
   Ctrl+C     copy selection · quit (no selection)
   Esc        (same: cancel in-flight action first)
   Ctrl+P     command palette
-  Ctrl+T     cycle theme
+  Ctrl+T     theme picker
   Ctrl+L     clear transcript
   Ctrl+Y     copy last code block
   Ctrl+S     save last code block to file

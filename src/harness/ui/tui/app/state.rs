@@ -72,6 +72,8 @@ pub struct App {
     pub auth_prompt: Option<AuthPromptState>,
     /// Open `/resume` session picker.
     pub resume_picker: Option<ResumePickerState>,
+    /// Open theme picker overlay (Ctrl+T / `/theme`).
+    pub theme_picker: Option<ThemePickerState>,
     /// Per-row mapping of rendered transcript rows → `lines` index (rebuilt
     /// each draw; used for mouse click hit-testing).
     pub transcript_row_map: Vec<usize>,
@@ -410,6 +412,61 @@ impl ModelPickerState {
     }
 }
 
+/// State of the theme picker overlay (Ctrl+T / `/theme`).
+pub struct ThemePickerState {
+    /// Row highlighted for keyboard navigation.
+    pub selected: usize,
+    /// First visible row index in the scrollable list.
+    pub scroll_offset: usize,
+    /// Theme name active when the picker opened (to restore on Esc).
+    pub original: String,
+}
+
+impl ThemePickerState {
+    /// Opens the picker with the current theme pre-selected.
+    pub fn open(app: &App) -> Self {
+        let names = Theme::names();
+        let selected = names.iter().position(|n| *n == app.theme.name).unwrap_or(0);
+        Self {
+            selected,
+            scroll_offset: 0,
+            original: app.theme.name.to_string(),
+        }
+    }
+
+    pub fn items(&self) -> Vec<&'static str> {
+        Theme::names()
+    }
+
+    pub fn move_sel(&mut self, delta: i32) {
+        let len = self.items().len() as i32;
+        if len == 0 {
+            return;
+        }
+        self.selected = ((self.selected as i32 + delta).rem_euclid(len)) as usize;
+    }
+
+    /// Keeps the selected row within the visible window, scrolling as needed.
+    pub fn ensure_selected_visible(&mut self, visible: usize) {
+        let len = self.items().len();
+        if visible == 0 || len == 0 {
+            return;
+        }
+        if self.selected < self.scroll_offset {
+            self.scroll_offset = self.selected;
+        } else if self.selected >= self.scroll_offset + visible {
+            self.scroll_offset = self.selected + 1 - visible;
+        }
+        let max_offset = len.saturating_sub(visible);
+        self.scroll_offset = self.scroll_offset.min(max_offset);
+    }
+
+    /// Name of the highlighted theme, if any.
+    pub fn current(&self) -> Option<&'static str> {
+        self.items().get(self.selected).copied()
+    }
+}
+
 /// Modal waiting for a token (masked input) for `/auth`.
 pub struct AuthPromptState {
     pub provider: String,
@@ -609,6 +666,7 @@ impl App {
             model_picker: None,
             auth_prompt: None,
             resume_picker: None,
+            theme_picker: None,
             transcript_row_map: Vec::new(),
             transcript_scroll: 0,
             transcript_area: ratatui::layout::Rect::default(),
@@ -721,6 +779,7 @@ impl App {
             || self.model_picker.is_some()
             || self.auth_prompt.is_some()
             || self.resume_picker.is_some()
+            || self.theme_picker.is_some()
             || self.search.is_some()
             || self.selection.as_ref().map(|s| s.dragging).unwrap_or(false)
     }
@@ -786,13 +845,6 @@ impl App {
         Ok(())
     }
 
-    pub fn cycle_theme(&mut self) {
-        self.theme_id = (self.theme_id + 1) % Theme::all().len();
-        self.theme = Theme::from_index(self.theme_id);
-        self.add_system(&format!("theme → {}", self.theme.name));
-        self.persist_theme();
-    }
-
     /// Saves the current theme into the global config.json (best effort).
     pub fn persist_theme(&self) {
         let mut s = crate::config::GlobalSettings::load();
@@ -825,6 +877,31 @@ impl App {
             true
         } else {
             false
+        }
+    }
+
+    /// Opens the theme picker overlay, pre-selecting the active theme.
+    pub fn open_theme_picker(&mut self) {
+        self.autocomplete = None;
+        self.theme_picker = Some(ThemePickerState::open(self));
+    }
+
+    /// Applies the highlighted theme and closes the picker.
+    pub fn apply_theme_picker(&mut self) {
+        if let Some(name) = self.theme_picker.as_ref().and_then(|p| p.current()) {
+            self.set_theme(name);
+            self.add_system(&format!(
+                "theme → {} (saved to config.json)",
+                self.theme.name
+            ));
+        }
+        self.theme_picker = None;
+    }
+
+    /// Closes the picker, restoring the theme active when it opened.
+    pub fn cancel_theme_picker(&mut self) {
+        if let Some(picker) = self.theme_picker.take() {
+            self.set_theme(&picker.original);
         }
     }
 
@@ -1006,5 +1083,49 @@ mod resume_picker_tests {
         p.selected = 3;
         p.ensure_selected_visible(10);
         assert_eq!(p.scroll_offset, 0);
+    }
+}
+
+#[cfg(test)]
+mod theme_picker_tests {
+    use super::ThemePickerState;
+    use crate::harness::ui::tui::theme::Theme;
+
+    fn picker(selected: usize) -> ThemePickerState {
+        ThemePickerState {
+            selected,
+            scroll_offset: 0,
+            original: "cyberclaw".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_items_match_theme_names() {
+        let p = picker(0);
+        assert_eq!(p.items(), Theme::names());
+    }
+
+    #[test]
+    fn test_move_sel_wraps_around() {
+        let mut p = picker(0);
+        p.move_sel(-1);
+        assert_eq!(p.selected, Theme::names().len() - 1);
+        p.move_sel(1);
+        assert_eq!(p.selected, 0);
+    }
+
+    #[test]
+    fn test_current_returns_highlighted_name() {
+        let p = picker(0);
+        assert_eq!(p.current(), Some(Theme::names()[0]));
+    }
+
+    #[test]
+    fn test_ensure_selected_visible_scrolls() {
+        let mut p = picker(Theme::names().len() - 1);
+        p.ensure_selected_visible(2);
+        assert!(p.scroll_offset > 0);
+        assert!(p.selected >= p.scroll_offset);
+        assert!(p.selected < p.scroll_offset + 2);
     }
 }

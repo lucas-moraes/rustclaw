@@ -13,7 +13,7 @@ use crossterm::event::KeyEvent;
 
 use super::pickers::{
     handle_auth_prompt_key, handle_model_picker_key, handle_resume_picker_key,
-    handle_settings_command, handle_skill_picker_key,
+    handle_settings_command, handle_skill_picker_key, handle_theme_picker_key,
 };
 use super::state::{App, AuthPromptState, Modal, ResumePickerState};
 use super::undo::{copy_to_clipboard, revert_to_prompt, undo_last_turn, user_prompt_text};
@@ -60,6 +60,10 @@ pub(crate) async fn handle_key(
 
     if app.resume_picker.is_some() {
         return handle_resume_picker_key(app, key).await;
+    }
+
+    if app.theme_picker.is_some() {
+        return handle_theme_picker_key(app, key);
     }
 
     if app.search.is_some() {
@@ -137,7 +141,7 @@ pub(crate) async fn handle_key(
             return Ok(false);
         }
         KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.cycle_theme();
+            app.open_theme_picker();
             return Ok(false);
         }
         KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -394,7 +398,7 @@ pub(crate) async fn handle_palette_key(
         match payload.as_str() {
             "__help__" => app.show_help = true,
             "__clear__" => app.clear_transcript(),
-            "__theme_cycle__" => app.cycle_theme(),
+            "__theme_picker__" => app.open_theme_picker(),
             "__skills__" => {
                 app.open_skill_picker();
             }
@@ -698,11 +702,7 @@ pub(crate) async fn submit_input(
         if text == "/theme" || text.starts_with("/theme ") {
             let arg = text.strip_prefix("/theme").unwrap_or("").trim();
             if arg.is_empty() {
-                app.add_system(&format!(
-                    "themes: {}  (current: {})",
-                    Theme::names().join(", "),
-                    app.theme.name
-                ));
+                app.open_theme_picker();
             } else if app.set_theme(arg) {
                 app.add_system(&format!("theme → {}", app.theme.name));
             } else {

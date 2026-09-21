@@ -111,6 +111,33 @@ impl Theme {
         }
     }
 
+    pub fn daylight() -> Self {
+        Self {
+            name: "daylight",
+            bg: Color::Rgb(250, 250, 248),
+            surface: Color::Rgb(238, 240, 244),
+            border: Color::Rgb(200, 205, 215),
+            border_focus: Color::Rgb(0, 110, 200),
+            text: Color::Rgb(35, 40, 50),
+            text_dim: Color::Rgb(130, 138, 150),
+            text_bright: Color::Rgb(10, 12, 18),
+            accent: Color::Rgb(0, 110, 200),
+            accent2: Color::Rgb(200, 40, 140),
+            accent3: Color::Rgb(120, 80, 200),
+            success: Color::Rgb(20, 130, 80),
+            warn: Color::Rgb(180, 120, 0),
+            error: Color::Rgb(200, 40, 60),
+            info: Color::Rgb(30, 110, 190),
+            user_fg: Color::Rgb(0, 110, 200),
+            assistant_fg: Color::Rgb(30, 35, 45),
+            tool_fg: Color::Rgb(150, 95, 0),
+            diff_add: Color::Rgb(20, 130, 80),
+            diff_del: Color::Rgb(200, 40, 60),
+            diff_hunk: Color::Rgb(120, 80, 200),
+            status_bg: Color::Rgb(232, 235, 240),
+        }
+    }
+
     pub fn mono() -> Self {
         Self {
             name: "mono",
@@ -139,7 +166,13 @@ impl Theme {
     }
 
     pub fn all() -> &'static [fn() -> Theme] {
-        &[Theme::cyberclaw, Theme::aurora, Theme::ember, Theme::mono]
+        &[
+            Theme::cyberclaw,
+            Theme::aurora,
+            Theme::ember,
+            Theme::mono,
+            Theme::daylight,
+        ]
     }
 
     pub fn by_name(name: &str) -> Option<Theme> {
@@ -149,12 +182,13 @@ impl Theme {
             "aurora" => Some(Self::aurora()),
             "ember" | "warm" | "amber" => Some(Self::ember()),
             "mono" | "monochrome" | "bw" => Some(Self::mono()),
+            "daylight" | "light" | "day" => Some(Self::daylight()),
             _ => None,
         }
     }
 
     pub fn names() -> Vec<&'static str> {
-        vec!["cyberclaw", "aurora", "ember", "mono"]
+        vec!["cyberclaw", "aurora", "ember", "mono", "daylight"]
     }
 
     pub fn from_index(i: usize) -> Theme {
@@ -183,10 +217,33 @@ impl Theme {
         }
     }
 
+    /// Darker variants of the mode accents, readable on a light background.
+    pub fn mode_accent_light(agent: &str) -> Option<Color> {
+        match agent {
+            "build" => Some(Color::Rgb(0, 90, 200)),
+            "plan" => Some(Color::Rgb(170, 110, 0)),
+            "explore" => Some(Color::Rgb(190, 80, 0)),
+            "general" => Some(Color::Rgb(110, 60, 190)),
+            "chat-free" => Some(Color::Rgb(0, 130, 120)),
+            _ => None,
+        }
+    }
+
+    /// True when the theme is designed for a light background.
+    pub fn is_light(&self) -> bool {
+        self.name == "daylight"
+    }
+
     /// Returns a copy with the accent and focus border tinted by the agent
-    /// mode. Agents outside the cycle keep the base theme colors.
+    /// mode. Agents outside the cycle keep the base theme colors. Light themes
+    /// use darker accent variants so they stay readable on a bright background.
     pub fn with_mode(mut self, agent: &str) -> Self {
-        if let Some(c) = Self::mode_accent(agent) {
+        let accent = if self.is_light() {
+            Self::mode_accent_light(agent)
+        } else {
+            Self::mode_accent(agent)
+        };
+        if let Some(c) = accent {
             self.accent = c;
             self.border_focus = c;
         }
@@ -256,5 +313,35 @@ mod tests {
         let themed = base.clone().with_mode("custom-agent");
         assert_eq!(themed.accent, base.accent);
         assert_eq!(themed.border_focus, base.border_focus);
+    }
+
+    #[test]
+    fn test_daylight_registered_and_resolvable() {
+        assert!(Theme::names().contains(&"daylight"));
+        assert_eq!(Theme::all().len(), Theme::names().len());
+        assert_eq!(Theme::by_name("light").unwrap().name, "daylight");
+        assert_eq!(Theme::by_name("day").unwrap().name, "daylight");
+        assert_eq!(Theme::index_of("daylight"), Theme::names().len() - 1);
+        assert_eq!(
+            Theme::from_index(Theme::index_of("daylight")).name,
+            "daylight"
+        );
+    }
+
+    #[test]
+    fn test_daylight_is_light_and_uses_dark_mode_accents() {
+        let base = Theme::daylight();
+        assert!(base.is_light());
+        assert!(!Theme::cyberclaw().is_light());
+        let themed = base.clone().with_mode("plan");
+        assert_eq!(themed.accent, Theme::mode_accent_light("plan").unwrap());
+        assert_eq!(
+            themed.border_focus,
+            Theme::mode_accent_light("plan").unwrap()
+        );
+        // Light accents differ from the dark-theme ones.
+        assert_ne!(Theme::mode_accent_light("plan"), Theme::mode_accent("plan"));
+        // Unknown agent keeps the base light accent.
+        assert_eq!(base.clone().with_mode("custom").accent, base.accent);
     }
 }

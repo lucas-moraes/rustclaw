@@ -29,10 +29,11 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
         .style(Style::default().bg(t.surface));
 
     let inner = block.inner(area);
+    // No left prefix: the full inner width is available for text on every row.
     app.input_inner_width = inner.width;
     frame.render_widget(block, area);
 
-    let prefix = "✦ › ";
+    let prefix = "";
     let prefix_len = prefix.chars().count() as u16;
 
     let max_rows = inner.height.max(1) as usize;
@@ -56,7 +57,8 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 
     // Soft-wrap the input into visual rows and locate the cursor.
-    let rows = wrap_visual(&app.input, inner.width as usize);
+    // `app.input_inner_width` already accounts for the row-0 prefix.
+    let rows = wrap_visual(&app.input, app.input_inner_width as usize);
     let (crow, ccol) = visual_row_col(&rows, app.input_cursor);
     let input_chars: Vec<char> = app.input.chars().collect();
     let cur = if focused {

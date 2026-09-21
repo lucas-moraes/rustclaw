@@ -384,10 +384,10 @@ pub fn all_items() -> Vec<PaletteItem> {
         ),
         item(
             "action-theme",
-            "cycle theme",
-            "Switch to next color theme",
+            "select theme",
+            "Open the theme picker",
             PaletteKind::Action,
-            "__theme_cycle__",
+            "__theme_picker__",
         ),
         item(
             "action-quit",

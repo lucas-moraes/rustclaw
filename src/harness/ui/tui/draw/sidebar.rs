@@ -30,7 +30,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
         .borders(Borders::ALL)
         .border_style(Style::default().fg(t.border))
         .title(Span::styled(
-            " rustclaw ",
+            " RUSTCLAW ",
             Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
         ))
         .style(Style::default().bg(t.surface));
@@ -48,7 +48,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
     let mut lines: Vec<Line<'static>> = Vec::new();
 
     // ── Model (always first & prioritized so it's never clipped) ────────
-    lines.push(section("Model", t.accent));
+    lines.push(section("Model", t));
     // In very short panels, keep model/provider on a single line each so they
     // always fit; otherwise allow stacked (wrapped) values.
     if h < 12 {
@@ -76,12 +76,12 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
     lines.push(blank());
 
     // ── Mode ────────────────────────────────────────────────────────────
-    lines.push(section("Mode", t.accent));
-    lines.extend(mode_rows(active, t, w));
+    lines.push(section("Mode", t));
+    lines.extend(mode_rows(active, t, w, inner.width as usize));
     lines.push(blank());
 
     // ── Session ─────────────────────────────────────────────────────────
-    lines.push(section("Session", t.accent));
+    lines.push(section("Session", t));
     let title = session_title(app);
     lines.extend(kv_block("title", &title, t, w));
     let proj = project_name(app);
@@ -95,27 +95,27 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
     lines.push(blank());
 
     // ── Context bar ─────────────────────────────────────────────────────
-    lines.push(section("Context", t.accent));
+    lines.push(section("Context", t));
     lines.extend(context_block(app, t, w));
     lines.push(blank());
 
     // ── Cost (estimated session spend) ────────────────────────────────────
     if app.session_usage.total() > 0 {
-        lines.push(section("Cost", t.accent));
+        lines.push(section("Cost", t));
         lines.extend(cost_block(app, t, w));
         lines.push(blank());
     }
 
     // ── Skills (if any) ─────────────────────────────────────────────────
     if !app.session.skills.is_empty() {
-        lines.push(section("Skills", t.accent));
+        lines.push(section("Skills", t));
         lines.extend(skills_block(app, t, w));
         lines.push(blank());
     }
 
     // ── Active tools (while running) ────────────────────────────────────
     if !app.active_tools.is_empty() {
-        lines.push(section("Tools", t.accent));
+        lines.push(section("Tools", t));
         for tool in app.active_tools.iter().take(4) {
             lines.push(Line::from(vec![
                 Span::styled("  ▸ ".to_string(), Style::default().fg(t.warn)),
@@ -173,7 +173,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
     // view so the active model is never hidden.
     if h < 5 {
         let mut minimal: Vec<Line<'static>> = Vec::new();
-        minimal.push(section("Model", t.accent));
+        minimal.push(section("Model", t));
         minimal.push(kv_inline("model", app.runtime.config.model.clone(), t, w));
         if h >= 4 {
             minimal.push(kv_inline(
@@ -211,41 +211,49 @@ fn status_block(app: &App, t: &Theme, w: usize) -> Vec<Line<'static>> {
         ("●", "idle", t.success)
     };
 
-    let label = truncate(label, w.saturating_sub(4));
+    // Solid pill: colored background spanning the label, text in the theme bg.
+    let label = truncate(label, w.saturating_sub(5));
     vec![Line::from(vec![
+        Span::styled(" ", Style::default()),
         Span::styled(
-            format!(" {icon} "),
-            Style::default().fg(fg).add_modifier(Modifier::BOLD),
+            format!(" {icon} {label} "),
+            Style::default()
+                .fg(t.bg)
+                .bg(fg)
+                .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(label, Style::default().fg(fg).add_modifier(Modifier::BOLD)),
     ])]
 }
 
-fn mode_rows(active: &str, t: &Theme, w: usize) -> Vec<Line<'static>> {
+fn mode_rows(active: &str, t: &Theme, w: usize, full: usize) -> Vec<Line<'static>> {
     let mut out = Vec::with_capacity(MODES.len());
     // If the active agent is outside the cycle (custom), show it first.
     let known = MODES.contains(&active);
     if !known && !active.is_empty() {
-        out.push(mode_row(active, true, t, w));
+        out.push(mode_row(active, true, t, w, full));
     }
     for mode in MODES {
-        out.push(mode_row(mode, *mode == active, t, w));
+        out.push(mode_row(mode, *mode == active, t, w, full));
     }
     out
 }
 
-fn mode_row(mode: &str, is_active: bool, t: &Theme, w: usize) -> Line<'static> {
+fn mode_row(mode: &str, is_active: bool, t: &Theme, w: usize, full: usize) -> Line<'static> {
     let marker = if is_active { "▶" } else { " " };
-    let label = truncate(&format!(" {marker} {mode}"), w.saturating_sub(1));
     if is_active {
+        // Active row: solid accent background spanning the whole line width.
+        let text = format!(" {marker} {mode}");
+        let text = truncate(&text, full);
+        let pad = full.saturating_sub(text.chars().count());
         Line::from(Span::styled(
-            label,
+            format!("{text}{}", " ".repeat(pad)),
             Style::default()
                 .fg(t.bg)
                 .bg(t.accent)
                 .add_modifier(Modifier::BOLD),
         ))
     } else {
+        let label = truncate(&format!(" {marker} {mode}"), w.saturating_sub(1));
         Line::from(Span::styled(label, Style::default().fg(t.text_dim)))
     }
 }
@@ -270,8 +278,8 @@ fn context_block(app: &App, t: &Theme, w: usize) -> Vec<Line<'static>> {
     // Row 1: continuous bar + percent (color shifts with pressure).
     lines.push(Line::from(vec![
         Span::styled("  ".to_string(), Style::default()),
-        Span::styled("━".repeat(filled), Style::default().fg(bar_fg)),
-        Span::styled("─".repeat(empty), Style::default().fg(t.border)),
+        Span::styled("█".repeat(filled), Style::default().fg(bar_fg)),
+        Span::styled("░".repeat(empty), Style::default().fg(t.border)),
         Span::styled(" ".to_string(), Style::default()),
         Span::styled(
             pct_label,
@@ -436,11 +444,14 @@ fn skills_block(app: &App, t: &Theme, w: usize) -> Vec<Line<'static>> {
 
 // ─── helpers ───────────────────────────────────────────────────────────────
 
-fn section(label: &str, fg: ratatui::style::Color) -> Line<'static> {
-    Line::from(Span::styled(
-        format!(" {}", label.to_uppercase()),
-        Style::default().fg(fg).add_modifier(Modifier::BOLD),
-    ))
+fn section(label: &str, t: &Theme) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(" ▎", Style::default().fg(t.accent)),
+        Span::styled(
+            label.to_uppercase(),
+            Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+        ),
+    ])
 }
 
 fn blank() -> Line<'static> {

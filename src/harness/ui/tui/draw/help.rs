@@ -83,7 +83,7 @@ fn keys(t: &crate::harness::ui::tui::theme::Theme) -> Vec<Line<'static>> {
         kv("Drag", "select transcript text (auto-copy)", t),
         kv("Ctrl+C", "copy selection · quit if none", t),
         kv("Ctrl+P", "command palette", t),
-        kv("Ctrl+T", "cycle color theme", t),
+        kv("Ctrl+T", "theme picker", t),
         kv("Ctrl+L", "clear local transcript", t),
         kv("Ctrl+Y", "copy last code block", t),
         kv("Ctrl+S", "save last code block to file", t),
@@ -103,7 +103,11 @@ fn commands(t: &crate::harness::ui::tui::theme::Theme) -> Vec<Line<'static>> {
         kv("/sessions select <id>", "load a session by id", t),
         kv("/agent name", "switch agent", t),
         kv("/compact", "summarize old messages (also auto on open)", t),
-        kv("/theme name", "cyberclaw · aurora · ember · mono", t),
+        kv(
+            "/theme name",
+            "cyberclaw · aurora · ember · mono · daylight",
+            t,
+        ),
         kv("/usage", "tokens in/out + context window", t),
         kv(
             "/stats",
