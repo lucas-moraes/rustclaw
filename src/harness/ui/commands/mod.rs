@@ -60,8 +60,17 @@ pub async fn handle(
                     "settings · iterations {} · context {} · turn_timeout {}s · provider {} · model {}",
                     c.max_iterations, c.max_context_tokens, c.turn_timeout_secs, c.provider, c.model
                 ));
+                out.push(format!(
+                    "compact_trigger_ratio {} · summary_model {}",
+                    c.compact_trigger_ratio,
+                    if c.summary_model.is_empty() {
+                        "(same as model)"
+                    } else {
+                        c.summary_model.as_str()
+                    }
+                ));
                 out.push(
-                    "usage: /settings iterations <n> · context <n> · turn_timeout <secs>"
+                    "usage: /settings iterations <n> · context <n> · turn_timeout <secs> · compact_ratio <0.0-1.0> · summary_model <name|off>"
                         .to_string(),
                 );
             } else {
@@ -69,7 +78,7 @@ pub async fn handle(
                 match parts.next() {
                     Some("iterations") => {
                         match parts.next().and_then(|v| v.parse::<usize>().ok()) {
-                            Some(n) => match runtime.update_settings(Some(n), None, None) {
+                            Some(n) => match runtime.update_settings(Some(n), None, None, None, None) {
                                 Ok(()) => out.push(format!("settings · max_iterations = {}", n)),
                                 Err(e) => out.push(format!("[error] {}", e)),
                             },
@@ -77,7 +86,7 @@ pub async fn handle(
                         }
                     }
                     Some("context") => match parts.next().and_then(|v| v.parse::<usize>().ok()) {
-                        Some(n) => match runtime.update_settings(None, Some(n), None) {
+                        Some(n) => match runtime.update_settings(None, Some(n), None, None, None) {
                             Ok(()) => out.push(format!("settings · max_context_tokens = {}", n)),
                             Err(e) => out.push(format!("[error] {}", e)),
                         },
@@ -85,15 +94,39 @@ pub async fn handle(
                     },
                     Some("turn_timeout") => {
                         match parts.next().and_then(|v| v.parse::<u64>().ok()) {
-                            Some(n) => match runtime.update_settings(None, None, Some(n)) {
+                            Some(n) => match runtime.update_settings(None, None, Some(n), None, None) {
                                 Ok(()) => out.push(format!("settings · turn_timeout_secs = {}", n)),
                                 Err(e) => out.push(format!("[error] {}", e)),
                             },
                             None => out.push("usage: /settings turn_timeout <secs>".to_string()),
                         }
                     }
+                    Some("compact_ratio") => {
+                        match parts.next().and_then(|v| v.parse::<f64>().ok()) {
+                            Some(r) => match runtime.update_settings(None, None, None, Some(r), None) {
+                                Ok(()) => out.push(format!("settings · compact_trigger_ratio = {}", r)),
+                                Err(e) => out.push(format!("[error] {}", e)),
+                            },
+                            None => out.push("usage: /settings compact_ratio <0.0-1.0>".to_string()),
+                        }
+                    }
+                    Some("summary_model") => {
+                        let m = parts.next().unwrap_or("");
+                        if m.is_empty() {
+                            out.push("usage: /settings summary_model <name|off>".to_string());
+                        } else {
+                            let val = if m == "off" { "" } else { m };
+                            match runtime.update_settings(None, None, None, None, Some(val)) {
+                                Ok(()) => out.push(format!(
+                                    "settings · summary_model = {}",
+                                    if val.is_empty() { "(same as model)" } else { val }
+                                )),
+                                Err(e) => out.push(format!("[error] {}", e)),
+                            }
+                        }
+                    }
                     Some(other) => out.push(format!(
-                        "unknown setting: {} (iterations · context · turn_timeout)",
+                        "unknown setting: {} (iterations · context · turn_timeout · compact_ratio · summary_model)",
                         other
                     )),
                     None => {}

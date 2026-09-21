@@ -216,6 +216,7 @@ pub struct CompactionOutcome {
 /// - `events` is optional: when `None`, no events are emitted.
 ///
 /// Returns the number of messages summarized away (`0` when nothing changed).
+#[allow(clippy::too_many_arguments)] // orchestration fn: params are independent & required
 pub async fn compact_if_needed(
     session: &mut Session,
     provider: Arc<dyn Provider>,
@@ -224,6 +225,8 @@ pub async fn compact_if_needed(
     force: bool,
     events: Option<&EventSender>,
     model: &str,
+    trigger_ratio: f64,
+    summary_model: &str,
 ) -> Result<usize> {
     let config = CompactionConfig {
         max_context_tokens: if force { 0 } else { max_context_tokens },
@@ -232,8 +235,23 @@ pub async fn compact_if_needed(
         min_messages_to_compact: if force { 2 } else { MIN_MESSAGES },
         summary_timeout: SUMMARY_TIMEOUT,
         // Force ignores the ratio (budget is already 0); otherwise compact
-        // proactively at 70% of the budget.
-        trigger_ratio: if force { 1.0 } else { DEFAULT_TRIGGER_RATIO },
+        // proactively at the configured ratio (default 70% of the budget).
+        trigger_ratio: if force {
+            1.0
+        } else if trigger_ratio > 0.0 {
+            trigger_ratio
+        } else {
+            DEFAULT_TRIGGER_RATIO
+        },
+    };
+
+    // Summarization can use a cheaper model: quality bar is lower than the
+    // primary turn model, so a budget model cuts compaction cost. Empty =
+    // use the main model.
+    let summary_model = if summary_model.trim().is_empty() {
+        model
+    } else {
+        summary_model
     };
 
     // Decide first: events must only fire when a compaction actually runs,
@@ -242,7 +260,7 @@ pub async fn compact_if_needed(
         &session.messages,
         provider,
         &config,
-        model,
+        summary_model,
         Some(&session.ledger),
         &session.summary_chain,
     )
@@ -335,6 +353,7 @@ async fn summarize(
         tools: vec![],
         max_tokens: None,
         temperature: 0.2,
+        prompt_cache_key: None,
     };
     // Timeout so a slow/hung provider never blocks the turn during compaction.
     // Retry transient errors (429/5xx) with backoff before falling back.
@@ -905,6 +924,8 @@ mod tests {
             false,
             Some(&tx),
             "grok-4.5",
+            0.0,
+            "",
         )
         .await
         .unwrap();
@@ -951,10 +972,19 @@ mod tests {
         session.messages = msgs(3);
 
         let provider = Arc::new(MockProvider::ok("summary"));
-        let summarized =
-            compact_if_needed(&mut session, provider, &store, 1, false, None, "grok-4.5")
-                .await
-                .unwrap();
+        let summarized = compact_if_needed(
+            &mut session,
+            provider,
+            &store,
+            1,
+            false,
+            None,
+            "grok-4.5",
+            0.0,
+            "",
+        )
+        .await
+        .unwrap();
         assert_eq!(summarized, 0);
         assert_eq!(session.messages.len(), 3);
     }
@@ -980,6 +1010,8 @@ mod tests {
             false,
             Some(&tx),
             "grok-4.5",
+            0.0,
+            "",
         )
         .await
         .unwrap();

@@ -403,6 +403,8 @@ impl SessionRuntime {
         max_iterations: Option<usize>,
         max_context_tokens: Option<usize>,
         turn_timeout_secs: Option<u64>,
+        compact_trigger_ratio: Option<f64>,
+        summary_model: Option<&str>,
     ) -> Result<()> {
         if let Some(n) = max_iterations {
             anyhow::ensure!(n > 0, "max_iterations must be > 0");
@@ -416,12 +418,24 @@ impl SessionRuntime {
             anyhow::ensure!(n >= 30, "turn_timeout_secs must be at least 30");
             self.config.turn_timeout_secs = n as usize;
         }
+        if let Some(r) = compact_trigger_ratio {
+            anyhow::ensure!(
+                (0.0..=1.0).contains(&r),
+                "compact_trigger_ratio must be between 0.0 and 1.0"
+            );
+            self.config.compact_trigger_ratio = r;
+        }
+        if let Some(m) = summary_model {
+            self.config.summary_model = m.to_string();
+        }
         let mut s = crate::config::GlobalSettings::load();
         s.max_iterations = self.config.max_iterations;
         s.max_context_tokens = self.config.max_context_tokens;
         s.turn_timeout_secs = self.config.turn_timeout_secs;
         s.provider = self.config.provider.clone();
         s.model = self.config.model.clone();
+        s.compact_trigger_ratio = self.config.compact_trigger_ratio;
+        s.summary_model = self.config.summary_model.clone();
         s.save().context("failed to persist config.json")?;
         Ok(())
     }
@@ -466,6 +480,8 @@ impl SessionRuntime {
             force,
             events,
             &self.config.model,
+            self.config.compact_trigger_ratio,
+            &self.config.summary_model,
         )
         .await?;
         // Compaction rewrote the conversation context: drop the frozen
@@ -668,6 +684,8 @@ impl SessionRuntime {
                 turn_timeout_secs: self.config.turn_timeout_secs as u64,
                 max_total_iterations: (self.config.max_total_iterations != 0)
                     .then_some(self.config.max_total_iterations),
+                compact_trigger_ratio: self.config.compact_trigger_ratio,
+                summary_model: self.config.summary_model.clone(),
             },
         };
 

@@ -48,6 +48,16 @@ pub struct GlobalSettings {
     /// Daily spend limit in USD (estimated cost). `0.0` = no limit.
     #[serde(default, skip_serializing_if = "is_zero_f64")]
     pub daily_budget_usd: f64,
+    /// Optional cheaper model used only for compaction summaries. Empty =
+    /// use the main model. Summarization quality doesn't need the primary
+    /// model, so a cheaper one cuts compaction cost.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub summary_model: String,
+    /// Fraction of `max_context_tokens` at which proactive compaction
+    /// triggers. `0.0` = keep the default (0.7). Lower values compact sooner,
+    /// keeping the context leaner at the cost of more frequent summaries.
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
+    pub compact_trigger_ratio: f64,
 }
 
 fn is_zero_f64(v: &f64) -> bool {
@@ -77,6 +87,8 @@ impl Default for GlobalSettings {
             theme: String::new(),
             daily_budget_usd: 0.0,
             prompt_caching: true,
+            summary_model: String::new(),
+            compact_trigger_ratio: 0.0,
         }
     }
 }
@@ -164,6 +176,11 @@ pub struct RuntimeConfig {
     pub default_agent: String,
     /// Daily spend limit in USD (estimated cost). `0.0` = no limit.
     pub daily_budget_usd: f64,
+    /// Optional cheaper model for compaction summaries. Empty = main model.
+    pub summary_model: String,
+    /// Fraction of `max_context_tokens` at which proactive compaction
+    /// triggers. `0.0` = default (0.7).
+    pub compact_trigger_ratio: f64,
 }
 
 impl Default for RuntimeConfig {
@@ -200,6 +217,8 @@ impl RuntimeConfig {
             turn_timeout_secs: 1200,
             default_agent: "build".to_string(),
             daily_budget_usd: 0.0,
+            summary_model: String::new(),
+            compact_trigger_ratio: 0.0,
         }
     }
 
@@ -251,6 +270,12 @@ impl RuntimeConfig {
         }
         if settings.daily_budget_usd != 0.0 {
             cfg.daily_budget_usd = settings.daily_budget_usd;
+        }
+        if !settings.summary_model.is_empty() {
+            cfg.summary_model = settings.summary_model.clone();
+        }
+        if settings.compact_trigger_ratio != 0.0 {
+            cfg.compact_trigger_ratio = settings.compact_trigger_ratio;
         }
 
         // 4. Token from the global auth store for the resolved provider.

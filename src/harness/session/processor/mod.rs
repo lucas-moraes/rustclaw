@@ -27,6 +27,11 @@ pub struct ProcessorConfig {
     /// outer safety net: even if every continuation resets the per-segment
     /// `max_iterations`, the turn cannot exceed this many iterations.
     pub max_total_iterations: Option<usize>,
+    /// Fraction of `max_context_tokens` at which proactive compaction
+    /// triggers. `0.0` = default (0.7).
+    pub compact_trigger_ratio: f64,
+    /// Optional cheaper model for compaction summaries. Empty = main model.
+    pub summary_model: String,
     // Temperature is agent-calibrated: see AgentSpec::turn_temperature.
 }
 
@@ -38,6 +43,8 @@ impl Default for ProcessorConfig {
             max_context_tokens: 100_000,
             turn_timeout_secs: DEFAULT_TURN_TIMEOUT_SECS,
             max_total_iterations: None,
+            compact_trigger_ratio: 0.0,
+            summary_model: String::new(),
         }
     }
 }
@@ -944,6 +951,8 @@ impl SessionProcessor {
             false,
             Some(&self.events),
             &self.config.model,
+            self.config.compact_trigger_ratio,
+            &self.config.summary_model,
         )
         .await?;
         tracker.record(&session.messages);

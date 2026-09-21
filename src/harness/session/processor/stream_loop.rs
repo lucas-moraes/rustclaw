@@ -221,6 +221,8 @@ mod tests {
                 max_context_tokens: 100_000,
                 turn_timeout_secs: 60,
                 max_total_iterations: None,
+                compact_trigger_ratio: 0.0,
+                summary_model: String::new(),
             },
         }
     }

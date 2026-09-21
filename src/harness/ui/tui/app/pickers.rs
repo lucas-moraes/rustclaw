@@ -48,7 +48,7 @@ pub(crate) fn handle_settings_command(app: &mut App, text: &str) {
                 app.add_system("usage: /settings iterations <n> (e.g. 50)");
                 return;
             };
-            match app.runtime.update_settings(Some(n), None, None) {
+            match app.runtime.update_settings(Some(n), None, None, None, None) {
                 Ok(()) => app.add_system(&format!("settings · max_iterations = {}", n)),
                 Err(e) => app.add_system(&format!("[error] {}", e)),
             }
@@ -58,7 +58,7 @@ pub(crate) fn handle_settings_command(app: &mut App, text: &str) {
                 app.add_system("usage: /settings context <tokens> (e.g. 100000)");
                 return;
             };
-            match app.runtime.update_settings(None, Some(n), None) {
+            match app.runtime.update_settings(None, Some(n), None, None, None) {
                 Ok(()) => app.add_system(&format!("settings · max_context_tokens = {}", n)),
                 Err(e) => app.add_system(&format!("[error] {}", e)),
             }
@@ -68,8 +68,33 @@ pub(crate) fn handle_settings_command(app: &mut App, text: &str) {
                 app.add_system("usage: /settings turn_timeout <secs> (e.g. 1200)");
                 return;
             };
-            match app.runtime.update_settings(None, None, Some(n)) {
+            match app.runtime.update_settings(None, None, Some(n), None, None) {
                 Ok(()) => app.add_system(&format!("settings · turn_timeout_secs = {}", n)),
+                Err(e) => app.add_system(&format!("[error] {}", e)),
+            }
+        }
+        Some("compact_ratio") => {
+            let Some(r) = parts.next().and_then(|v| v.parse::<f64>().ok()) else {
+                app.add_system("usage: /settings compact_ratio <0.0-1.0> (e.g. 0.85)");
+                return;
+            };
+            match app.runtime.update_settings(None, None, None, Some(r), None) {
+                Ok(()) => app.add_system(&format!("settings · compact_trigger_ratio = {}", r)),
+                Err(e) => app.add_system(&format!("[error] {}", e)),
+            }
+        }
+        Some("summary_model") => {
+            let m = parts.next().unwrap_or("");
+            if m.is_empty() {
+                app.add_system("usage: /settings summary_model <name|off>");
+                return;
+            }
+            let val = if m == "off" { "" } else { m };
+            match app.runtime.update_settings(None, None, None, None, Some(val)) {
+                Ok(()) => app.add_system(&format!(
+                    "settings · summary_model = {}",
+                    if val.is_empty() { "(same as model)" } else { val }
+                )),
                 Err(e) => app.add_system(&format!("[error] {}", e)),
             }
         }
@@ -87,7 +112,7 @@ pub(crate) fn handle_settings_command(app: &mut App, text: &str) {
             None => app.add_system(&format!("current theme: {}", app.theme.name)),
         },
         Some(other) => app.add_system(&format!(
-            "unknown setting: {} (iterations · context · theme)",
+            "unknown setting: {} (iterations · context · turn_timeout · compact_ratio · summary_model · theme)",
             other
         )),
     }
@@ -403,6 +428,37 @@ pub(crate) async fn handle_resume_picker_key(app: &mut App, key: KeyEvent) -> Re
         // Rename the selected session.
         KeyCode::Char('r') => {
             picker.rename_input = Some(picker.selected_title());
+        }
+        _ => {}
+    }
+    Ok(false)
+}
+
+/// Handles a key while the theme picker overlay is open.
+pub(crate) fn handle_theme_picker_key(app: &mut App, key: KeyEvent) -> Result<bool> {
+    use crossterm::event::KeyCode;
+    let Some(picker) = app.theme_picker.as_mut() else {
+        return Ok(false);
+    };
+    match key.code {
+        KeyCode::Up | KeyCode::Char('k') => {
+            picker.move_sel(-1);
+            // Live preview: apply the highlighted theme immediately.
+            if let Some(name) = picker.current() {
+                app.set_theme(name);
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            picker.move_sel(1);
+            if let Some(name) = picker.current() {
+                app.set_theme(name);
+            }
+        }
+        KeyCode::Enter => {
+            app.apply_theme_picker();
+        }
+        KeyCode::Esc => {
+            app.cancel_theme_picker();
         }
         _ => {}
     }

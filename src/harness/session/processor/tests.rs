@@ -83,6 +83,8 @@ async fn test_turn_timeout_stops_run() {
             max_context_tokens: 100_000,
             turn_timeout_secs: 1, // 1s so the test is fast
             max_total_iterations: None,
+            compact_trigger_ratio: 0.0,
+            summary_model: String::new(),
         },
     };
     let mut session = store.create_session("build", dir.path()).unwrap();
@@ -170,6 +172,8 @@ async fn test_auto_continuation_resumes_after_max_iterations() {
             // Explicit budget so the continuation cap (10), not the budget,
             // ends the turn — this test is about auto-continuation.
             max_total_iterations: Some(11),
+            compact_trigger_ratio: 0.0,
+            summary_model: String::new(),
         },
     };
     let mut session = store.create_session("build", dir.path()).unwrap();
@@ -364,6 +368,8 @@ fn test_processor_with_budget(
             max_context_tokens: 100_000,
             turn_timeout_secs: 30, // generous: no watchdog interference
             max_total_iterations,
+            compact_trigger_ratio: 0.0,
+            summary_model: String::new(),
         },
     };
     (processor, dir)
@@ -962,6 +968,8 @@ fn processor_with(provider: StdArc<dyn Provider>, max_iterations: usize) -> Sess
             max_context_tokens: 100_000,
             turn_timeout_secs: 60,
             max_total_iterations: None,
+            compact_trigger_ratio: 0.0,
+            summary_model: String::new(),
         },
     }
 }
@@ -1312,4 +1320,89 @@ async fn test_successful_edit_prevents_rollback() {
         .filter(|m| m.role.as_str() == "user" && m.text_content().contains("rolled back"))
         .count();
     assert_eq!(notes, 0, "no rollback when something succeeded");
+}
+
+// --- elide_old_tool_outputs -----------------------------------------------
+
+use crate::harness::session::{Part, Role, ToolPart, ToolStatus};
+
+fn tool_msg(id: &str, name: &str, output: String) -> Message {
+    let mut t = ToolPart::pending(id, name, serde_json::json!({}));
+    t.status = ToolStatus::Completed;
+    t.output = output;
+    Message::new(Role::Assistant, vec![Part::Tool(t)])
+}
+
+fn big_output(n: usize) -> String {
+    "x".repeat(n)
+}
+
+#[test]
+fn elide_keeps_recent_outputs_intact() {
+    // 8 tool results, KEEP_RECENT_TOOL_OUTPUTS = 6 -> the 2 oldest are elided.
+    let mut msgs = vec![Message::user("go")];
+    for i in 0..8 {
+        msgs.push(tool_msg(&format!("t{i}"), "read", big_output(2000)));
+    }
+    let out = super::elide_old_tool_outputs(&msgs);
+
+    let outputs: Vec<&str> = out
+        .iter()
+        .flat_map(|m| m.tool_parts())
+        .map(|t| t.output.as_str())
+        .collect();
+    assert_eq!(outputs.len(), 8);
+    // 2 oldest elided.
+    assert!(outputs[0].contains("output omitted"), "oldest elided");
+    assert!(outputs[1].contains("output omitted"));
+    // 6 most recent intact.
+    for o in &outputs[2..] {
+        assert_eq!(o.len(), 2000, "recent output must stay intact");
+    }
+}
+
+#[test]
+fn elide_noop_when_few_tools() {
+    let mut msgs = vec![Message::user("go")];
+    for i in 0..4 {
+        msgs.push(tool_msg(&format!("t{i}"), "read", big_output(2000)));
+    }
+    let out = super::elide_old_tool_outputs(&msgs);
+    let all_intact = out
+        .iter()
+        .flat_map(|m| m.tool_parts())
+        .all(|t| t.output.len() == 2000);
+    assert!(all_intact, "fewer than KEEP recent -> nothing elided");
+}
+
+#[test]
+fn elide_skips_small_outputs() {
+    // Many small outputs: even the old ones stay (below MIN_ELIDE_BYTES).
+    let mut msgs = vec![Message::user("go")];
+    for i in 0..10 {
+        msgs.push(tool_msg(&format!("t{i}"), "git_status", "ok".to_string()));
+    }
+    let out = super::elide_old_tool_outputs(&msgs);
+    let all_intact = out
+        .iter()
+        .flat_map(|m| m.tool_parts())
+        .all(|t| t.output == "ok");
+    assert!(all_intact, "small outputs are never elided");
+}
+
+#[test]
+fn elide_preserves_tool_name_and_size_in_placeholder() {
+    let mut msgs = vec![Message::user("go")];
+    for i in 0..8 {
+        msgs.push(tool_msg(&format!("t{i}"), "bash", big_output(5000)));
+    }
+    let out = super::elide_old_tool_outputs(&msgs);
+    let first = &out
+        .iter()
+        .flat_map(|m| m.tool_parts())
+        .next()
+        .unwrap()
+        .output;
+    assert!(first.contains("bash"), "placeholder names the tool");
+    assert!(first.contains("5000"), "placeholder reports original size");
 }
