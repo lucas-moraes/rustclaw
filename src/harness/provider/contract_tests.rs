@@ -48,6 +48,7 @@ fn test_request() -> LlmRequest {
         }],
         max_tokens: None,
         temperature: 0.5,
+        prompt_cache_key: None,
     }
 }
 

@@ -180,6 +180,11 @@ pub struct LlmRequest {
     /// requires the field — see `anthropic::build_request_body`).
     pub max_tokens: Option<usize>,
     pub temperature: f32,
+    /// Optional explicit prompt-cache key (DeepInfra `prompt_cache_key`).
+    /// Scoped per chat session so the growing conversation history keeps
+    /// hitting the KV cache even when the prefix isn't byte-identical.
+    /// `None` = omit the field (providers without support ignore it).
+    pub prompt_cache_key: Option<String>,
 }
 
 pub struct LlmResponse {

@@ -156,6 +156,14 @@ fn build_request_body(req: &LlmRequest, stream: bool) -> Value {
     if let Some(v) = req.max_tokens {
         body["max_tokens"] = json!(v);
     }
+    // DeepInfra-style explicit prompt-cache key: requests sharing the key and
+    // model reuse the KV cache even when the prefix isn't byte-identical.
+    // Providers that don't support it ignore unknown fields.
+    if let Some(key) = &req.prompt_cache_key {
+        if !key.is_empty() {
+            body["prompt_cache_key"] = json!(key);
+        }
+    }
     if !req.tools.is_empty() {
         body["tools"] = tools_body(&req.tools);
     }
@@ -683,10 +691,43 @@ mod tests {
             tools: vec![],
             max_tokens: None,
             temperature: 0.0,
+            prompt_cache_key: None,
         };
         let streaming = build_request_body(&req, true);
         assert_eq!(streaming["stream_options"]["include_usage"], true);
         let non_streaming = build_request_body(&req, false);
         assert!(non_streaming.get("stream_options").is_none());
+    }
+
+    #[test]
+    fn test_build_request_body_prompt_cache_key() {
+        let base = LlmRequest {
+            model: "kimi".into(),
+            system: "sys".into(),
+            messages: std::sync::Arc::new(vec![Message::user("hi")]),
+            tools: vec![],
+            max_tokens: None,
+            temperature: 0.0,
+            prompt_cache_key: None,
+        };
+        // Absent key -> field omitted entirely.
+        let body = build_request_body(&base, false);
+        assert!(body.get("prompt_cache_key").is_none());
+
+        // Present key -> emitted for providers that honor it (DeepInfra).
+        let with_key = LlmRequest {
+            prompt_cache_key: Some("session-123".into()),
+            ..base.clone()
+        };
+        let body = build_request_body(&with_key, false);
+        assert_eq!(body["prompt_cache_key"], "session-123");
+
+        // Empty key -> omitted (defensive).
+        let empty = LlmRequest {
+            prompt_cache_key: Some(String::new()),
+            ..base
+        };
+        let body = build_request_body(&empty, false);
+        assert!(body.get("prompt_cache_key").is_none());
     }
 }

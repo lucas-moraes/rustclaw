@@ -207,6 +207,7 @@ mod tests {
             tools: Vec::new(),
             max_tokens: None,
             temperature: 0.0,
+            prompt_cache_key: None,
         }
     }
 

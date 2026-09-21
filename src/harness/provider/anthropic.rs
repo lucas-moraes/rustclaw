@@ -617,6 +617,7 @@ mod tests {
             }],
             max_tokens: Some(100),
             temperature: 0.5,
+            prompt_cache_key: None,
         };
         let body = build_request_body(&req, true, false);
         assert_eq!(body["system"], "sys");
@@ -654,6 +655,7 @@ mod tests {
             }],
             max_tokens: Some(100),
             temperature: 0.5,
+            prompt_cache_key: None,
         };
         let body = build_request_body(&req, true, false);
         assert_eq!(body["system"], "sys");
@@ -689,6 +691,7 @@ mod tests {
             ],
             max_tokens: Some(100),
             temperature: 0.5,
+            prompt_cache_key: None,
         };
         let body = build_request_body(&req, true, true);
         // Breakpoint 1: system is an array with cache_control.
@@ -714,6 +717,7 @@ mod tests {
             tools: vec![],
             max_tokens: Some(100),
             temperature: 0.5,
+            prompt_cache_key: None,
         };
         let body = build_request_body(&req, false, true);
         let last_msg = body["messages"].as_array().unwrap().last().unwrap();

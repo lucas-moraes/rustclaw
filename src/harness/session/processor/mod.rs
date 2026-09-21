@@ -64,6 +64,65 @@ fn strip_images(req: &LlmRequest) -> Vec<Message> {
         .collect()
 }
 
+/// How many of the most recent tool results keep their full output. Older
+/// tool outputs are elided (replaced by a short placeholder) on the wire to
+/// save input tokens — the model rarely needs the exact bytes of a `read` or
+/// `bash` from many iterations ago, and can re-run the tool if it does.
+const KEEP_RECENT_TOOL_OUTPUTS: usize = 6;
+/// Outputs smaller than this are never elided (no savings, keeps small
+/// results like `git_status` intact for context).
+const MIN_ELIDE_BYTES: usize = 512;
+
+/// Returns a copy of `messages` where tool outputs older than the most recent
+/// `KEEP_RECENT_TOOL_OUTPUTS` are replaced by a short placeholder. Only the
+/// in-memory copy sent to the provider is changed — the persisted session
+/// keeps the full output, so `/export`, undo and resume are unaffected.
+///
+/// Elision is positional (by recency), not semantic, so it is provider- and
+/// content-agnostic. The placeholder preserves the tool name and original
+/// size so the model knows something was there and can re-run the tool.
+fn elide_old_tool_outputs(messages: &[Message]) -> Vec<Message> {
+    // Count terminal tool parts from the end to find the elision cutoff.
+    let total_tools: usize = messages
+        .iter()
+        .flat_map(|m| m.tool_parts())
+        .filter(|t| t.is_terminal())
+        .count();
+    if total_tools <= KEEP_RECENT_TOOL_OUTPUTS {
+        return messages.to_vec();
+    }
+    // Number of tool results (from the start) eligible for elision.
+    let elidable = total_tools - KEEP_RECENT_TOOL_OUTPUTS;
+    let mut seen = 0usize;
+
+    messages
+        .iter()
+        .map(|m| {
+            if !m.has_tool_calls() {
+                return m.clone();
+            }
+            let mut m = m.clone();
+            for part in m.parts.iter_mut() {
+                if let Part::Tool(t) = part {
+                    if !t.is_terminal() {
+                        continue;
+                    }
+                    seen += 1;
+                    if seen <= elidable && t.output.len() >= MIN_ELIDE_BYTES {
+                        let original = t.output.len();
+                        t.output = format!(
+                            "[output omitted to save context: `{}` produced {} bytes; \
+                             re-run the tool if you need it]",
+                            t.name, original
+                        );
+                    }
+                }
+            }
+            m
+        })
+        .collect()
+}
+
 /// Deps the processor needs; all shared, cheap to clone.
 #[derive(Clone)]
 pub struct SessionProcessor {
@@ -412,10 +471,16 @@ impl SessionProcessor {
                         .clone()
                         .unwrap_or_else(|| self.config.model.clone()),
                     system: system_prompt.to_string(),
-                    messages: session.messages_arc(),
+                    // Elide old tool outputs on the wire only; the persisted
+                    // session keeps the full outputs.
+                    messages: Arc::new(elide_old_tool_outputs(&session.messages_arc())),
                     tools: tool_specs.clone(),
                     max_tokens: None,
                     temperature: agent.turn_temperature(),
+                    // Session-scoped cache key: the conversation grows by one
+                    // message per iteration, so a stable key maximizes cache
+                    // hits on providers that honor it (e.g. DeepInfra).
+                    prompt_cache_key: Some(session.id.clone()),
                 };
 
                 let stream = match self.stream_with_image_fallback(&req, &ctx.abort).await {
