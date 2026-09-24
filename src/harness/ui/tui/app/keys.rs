@@ -12,8 +12,9 @@ use anyhow::Result;
 use crossterm::event::KeyEvent;
 
 use super::pickers::{
-    handle_auth_prompt_key, handle_model_picker_key, handle_resume_picker_key,
-    handle_settings_command, handle_skill_picker_key, handle_theme_picker_key,
+    handle_auth_prompt_key, handle_cursor_command, handle_model_picker_key,
+    handle_resume_picker_key, handle_settings_command, handle_skill_picker_key,
+    handle_theme_picker_key,
 };
 use super::state::{App, AuthPromptState, Modal, ResumePickerState};
 use super::undo::{copy_to_clipboard, revert_to_prompt, undo_last_turn, user_prompt_text};
@@ -117,6 +118,7 @@ pub(crate) async fn handle_key(
                     }
                     Modal::UserPrompt { .. } => {}
                     Modal::Settings { .. } => {}
+                    Modal::Cursor { .. } => {}
                     Modal::CursorModel { .. } => {}
                 }
             }
@@ -131,6 +133,7 @@ pub(crate) async fn handle_key(
                     }
                     Modal::UserPrompt { .. } => {}
                     Modal::Settings { .. } => {}
+                    Modal::Cursor { .. } => {}
                     Modal::CursorModel { .. } => {}
                 }
             }
@@ -612,58 +615,12 @@ pub(crate) fn handle_modal_key(app: &mut App, key: KeyEvent) -> Result<bool> {
             }
         }
         Some(Modal::Settings { selected }) => {
-            // Navigate over *all* rows (same list the renderer uses) so the
-            // highlight moves through every setting; only toggleable rows can
-            // be flipped with Space/Enter.
             let rows = crate::harness::ui::tui::draw::modal::settings_rows(&app.runtime.config);
-            let n = rows.len();
-            let mut sel = selected.min(n.saturating_sub(1));
-            // `None` = keep the settings modal open; `Some(modal)` = replace it
-            // with another modal (the picker); `Close` = dismiss entirely.
-            enum Next {
-                Keep,
-                Replace(Modal),
-                Close,
-            }
-            let mut next = Next::Keep;
-            match key.code {
-                KeyCode::Esc | KeyCode::Char('q') => next = Next::Close,
-                KeyCode::Up | KeyCode::Char('k') => {
-                    sel = sel.saturating_sub(1);
-                }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    if sel + 1 < n {
-                        sel += 1;
-                    }
-                }
-                KeyCode::Char(' ') | KeyCode::Enter => {
-                    if let Some((label, _, toggleable)) = rows.get(sel) {
-                        if *toggleable {
-                            toggle_setting(app, "cursor_agent");
-                        } else if label == "cursor_model" {
-                            // Non-toggleable row: Enter opens the model picker.
-                            let mut models = vec![("auto".to_string(), "CLI default".to_string())];
-                            models.extend(list_cursor_models());
-                            let current = app.runtime.config.cursor_model.clone();
-                            let selected = models
-                                .iter()
-                                .position(|(m, _)| {
-                                    m == &current || (current.is_empty() && m == "auto")
-                                })
-                                .unwrap_or(0);
-                            next = Next::Replace(Modal::CursorModel { selected, models });
-                        }
-                    }
-                }
-                _ => {}
-            }
-            match next {
-                Next::Keep => app.modal = Some(Modal::Settings { selected: sel }),
-                // Set the picker directly: `close_modal()` would pop the queue
-                // and discard the modal we just built.
-                Next::Replace(modal) => app.modal = Some(modal),
-                Next::Close => app.close_modal(),
-            }
+            handle_settings_like_key(app, key, rows, selected, Modal::Settings { selected: 0 });
+        }
+        Some(Modal::Cursor { selected }) => {
+            let rows = crate::harness::ui::tui::draw::modal::cursor_rows(&app.runtime.config);
+            handle_settings_like_key(app, key, rows, selected, Modal::Cursor { selected: 0 });
         }
         Some(Modal::CursorModel { selected, models }) => {
             let n = models.len();
@@ -767,6 +724,71 @@ fn parse_model_list(text: &str) -> Vec<(String, String)> {
 
 /// Toggleable settings, in the same order as `settings_rows` in draw/modal.rs.
 /// Flip a boolean setting, persist it, and re-sync the runtime.
+/// Shared key handling for the settings-like modals (`/settings` and
+/// `/cursor`): navigate over `rows`, flip toggleable rows with Space/Enter,
+/// and open the model picker on the `cursor_model` row.
+///
+/// `template` is the modal to keep open while navigating (with its `selected`
+/// field ignored); the picker, when opened, replaces it directly —
+/// `close_modal()` would pop the queue and discard it.
+fn handle_settings_like_key(
+    app: &mut App,
+    key: KeyEvent,
+    rows: Vec<(String, String, bool)>,
+    selected: usize,
+    template: Modal,
+) {
+    use crossterm::event::KeyCode;
+    let n = rows.len();
+    let mut sel = selected.min(n.saturating_sub(1));
+    // `Keep` = stay on this modal; `Replace` = swap in another modal (the
+    // picker); `Close` = dismiss entirely.
+    enum Next {
+        Keep,
+        Replace(Modal),
+        Close,
+    }
+    let mut next = Next::Keep;
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => next = Next::Close,
+        KeyCode::Up | KeyCode::Char('k') => {
+            sel = sel.saturating_sub(1);
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if sel + 1 < n {
+                sel += 1;
+            }
+        }
+        KeyCode::Char(' ') | KeyCode::Enter => {
+            if let Some((label, _, toggleable)) = rows.get(sel) {
+                if *toggleable {
+                    toggle_setting(app, "cursor_agent");
+                } else if label == "cursor_model" {
+                    let mut models = vec![("auto".to_string(), "CLI default".to_string())];
+                    models.extend(list_cursor_models());
+                    let current = app.runtime.config.cursor_model.clone();
+                    let selected = models
+                        .iter()
+                        .position(|(m, _)| m == &current || (current.is_empty() && m == "auto"))
+                        .unwrap_or(0);
+                    next = Next::Replace(Modal::CursorModel { selected, models });
+                }
+            }
+        }
+        _ => {}
+    }
+    match next {
+        Next::Keep => {
+            app.modal = Some(match template {
+                Modal::Cursor { .. } => Modal::Cursor { selected: sel },
+                _ => Modal::Settings { selected: sel },
+            });
+        }
+        Next::Replace(modal) => app.modal = Some(modal),
+        Next::Close => app.close_modal(),
+    }
+}
+
 fn toggle_setting(app: &mut App, field: &str) {
     if field == "cursor_agent" {
         let v = !app.runtime.config.cursor_agent;
@@ -899,6 +921,11 @@ pub(crate) async fn submit_input(
         // /settings: show or update global limits/theme (persisted in config.json).
         if text == "/settings" || text.starts_with("/settings ") {
             handle_settings_command(app, &text);
+            return Ok(false);
+        }
+        // /cursor: Cursor CLI toggle + model (modal, or on/off/model args).
+        if text == "/cursor" || text.starts_with("/cursor ") {
+            handle_cursor_command(app, &text);
             return Ok(false);
         }
         if text == "/models" || text.starts_with("/models ") {

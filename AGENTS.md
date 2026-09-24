@@ -274,7 +274,7 @@ impl Tool for MyTool {
 - `tool::task` dispara subagent via `runtime::TaskRunner` (child session isolada)
 
 ### Cursor delegation (`cursor_agent` toggle)
-- Quando `cursor_agent` está **on** (config.json / modal `/settings`), o modo
+- Quando `cursor_agent` está **on** (config.json / modal `/cursor`), o modo
   `build` é servido pelo agente `cursor`, cuja única tool (`cursor`) delega a
   tarefa ao Cursor CLI (`agent -p --force --output-format stream-json`).
 - O **system prompt do harness nunca é enviado** ao Cursor: a tool monta um
@@ -291,10 +291,14 @@ impl Tool for MyTool {
   harness — são camadas distintas.
 - Permissão default da tool `cursor` = **ask**; allowlist do agente `build`
   nativo não inclui `cursor`.
-- TUI: toggle no modal `/settings` (Space); na linha `cursor_model` o
-  **Enter** abre um picker com a listagem de modelos (`agent --list-models`,
-  id + descrição, `auto` no topo, valor atual pré-selecionado; ↑/↓ + Enter);
-  indicador `└ cursor` (dim) sob `build` na sidebar.
+- TUI: o comando **`/cursor`** abre um modal dedicado (`Modal::Cursor`) com
+  as duas linhas do Cursor: `cursor_agent` (**Space** alterna) e
+  `cursor_model` (**Enter** abre um picker com a listagem de modelos —
+  `agent --list-models`, id + descrição, `auto` no topo, valor atual
+  pré-selecionado; ↑/↓ + Enter). Atalhos sem modal: `/cursor on|off` e
+  `/cursor model <id|auto>`. Essas linhas **não** ficam mais no `/settings`
+  (que voltou a só iterations/context/theme). Indicador `└ cursor` (dim) sob
+  `build` na sidebar.
 
 ### Memory (skills)
 - Modelo: **prompt** (pedido atual) + **session** (histórico) + **memory** (skills)

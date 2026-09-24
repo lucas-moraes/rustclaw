@@ -297,6 +297,13 @@ pub fn all_items() -> Vec<PaletteItem> {
             "/sessions",
         ),
         item(
+            "cursor",
+            "/cursor",
+            "Cursor CLI: toggle agent + pick model",
+            PaletteKind::Command,
+            "/cursor",
+        ),
+        item(
             "settings",
             "/settings",
             "View / edit global limits and theme (config.json)",

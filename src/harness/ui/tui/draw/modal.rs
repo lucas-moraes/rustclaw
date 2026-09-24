@@ -39,6 +39,11 @@ pub fn draw(
             frame.render_widget(Clear, fixed);
             draw_settings(frame, theme, *selected, fixed, config)
         }
+        Modal::Cursor { selected } => {
+            let fixed = centered_rect_fixed(64, 10, area);
+            frame.render_widget(Clear, fixed);
+            draw_cursor(frame, theme, *selected, fixed, config)
+        }
         Modal::CursorModel { selected, models } => {
             let fixed = centered_rect_fixed(56, 20, area);
             frame.render_widget(Clear, fixed);
@@ -80,6 +85,15 @@ pub(crate) fn settings_rows(c: &crate::config::RuntimeConfig) -> Vec<(String, St
             },
             false,
         ),
+    ]
+}
+
+/// Rows of the `/cursor` modal: (label, value, toggleable).
+///
+/// Mirrors `settings_rows` for the Cursor-specific knobs: `cursor_agent` is a
+/// boolean toggled with Space, `cursor_model` opens the model picker on Enter.
+pub(crate) fn cursor_rows(c: &crate::config::RuntimeConfig) -> Vec<(String, String, bool)> {
+    vec![
         ("cursor_agent".into(), on_off(c.cursor_agent), true),
         (
             "cursor_model".into(),
@@ -146,8 +160,64 @@ fn draw_settings(
         Span::styled(" move  ", Style::default().fg(t.text_dim)),
         Span::styled("Space", Style::default().fg(t.accent2)),
         Span::styled(" toggle  ", Style::default().fg(t.text_dim)),
+        Span::styled("Esc", Style::default().fg(t.accent2)),
+        Span::styled(" close", Style::default().fg(t.text_dim)),
+    ]));
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+}
+
+/// The `/cursor` modal: Cursor-specific settings (toggle + model).
+fn draw_cursor(
+    frame: &mut Frame,
+    t: &Theme,
+    selected: usize,
+    area: Rect,
+    config: &crate::config::RuntimeConfig,
+) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(t.accent2))
+        .title(Span::styled(
+            " ⬡ cursor ",
+            Style::default().fg(t.accent2).add_modifier(Modifier::BOLD),
+        ))
+        .style(Style::default().bg(t.surface).fg(t.text));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let rows = cursor_rows(config);
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, (label, value, toggleable)) in rows.iter().enumerate() {
+        let is_sel = i == selected;
+        let marker = if is_sel { "❯ " } else { "  " };
+        let label_style = if is_sel {
+            Style::default().fg(t.accent).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(t.text)
+        };
+        let value_style = if *toggleable {
+            Style::default().fg(if config.cursor_agent {
+                t.success
+            } else {
+                t.text_dim
+            })
+        } else {
+            Style::default().fg(t.text_dim)
+        };
+        lines.push(Line::from(vec![
+            Span::styled(marker, Style::default().fg(t.accent)),
+            Span::styled(format!("{:<22}", label), label_style),
+            Span::styled(value.clone(), value_style),
+        ]));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("  ↑/↓", Style::default().fg(t.accent2)),
+        Span::styled(" move  ", Style::default().fg(t.text_dim)),
+        Span::styled("Space", Style::default().fg(t.accent2)),
+        Span::styled(" toggle  ", Style::default().fg(t.text_dim)),
         Span::styled("Enter", Style::default().fg(t.accent2)),
-        Span::styled(" cursor model  ", Style::default().fg(t.text_dim)),
+        Span::styled(" model  ", Style::default().fg(t.text_dim)),
         Span::styled("Esc", Style::default().fg(t.accent2)),
         Span::styled(" close", Style::default().fg(t.text_dim)),
     ]));

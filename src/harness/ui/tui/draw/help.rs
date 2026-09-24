@@ -123,6 +123,7 @@ fn commands(t: &crate::harness::ui::tui::theme::Theme) -> Vec<Line<'static>> {
         kv("/model name", "set model for this project", t),
         kv("/provider name", "set provider (default model)", t),
         kv("/auth provider", "save API token (auth.json)", t),
+        kv("/cursor", "Cursor CLI: toggle agent + pick model", t),
         kv("/settings", "view · set iterations/context/theme", t),
         kv("/skills", "manage session skill memory", t),
         kv("/permissions", "set <tool> <allow|ask|deny> · rm <tool>", t),

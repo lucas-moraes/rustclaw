@@ -30,6 +30,51 @@ pub(crate) fn handle_skill_picker_key(app: &mut App, key: KeyEvent) -> Result<bo
     Ok(false)
 }
 
+/// `/cursor` — Cursor CLI settings (toggle + model). No args opens the modal;
+/// `on|off` flips `cursor_agent`; `model <id>` (or `model auto`) sets the
+/// model directly.
+pub(crate) fn handle_cursor_command(app: &mut App, text: &str) {
+    let rest = text.strip_prefix("/cursor").unwrap_or("").trim();
+    let mut parts = rest.split_whitespace();
+    match parts.next() {
+        None => {
+            app.modal = Some(crate::harness::ui::tui::app::Modal::Cursor { selected: 0 });
+        }
+        Some("on") | Some("off") => {
+            let on = rest == "on";
+            match app.runtime.set_cursor_agent(on) {
+                Ok(()) => app.add_system(&format!("cursor_agent = {}", on)),
+                Err(e) => app.add_system(&format!("[error] {}", e)),
+            }
+        }
+        Some("model") => {
+            let Some(arg) = parts.next() else {
+                app.add_system("usage: /cursor model <id|auto>");
+                return;
+            };
+            // "auto" is stored as an empty string (no --model flag).
+            let stored = if arg.eq_ignore_ascii_case("auto") {
+                String::new()
+            } else {
+                arg.to_string()
+            };
+            match app.runtime.set_cursor_model(stored.clone()) {
+                Ok(()) => app.add_system(&format!(
+                    "cursor_model = {} (Cursor CLI --model)",
+                    if stored.is_empty() { "auto" } else { &stored }
+                )),
+                Err(e) => app.add_system(&format!("[error] {}", e)),
+            }
+        }
+        Some(other) => {
+            app.add_system(&format!(
+                "usage: /cursor [on|off|model <id|auto>]  (unknown: {})",
+                other
+            ));
+        }
+    }
+}
+
 /// `/settings` — show/update global limits (config.json), no modal needed.
 pub(crate) fn handle_settings_command(app: &mut App, text: &str) {
     let rest = text.strip_prefix("/settings").unwrap_or("").trim();

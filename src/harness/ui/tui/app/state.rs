@@ -130,8 +130,15 @@ pub enum Modal {
         /// Index of the highlighted row.
         selected: usize,
     },
+    /// Cursor CLI modal (opened by `/cursor`). Holds the Cursor-specific
+    /// knobs: `cursor_agent` (toggled with Space) and `cursor_model` (Enter
+    /// opens the model picker).
+    Cursor {
+        /// Index of the highlighted row.
+        selected: usize,
+    },
     /// Picker for the Cursor CLI model (`cursor_model`), opened from the
-    /// `cursor_model` row of the settings modal with Enter. The list is the
+    /// `cursor_model` row of the Cursor modal with Enter. The list is the
     /// output of `agent --list-models`, with "auto" first.
     CursorModel {
         /// Index of the highlighted entry.

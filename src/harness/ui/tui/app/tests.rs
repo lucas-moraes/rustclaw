@@ -822,20 +822,85 @@ mod scroll_tests {
         }
     }
 
+    /// The `/settings` modal no longer carries the Cursor knobs: those moved
+    /// to the dedicated `/cursor` modal.
+    #[test]
+    fn test_settings_rows_exclude_cursor() {
+        let app = App::inline_for_tests("x");
+        let rows = crate::harness::ui::tui::draw::modal::settings_rows(&app.runtime.config);
+        assert!(
+            !rows
+                .iter()
+                .any(|(l, _, _)| l == "cursor_agent" || l == "cursor_model"),
+            "cursor rows must live in the /cursor modal, not /settings"
+        );
+        let crows = crate::harness::ui::tui::draw::modal::cursor_rows(&app.runtime.config);
+        let labels: Vec<&str> = crows.iter().map(|(l, _, _)| l.as_str()).collect();
+        assert_eq!(labels, vec!["cursor_agent", "cursor_model"]);
+    }
+
+    /// `/cursor` with no args opens the dedicated modal.
+    #[tokio::test]
+    async fn test_cursor_command_opens_modal() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut app = App::inline_for_tests("x");
+        let mut prompt_task = None;
+        app.input = "/cursor".to_string();
+        app.input_cursor = app.input.chars().count();
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut prompt_task,
+        )
+        .await
+        .unwrap();
+
+        match app.modal {
+            Some(Modal::Cursor { selected }) => assert_eq!(selected, 0),
+            _ => panic!("expected the /cursor modal to open"),
+        }
+    }
+
+    /// Space on `cursor_agent` flips the toggle and persists it.
+    #[tokio::test]
+    async fn test_cursor_modal_space_toggles_agent() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut app = App::inline_for_tests("x");
+        let before = app.runtime.config.cursor_agent;
+        app.modal = Some(Modal::Cursor { selected: 0 });
+        let mut prompt_task = None;
+
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
+            &mut prompt_task,
+        )
+        .await
+        .unwrap();
+
+        assert_ne!(app.runtime.config.cursor_agent, before);
+        match app.modal {
+            Some(Modal::Cursor { selected }) => assert_eq!(selected, 0),
+            _ => panic!("cursor modal must stay open after toggling"),
+        }
+    }
+
     /// Enter on the `cursor_model` row must open the model picker, not close
     /// the modal (regression: the handler set `Modal::CursorModel` and then
     /// called `close_modal()`, which popped the queue and discarded it).
     #[tokio::test]
-    async fn test_settings_modal_enter_on_cursor_model_opens_picker() {
+    async fn test_cursor_modal_enter_on_model_row_opens_picker() {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
         let mut app = App::inline_for_tests("x");
-        let rows = crate::harness::ui::tui::draw::modal::settings_rows(&app.runtime.config);
+        let rows = crate::harness::ui::tui::draw::modal::cursor_rows(&app.runtime.config);
         let model_row = rows
             .iter()
             .position(|(label, _, _)| label == "cursor_model")
-            .expect("settings modal must expose a cursor_model row");
-        app.modal = Some(Modal::Settings {
+            .expect("cursor modal must expose a cursor_model row");
+        app.modal = Some(Modal::Cursor {
             selected: model_row,
         });
         let mut prompt_task = None;
