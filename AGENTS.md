@@ -291,9 +291,10 @@ impl Tool for MyTool {
   harness — são camadas distintas.
 - Permissão default da tool `cursor` = **ask**; allowlist do agente `build`
   nativo não inclui `cursor`.
-- TUI: no modal `/settings`, **Space/Enter** alterna `cursor_agent` e
-  **←/→** (ou h/l) cicla o `cursor_model` inline (a linha mostra `◀ ▶` quando
-  selecionada); indicador `└ cursor` (dim) sob `build` na sidebar.
+- TUI: toggle no modal `/settings` (Space); na linha `cursor_model` o
+  **Enter** abre um picker com a listagem de modelos (`agent --list-models`,
+  id + descrição, `auto` no topo, valor atual pré-selecionado; ↑/↓ + Enter);
+  indicador `└ cursor` (dim) sob `build` na sidebar.
 
 ### Memory (skills)
 - Modelo: **prompt** (pedido atual) + **session** (histórico) + **memory** (skills)

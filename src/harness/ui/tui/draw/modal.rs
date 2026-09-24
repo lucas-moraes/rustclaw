@@ -39,6 +39,11 @@ pub fn draw(
             frame.render_widget(Clear, fixed);
             draw_settings(frame, theme, *selected, fixed, config)
         }
+        Modal::CursorModel { selected, models } => {
+            let fixed = centered_rect_fixed(56, 20, area);
+            frame.render_widget(Clear, fixed);
+            draw_cursor_model(frame, theme, *selected, models, fixed)
+        }
     }
 }
 
@@ -126,21 +131,14 @@ fn draw_settings(
         };
         let value_style = if *toggleable {
             Style::default().fg(t.success)
-        } else if is_sel && label == "cursor_model" {
-            // Editable inline with ←/→: highlight the value and show arrows.
-            Style::default().fg(t.accent).add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(t.text_dim)
         };
-        let mut spans = vec![
+        lines.push(Line::from(vec![
             Span::styled(marker, Style::default().fg(t.accent)),
             Span::styled(format!("{:<22}", label), label_style),
             Span::styled(value.clone(), value_style),
-        ];
-        if is_sel && label == "cursor_model" {
-            spans.push(Span::styled("  ◀ ▶", Style::default().fg(t.text_dim)));
-        }
-        lines.push(Line::from(spans));
+        ]));
     }
     lines.push(Line::from(""));
     lines.push(Line::from(vec![
@@ -148,10 +146,84 @@ fn draw_settings(
         Span::styled(" move  ", Style::default().fg(t.text_dim)),
         Span::styled("Space", Style::default().fg(t.accent2)),
         Span::styled(" toggle  ", Style::default().fg(t.text_dim)),
-        Span::styled("←/→", Style::default().fg(t.accent2)),
+        Span::styled("Enter", Style::default().fg(t.accent2)),
         Span::styled(" cursor model  ", Style::default().fg(t.text_dim)),
         Span::styled("Esc", Style::default().fg(t.accent2)),
         Span::styled(" close", Style::default().fg(t.text_dim)),
+    ]));
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+}
+
+/// Picker for the Cursor CLI model (`cursor_model`). The list comes from
+/// `agent --list-models`; an empty selection means "auto".
+fn draw_cursor_model(
+    frame: &mut Frame,
+    t: &Theme,
+    selected: usize,
+    models: &[(String, String)],
+    area: Rect,
+) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(t.accent2))
+        .title(Span::styled(
+            " cursor model ",
+            Style::default().fg(t.accent2).add_modifier(Modifier::BOLD),
+        ))
+        .style(Style::default().bg(t.surface).fg(t.text));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if models.is_empty() {
+        let lines = vec![
+            Line::from(Span::styled(
+                "  no models found — is the `agent` CLI installed?",
+                Style::default().fg(t.error),
+            )),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("  Esc", Style::default().fg(t.accent2)),
+                Span::styled(" close", Style::default().fg(t.text_dim)),
+            ]),
+        ];
+        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+        return;
+    }
+
+    // Keep the highlighted entry visible when the list is longer than the box.
+    let visible = inner.height.saturating_sub(3) as usize;
+    let start = if selected >= visible {
+        selected + 1 - visible
+    } else {
+        0
+    };
+
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, (id, desc)) in models.iter().enumerate().skip(start).take(visible) {
+        let is_sel = i == selected;
+        let marker = if is_sel { "❯ " } else { "  " };
+        let style = if is_sel {
+            Style::default().fg(t.accent).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(t.text)
+        };
+        let mut spans = vec![
+            Span::styled(marker, Style::default().fg(t.accent)),
+            Span::styled(format!("{:<28}", id), style),
+        ];
+        if !desc.is_empty() {
+            spans.push(Span::styled(desc.clone(), Style::default().fg(t.text_dim)));
+        }
+        lines.push(Line::from(spans));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("  ↑/↓", Style::default().fg(t.accent2)),
+        Span::styled(" move  ", Style::default().fg(t.text_dim)),
+        Span::styled("Enter", Style::default().fg(t.accent2)),
+        Span::styled(" select  ", Style::default().fg(t.text_dim)),
+        Span::styled("Esc", Style::default().fg(t.accent2)),
+        Span::styled(" cancel", Style::default().fg(t.text_dim)),
     ]));
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }

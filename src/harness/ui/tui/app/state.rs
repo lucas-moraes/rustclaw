@@ -130,6 +130,15 @@ pub enum Modal {
         /// Index of the highlighted row.
         selected: usize,
     },
+    /// Picker for the Cursor CLI model (`cursor_model`), opened from the
+    /// `cursor_model` row of the settings modal with Enter. The list is the
+    /// output of `agent --list-models`, with "auto" first.
+    CursorModel {
+        /// Index of the highlighted entry.
+        selected: usize,
+        /// Available models as `(id, description)` pairs ("auto" included).
+        models: Vec<(String, String)>,
+    },
 }
 
 /// Case-insensitive substring search over transcript lines.

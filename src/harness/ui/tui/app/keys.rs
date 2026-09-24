@@ -117,6 +117,7 @@ pub(crate) async fn handle_key(
                     }
                     Modal::UserPrompt { .. } => {}
                     Modal::Settings { .. } => {}
+                    Modal::CursorModel { .. } => {}
                 }
             }
             // Drain any queued asks too, so no oneshot is left dangling.
@@ -130,6 +131,7 @@ pub(crate) async fn handle_key(
                     }
                     Modal::UserPrompt { .. } => {}
                     Modal::Settings { .. } => {}
+                    Modal::CursorModel { .. } => {}
                 }
             }
             if app.running {
@@ -611,17 +613,12 @@ pub(crate) fn handle_modal_key(app: &mut App, key: KeyEvent) -> Result<bool> {
         }
         Some(Modal::Settings { selected }) => {
             // Navigate over *all* rows (same list the renderer uses) so the
-            // highlight moves through every setting. Space/Enter flips the
-            // `cursor_agent` toggle; ←/→ (or h/l) cycles the `cursor_model`
-            // value inline, right in the modal.
+            // highlight moves through every setting; only toggleable rows can
+            // be flipped with Space/Enter.
             let rows = crate::harness::ui::tui::draw::modal::settings_rows(&app.runtime.config);
             let n = rows.len();
             let mut sel = selected.min(n.saturating_sub(1));
             let mut keep = true;
-            let on_cursor_model = rows
-                .get(sel)
-                .map(|(label, _, _)| label == "cursor_model")
-                .unwrap_or(false);
             match key.code {
                 KeyCode::Esc | KeyCode::Char('q') => keep = false,
                 KeyCode::Up | KeyCode::Char('k') => {
@@ -632,20 +629,23 @@ pub(crate) fn handle_modal_key(app: &mut App, key: KeyEvent) -> Result<bool> {
                         sel += 1;
                     }
                 }
-                KeyCode::Left | KeyCode::Char('h') if on_cursor_model => {
-                    cycle_cursor_model(app, -1);
-                }
-                KeyCode::Right | KeyCode::Char('l') if on_cursor_model => {
-                    cycle_cursor_model(app, 1);
-                }
                 KeyCode::Char(' ') | KeyCode::Enter => {
                     if let Some((label, _, toggleable)) = rows.get(sel) {
                         if *toggleable {
                             toggle_setting(app, "cursor_agent");
                         } else if label == "cursor_model" {
-                            // Enter/Space on the model row advances to the next
-                            // model (same as →).
-                            cycle_cursor_model(app, 1);
+                            // Non-toggleable row: Enter opens the model picker.
+                            let mut models = vec![("auto".to_string(), "CLI default".to_string())];
+                            models.extend(list_cursor_models());
+                            let current = app.runtime.config.cursor_model.clone();
+                            let selected = models
+                                .iter()
+                                .position(|(m, _)| {
+                                    m == &current || (current.is_empty() && m == "auto")
+                                })
+                                .unwrap_or(0);
+                            app.modal = Some(Modal::CursorModel { selected, models });
+                            keep = false; // the picker takes over the modal
                         }
                     }
                 }
@@ -657,6 +657,51 @@ pub(crate) fn handle_modal_key(app: &mut App, key: KeyEvent) -> Result<bool> {
                 app.close_modal();
             }
         }
+        Some(Modal::CursorModel { selected, models }) => {
+            let n = models.len();
+            let mut sel = selected.min(n.saturating_sub(1));
+            let mut keep = true;
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => keep = false,
+                KeyCode::Up | KeyCode::Char('k') => {
+                    sel = sel.saturating_sub(1);
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    if sel + 1 < n {
+                        sel += 1;
+                    }
+                }
+                KeyCode::Enter => {
+                    if let Some((model, _)) = models.get(sel).cloned() {
+                        // "auto" is stored as an empty string (no --model flag).
+                        let stored = if model == "auto" {
+                            String::new()
+                        } else {
+                            model
+                        };
+                        match app.runtime.set_cursor_model(stored.clone()) {
+                            Ok(()) => app.add_system(&format!(
+                                "cursor_model = {} (Cursor CLI --model)",
+                                if stored.is_empty() { "auto" } else { &stored }
+                            )),
+                            Err(e) => {
+                                app.add_system(&format!("[error] failed to save settings: {}", e))
+                            }
+                        }
+                    }
+                    keep = false;
+                }
+                _ => {}
+            }
+            if keep {
+                app.modal = Some(Modal::CursorModel {
+                    selected: sel,
+                    models,
+                });
+            } else {
+                app.close_modal();
+            }
+        }
         None => {}
     }
     Ok(false)
@@ -664,7 +709,7 @@ pub(crate) fn handle_modal_key(app: &mut App, key: KeyEvent) -> Result<bool> {
 
 /// Runs `agent --list-models` and parses the model ids from its output.
 /// Returns an empty vec if the CLI is missing or the output can't be parsed.
-fn list_cursor_models() -> Vec<String> {
+fn list_cursor_models() -> Vec<(String, String)> {
     let out = match std::process::Command::new("agent")
         .arg("--list-models")
         .output()
@@ -676,53 +721,12 @@ fn list_cursor_models() -> Vec<String> {
     parse_model_list(&text)
 }
 
-/// Cycles the `cursor_model` setting by `delta` positions through the list of
-/// models reported by `agent --list-models` (with "auto" first). Wraps around.
-/// Persists the new value and reports it in the transcript.
-fn cycle_cursor_model(app: &mut App, delta: isize) {
-    let mut models = vec!["auto".to_string()];
-    models.extend(list_cursor_models());
-    if models.is_empty() {
-        return;
-    }
-    let current = app.runtime.config.cursor_model.clone();
-    let next = next_model_index(&models, &current, delta);
-    let model = models[next].clone();
-    // "auto" is stored as an empty string (no --model flag).
-    let stored = if model == "auto" {
-        String::new()
-    } else {
-        model
-    };
-    match app.runtime.set_cursor_model(stored.clone()) {
-        Ok(()) => app.add_system(&format!(
-            "cursor_model = {} (Cursor CLI --model)",
-            if stored.is_empty() { "auto" } else { &stored }
-        )),
-        Err(e) => app.add_system(&format!("[error] failed to save settings: {}", e)),
-    }
-}
-
-/// Index of the model `delta` positions away from `current` in `models`,
-/// wrapping around. `current` empty means "auto" (index 0). Falls back to 0
-/// when `current` is not in the list.
-fn next_model_index(models: &[String], current: &str, delta: isize) -> usize {
-    if models.is_empty() {
-        return 0;
-    }
-    let cur_idx = models
-        .iter()
-        .position(|m| m == current || (current.is_empty() && m == "auto"))
-        .unwrap_or(0);
-    let n = models.len() as isize;
-    ((cur_idx as isize + delta).rem_euclid(n)) as usize
-}
-
-/// Parses the model ids out of `agent --list-models` output. Lines look like
-/// `  gpt-5  - description` or `  claude-4.5-sonnet`; we take the first
-/// whitespace-delimited token of each non-empty, non-header line.
-fn parse_model_list(text: &str) -> Vec<String> {
-    let mut models = Vec::new();
+/// Parses `agent --list-models` output into `(id, description)` pairs. Lines
+/// look like `  gpt-5.3-codex - Codex 5.3` or a bare `  claude-4.5-sonnet`; the
+/// id is the first whitespace-delimited token and the description is whatever
+/// follows the ` - ` separator (empty when absent).
+fn parse_model_list(text: &str) -> Vec<(String, String)> {
+    let mut models: Vec<(String, String)> = Vec::new();
     for line in text.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -741,8 +745,13 @@ fn parse_model_list(text: &str) -> Vec<String> {
         if id.is_empty() || id.eq_ignore_ascii_case("model") || id.eq_ignore_ascii_case("models") {
             continue;
         }
-        if !models.iter().any(|m| m == id) {
-            models.push(id.to_string());
+        // Description = text after the first " - " separator, if any.
+        let desc = line
+            .split_once(" - ")
+            .map(|(_, d)| d.trim().to_string())
+            .unwrap_or_default();
+        if !models.iter().any(|(m, _)| m == id) {
+            models.push((id.to_string(), desc));
         }
     }
     models
@@ -1086,10 +1095,11 @@ pub(crate) async fn submit_input(
 
 #[cfg(test)]
 mod cursor_model_tests {
-    use super::{next_model_index, parse_model_list};
+    use super::parse_model_list;
 
     /// The parser must skip the `Available models` header and the blank line,
-    /// keep the ids (first token) and dedup while preserving order.
+    /// keep the ids (first token) with their descriptions, and dedup while
+    /// preserving order.
     #[test]
     fn test_parse_model_list_real_output() {
         let out = "Available models\n\n\
@@ -1101,19 +1111,29 @@ claude-opus-5-5-high - Claude Opus 5.5 1M High\n";
         assert_eq!(
             models,
             vec![
-                "auto",
-                "gpt-5.3-codex-low",
-                "gpt-5.3-codex",
-                "claude-opus-5-5-high",
+                ("auto".to_string(), "Auto (current, default)".to_string()),
+                ("gpt-5.3-codex-low".to_string(), "Codex 5.3 Low".to_string()),
+                ("gpt-5.3-codex".to_string(), "Codex 5.3".to_string()),
+                (
+                    "claude-opus-5-5-high".to_string(),
+                    "Claude Opus 5.5 1M High".to_string()
+                ),
             ]
         );
     }
 
-    /// Bare ids (no description) are kept; duplicates are dropped.
+    /// Bare ids (no description) are kept with an empty description;
+    /// duplicates are dropped.
     #[test]
     fn test_parse_model_list_bare_and_dedup() {
         let out = "Models:\nsonnet\nsonnet\nopus\n";
-        assert_eq!(parse_model_list(out), vec!["sonnet", "opus"]);
+        assert_eq!(
+            parse_model_list(out),
+            vec![
+                ("sonnet".to_string(), String::new()),
+                ("opus".to_string(), String::new()),
+            ]
+        );
     }
 
     /// Empty / header-only output yields no models.
@@ -1121,24 +1141,5 @@ claude-opus-5-5-high - Claude Opus 5.5 1M High\n";
     fn test_parse_model_list_empty() {
         assert!(parse_model_list("").is_empty());
         assert!(parse_model_list("Available models\n").is_empty());
-    }
-
-    /// Cycling wraps around in both directions and treats "" as "auto".
-    #[test]
-    fn test_next_model_index_wraps() {
-        let models: Vec<String> = ["auto", "a", "b"].iter().map(|s| s.to_string()).collect();
-
-        // "" (auto) +1 → "a"; +2 → "b"; +3 wraps back to "auto".
-        assert_eq!(next_model_index(&models, "", 1), 1);
-        assert_eq!(next_model_index(&models, "", 2), 2);
-        assert_eq!(next_model_index(&models, "", 3), 0);
-        // -1 from auto wraps to the last entry.
-        assert_eq!(next_model_index(&models, "", -1), 2);
-        // From "b", +1 wraps to "auto".
-        assert_eq!(next_model_index(&models, "b", 1), 0);
-        // Unknown current falls back to index 0.
-        assert_eq!(next_model_index(&models, "zzz", 1), 1);
-        // Empty list is safe.
-        assert_eq!(next_model_index(&[], "", 1), 0);
     }
 }
