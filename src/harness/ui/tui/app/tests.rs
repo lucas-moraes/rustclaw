@@ -821,4 +821,47 @@ mod scroll_tests {
             _ => panic!("settings modal closed unexpectedly"),
         }
     }
+
+    /// Enter on the `cursor_model` row must open the model picker, not close
+    /// the modal (regression: the handler set `Modal::CursorModel` and then
+    /// called `close_modal()`, which popped the queue and discarded it).
+    #[tokio::test]
+    async fn test_settings_modal_enter_on_cursor_model_opens_picker() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut app = App::inline_for_tests("x");
+        let rows = crate::harness::ui::tui::draw::modal::settings_rows(&app.runtime.config);
+        let model_row = rows
+            .iter()
+            .position(|(label, _, _)| label == "cursor_model")
+            .expect("settings modal must expose a cursor_model row");
+        app.modal = Some(Modal::Settings {
+            selected: model_row,
+        });
+        let mut prompt_task = None;
+
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut prompt_task,
+        )
+        .await
+        .unwrap();
+
+        match app.modal {
+            Some(Modal::CursorModel { selected, models }) => {
+                // "auto" is always first and pre-selected when unset.
+                assert_eq!(models.first().map(|(id, _)| id.as_str()), Some("auto"));
+                assert_eq!(selected, 0);
+            }
+            other => panic!(
+                "expected the cursor model picker, got {}",
+                if other.is_some() {
+                    "another modal"
+                } else {
+                    "None"
+                }
+            ),
+        }
+    }
 }

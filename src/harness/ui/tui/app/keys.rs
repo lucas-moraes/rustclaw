@@ -618,9 +618,16 @@ pub(crate) fn handle_modal_key(app: &mut App, key: KeyEvent) -> Result<bool> {
             let rows = crate::harness::ui::tui::draw::modal::settings_rows(&app.runtime.config);
             let n = rows.len();
             let mut sel = selected.min(n.saturating_sub(1));
-            let mut keep = true;
+            // `None` = keep the settings modal open; `Some(modal)` = replace it
+            // with another modal (the picker); `Close` = dismiss entirely.
+            enum Next {
+                Keep,
+                Replace(Modal),
+                Close,
+            }
+            let mut next = Next::Keep;
             match key.code {
-                KeyCode::Esc | KeyCode::Char('q') => keep = false,
+                KeyCode::Esc | KeyCode::Char('q') => next = Next::Close,
                 KeyCode::Up | KeyCode::Char('k') => {
                     sel = sel.saturating_sub(1);
                 }
@@ -644,17 +651,18 @@ pub(crate) fn handle_modal_key(app: &mut App, key: KeyEvent) -> Result<bool> {
                                     m == &current || (current.is_empty() && m == "auto")
                                 })
                                 .unwrap_or(0);
-                            app.modal = Some(Modal::CursorModel { selected, models });
-                            keep = false; // the picker takes over the modal
+                            next = Next::Replace(Modal::CursorModel { selected, models });
                         }
                     }
                 }
                 _ => {}
             }
-            if keep {
-                app.modal = Some(Modal::Settings { selected: sel });
-            } else {
-                app.close_modal();
+            match next {
+                Next::Keep => app.modal = Some(Modal::Settings { selected: sel }),
+                // Set the picker directly: `close_modal()` would pop the queue
+                // and discard the modal we just built.
+                Next::Replace(modal) => app.modal = Some(modal),
+                Next::Close => app.close_modal(),
             }
         }
         Some(Modal::CursorModel { selected, models }) => {
