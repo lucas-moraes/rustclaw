@@ -123,6 +123,7 @@ src/
     │   ├── ast_search.rs web_search.rs fetch_webpage.rs
     │   ├── todo.rs question.rs task.rs remember.rs
     │   ├── diff.rs git.rs diagnostics.rs checkpoint.rs
+    │   ├── cursor.rs    # CursorTool: delega a tarefa ao Cursor CLI
     │   ├── env.rs jobs.rs truncate.rs
     │   └── mod.rs
     ├── permission/mod.rs # allow/ask/deny engine
@@ -269,8 +270,23 @@ impl Tool for MyTool {
 - Compaction automática em overflow de contexto (`session/compaction.rs`)
 
 ### Agents
-- Builtins em `agent/builtin.rs` (`build`/`plan`/`explore`/`general`)
+- Builtins em `agent/builtin.rs` (`build`/`plan`/`explore`/`general`/`cursor`)
 - `tool::task` dispara subagent via `runtime::TaskRunner` (child session isolada)
+
+### Cursor delegation (`cursor_agent` toggle)
+- Quando `cursor_agent` está **on** (config.json / modal `/settings`), o modo
+  `build` é servido pelo agente `cursor`, cuja única tool (`cursor`) delega a
+  tarefa ao Cursor CLI (`agent -p --force --output-format stream-json`).
+- O **system prompt do harness nunca é enviado** ao Cursor: a tool monta um
+  prompt determinístico (`build_delegation_prompt`) com `## Tarefa`,
+  `# Project context` (ProjectProfiler) e `<project-memory>`.
+- Kill-switch: `build_default_registry()` sempre registra a tool; ela é
+  removida via `registry::apply_cursor_toggle` quando o toggle está off
+  (aplicado em `new_in`, `set_cursor_agent` e re-sincronizado por turno).
+- Permissão default da tool `cursor` = **ask**; allowlist do agente `build`
+  nativo não inclui `cursor`.
+- TUI: toggle no modal `/settings` (Space); indicador `└ cursor` (dim) sob
+  `build` na sidebar.
 
 ### Memory (skills)
 - Modelo: **prompt** (pedido atual) + **session** (histórico) + **memory** (skills)

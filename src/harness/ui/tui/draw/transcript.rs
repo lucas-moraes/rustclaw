@@ -30,11 +30,16 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     // Horizontal margins: keep breathing room on both sides of the chat,
     // plus room for the scrollbar on the right.
     const H_MARGIN: u16 = 3;
+    // Vertical padding: one blank row at the top and one at the bottom so the
+    // first/last visible line never sits flush against the frame. This is
+    // internal padding (it does not steal a row from the layout), so the
+    // transcript keeps its full height and the last line stays readable.
+    const V_PAD: u16 = 1;
     let content = Rect {
         x: inner.x.saturating_add(H_MARGIN),
-        y: inner.y,
+        y: inner.y.saturating_add(V_PAD),
         width: inner.width.saturating_sub(H_MARGIN * 2).max(1),
-        height: inner.height,
+        height: inner.height.saturating_sub(V_PAD * 2).max(1),
     };
     let width = content.width as usize;
 

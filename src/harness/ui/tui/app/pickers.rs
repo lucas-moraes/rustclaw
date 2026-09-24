@@ -36,12 +36,8 @@ pub(crate) fn handle_settings_command(app: &mut App, text: &str) {
     let mut parts = rest.split_whitespace();
     match parts.next() {
         None => {
-            let c = &app.runtime.config;
-            app.add_system(&format!(
-                "settings · iterations {} · context {} · turn_timeout {}s · theme {} · provider {} · model {}",
-                c.max_iterations, c.max_context_tokens, c.turn_timeout_secs, app.theme.name, c.provider, c.model
-            ));
-            app.add_system("usage: /settings iterations <n> · context <n> · turn_timeout <secs> · theme <name>");
+            // No args → open the interactive settings modal (TUI).
+            app.modal = Some(crate::harness::ui::tui::app::Modal::Settings { selected: 0 });
         }
         Some("iterations") => {
             let Some(n) = parts.next().and_then(|v| v.parse::<usize>().ok()) else {

@@ -2,7 +2,7 @@
 
 pub mod help;
 mod input;
-mod modal;
+pub mod modal;
 mod model_picker;
 mod palette_view;
 mod resume_picker;
@@ -122,7 +122,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 
     if let Some(modal) = &app.modal {
-        modal::draw(frame, modal, &app.theme, app.tick, area);
+        modal::draw(
+            frame,
+            modal,
+            &app.theme,
+            app.tick,
+            area,
+            &app.runtime.config,
+        );
     } else if app.show_help {
         help::draw(frame, app, area);
     } else if let Some(pal) = &app.palette {

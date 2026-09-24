@@ -116,6 +116,7 @@ pub(crate) async fn handle_key(
                         app.push(LineKind::System, "[question] no answer".to_string());
                     }
                     Modal::UserPrompt { .. } => {}
+                    Modal::Settings { .. } => {}
                 }
             }
             // Drain any queued asks too, so no oneshot is left dangling.
@@ -128,6 +129,7 @@ pub(crate) async fn handle_key(
                         let _ = req.reply.send(None);
                     }
                     Modal::UserPrompt { .. } => {}
+                    Modal::Settings { .. } => {}
                 }
             }
             if app.running {
@@ -607,9 +609,55 @@ pub(crate) fn handle_modal_key(app: &mut App, key: KeyEvent) -> Result<bool> {
                 app.close_modal();
             }
         }
+        Some(Modal::Settings { selected }) => {
+            // Navigate over *all* rows (same list the renderer uses) so the
+            // highlight moves through every setting; only toggleable rows can
+            // be flipped with Space/Enter.
+            let rows = crate::harness::ui::tui::draw::modal::settings_rows(&app.runtime.config);
+            let n = rows.len();
+            let mut sel = selected.min(n.saturating_sub(1));
+            let mut keep = true;
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => keep = false,
+                KeyCode::Up | KeyCode::Char('k') => {
+                    sel = sel.saturating_sub(1);
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    if sel + 1 < n {
+                        sel += 1;
+                    }
+                }
+                KeyCode::Char(' ') | KeyCode::Enter => {
+                    if let Some((_, _, true)) = rows.get(sel) {
+                        toggle_setting(app, "cursor_agent");
+                    }
+                }
+                _ => {}
+            }
+            if keep {
+                app.modal = Some(Modal::Settings { selected: sel });
+            } else {
+                app.close_modal();
+            }
+        }
         None => {}
     }
     Ok(false)
+}
+
+/// Toggleable settings, in the same order as `settings_rows` in draw/modal.rs.
+/// Flip a boolean setting, persist it, and re-sync the runtime.
+fn toggle_setting(app: &mut App, field: &str) {
+    if field == "cursor_agent" {
+        let v = !app.runtime.config.cursor_agent;
+        match app.runtime.set_cursor_agent(v) {
+            Ok(()) => app.add_system(&format!(
+                "cursor_agent = {} (build mode now uses the Cursor CLI)",
+                if v { "on" } else { "off" }
+            )),
+            Err(e) => app.add_system(&format!("[error] failed to save settings: {}", e)),
+        }
+    }
 }
 
 pub(crate) fn handle_search_key(app: &mut App, key: KeyEvent) -> Result<bool> {

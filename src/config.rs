@@ -58,6 +58,11 @@ pub struct GlobalSettings {
     /// keeping the context leaner at the cost of more frequent summaries.
     #[serde(default, skip_serializing_if = "is_zero_f64")]
     pub compact_trigger_ratio: f64,
+    /// When `true`, the `build` mode is served by the `cursor` agent, which
+    /// delegates the whole task to the Cursor CLI. Default `false` (native
+    /// build). Takes effect on the next turn (registry rebuilt per turn).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub cursor_agent: bool,
 }
 
 fn is_zero_f64(v: &f64) -> bool {
@@ -89,6 +94,7 @@ impl Default for GlobalSettings {
             prompt_caching: true,
             summary_model: String::new(),
             compact_trigger_ratio: 0.0,
+            cursor_agent: false,
         }
     }
 }
@@ -181,6 +187,9 @@ pub struct RuntimeConfig {
     /// Fraction of `max_context_tokens` at which proactive compaction
     /// triggers. `0.0` = default (0.7).
     pub compact_trigger_ratio: f64,
+    /// When `true`, the `build` mode is served by the `cursor` agent (Cursor
+    /// CLI delegation) instead of the native build agent.
+    pub cursor_agent: bool,
 }
 
 impl Default for RuntimeConfig {
@@ -219,6 +228,7 @@ impl RuntimeConfig {
             daily_budget_usd: 0.0,
             summary_model: String::new(),
             compact_trigger_ratio: 0.0,
+            cursor_agent: false,
         }
     }
 
@@ -277,6 +287,7 @@ impl RuntimeConfig {
         if settings.compact_trigger_ratio != 0.0 {
             cfg.compact_trigger_ratio = settings.compact_trigger_ratio;
         }
+        cfg.cursor_agent = settings.cursor_agent;
 
         // 4. Token from the global auth store for the resolved provider.
         cfg.api_key = auth
@@ -408,5 +419,51 @@ mod tests {
         assert!(!cfg.is_configured());
         cfg.api_key = "sk-1234567890".to_string();
         assert!(cfg.is_configured());
+    }
+
+    #[test]
+    fn test_cursor_agent_defaults_false() {
+        let d = dir();
+        let cfg =
+            RuntimeConfig::resolve(d.path(), &GlobalSettings::default(), &AuthStore::default());
+        assert!(!cfg.cursor_agent);
+        assert!(!GlobalSettings::default().cursor_agent);
+    }
+
+    #[test]
+    fn test_cursor_agent_roundtrip() {
+        let d = dir();
+        let p = d.path().join("config.json");
+        let s = GlobalSettings {
+            cursor_agent: true,
+            ..Default::default()
+        };
+        s.save_to(&p).unwrap();
+        let back = GlobalSettings::load_from(&p).unwrap();
+        assert!(back.cursor_agent);
+        assert_eq!(back, s);
+    }
+
+    #[test]
+    fn test_cursor_agent_omitted_when_false() {
+        let d = dir();
+        let p = d.path().join("config.json");
+        GlobalSettings::default().save_to(&p).unwrap();
+        let raw = std::fs::read_to_string(&p).unwrap();
+        assert!(
+            !raw.contains("cursor_agent"),
+            "false must be skipped: {raw}"
+        );
+    }
+
+    #[test]
+    fn test_cursor_agent_propagates_to_runtime() {
+        let d = dir();
+        let s = GlobalSettings {
+            cursor_agent: true,
+            ..Default::default()
+        };
+        let cfg = RuntimeConfig::resolve(d.path(), &s, &AuthStore::default());
+        assert!(cfg.cursor_agent);
     }
 }

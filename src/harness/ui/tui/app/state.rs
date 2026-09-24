@@ -124,6 +124,12 @@ pub enum Modal {
     UserPrompt {
         line_idx: usize,
     },
+    /// System settings modal (opened by `/settings` with no args). Boolean
+    /// settings can be toggled with Space; the rest are read-only here.
+    Settings {
+        /// Index of the highlighted row.
+        selected: usize,
+    },
 }
 
 /// Case-insensitive substring search over transcript lines.

@@ -9,7 +9,14 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 
-pub fn draw(frame: &mut Frame, modal: &Modal, theme: &Theme, tick: u64, area: Rect) {
+pub fn draw(
+    frame: &mut Frame,
+    modal: &Modal,
+    theme: &Theme,
+    tick: u64,
+    area: Rect,
+    config: &crate::config::RuntimeConfig,
+) {
     match modal {
         Modal::Permission(req) => {
             let modal_area = centered_rect(70, 45, area);
@@ -27,7 +34,108 @@ pub fn draw(frame: &mut Frame, modal: &Modal, theme: &Theme, tick: u64, area: Re
             frame.render_widget(Clear, fixed);
             draw_user_prompt(frame, theme, fixed)
         }
+        Modal::Settings { selected } => {
+            let fixed = centered_rect_fixed(64, 16, area);
+            frame.render_widget(Clear, fixed);
+            draw_settings(frame, theme, *selected, fixed, config)
+        }
     }
+}
+
+/// Rows of the settings modal: (label, value, toggleable).
+///
+/// Shared with the key handler so navigation and rendering always agree on the
+/// row order and count.
+pub(crate) fn settings_rows(c: &crate::config::RuntimeConfig) -> Vec<(String, String, bool)> {
+    vec![
+        ("provider".into(), c.provider.clone(), false),
+        ("model".into(), c.model.clone(), false),
+        ("max_iterations".into(), c.max_iterations.to_string(), false),
+        (
+            "max_context_tokens".into(),
+            c.max_context_tokens.to_string(),
+            false,
+        ),
+        (
+            "turn_timeout_secs".into(),
+            c.turn_timeout_secs.to_string(),
+            false,
+        ),
+        (
+            "compact_trigger_ratio".into(),
+            format!("{:.2}", c.compact_trigger_ratio),
+            false,
+        ),
+        (
+            "summary_model".into(),
+            if c.summary_model.is_empty() {
+                "(same as model)".into()
+            } else {
+                c.summary_model.clone()
+            },
+            false,
+        ),
+        ("cursor_agent".into(), on_off(c.cursor_agent), true),
+    ]
+}
+
+fn on_off(v: bool) -> String {
+    if v {
+        "on".into()
+    } else {
+        "off".into()
+    }
+}
+
+fn draw_settings(
+    frame: &mut Frame,
+    t: &Theme,
+    selected: usize,
+    area: Rect,
+    config: &crate::config::RuntimeConfig,
+) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(t.accent2))
+        .title(Span::styled(
+            " ⚙ settings ",
+            Style::default().fg(t.accent2).add_modifier(Modifier::BOLD),
+        ))
+        .style(Style::default().bg(t.surface).fg(t.text));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let rows = settings_rows(config);
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, (label, value, toggleable)) in rows.iter().enumerate() {
+        let is_sel = i == selected;
+        let marker = if is_sel { "❯ " } else { "  " };
+        let label_style = if is_sel {
+            Style::default().fg(t.accent).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(t.text)
+        };
+        let value_style = if *toggleable {
+            Style::default().fg(t.success)
+        } else {
+            Style::default().fg(t.text_dim)
+        };
+        lines.push(Line::from(vec![
+            Span::styled(marker, Style::default().fg(t.accent)),
+            Span::styled(format!("{:<22}", label), label_style),
+            Span::styled(value.clone(), value_style),
+        ]));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("  ↑/↓", Style::default().fg(t.accent2)),
+        Span::styled(" move  ", Style::default().fg(t.text_dim)),
+        Span::styled("Space", Style::default().fg(t.accent2)),
+        Span::styled(" toggle  ", Style::default().fg(t.text_dim)),
+        Span::styled("Esc", Style::default().fg(t.accent2)),
+        Span::styled(" close", Style::default().fg(t.text_dim)),
+    ]));
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
 
 fn draw_user_prompt(frame: &mut Frame, t: &Theme, area: Rect) {

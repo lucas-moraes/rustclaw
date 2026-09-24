@@ -158,6 +158,7 @@ pub fn builtin_names() -> Vec<String> {
         builtin::EXPLORE.to_string(),
         builtin::GENERAL.to_string(),
         builtin::CHAT_FREE.to_string(),
+        builtin::CURSOR.to_string(),
     ]
 }
 
@@ -170,6 +171,7 @@ pub fn find_builtin(name: &str) -> Option<AgentSpec> {
         "explore" => builtin::explore(),
         "general" => builtin::general(),
         "chat-free" | "chat_free" | "chatfree" => builtin::chat_free(),
+        "cursor" => builtin::cursor(),
         _ => return None,
     };
     Some(agent)

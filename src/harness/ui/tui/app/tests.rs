@@ -708,6 +708,7 @@ mod mouse_scroll_tests {
 #[cfg(test)]
 mod scroll_tests {
     use super::*;
+    use crate::harness::ui::tui::app::keys::handle_key;
 
     #[test]
     fn test_scroll_by_clamps_at_zero() {
@@ -762,5 +763,62 @@ mod scroll_tests {
         assert!(app.stick_bottom);
         assert!(app.streaming.is_none());
         assert!(app.tool_status.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_settings_modal_down_moves_through_all_rows() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut app = App::inline_for_tests("x");
+        app.modal = Some(Modal::Settings { selected: 0 });
+        let mut prompt_task = None;
+
+        let rows = crate::harness::ui::tui::draw::modal::settings_rows(&app.runtime.config);
+        assert!(
+            rows.len() > 1,
+            "settings modal must expose more than one row"
+        );
+
+        // Down must advance the highlight through every row (regression: the
+        // handler used to navigate a 1-element list, so Down never moved).
+        for expected in 1..rows.len() {
+            handle_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+                &mut prompt_task,
+            )
+            .await
+            .unwrap();
+            match app.modal {
+                Some(Modal::Settings { selected }) => assert_eq!(selected, expected),
+                _ => panic!("settings modal closed unexpectedly"),
+            }
+        }
+
+        // Down at the last row stays put.
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+            &mut prompt_task,
+        )
+        .await
+        .unwrap();
+        match app.modal {
+            Some(Modal::Settings { selected }) => assert_eq!(selected, rows.len() - 1),
+            _ => panic!("settings modal closed unexpectedly"),
+        }
+
+        // Up moves back.
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+            &mut prompt_task,
+        )
+        .await
+        .unwrap();
+        match app.modal {
+            Some(Modal::Settings { selected }) => assert_eq!(selected, rows.len() - 2),
+            _ => panic!("settings modal closed unexpectedly"),
+        }
     }
 }

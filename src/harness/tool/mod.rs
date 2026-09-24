@@ -5,6 +5,7 @@ pub mod bash;
 pub mod browser;
 pub mod checkpoint;
 pub mod context;
+pub mod cursor;
 pub mod diagnostics;
 pub mod diff;
 pub mod edit;

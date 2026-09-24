@@ -31,6 +31,17 @@ impl ToolRegistry {
         }
     }
 
+    /// Returns a copy of the registry without the named tool (no-op if absent).
+    /// Used to apply the `cursor_agent` kill-switch: the `cursor` tool is
+    /// registered unconditionally and removed when the toggle is off.
+    pub fn without_tool(&self, name: &str) -> Self {
+        let mut tools = (*self.tools).clone();
+        tools.remove(name);
+        ToolRegistry {
+            tools: Arc::new(tools),
+        }
+    }
+
     pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
         self.tools.get(name).cloned()
     }
@@ -143,6 +154,30 @@ mod tests {
 
         let filtered = registry.specs(&["other".to_string()]);
         assert!(filtered.is_empty());
+    }
+
+    #[test]
+    fn test_without_tool_removes_entry() {
+        let registry = ToolRegistry::builder().register(Arc::new(EchoTool)).build();
+        let trimmed = registry.without_tool("echo");
+        assert!(!trimmed.contains("echo"));
+        // Original is untouched (copy semantics).
+        assert!(registry.contains("echo"));
+    }
+
+    #[test]
+    fn test_without_tool_keeps_others() {
+        let registry = ToolRegistry::builder()
+            .register(Arc::new(EchoTool))
+            .register(Arc::new(McpEchoTool))
+            .build();
+        let trimmed = registry.without_tool("echo");
+        assert!(!trimmed.contains("echo"));
+        assert!(trimmed.contains("mcp_fs_read"));
+        // Removing an absent tool is a no-op.
+        let noop = registry.without_tool("does_not_exist");
+        assert!(noop.contains("echo"));
+        assert!(noop.contains("mcp_fs_read"));
     }
 
     struct McpEchoTool;

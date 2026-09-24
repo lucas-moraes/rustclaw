@@ -8,6 +8,7 @@ pub const PLAN: &str = "plan";
 pub const EXPLORE: &str = "explore";
 pub const GENERAL: &str = "general";
 pub const CHAT_FREE: &str = "chat-free";
+pub const CURSOR: &str = "cursor";
 
 /// All build-mode tools except the file-writing ones (`write`/`edit`).
 ///
@@ -50,6 +51,27 @@ pass `tasks: [...]` (a batch) so independent tasks run in parallel instead of on
 To inspect a symbol definition (struct, enum, trait, function, impl) in a .rs file, prefer \
 the ast_search tool over reading the whole file — it extracts exactly the block you need \
 without loading the full source into context."
+            .into(),
+        model: None,
+        temperature: Some(0.0),
+        permission_overrides: HashMap::new(),
+    }
+}
+
+/// Cursor delegation agent: the sole agent of the `build` mode when the
+/// `cursor_agent` toggle is on. Its only tool is `cursor`, which delegates the
+/// whole task to the Cursor CLI. The system prompt below is a minimal proxy
+/// instruction for the harness LLM — it is NEVER forwarded to Cursor (the
+/// delegation prompt is built deterministically by the tool).
+pub fn cursor() -> AgentSpec {
+    AgentSpec {
+        name: CURSOR.into(),
+        description: "Delegates the whole build task to the Cursor CLI (agent -p --force).".into(),
+        tools: vec!["cursor".to_string()],
+        system_prompt: "You are a proxy for the Cursor CLI. The user's request is a build task. \
+Call the `cursor` tool exactly once, passing the user's full request verbatim as the `task` \
+argument. Do not attempt to solve the task yourself and do not call any other tool. After the \
+tool returns, relay its summary to the user."
             .into(),
         model: None,
         temperature: Some(0.0),

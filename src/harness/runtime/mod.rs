@@ -133,6 +133,9 @@ impl SessionRuntime {
         user_asker: Arc<dyn UserAsker>,
     ) -> Result<Self> {
         let cwd = project_root.to_path_buf();
+        // Apply the `cursor_agent` kill-switch: the `cursor` tool is only
+        // present in the registry when the toggle is on.
+        let registry = registry::apply_cursor_toggle(registry, config.cursor_agent);
         let store = Arc::new(SessionStore::open(db_path).context("failed to open session store")?);
         let skills = Arc::new(crate::harness::skill::loader::load_catalog(&cwd));
         let custom_agents = crate::harness::agent::custom::load_custom_agents(&cwd);
@@ -384,6 +387,12 @@ impl SessionRuntime {
         if let Some(spec) = self.custom_agents.get(name) {
             return spec.clone();
         }
+        // Cursor delegation: when the toggle is on, the `build` mode is served
+        // by the `cursor` agent (whose only tool delegates to the Cursor CLI).
+        // The native build agent is left untouched and still reachable by name.
+        if self.config.cursor_agent && name == crate::harness::agent::builtin::BUILD {
+            return crate::harness::agent::builtin::cursor();
+        }
         crate::harness::agent::find_builtin(name)
             .unwrap_or_else(crate::harness::agent::builtin::build)
     }
@@ -436,6 +445,19 @@ impl SessionRuntime {
         s.model = self.config.model.clone();
         s.compact_trigger_ratio = self.config.compact_trigger_ratio;
         s.summary_model = self.config.summary_model.clone();
+        s.save().context("failed to persist config.json")?;
+        Ok(())
+    }
+
+    /// Enables or disables the Cursor CLI delegation for the `build` mode.
+    ///
+    /// Updates the in-memory config, re-syncs the tool registry (kill-switch)
+    /// and persists the flag to `config.json`. Takes effect on the next turn.
+    pub fn set_cursor_agent(&mut self, enabled: bool) -> Result<()> {
+        self.config.cursor_agent = enabled;
+        self.registry = registry::apply_cursor_toggle(self.registry.clone(), enabled);
+        let mut s = crate::config::GlobalSettings::load();
+        s.cursor_agent = enabled;
         s.save().context("failed to persist config.json")?;
         Ok(())
     }
@@ -624,13 +646,18 @@ impl SessionRuntime {
 
         // 2. Resolve agent + build system prompt (with enabled skills).
         let agent = self.resolve_agent(&session.agent);
+        // Defensive re-sync of the Cursor kill-switch: the registry is normally
+        // kept in sync by `new_in`/`set_cursor_agent`, but re-applying here
+        // guarantees the tool set matches the current config for this turn.
+        let turn_registry =
+            registry::apply_cursor_toggle(self.registry.clone(), self.config.cursor_agent);
         let enabled: Vec<String> = match enabled_skills {
             Some(ids) => ids.to_vec(),
             None => inject::enabled_for_turn(&session.skills, None),
         };
         let skills_block = inject::render_enabled(&self.skills, &session.skills, &enabled);
         let project_context = self.frozen_summary_for(&session.id, &session.cwd).await?;
-        let available_tools = self.registry.specs(&agent.tools);
+        let available_tools = turn_registry.specs(&agent.tools);
         let system_prompt = build_system_prompt(
             &agent,
             &session.cwd,
@@ -671,7 +698,7 @@ impl SessionRuntime {
         let turn_started = std::time::Instant::now();
         let processor = SessionProcessor {
             provider: self.provider.clone(),
-            registry: self.registry.clone(),
+            registry: turn_registry.clone(),
             events: events.clone(),
             store: self.store.clone(),
             config: ProcessorConfig {
