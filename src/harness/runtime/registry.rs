@@ -47,18 +47,27 @@ pub fn build_default_registry() -> ToolRegistry {
         .register(Arc::new(GitStatusTool))
         .register(Arc::new(GitDiffTool))
         .register(Arc::new(GitLogTool))
-        .register(Arc::new(CursorTool))
+        .register(Arc::new(CursorTool::default()))
         .build()
 }
 
 /// Applies the `cursor_agent` kill-switch to a registry: when the toggle is
 /// off, the `cursor` tool is removed so no agent can call it.
-pub fn apply_cursor_toggle(registry: ToolRegistry, cursor_agent: bool) -> ToolRegistry {
+///
+/// `cursor_model` is forwarded to the tool (`--model <id>`); empty means the
+/// Cursor CLI's own default ("auto").
+pub fn apply_cursor_toggle(
+    registry: ToolRegistry,
+    cursor_agent: bool,
+    cursor_model: &str,
+) -> ToolRegistry {
     if cursor_agent {
         // Re-register the tool so it comes back after a previous "off": the
         // kill-switch (`without_tool`) permanently drops it, so simply keeping
         // the registry would leave the `cursor` agent with zero tool specs.
-        registry.with_tool(Arc::new(crate::harness::tool::cursor::CursorTool))
+        registry.with_tool(Arc::new(crate::harness::tool::cursor::CursorTool::new(
+            cursor_model,
+        )))
     } else {
         registry.without_tool("cursor")
     }
@@ -81,14 +90,14 @@ mod tests {
         );
 
         // Toggle OFF: the tool is removed.
-        let reg = apply_cursor_toggle(reg, false);
+        let reg = apply_cursor_toggle(reg, false, "");
         assert!(
             reg.specs(&["cursor".to_string()]).is_empty(),
             "toggle off must remove the cursor tool"
         );
 
         // Toggle ON again: the tool must come back.
-        let reg = apply_cursor_toggle(reg, true);
+        let reg = apply_cursor_toggle(reg, true, "");
         let specs = reg.specs(&["cursor".to_string()]);
         assert_eq!(
             specs.len(),
@@ -103,10 +112,10 @@ mod tests {
     fn test_cursor_agent_tool_specs_follow_toggle() {
         let agent = find_builtin("cursor").expect("cursor agent exists");
 
-        let on = apply_cursor_toggle(build_default_registry(), true);
+        let on = apply_cursor_toggle(build_default_registry(), true, "");
         assert_eq!(on.specs(&agent.tools).len(), 1);
 
-        let off = apply_cursor_toggle(build_default_registry(), false);
+        let off = apply_cursor_toggle(build_default_registry(), false, "");
         assert!(off.specs(&agent.tools).is_empty());
     }
 }

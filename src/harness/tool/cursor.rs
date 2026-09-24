@@ -169,8 +169,47 @@ pub fn parse_stream_json(payload: &str) -> String {
     out
 }
 
+/// Builds the fixed argv for the Cursor CLI spawn. `--model <id>` is appended
+/// only when a model is set; an empty/`None` model means the CLI's own default
+/// ("auto").
+fn spawn_args(model: Option<&str>) -> Vec<String> {
+    let mut args = vec![
+        "-p".to_string(),
+        "--force".to_string(),
+        "--output-format".to_string(),
+        "stream-json".to_string(),
+    ];
+    if let Some(model) = model {
+        args.push("--model".to_string());
+        args.push(model.to_string());
+    }
+    args
+}
+
 /// The `cursor` tool.
-pub struct CursorTool;
+///
+/// `model` is the id passed to the Cursor CLI as `--model <id>`. When `None`
+/// or empty, no `--model` flag is sent and the CLI uses its own default
+/// ("auto").
+#[derive(Default)]
+pub struct CursorTool {
+    model: Option<String>,
+}
+
+impl CursorTool {
+    /// Builds the tool with the given Cursor model id. An empty string is
+    /// treated as "auto" (no `--model` flag).
+    pub fn new(model: impl Into<String>) -> Self {
+        let model = model.into();
+        Self {
+            model: if model.trim().is_empty() {
+                None
+            } else {
+                Some(model)
+            },
+        }
+    }
+}
 
 #[async_trait::async_trait]
 impl Tool for CursorTool {
@@ -219,11 +258,9 @@ impl Tool for CursorTool {
         };
         let prompt = build_delegation_prompt(&task, &cwd, mem.as_deref(), None);
 
-        let mut child = tokio::process::Command::new("agent")
-            .arg("-p")
-            .arg("--force")
-            .arg("--output-format")
-            .arg("stream-json")
+        let mut cmd = tokio::process::Command::new("agent");
+        cmd.args(spawn_args(self.model.as_deref()));
+        let mut child = cmd
             .arg(&prompt)
             .current_dir(&cwd)
             .stdin(Stdio::null())
@@ -348,6 +385,47 @@ mod tests {
             "{\"text\":\"B\"}\n"
         );
         assert_eq!(parse_stream_json(payload), "AB");
+    }
+
+    /// No model set → no `--model` flag (CLI default "auto").
+    #[test]
+    fn test_spawn_args_without_model() {
+        let args = spawn_args(None);
+        assert_eq!(
+            args,
+            vec!["-p", "--force", "--output-format", "stream-json"]
+        );
+        assert!(!args.iter().any(|a| a == "--model"));
+    }
+
+    /// A model is forwarded as `--model <id>`.
+    #[test]
+    fn test_spawn_args_with_model() {
+        let args = spawn_args(Some("composer-2.5"));
+        assert_eq!(
+            args,
+            vec![
+                "-p",
+                "--force",
+                "--output-format",
+                "stream-json",
+                "--model",
+                "composer-2.5",
+            ]
+        );
+    }
+
+    /// `CursorTool::new("")` normalizes to "auto" (no `--model` flag).
+    #[test]
+    fn test_cursor_tool_empty_model_is_auto() {
+        assert_eq!(
+            spawn_args(CursorTool::new("").model.as_deref()),
+            spawn_args(None)
+        );
+        assert_eq!(
+            spawn_args(CursorTool::new("gpt-5.3-codex").model.as_deref()),
+            spawn_args(Some("gpt-5.3-codex"))
+        );
     }
 
     #[test]

@@ -63,6 +63,10 @@ pub struct GlobalSettings {
     /// build). Takes effect on the next turn (registry rebuilt per turn).
     #[serde(default, skip_serializing_if = "is_false")]
     pub cursor_agent: bool,
+    /// Model passed to the Cursor CLI as `--model <id>` when `cursor_agent`
+    /// is on. Empty (default) means "auto" — the CLI picks the model.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub cursor_model: String,
 }
 
 fn is_zero_f64(v: &f64) -> bool {
@@ -95,6 +99,7 @@ impl Default for GlobalSettings {
             summary_model: String::new(),
             compact_trigger_ratio: 0.0,
             cursor_agent: false,
+            cursor_model: String::new(),
         }
     }
 }
@@ -190,6 +195,8 @@ pub struct RuntimeConfig {
     /// When `true`, the `build` mode is served by the `cursor` agent (Cursor
     /// CLI delegation) instead of the native build agent.
     pub cursor_agent: bool,
+    /// Model id passed to the Cursor CLI (`--model`). Empty means "auto".
+    pub cursor_model: String,
 }
 
 impl Default for RuntimeConfig {
@@ -229,6 +236,7 @@ impl RuntimeConfig {
             summary_model: String::new(),
             compact_trigger_ratio: 0.0,
             cursor_agent: false,
+            cursor_model: String::new(),
         }
     }
 
@@ -288,6 +296,7 @@ impl RuntimeConfig {
             cfg.compact_trigger_ratio = settings.compact_trigger_ratio;
         }
         cfg.cursor_agent = settings.cursor_agent;
+        cfg.cursor_model = settings.cursor_model.clone();
 
         // 4. Token from the global auth store for the resolved provider.
         cfg.api_key = auth

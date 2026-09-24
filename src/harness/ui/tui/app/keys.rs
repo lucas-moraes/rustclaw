@@ -117,6 +117,7 @@ pub(crate) async fn handle_key(
                     }
                     Modal::UserPrompt { .. } => {}
                     Modal::Settings { .. } => {}
+                    Modal::CursorModel { .. } => {}
                 }
             }
             // Drain any queued asks too, so no oneshot is left dangling.
@@ -130,6 +131,7 @@ pub(crate) async fn handle_key(
                     }
                     Modal::UserPrompt { .. } => {}
                     Modal::Settings { .. } => {}
+                    Modal::CursorModel { .. } => {}
                 }
             }
             if app.running {
@@ -628,8 +630,21 @@ pub(crate) fn handle_modal_key(app: &mut App, key: KeyEvent) -> Result<bool> {
                     }
                 }
                 KeyCode::Char(' ') | KeyCode::Enter => {
-                    if let Some((_, _, true)) = rows.get(sel) {
-                        toggle_setting(app, "cursor_agent");
+                    if let Some((label, _, toggleable)) = rows.get(sel) {
+                        if *toggleable {
+                            toggle_setting(app, "cursor_agent");
+                        } else if label == "cursor_model" {
+                            // Non-toggleable row: Enter opens the model picker.
+                            let mut models = vec!["auto".to_string()];
+                            models.extend(list_cursor_models());
+                            let current = app.runtime.config.cursor_model.clone();
+                            let selected = models
+                                .iter()
+                                .position(|m| m == &current || (current.is_empty() && m == "auto"))
+                                .unwrap_or(0);
+                            app.modal = Some(Modal::CursorModel { selected, models });
+                            keep = false; // the picker takes over the modal
+                        }
                     }
                 }
                 _ => {}
@@ -640,9 +655,98 @@ pub(crate) fn handle_modal_key(app: &mut App, key: KeyEvent) -> Result<bool> {
                 app.close_modal();
             }
         }
+        Some(Modal::CursorModel { selected, models }) => {
+            let n = models.len();
+            let mut sel = selected.min(n.saturating_sub(1));
+            let mut keep = true;
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => keep = false,
+                KeyCode::Up | KeyCode::Char('k') => {
+                    sel = sel.saturating_sub(1);
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    if sel + 1 < n {
+                        sel += 1;
+                    }
+                }
+                KeyCode::Enter => {
+                    if let Some(model) = models.get(sel).cloned() {
+                        // "auto" is stored as an empty string (no --model flag).
+                        let stored = if model == "auto" {
+                            String::new()
+                        } else {
+                            model
+                        };
+                        match app.runtime.set_cursor_model(stored.clone()) {
+                            Ok(()) => app.add_system(&format!(
+                                "cursor_model = {} (Cursor CLI --model)",
+                                if stored.is_empty() { "auto" } else { &stored }
+                            )),
+                            Err(e) => {
+                                app.add_system(&format!("[error] failed to save settings: {}", e))
+                            }
+                        }
+                    }
+                    keep = false;
+                }
+                _ => {}
+            }
+            if keep {
+                app.modal = Some(Modal::CursorModel {
+                    selected: sel,
+                    models,
+                });
+            } else {
+                app.close_modal();
+            }
+        }
         None => {}
     }
     Ok(false)
+}
+
+/// Runs `agent --list-models` and parses the model ids from its output.
+/// Returns an empty vec if the CLI is missing or the output can't be parsed.
+fn list_cursor_models() -> Vec<String> {
+    let out = match std::process::Command::new("agent")
+        .arg("--list-models")
+        .output()
+    {
+        Ok(o) if o.status.success() => o,
+        _ => return Vec::new(),
+    };
+    let text = String::from_utf8_lossy(&out.stdout);
+    parse_model_list(&text)
+}
+
+/// Parses the model ids out of `agent --list-models` output. Lines look like
+/// `  gpt-5  - description` or `  claude-4.5-sonnet`; we take the first
+/// whitespace-delimited token of each non-empty, non-header line.
+fn parse_model_list(text: &str) -> Vec<String> {
+    let mut models = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        // Skip obvious header lines ("Available models", "Models:", ...).
+        if line.ends_with(':') && !line.contains(' ') {
+            continue;
+        }
+        if line.eq_ignore_ascii_case("available models") || line.eq_ignore_ascii_case("models") {
+            continue;
+        }
+        let id = line.split_whitespace().next().unwrap_or("");
+        // Drop a trailing dash separator ("gpt-5 - desc").
+        let id = id.trim_end_matches('-').trim();
+        if id.is_empty() || id.eq_ignore_ascii_case("model") || id.eq_ignore_ascii_case("models") {
+            continue;
+        }
+        if !models.iter().any(|m| m == id) {
+            models.push(id.to_string());
+        }
+    }
+    models
 }
 
 /// Toggleable settings, in the same order as `settings_rows` in draw/modal.rs.
@@ -979,4 +1083,44 @@ pub(crate) async fn submit_input(
     });
     *prompt_task = Some(handle);
     Ok(false)
+}
+
+#[cfg(test)]
+mod cursor_model_tests {
+    use super::parse_model_list;
+
+    /// The parser must skip the `Available models` header and the blank line,
+    /// keep the ids (first token) and dedup while preserving order.
+    #[test]
+    fn test_parse_model_list_real_output() {
+        let out = "Available models\n\n\
+auto - Auto (current, default)\n\
+gpt-5.3-codex-low - Codex 5.3 Low\n\
+gpt-5.3-codex - Codex 5.3\n\
+claude-opus-5-5-high - Claude Opus 5.5 1M High\n";
+        let models = parse_model_list(out);
+        assert_eq!(
+            models,
+            vec![
+                "auto",
+                "gpt-5.3-codex-low",
+                "gpt-5.3-codex",
+                "claude-opus-5-5-high",
+            ]
+        );
+    }
+
+    /// Bare ids (no description) are kept; duplicates are dropped.
+    #[test]
+    fn test_parse_model_list_bare_and_dedup() {
+        let out = "Models:\nsonnet\nsonnet\nopus\n";
+        assert_eq!(parse_model_list(out), vec!["sonnet", "opus"]);
+    }
+
+    /// Empty / header-only output yields no models.
+    #[test]
+    fn test_parse_model_list_empty() {
+        assert!(parse_model_list("").is_empty());
+        assert!(parse_model_list("Available models\n").is_empty());
+    }
 }

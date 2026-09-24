@@ -281,12 +281,19 @@ impl Tool for MyTool {
   prompt determinístico (`build_delegation_prompt`) com `## Tarefa`,
   `# Project context` (ProjectProfiler) e `<project-memory>`.
 - Kill-switch: `build_default_registry()` sempre registra a tool; ela é
-  removida via `registry::apply_cursor_toggle` quando o toggle está off
-  (aplicado em `new_in`, `set_cursor_agent` e re-sincronizado por turno).
+  removida via `registry::apply_cursor_toggle(reg, cursor_agent, cursor_model)`
+  quando o toggle está off (aplicado em `new_in`, `set_cursor_agent`,
+  `set_cursor_model` e re-sincronizado por turno).
+- **Modelo do Cursor**: `cursor_model` (config.json) é repassado como
+  `--model <id>` no spawn (`CursorTool::new(model)` → `spawn_args`). Vazio =
+  `auto` (sem flag; default do CLI). A lista vem de `agent --list-models`
+  (parser `parse_model_list`). Mudar o modelo **não** altera o modelo do
+  harness — são camadas distintas.
 - Permissão default da tool `cursor` = **ask**; allowlist do agente `build`
   nativo não inclui `cursor`.
-- TUI: toggle no modal `/settings` (Space); indicador `└ cursor` (dim) sob
-  `build` na sidebar.
+- TUI: toggle no modal `/settings` (Space); na linha `cursor_model` o
+  **Enter** abre o picker de modelos (↑/↓ + Enter); indicador `└ cursor` (dim)
+  sob `build` na sidebar.
 
 ### Memory (skills)
 - Modelo: **prompt** (pedido atual) + **session** (histórico) + **memory** (skills)
