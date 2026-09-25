@@ -139,18 +139,23 @@ pub const HELP: &str = "\
   Esc        cancel streaming/run · close overlay · clear draft
   Up/Down    history (single-line) / move between lines
   Ctrl+A/E   line start / line end
-  Ctrl+U/W   kill to line start / kill word
+  Ctrl+K     kill to line end (kill-ring)
+  Ctrl+U/W   kill to line start / kill word (fills kill-ring)
+  Ctrl+←/→   word left / right (also Alt+B / Alt+F)
+  Alt+Backspace / Alt+D  kill word back / forward
+  Ctrl+Home/End  transcript top / bottom (stick-bottom on End)
   Ctrl+Z     reset prompt input
   Del        delete char at cursor
-  PgUp/PgDn  scroll transcript
+  PgUp/PgDn  scroll transcript (page = viewport height)
   x          expand/collapse thinking (reasoning) blocks
   Drag       select transcript text (auto-copy on release)
   Ctrl+C     copy selection · quit (no selection)
   Esc        (same: cancel in-flight action first)
   Ctrl+P     command palette
-  Ctrl+T     theme picker
+  Ctrl+T     theme picker (no-op when NO_COLOR)
   Ctrl+L     clear transcript
-  Ctrl+Y     copy last code block
+  Ctrl+Y     yank kill-ring, or copy last code block if the ring is empty
+  /copy-code /save-code  same as Ctrl+Y (empty ring) / Ctrl+S
   Ctrl+S     save last code block to file
   ? / F1     help overlay
   Tab        autocomplete (in /) / cycle mode

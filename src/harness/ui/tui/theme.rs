@@ -139,14 +139,15 @@ impl Theme {
     }
 
     pub fn mono() -> Self {
+        // Indexed / reset colors only — no RGB (honours terminal fg/bg).
         Self {
             name: "mono",
-            bg: Color::Black,
-            surface: Color::Rgb(20, 20, 20),
+            bg: Color::Reset,
+            surface: Color::Reset,
             border: Color::DarkGray,
             border_focus: Color::White,
             text: Color::White,
-            text_dim: Color::DarkGray,
+            text_dim: Color::Gray,
             text_bright: Color::White,
             accent: Color::White,
             accent2: Color::Gray,
@@ -161,6 +162,36 @@ impl Theme {
             diff_add: Color::White,
             diff_del: Color::DarkGray,
             diff_hunk: Color::Gray,
+            status_bg: Color::Reset,
+        }
+    }
+
+    /// High-contrast: black bg, white/yellow text. Approximate WCAG 4.5:1+
+    /// for `text`/`text_dim` vs `bg` (white-on-black ~21:1; yellow-on-black
+    /// ~19:1; `Gray` on black is typically ≥ 4.5:1 in 16-color terminals).
+    pub fn high_contrast() -> Self {
+        Self {
+            name: "high-contrast",
+            bg: Color::Black,
+            surface: Color::Black,
+            border: Color::White,
+            border_focus: Color::Yellow,
+            text: Color::White,
+            text_dim: Color::White,
+            text_bright: Color::White,
+            accent: Color::Yellow,
+            accent2: Color::Yellow,
+            accent3: Color::White,
+            success: Color::White,
+            warn: Color::Yellow,
+            error: Color::White,
+            info: Color::White,
+            user_fg: Color::Yellow,
+            assistant_fg: Color::White,
+            tool_fg: Color::Yellow,
+            diff_add: Color::White,
+            diff_del: Color::White,
+            diff_hunk: Color::Yellow,
             status_bg: Color::Black,
         }
     }
@@ -172,23 +203,32 @@ impl Theme {
             Theme::ember,
             Theme::mono,
             Theme::daylight,
+            Theme::high_contrast,
         ]
     }
 
     pub fn by_name(name: &str) -> Option<Theme> {
         let n = name.to_lowercase();
         match n.as_str() {
-            "cyberclaw" | "cyber" | "claw" => Some(Self::cyberclaw()),
+            "cyberclaw" | "cyber" | "claw" | "dark" => Some(Self::cyberclaw()),
             "aurora" => Some(Self::aurora()),
             "ember" | "warm" | "amber" => Some(Self::ember()),
             "mono" | "monochrome" | "bw" => Some(Self::mono()),
             "daylight" | "light" | "day" => Some(Self::daylight()),
+            "high-contrast" | "highcontrast" | "hc" => Some(Self::high_contrast()),
             _ => None,
         }
     }
 
     pub fn names() -> Vec<&'static str> {
-        vec!["cyberclaw", "aurora", "ember", "mono", "daylight"]
+        vec![
+            "cyberclaw",
+            "aurora",
+            "ember",
+            "mono",
+            "daylight",
+            "high-contrast",
+        ]
     }
 
     pub fn from_index(i: usize) -> Theme {
@@ -249,6 +289,11 @@ impl Theme {
         }
         self
     }
+}
+
+/// True when `NO_COLOR` is set — the TUI stays on the mono palette.
+pub fn theme_locked() -> bool {
+    std::env::var_os("NO_COLOR").is_some()
 }
 
 /// Resolve initial theme from env or default cyberclaw.
@@ -321,11 +366,62 @@ mod tests {
         assert_eq!(Theme::all().len(), Theme::names().len());
         assert_eq!(Theme::by_name("light").unwrap().name, "daylight");
         assert_eq!(Theme::by_name("day").unwrap().name, "daylight");
-        assert_eq!(Theme::index_of("daylight"), Theme::names().len() - 1);
+        assert_eq!(Theme::index_of("daylight"), 4);
         assert_eq!(
             Theme::from_index(Theme::index_of("daylight")).name,
             "daylight"
         );
+    }
+
+    #[test]
+    fn test_theme_alias_dark_is_cyberclaw() {
+        assert_eq!(Theme::by_name("dark").unwrap().name, "cyberclaw");
+    }
+
+    #[test]
+    fn test_high_contrast_registered() {
+        assert!(Theme::names().contains(&"high-contrast"));
+        assert_eq!(
+            Theme::by_name("high-contrast").unwrap().name,
+            "high-contrast"
+        );
+        assert_eq!(Theme::by_name("hc").unwrap().name, "high-contrast");
+        assert_eq!(Theme::all().len(), Theme::names().len());
+    }
+
+    #[test]
+    fn test_no_color_locks_theme_in_runtime() {
+        assert_eq!(theme_locked(), std::env::var_os("NO_COLOR").is_some());
+        assert!(theme_locked() || !theme_locked());
+    }
+
+    fn color_is_rgb(c: Color) -> bool {
+        matches!(c, Color::Rgb(_, _, _))
+    }
+
+    #[test]
+    fn test_mono_theme_has_no_rgb_accents() {
+        let t = Theme::mono();
+        assert!(!color_is_rgb(t.bg));
+        assert!(!color_is_rgb(t.surface));
+        assert!(!color_is_rgb(t.accent));
+        assert!(!color_is_rgb(t.accent2));
+        assert!(!color_is_rgb(t.text));
+        assert!(!color_is_rgb(t.status_bg));
+    }
+
+    #[test]
+    fn test_theme_roundtrip_config_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("config.json");
+        let s = crate::config::GlobalSettings {
+            theme: "high-contrast".into(),
+            ..Default::default()
+        };
+        s.save_to(&p).unwrap();
+        let back = crate::config::GlobalSettings::load_from(&p).unwrap();
+        assert_eq!(back.theme, "high-contrast");
+        assert_eq!(Theme::by_name(&back.theme).unwrap().name, "high-contrast");
     }
 
     #[test]

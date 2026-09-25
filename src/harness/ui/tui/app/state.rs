@@ -22,6 +22,29 @@ use super::pickers::persist_custom_model;
 use super::undo::copy_to_clipboard;
 use super::MODES;
 
+/// Status-bar chip for doom-loop feedback. Kept independent of the processor's
+/// `DoomLoopDetector` so `draw/status.rs` does not couple to that type.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DoomLevel {
+    #[default]
+    Ok,
+    Warn,
+    Stop,
+}
+
+/// Flush pending stream text after this much idle time (or sooner at size cap).
+pub const STREAM_FLUSH_MS: u64 = 64;
+/// Flush pending stream text once this many chars have accumulated.
+pub const STREAM_FLUSH_CHARS: usize = 80;
+
+/// Whether the temporal stream buffer should be flushed into `streaming`.
+pub fn should_flush_stream(buf: &str, elapsed: std::time::Duration, n_chars: usize) -> bool {
+    if buf.is_empty() {
+        return false;
+    }
+    n_chars >= STREAM_FLUSH_CHARS || elapsed >= std::time::Duration::from_millis(STREAM_FLUSH_MS)
+}
+
 pub struct App {
     pub runtime: SessionRuntime,
     pub session: Session,
@@ -33,8 +56,31 @@ pub struct App {
     /// Inner width of the prompt box (refreshed by the draw pass); used for
     /// soft-wrap aware cursor movement between frames.
     pub input_inner_width: u16,
+    /// Redraw flag: the runner only calls `terminal.draw` when this is set
+    /// (or animation is running), rate-limited to ~30 fps.
+    pub needs_redraw: bool,
+    /// Temporal stream buffer (F2): deltas collect here and flush into
+    /// `streaming` every `STREAM_FLUSH_MS` or `STREAM_FLUSH_CHARS`.
+    pub pending_stream: String,
+    /// When the current `pending_stream` started accumulating.
+    pub last_stream_flush: Option<std::time::Instant>,
+    /// Emacs-lite kill-ring (single slot). Filled by Ctrl+K / Ctrl+U / Ctrl+W.
+    pub kill_ring: Option<String>,
+    /// Transcript viewport height in rows (set during draw). `scroll` is the
+    /// index of the **first visible rendered row** (not a raw `lines` index).
+    pub last_view_h: usize,
+    /// LLM round of the in-flight turn (1-based); 0 when idle.
+    pub current_iteration: usize,
+    /// Doom-loop chip for the status bar (not the processor detector type).
+    pub doom_level: DoomLevel,
+    /// Last tool signature seen this turn (UI-side streak for the doom chip).
+    pub(crate) doom_sig: Option<String>,
+    pub(crate) doom_streak: usize,
+    /// True after at least one tool batch finished in the current turn.
+    pub(crate) had_tool_batch: bool,
     pub history: Vec<String>,
     pub history_pos: Option<usize>,
+    /// First visible row of the rendered transcript (see `last_view_h`).
     pub scroll: usize,
     pub stick_bottom: bool,
     pub running: bool,
@@ -470,11 +516,26 @@ impl ThemePickerState {
     pub fn open(app: &App) -> Self {
         let names = Theme::names();
         let selected = names.iter().position(|n| *n == app.theme.name).unwrap_or(0);
+        let mut list = crate::harness::ui::tui::fuzzy::FuzzyList::new(names);
+        list.set_filter("");
+        list.selected = selected;
         Self {
-            selected,
-            scroll_offset: 0,
+            selected: list.selected,
+            scroll_offset: list.scroll_offset,
             original: app.theme.name.to_string(),
         }
+    }
+
+    fn as_list(&self) -> crate::harness::ui::tui::fuzzy::FuzzyList<&'static str> {
+        let mut list = crate::harness::ui::tui::fuzzy::FuzzyList::new(Theme::names());
+        list.selected = self.selected;
+        list.scroll_offset = self.scroll_offset;
+        list
+    }
+
+    fn apply_list(&mut self, list: crate::harness::ui::tui::fuzzy::FuzzyList<&'static str>) {
+        self.selected = list.selected;
+        self.scroll_offset = list.scroll_offset;
     }
 
     pub fn items(&self) -> Vec<&'static str> {
@@ -482,31 +543,28 @@ impl ThemePickerState {
     }
 
     pub fn move_sel(&mut self, delta: i32) {
-        let len = self.items().len() as i32;
-        if len == 0 {
-            return;
-        }
-        self.selected = ((self.selected as i32 + delta).rem_euclid(len)) as usize;
+        let mut list = self.as_list();
+        list.move_sel(delta);
+        self.apply_list(list);
     }
 
     /// Keeps the selected row within the visible window, scrolling as needed.
     pub fn ensure_selected_visible(&mut self, visible: usize) {
-        let len = self.items().len();
-        if visible == 0 || len == 0 {
-            return;
-        }
-        if self.selected < self.scroll_offset {
-            self.scroll_offset = self.selected;
-        } else if self.selected >= self.scroll_offset + visible {
-            self.scroll_offset = self.selected + 1 - visible;
-        }
-        let max_offset = len.saturating_sub(visible);
-        self.scroll_offset = self.scroll_offset.min(max_offset);
+        let mut list = self.as_list();
+        list.ensure_visible(visible);
+        self.apply_list(list);
     }
 
     /// Name of the highlighted theme, if any.
     pub fn current(&self) -> Option<&'static str> {
-        self.items().get(self.selected).copied()
+        self.as_list().current().copied()
+    }
+
+    /// Scrolls the list by `delta` rows (mouse wheel), keeping selection.
+    pub fn scroll_by(&mut self, delta: i32) {
+        let mut list = self.as_list();
+        list.scroll_by(delta);
+        self.apply_list(list);
     }
 }
 
@@ -681,6 +739,16 @@ impl App {
             input: String::new(),
             input_cursor: 0,
             input_inner_width: 80,
+            needs_redraw: true,
+            pending_stream: String::new(),
+            last_stream_flush: None,
+            kill_ring: None,
+            last_view_h: 8,
+            current_iteration: 0,
+            doom_level: DoomLevel::Ok,
+            doom_sig: None,
+            doom_streak: 0,
+            had_tool_batch: false,
             history: Vec::new(),
             history_pos: None,
             scroll: 0,
@@ -803,6 +871,35 @@ impl App {
         Ok(())
     }
 
+    /// Marks the UI dirty so the next eligible frame redraws.
+    pub fn mark_dirty(&mut self) {
+        self.needs_redraw = true;
+    }
+
+    /// Clears the dirty flag after a draw, unless animation still requires frames.
+    pub fn clear_dirty_after_draw(&mut self) {
+        if !self.needs_anim() {
+            self.needs_redraw = false;
+        }
+    }
+
+    /// Page-scroll delta (PgUp/PgDn): viewport height minus one row of overlap.
+    pub fn page_scroll_delta(&self) -> i32 {
+        self.last_view_h.saturating_sub(1).max(1) as i32
+    }
+
+    pub fn scroll_to_top(&mut self) {
+        self.stick_bottom = false;
+        self.scroll = 0;
+        self.mark_dirty();
+    }
+
+    pub fn scroll_to_end(&mut self) {
+        self.stick_bottom = true;
+        self.scroll = usize::MAX / 4;
+        self.mark_dirty();
+    }
+
     pub fn needs_anim(&self) -> bool {
         self.splash.is_some()
             || self.running
@@ -913,10 +1010,16 @@ impl App {
     }
 
     pub fn set_theme(&mut self, name: &str) -> bool {
+        if crate::harness::ui::tui::theme::theme_locked() {
+            self.status_msg = Some("NO_COLOR set — mono locked".into());
+            self.mark_dirty();
+            return false;
+        }
         if let Some(t) = Theme::by_name(name) {
             self.theme_id = Theme::index_of(t.name);
             self.theme = t;
             self.persist_theme();
+            self.mark_dirty();
             true
         } else {
             false
@@ -925,8 +1028,14 @@ impl App {
 
     /// Opens the theme picker overlay, pre-selecting the active theme.
     pub fn open_theme_picker(&mut self) {
+        if crate::harness::ui::tui::theme::theme_locked() {
+            self.status_msg = Some("NO_COLOR set — mono locked".into());
+            self.add_system("NO_COLOR set — mono locked");
+            return;
+        }
         self.autocomplete = None;
         self.theme_picker = Some(ThemePickerState::open(self));
+        self.mark_dirty();
     }
 
     /// Applies the highlighted theme and closes the picker.
@@ -969,6 +1078,7 @@ impl App {
             kind,
             text: text.into(),
         });
+        self.mark_dirty();
     }
 
     /// Enqueues a modal to be shown. If none is currently open, shows it
@@ -980,6 +1090,7 @@ impl App {
         } else {
             self.modal_queue.push_back(modal);
         }
+        self.mark_dirty();
     }
 
     /// Closes the current modal and opens the next queued one, if any.
@@ -1170,5 +1281,49 @@ mod theme_picker_tests {
         assert!(p.scroll_offset > 0);
         assert!(p.selected >= p.scroll_offset);
         assert!(p.selected < p.scroll_offset + 2);
+    }
+
+    #[test]
+    fn test_theme_picker_scroll_by() {
+        let mut p = picker(0);
+        p.scroll_by(1);
+        assert_eq!(p.scroll_offset, 1);
+    }
+}
+
+#[cfg(test)]
+mod dirty_and_stream_tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn test_mark_dirty_then_draw_clears_flag() {
+        let mut app = App::inline_for_tests("typed");
+        app.splash = None;
+        app.needs_redraw = false;
+        app.mark_dirty();
+        assert!(app.needs_redraw);
+        app.clear_dirty_after_draw();
+        assert!(!app.needs_redraw);
+    }
+
+    #[test]
+    fn test_delta_grouping_flushes_on_timer_or_size() {
+        assert!(!should_flush_stream("", Duration::from_millis(1000), 0));
+        assert!(should_flush_stream(
+            "x",
+            Duration::from_millis(STREAM_FLUSH_MS),
+            1
+        ));
+        assert!(should_flush_stream(
+            &"a".repeat(STREAM_FLUSH_CHARS),
+            Duration::from_millis(0),
+            STREAM_FLUSH_CHARS
+        ));
+        assert!(!should_flush_stream(
+            "hi",
+            Duration::from_millis(STREAM_FLUSH_MS - 1),
+            2
+        ));
     }
 }

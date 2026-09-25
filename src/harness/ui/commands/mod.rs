@@ -42,9 +42,11 @@ pub async fn handle(
         "/help" => {
             out.push(
                 "commands: /help /new /sessions /agent <name> /skills \
-                  /compact /theme [name] /usage /stats /memory /index /models /model <name> \
-                  /provider <name> /provider add|rm|list /auth <provider> /settings \
-                  /undo /diff /restore /fork [N] /apply-plan /image [path] /permissions /allow-all-permissions /mcp /record on|off|status /replay <file> /doctor /exit"
+                  /compact /theme [name|list] /usage /stats /memory /index /models /model <name> \
+                  /provider <name> /provider add|rm|list /auth <provider> /settings /cursor \
+                  /undo /diff /restore /fork [N] /apply-plan /image [path] /copy-code /save-code \
+                  /permissions /allow-all-permissions /mcp /record on|off|status /replay <file> \
+                  /doctor /exit"
                     .to_string(),
             );
             out.push("keys: Ctrl+P palette · Ctrl+T theme · ? help · Ctrl+L clear".to_string());
@@ -134,8 +136,29 @@ pub async fn handle(
             }
         }
         "/theme" => {
+            let names = crate::harness::ui::tui::theme::Theme::names();
+            if arg.is_empty() || arg == "list" {
+                out.push(format!("themes: {}", names.join(", ")));
+                out.push("usage: /theme <name>  (TUI also opens a picker)".to_string());
+            } else if let Some(t) = crate::harness::ui::tui::theme::Theme::by_name(arg) {
+                if crate::harness::ui::tui::theme::theme_locked() {
+                    out.push("NO_COLOR set — mono locked".to_string());
+                } else {
+                    let mut s = crate::config::GlobalSettings::load();
+                    s.theme = t.name.to_string();
+                    match s.save() {
+                        Ok(()) => out.push(format!("theme → {} (saved to config.json)", t.name)),
+                        Err(e) => out.push(format!("[error] failed to persist theme: {e}")),
+                    }
+                }
+            } else {
+                out.push(format!("unknown theme: {arg} (try {})", names.join(", ")));
+            }
+        }
+        "/copy-code" | "/save-code" => {
             out.push(
-                "themes: cyberclaw, aurora, ember, mono (use TUI /theme <name> or Ctrl+T)"
+                "copy/save last code block is TUI-only (Ctrl+Y / Ctrl+S, or /copy-code /save-code \
+                 in the TUI). Use /export to dump the session from the CLI."
                     .to_string(),
             );
         }
@@ -808,5 +831,21 @@ mod tests {
                 dep.name
             );
         }
+    }
+
+    #[tokio::test]
+    async fn test_commands_help_lists_theme_models_cursor_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut rt = test_runtime(dir.path()).unwrap();
+        let mut session = rt.create_session("build").await.unwrap();
+        let outcome = handle(&mut rt, &mut session, "/help").await.unwrap();
+        let CommandOutcome::Continue(lines) = outcome else {
+            panic!("expected Continue");
+        };
+        let blob = lines.join(" ");
+        assert!(blob.contains("/theme"), "{blob}");
+        assert!(blob.contains("/models"), "{blob}");
+        assert!(blob.contains("/cursor"), "{blob}");
+        assert!(blob.contains("/settings"), "{blob}");
     }
 }

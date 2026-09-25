@@ -109,12 +109,23 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
             row_map.push(app.lines.len());
         }
     }
+    // Bottom breathing room: reserve blank rows after the last content line so
+    // the tail of a response is never flush against the frame's bottom edge.
+    // `clamp_scroll` sticks to `total - view_h`, so these rows push the real
+    // content up by `BOTTOM_PAD` and keep the final lines fully visible.
+    const BOTTOM_PAD: usize = 10;
+    for _ in 0..BOTTOM_PAD {
+        rows.push(Line::from(""));
+        row_map.push(app.lines.len());
+    }
+
     app.transcript_row_map = row_map;
     // Plain-text snapshot for mouse hit-testing + clipboard extraction.
     app.transcript_plain_rows = rows.iter().map(selection::line_to_plain).collect();
 
     let total = rows.len();
     let view_h = content.height as usize;
+    app.last_view_h = view_h;
     app.clamp_scroll(total, view_h);
     app.transcript_scroll = app.scroll;
     app.transcript_area = content;

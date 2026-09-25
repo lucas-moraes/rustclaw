@@ -7,6 +7,7 @@ pub mod askers;
 pub mod codeblock;
 pub mod draw;
 pub mod editor;
+pub mod fuzzy;
 pub mod input;
 pub mod markdown;
 pub mod palette;
@@ -30,6 +31,7 @@ pub fn is_tty() -> bool {
 /// UI mode from `RUSTCLAW_UI=cli|tui` (default tui when TTY).
 pub fn ui_mode_from_env() -> &'static str {
     let m = std::env::var("RUSTCLAW_UI")
+        .or_else(|_| std::env::var("RUSTCLAWUI"))
         .unwrap_or_default()
         .to_lowercase();
     match m.as_str() {

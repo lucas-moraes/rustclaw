@@ -49,6 +49,15 @@ pub async fn run_tui(
     let mut terminal = Terminal::new(backend)?;
     let _guard = TerminalGuard;
 
+    let prev_hook = std::sync::Arc::new(std::panic::take_hook());
+    {
+        let prev = prev_hook.clone();
+        std::panic::set_hook(Box::new(move |info| {
+            restore_terminal();
+            prev(info);
+        }));
+    }
+
     let mut app = App::new(runtime, session, cwd, permission_rx, question_rx);
 
     // Warn (non-fatally) about missing system dependencies, e.g. a Chrome
@@ -109,14 +118,16 @@ pub async fn run_tui(
     }
 
     let mut prompt_task: Option<tokio::task::JoinHandle<Result<(PromptResult, Session)>>> = None;
+    let mut last_draw = std::time::Instant::now()
+        .checked_sub(MIN_FRAME_DT)
+        .unwrap_or_else(std::time::Instant::now);
 
     loop {
-        app.tick = app.tick.wrapping_add(1);
-
         // Splash finished?
         if let Some(s) = &app.splash {
             if s.done() {
                 app.splash = None;
+                app.mark_dirty();
                 let fresh = app.session.messages.is_empty();
                 if fresh && app.skill_picker.is_none() {
                     // New session → choose skills for this session's memory.
@@ -160,8 +171,9 @@ pub async fn run_tui(
                 parent_session_id: None,
             });
         }
+        app.flush_pending_stream_if_due();
         while let Ok(req) = app.permission_rx.try_recv() {
-            app.flush_streaming();
+            app.flush_stream_now();
             app.push(
                 LineKind::System,
                 format!(
@@ -173,7 +185,7 @@ pub async fn run_tui(
             app.enqueue_modal(Modal::Permission(req));
         }
         while let Ok(req) = app.question_rx.try_recv() {
-            app.flush_streaming();
+            app.flush_stream_now();
             app.push(LineKind::System, format!("[question] {}", req.question));
             app.enqueue_modal(Modal::Question {
                 req,
@@ -193,7 +205,8 @@ pub async fn run_tui(
                         app.turn_started_at = None;
                         app.status_msg = None;
                         app.active_tools.clear();
-                        app.flush_streaming();
+                        app.flush_stream_now();
+                        app.mark_dirty();
                         if was_aborted {
                             // Accidental Enter recovery: put the last submitted
                             // prompt back into the editor so the user can edit
@@ -237,7 +250,8 @@ pub async fn run_tui(
                         app.turn_started_at = None;
                         app.status_msg = None;
                         app.active_tools.clear();
-                        app.flush_streaming();
+                        app.flush_stream_now();
+                        app.mark_dirty();
                     }
                     Err(e) => {
                         app.push(LineKind::Error, format!("[error] task: {}", e));
@@ -251,10 +265,17 @@ pub async fn run_tui(
             }
         }
 
-        terminal.draw(|frame| crate::harness::ui::tui::draw::draw(frame, &mut app))?;
+        let now = std::time::Instant::now();
+        let anim = app.needs_anim();
+        if should_draw(app.needs_redraw, anim, last_draw, now) {
+            app.tick = app.tick.wrapping_add(1);
+            terminal.draw(|frame| crate::harness::ui::tui::draw::draw(frame, &mut app))?;
+            last_draw = std::time::Instant::now();
+            app.clear_dirty_after_draw();
+        }
 
-        let poll_ms = if app.needs_anim() { 50 } else { 120 };
-        if event::poll(std::time::Duration::from_millis(poll_ms))? {
+        let timeout = poll_timeout(app.needs_redraw, app.needs_anim(), last_draw);
+        if event::poll(timeout)? {
             match event::read()? {
                 Event::Key(key) => {
                     // Kitty protocol reports releases/repeats as well; only
@@ -265,6 +286,7 @@ pub async fn run_tui(
                     // Skip splash on any key.
                     if app.splash.is_some() {
                         app.splash = None;
+                        app.mark_dirty();
                         let fresh = app.session.messages.is_empty();
                         if fresh && app.skill_picker.is_none() {
                             app.open_skill_picker();
@@ -274,6 +296,7 @@ pub async fn run_tui(
                         continue;
                     }
                     let quit = handle_key(&mut app, key, &mut prompt_task).await?;
+                    app.mark_dirty();
                     if quit {
                         // Graceful shutdown: give the in-flight turn a moment to
                         // persist its state before we drop the task handle.
@@ -297,7 +320,9 @@ pub async fn run_tui(
                         || app.skill_picker.is_some()
                         || app.model_picker.is_some()
                         || app.auth_prompt.is_some()
-                        || app.resume_picker.is_some();
+                        || app.resume_picker.is_some()
+                        || app.theme_picker.is_some();
+                    app.mark_dirty();
                     match m.kind {
                         MouseEventKind::ScrollUp => {
                             // Scroll the active overlay (picker/modal) when one
@@ -359,6 +384,18 @@ pub async fn run_tui(
                                     sel.set_head(pos);
                                 }
                             }
+                            // Drag past the viewport edge auto-scrolls.
+                            if app.selection.as_ref().map(|s| s.dragging).unwrap_or(false) {
+                                let area = app.transcript_area;
+                                const EDGE: u16 = 1;
+                                if m.row <= area.y.saturating_add(EDGE) {
+                                    app.scroll_by(-1);
+                                } else if area.height > 0
+                                    && m.row + EDGE >= area.y.saturating_add(area.height)
+                                {
+                                    app.scroll_by(1);
+                                }
+                            }
                         }
                         MouseEventKind::Up(MouseButton::Left) => {
                             if overlays_open {
@@ -404,15 +441,13 @@ pub async fn run_tui(
                     if app.splash.is_some() || app.modal.is_some() || app.palette.is_some() {
                         continue;
                     }
-                    for c in text.chars() {
-                        if c == '\n' || c == '\r' {
-                            continue;
-                        }
-                        app.insert_char_fixed(c);
-                    }
+                    app.paste_text(&text);
+                    app.mark_dirty();
                 }
                 Event::Resize(..) => {
-                    app.clear_selection();
+                    // Keep selection; next draw reclamps scroll and remaps via
+                    // transcript_row_map. Collapse only if the anchor is gone.
+                    app.mark_dirty();
                 }
                 _ => {}
             }
@@ -425,21 +460,96 @@ pub async fn run_tui(
     execute!(stdout, crossterm::event::DisableMouseCapture)?;
     execute!(stdout, LeaveAlternateScreen)?;
     let _ = crossterm::execute!(stdout, crossterm::event::PopKeyboardEnhancementFlags);
+    // Restore the panic hook we replaced so later panics use the default
+    // reporter. Abort (`panic = abort`) never runs Drop or this path.
+    let _ = std::panic::take_hook();
+    let prev = prev_hook.clone();
+    std::panic::set_hook(Box::new(move |info| prev(info)));
     Ok(())
+}
+
+/// Minimum time between draws (~30 fps). Animation still polls at 50 ms.
+pub(crate) const MIN_FRAME_DT: std::time::Duration = std::time::Duration::from_millis(33);
+
+pub(crate) fn should_draw(
+    needs_redraw: bool,
+    needs_anim: bool,
+    last_draw: std::time::Instant,
+    now: std::time::Instant,
+) -> bool {
+    if needs_anim {
+        return true;
+    }
+    needs_redraw && now.duration_since(last_draw) >= MIN_FRAME_DT
+}
+
+pub(crate) fn poll_timeout(
+    needs_redraw: bool,
+    needs_anim: bool,
+    last_draw: std::time::Instant,
+) -> std::time::Duration {
+    let base = if needs_anim {
+        std::time::Duration::from_millis(50)
+    } else {
+        std::time::Duration::from_millis(120)
+    };
+    if needs_redraw && !needs_anim {
+        let remaining = MIN_FRAME_DT.saturating_sub(last_draw.elapsed());
+        remaining.min(base)
+    } else {
+        base
+    }
+}
+
+/// Restores cooked mode, mouse, alternate screen, kitty flags. Idempotent.
+/// Called from `TerminalGuard::drop` and the TUI panic hook. Does not run on
+/// abort (`panic = abort`).
+pub(crate) fn restore_terminal() {
+    use crossterm::execute;
+    use crossterm::terminal::{disable_raw_mode, LeaveAlternateScreen};
+    let _ = disable_raw_mode();
+    let _ = execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
+    let _ = execute!(std::io::stdout(), LeaveAlternateScreen);
+    let _ = crossterm::execute!(
+        std::io::stdout(),
+        crossterm::event::PopKeyboardEnhancementFlags
+    );
 }
 
 struct TerminalGuard;
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
-        use crossterm::execute;
-        use crossterm::terminal::{disable_raw_mode, LeaveAlternateScreen};
-        let _ = disable_raw_mode();
-        let _ = execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
-        let _ = execute!(std::io::stdout(), LeaveAlternateScreen);
-        let _ = crossterm::execute!(
-            std::io::stdout(),
-            crossterm::event::PopKeyboardEnhancementFlags
-        );
+        restore_terminal();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn test_idle_loop_skips_draw_when_clean() {
+        let last = Instant::now();
+        let now = last + Duration::from_millis(200);
+        assert!(!should_draw(false, false, last, now));
+        assert!(should_draw(true, false, last, now));
+        assert!(should_draw(false, true, last, now));
+        let too_soon = last + Duration::from_millis(10);
+        assert!(!should_draw(true, false, last, too_soon));
+    }
+
+    #[test]
+    fn test_terminal_guard_drop_is_idempotent() {
+        restore_terminal();
+        restore_terminal();
+    }
+
+    #[test]
+    fn test_paste_preserves_newlines() {
+        let mut app = App::inline_for_tests("");
+        app.paste_text("a\r\nb\rc");
+        assert_eq!(app.input, "a\nb\nc");
     }
 }

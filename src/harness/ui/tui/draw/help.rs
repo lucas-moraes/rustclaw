@@ -74,7 +74,14 @@ fn keys(t: &crate::harness::ui::tui::theme::Theme) -> Vec<Line<'static>> {
         kv("Enter", "send prompt (Shift/Alt+Enter new line)", t),
         kv("Ctrl+J", "insert line break (macOS fallback)", t),
         kv("Ctrl+A / E", "line start / end", t),
-        kv("Ctrl+U / W", "kill to line start / kill word", t),
+        kv("Ctrl+K", "kill to line end (kill-ring)", t),
+        kv(
+            "Ctrl+U / W",
+            "kill to line start / kill word (kill-ring)",
+            t,
+        ),
+        kv("Ctrl+← / →", "word left / right (Alt+B / Alt+F)", t),
+        kv("Ctrl+Home/End", "transcript top / bottom", t),
         kv("Ctrl+Z", "reset prompt input", t),
         kv("Esc", "cancel run · close overlay · clear images/draft", t),
         kv("Up/Down", "prompt history", t),
@@ -85,7 +92,7 @@ fn keys(t: &crate::harness::ui::tui::theme::Theme) -> Vec<Line<'static>> {
         kv("Ctrl+P", "command palette", t),
         kv("Ctrl+T", "theme picker", t),
         kv("Ctrl+L", "clear local transcript", t),
-        kv("Ctrl+Y", "copy last code block", t),
+        kv("Ctrl+Y", "yank kill-ring · else copy last code block", t),
         kv("Ctrl+S", "save last code block to file", t),
         kv("Ctrl/Cmd+V", "paste screenshot/image from clipboard", t),
         kv("? / F1", "this help", t),
@@ -105,9 +112,12 @@ fn commands(t: &crate::harness::ui::tui::theme::Theme) -> Vec<Line<'static>> {
         kv("/compact", "summarize old messages (also auto on open)", t),
         kv(
             "/theme name",
-            "cyberclaw · aurora · ember · mono · daylight",
+            "cyberclaw · aurora · ember · mono · daylight · high-contrast",
             t,
         ),
+        kv("/theme list", "list theme names (CLI too)", t),
+        kv("/copy-code", "copy last code block (TUI; Ctrl+Y)", t),
+        kv("/save-code", "save last code block (TUI; Ctrl+S)", t),
         kv("/usage", "tokens in/out + context window", t),
         kv(
             "/stats",
@@ -175,7 +185,7 @@ fn tips(t: &crate::harness::ui::tui::theme::Theme) -> Vec<Line<'static>> {
             Style::default().fg(t.text),
         )),
         Line::from(Span::styled(
-            "  · NO_COLOR forces the mono theme",
+            "  · NO_COLOR forces mono and locks theme changes (Ctrl+T / /theme)",
             Style::default().fg(t.text),
         )),
         Line::from(Span::styled(

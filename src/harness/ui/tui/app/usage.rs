@@ -7,8 +7,10 @@ use super::state::App;
 impl App {
     pub fn record_usage(&mut self, usage: Usage, iterations: usize) {
         self.last_iterations = iterations;
+        self.current_iteration = iterations;
         self.last_usage = usage;
         self.session_usage.add_assign(usage);
+        self.mark_dirty();
     }
 
     pub fn reset_usage(&mut self) {

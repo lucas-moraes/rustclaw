@@ -83,9 +83,26 @@ Precedência: **catálogo builtin → `config.json` → `rustclaw.json` → toke
 ## 🤖 Uso
 
 ```bash
-rustclaw                 # TUI (qualquer diretório); CLI se não for TTY
+rustclaw                 # TUI (TTY); CLI se stdout/stdin não for terminal
 RUSTCLAW_UI=cli rustclaw # força CLI streaming
+RUSTCLAWUI=cli rustclaw  # alias (mesmo efeito)
 cargo run                # no diretório do projeto (dev)
+```
+
+### UI
+
+A interface padrão é a **TUI** quando stdin e stdout são um TTY. Use a CLI quando
+precisar de screen reader, CI, pipe, ou sessão sem alternate screen.
+
+| Variável / comando | Efeito |
+|--------------------|--------|
+| `RUSTCLAW_UI=cli` / `RUSTCLAWUI=cli` | força o REPL streaming (sem ratatui) |
+| `NO_COLOR` | tema `mono` (cores do terminal) e **trava** `/theme` e Ctrl+T |
+| `RUSTCLAW_THEME` | preset inicial (`cyberclaw`, `aurora`, `ember`, `mono`, `daylight`, `high-contrast`; `dark` = cyberclaw, `light` = daylight) |
+| `/theme` · `/theme list` · `/theme <name>` · Ctrl+T | picker (TUI) ou lista/aplica (CLI); persiste em `config.json` |
+| `?` / F1 | help in-app (teclas, comandos, agents, tips) |
+
+Ações da TUI têm slash command equivalente (`/models`, `/skills`, `/sessions`, `/cursor`, `/settings`, `/theme`, …). Exceções TUI-only: splash animado, seleção por mouse, yank do kill-ring (Ctrl+Y). Copiar/salvar o último code block: **Ctrl+Y** (anel vazio) / **Ctrl+S**, ou `/copy-code` / `/save-code` na TUI; no CLI use `/export`.
 
 ### Skills: memória da sessão
 
@@ -102,11 +119,12 @@ só as marcadas entram no prompt daquele turno.
 | `Ctrl+C` | cancela run ativo / sai quando idle |
 | `Enter` | envia prompt |
 | `Ctrl+P` | command palette (comandos/agents/temas/actions) |
-| `Ctrl+T` | troca tema (cyberclaw·aurora·ember·mono) |
-| `Ctrl+S` | foca os chips de skills (navega com `←/→`, marca com `Space`) |
+| `Ctrl+T` | theme picker (`NO_COLOR` trava em mono) |
 | `Ctrl+L` | limpa o transcript local |
-| `Ctrl+Y` | copia o último bloco de código para o clipboard |
-| `Ctrl+S` | salva o último bloco de código em arquivo (`rustclaw-code-<n>.txt`) |
+| `Ctrl+Y` | yank do kill-ring, ou último code block se o anel estiver vazio (`/copy-code`) |
+| `Ctrl+S` | salva o último bloco de código (`/save-code`) |
+| `Ctrl+←/→` | palavra anterior/próxima |
+| `Ctrl+Home/End` | topo / fundo do transcript |
 | `?` / `F1` | help overlay (seções com `Tab`) |
 | `Esc` | limpa input / fecha overlay |
 | `↑/↓` | histórico (ou navega nos chips com foco) |

@@ -166,24 +166,24 @@ src/
             │   ├── runner.rs # run_tui + TerminalGuard
             │   └── tests.rs  # input/code_block tests
             ├── editor.rs# prompt input editor (cursor/editing/history)
+            ├── fuzzy.rs # FuzzyList + subsequence match (pickers)
             ├── subagent.rs # live subagent panels (task tool)
             ├── codeblock.rs # last-code-block copy/save helpers
             ├── transcript.rs # LineKind/TranscriptLine/ToolBatch types
-            ├── draw/    # widgets
-            │   ├── mod.rs
-            │   ├── header.rs transcript.rs status.rs input.rs help.rs
-            │   ├── modal.rs sidebar.rs splash.rs
-            │   ├── model_picker.rs resume_picker.rs skill_picker.rs
-            │   ├── palette_view.rs search.rs
-            │   └── mod.rs
+            ├── draw/    # widgets (status chips, fuzzy_list, TestBackend helper)
             ├── input.rs # key bindings
             ├── askers.rs# TuiAsker/TuiUserAsker (channels oneshot)
-            ├── theme.rs # Tema e cores
+            ├── theme.rs # Tema e cores (NO_COLOR lock, high-contrast)
             ├── palette.rs # Paleta de comandos (Ctrl+P)
             ├── selection.rs # Seleção de texto no transcript
             ├── anim.rs  # Animações (spinner, fade)
             └── markdown.rs # Renderização de Markdown
 ```
+
+TUI draw loop (`app/runner.rs`): `needs_redraw` + teto `MIN_FRAME_DT` (~30 fps);
+`tick++` só no frame desenhado. Streaming usa `pending_stream` (flush ~64 ms / 80
+chars). `TerminalGuard` + panic hook restauram o terminal (idempotente; abort
+não restaura). Pickers compartilham `FuzzyList` (`fuzzy.rs`).
 
 ## Configuration (file-based, no `.env`)
 

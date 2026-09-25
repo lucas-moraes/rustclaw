@@ -1,5 +1,6 @@
 //! TUI rendering (ratatui widgets) — Cyberclaw chrome.
 
+mod fuzzy_list;
 pub mod help;
 mod input;
 pub mod modal;
@@ -242,4 +243,15 @@ pub fn centered_rect_fixed(width: u16, height: u16, r: Rect) -> Rect {
         width,
         height,
     }
+}
+
+/// Renders the TUI into an in-memory buffer (no TTY). Used by snapshot tests.
+#[cfg(test)]
+pub fn render_to_buffer(app: &mut App, width: u16, height: u16) -> ratatui::buffer::Buffer {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    terminal.draw(|frame| draw(frame, app)).expect("test draw");
+    terminal.backend().buffer().clone()
 }

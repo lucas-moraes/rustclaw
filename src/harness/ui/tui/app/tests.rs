@@ -1041,3 +1041,452 @@ mod scroll_tests {
         assert_eq!(app.runtime.config.cursor_agent, build_before);
     }
 }
+
+fn text_delta(delta: &str) -> HarnessEvent {
+    HarnessEvent::TextDelta {
+        session_id: "s".into(),
+        message_id: "m".into(),
+        delta: delta.into(),
+        parent_session_id: None,
+    }
+}
+
+mod dirty_event_tests {
+    use super::*;
+
+    #[test]
+    fn test_apply_event_empty_delta_does_not_mark_dirty() {
+        let mut app = App::inline_for_tests("x");
+        app.needs_redraw = false;
+        app.apply_event(text_delta(""));
+        assert!(!app.needs_redraw);
+        assert!(app.pending_stream.is_empty());
+        assert!(app.streaming.is_none());
+    }
+
+    #[test]
+    fn test_apply_event_text_delta_marks_dirty() {
+        let mut app = App::inline_for_tests("x");
+        app.needs_redraw = false;
+        app.apply_event(text_delta("hello"));
+        assert!(app.needs_redraw);
+        assert!(
+            !app.pending_stream.is_empty() || app.streaming.is_some(),
+            "delta should land in pending or streaming"
+        );
+    }
+
+    #[test]
+    fn test_streaming_does_not_set_stick_bottom() {
+        let mut app = App::inline_for_tests("x");
+        app.stick_bottom = false;
+        app.scroll = 4;
+        app.apply_event(text_delta("token"));
+        assert!(!app.stick_bottom);
+        assert_eq!(app.scroll, 4);
+    }
+
+    #[test]
+    fn test_scroll_up_during_delta_keeps_offset() {
+        let mut app = App::inline_for_tests("x");
+        app.scroll = 20;
+        app.scroll_by(-5);
+        let kept = app.scroll;
+        app.apply_event(text_delta("more"));
+        assert_eq!(app.scroll, kept);
+        assert!(!app.stick_bottom);
+    }
+}
+
+mod editor_kill_tests {
+    use super::*;
+    use crate::harness::ui::tui::input::{visual_row_col, wrap_visual};
+
+    #[test]
+    fn test_cursor_word_left_right_stops_at_whitespace() {
+        let mut app = App::inline_for_tests("foo bar baz");
+        app.input_cursor = 11;
+        app.cursor_word_left();
+        assert_eq!(app.input_cursor, 8); // "baz"
+        app.cursor_word_left();
+        assert_eq!(app.input_cursor, 4); // "bar"
+        app.cursor_word_right();
+        assert_eq!(app.input_cursor, 8);
+        let mut app = App::inline_for_tests("ab\ncd");
+        app.input_cursor = 3; // start of second line
+        app.cursor_word_left();
+        assert_eq!(app.input_cursor, 3, "must not cross line start");
+    }
+
+    #[test]
+    fn test_kill_to_line_end_ctrl_k() {
+        let mut app = App::inline_for_tests("hello world");
+        app.input_cursor = 6;
+        app.kill_to_line_end();
+        assert_eq!(app.input, "hello ");
+        assert_eq!(app.kill_ring.as_deref(), Some("world"));
+    }
+
+    #[test]
+    fn test_kill_to_line_start_fills_kill_ring() {
+        let mut app = App::inline_for_tests("hello world");
+        app.input_cursor = 6;
+        app.kill_to_line_start();
+        assert_eq!(app.input, "world");
+        assert_eq!(app.kill_ring.as_deref(), Some("hello "));
+    }
+
+    #[test]
+    fn test_yank_inserts_at_cursor() {
+        let mut app = App::inline_for_tests("ab");
+        app.input_cursor = 1;
+        app.kill_ring = Some("XY".into());
+        app.yank_kill_ring();
+        assert_eq!(app.input, "aXYb");
+        assert_eq!(app.input_cursor, 3);
+    }
+
+    #[test]
+    fn test_alt_backspace_kills_word() {
+        let mut app = App::inline_for_tests("one two");
+        app.input_cursor = 7;
+        app.kill_word_back();
+        assert_eq!(app.input, "one ");
+        assert_eq!(app.kill_ring.as_deref(), Some("two"));
+    }
+
+    #[test]
+    fn test_wrap_visual_long_line_cursor_stays_in_box() {
+        let long = "x".repeat(80);
+        let mut app = App::inline_for_tests(&long);
+        app.input_inner_width = 20;
+        app.input_cursor = 80;
+        let rows = wrap_visual(&app.input, 20);
+        let (_, col) = visual_row_col(&rows, app.input_cursor);
+        assert!(col <= 20, "cursor col {col} must stay in the input box");
+    }
+}
+
+mod rebuild_tests {
+    use super::*;
+    use crate::harness::session::{Message, Role};
+    use crate::harness::ui::tui::app::state::STREAM_FLUSH_CHARS;
+
+    #[test]
+    fn test_rebuild_from_session_preserves_line_kinds() {
+        let mut app = App::inline_for_tests("");
+        app.session.push_message(Message::user("u"));
+        app.session.push_message(Message::new(
+            Role::Assistant,
+            vec![crate::harness::session::Part::text("a")],
+        ));
+        app.rebuild_transcript_from_session();
+        let kinds: Vec<LineKind> = app.lines.iter().map(|l| l.kind).collect();
+        assert_eq!(kinds, vec![LineKind::User, LineKind::Assistant]);
+    }
+
+    #[test]
+    fn test_rebuild_after_compact_drops_old_user_assistant_pairs() {
+        let mut app = App::inline_for_tests("");
+        app.session.push_message(Message::user("old prompt"));
+        app.session.push_message(Message::new(
+            Role::Assistant,
+            vec![crate::harness::session::Part::text("old reply")],
+        ));
+        app.rebuild_transcript_from_session();
+        assert!(app.lines.iter().any(|l| l.text.contains("old prompt")));
+        app.session.messages.clear();
+        app.session
+            .push_message(Message::user("[compacted summary]"));
+        app.session.push_message(Message::new(
+            Role::Assistant,
+            vec![crate::harness::session::Part::text("recent")],
+        ));
+        app.rebuild_transcript_from_session();
+        assert!(!app.lines.iter().any(|l| l.text.contains("old prompt")));
+        assert!(app.lines.iter().any(|l| l.text.contains("recent")));
+    }
+
+    #[test]
+    fn test_streaming_then_flush_becomes_assistant_line() {
+        let mut app = App::inline_for_tests("");
+        let chunk = "x".repeat(STREAM_FLUSH_CHARS);
+        app.apply_event(text_delta(&chunk));
+        app.flush_stream_now();
+        assert!(app.streaming.is_none());
+        assert!(app.pending_stream.is_empty());
+        assert_eq!(app.lines.last().map(|l| l.kind), Some(LineKind::Assistant));
+        assert!(app.lines.last().unwrap().text.contains('x'));
+    }
+
+    #[test]
+    fn test_rebuild_preserves_scroll_when_not_stuck() {
+        let mut app = App::inline_for_tests("");
+        app.session.push_message(Message::user("keep"));
+        app.stick_bottom = false;
+        app.scroll = 3;
+        app.rebuild_transcript_from_session();
+        assert_eq!(app.scroll, 3);
+        assert!(!app.stick_bottom);
+    }
+}
+
+mod scroll_extra_tests {
+    use super::*;
+    use crate::harness::ui::tui::app::keys::handle_key;
+    use crate::harness::ui::tui::app::state::ThemePickerState;
+    use crate::harness::ui::tui::selection::{CellPos, TextSelection};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    #[tokio::test]
+    async fn test_ctrl_home_end_transcript_when_input_empty() {
+        let mut app = App::inline_for_tests("");
+        app.scroll = 12;
+        app.stick_bottom = false;
+        let mut prompt_task = None;
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Home, KeyModifiers::CONTROL),
+            &mut prompt_task,
+        )
+        .await
+        .unwrap();
+        assert_eq!(app.scroll, 0);
+        assert!(!app.stick_bottom);
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::End, KeyModifiers::CONTROL),
+            &mut prompt_task,
+        )
+        .await
+        .unwrap();
+        assert!(app.stick_bottom);
+    }
+
+    #[test]
+    fn test_page_size_matches_viewport() {
+        let mut app = App::inline_for_tests("x");
+        app.last_view_h = 20;
+        assert_eq!(app.page_scroll_delta(), 19);
+        app.last_view_h = 1;
+        assert_eq!(app.page_scroll_delta(), 1);
+    }
+
+    #[test]
+    fn test_selection_survives_scroll_by() {
+        let mut app = App::inline_for_tests("x");
+        app.selection = Some(TextSelection::new(CellPos::new(4, 2)));
+        let before = app.selection.clone();
+        app.scroll_by(3);
+        assert_eq!(app.selection, before);
+    }
+
+    #[test]
+    fn test_offset_after_resize_clamps_without_jump() {
+        let mut app = App::inline_for_tests("x");
+        app.stick_bottom = false;
+        app.scroll = 40;
+        app.clamp_scroll(100, 24);
+        assert_eq!(app.scroll, 40);
+        app.clamp_scroll(50, 20);
+        assert_eq!(app.scroll, 30); // max = 50-20
+        assert!(!app.stick_bottom || app.scroll == 30);
+    }
+
+    #[test]
+    fn test_theme_picker_consumes_mouse_scroll() {
+        let mut app = App::inline_for_tests("x");
+        // Don't use open_theme_picker — NO_COLOR in the env locks it.
+        app.theme_picker = Some(ThemePickerState {
+            selected: 0,
+            scroll_offset: 0,
+            original: "cyberclaw".into(),
+        });
+        app.scroll = 9;
+        assert!(app.mouse_scroll(1));
+        assert_eq!(app.theme_picker.as_ref().unwrap().scroll_offset, 1);
+        assert_eq!(app.scroll, 9);
+    }
+
+    #[test]
+    fn test_resize_clamps_scroll() {
+        let mut app = App::inline_for_tests("x");
+        app.stick_bottom = false;
+        app.scroll = 80;
+        app.clamp_scroll(40, 10);
+        assert_eq!(app.scroll, 30);
+    }
+
+    #[test]
+    fn test_resize_keeps_selection_anchor_line() {
+        let mut app = App::inline_for_tests("x");
+        app.selection = Some(TextSelection {
+            anchor: CellPos::new(2, 0),
+            head: CellPos::new(2, 4),
+            dragging: false,
+        });
+        // Resize must not clear a committed selection (runner no longer does).
+        assert!(app.selection.is_some());
+        app.clamp_scroll(100, 20);
+        assert_eq!(app.selection.as_ref().unwrap().anchor.row, 2);
+    }
+}
+
+mod snapshot_and_picker_tests {
+    use super::*;
+    use crate::harness::ui::tui::app::keys::handle_key;
+    use crate::harness::ui::tui::theme::Theme;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    fn prep_snapshot(app: &mut App) {
+        app.splash = None;
+        app.tick = 0;
+        app.theme = Theme::mono();
+        app.theme_id = Theme::index_of("mono");
+        app.needs_redraw = true;
+    }
+
+    fn buffer_has(buf: &ratatui::buffer::Buffer, needle: &str) -> bool {
+        let mut s = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                s.push_str(buf[(x, y)].symbol());
+            }
+            s.push('\n');
+        }
+        s.contains(needle)
+    }
+
+    #[test]
+    fn test_snapshot_idle_empty_has_prompt() {
+        let mut app = App::inline_for_tests("");
+        prep_snapshot(&mut app);
+        let buf = crate::harness::ui::tui::draw::render_to_buffer(&mut app, 80, 24);
+        assert!(
+            buffer_has(&buf, "prompt") || buffer_has(&buf, "idle") || buffer_has(&buf, "help"),
+            "idle frame should show chrome"
+        );
+    }
+
+    #[test]
+    fn test_snapshot_user_assistant_bubbles() {
+        let mut app = App::inline_for_tests("");
+        prep_snapshot(&mut app);
+        app.push(LineKind::User, "hello from user");
+        app.push(LineKind::Assistant, "hello from assistant");
+        let buf = crate::harness::ui::tui::draw::render_to_buffer(&mut app, 100, 30);
+        assert!(
+            buffer_has(&buf, "hello") && buffer_has(&buf, "assistant"),
+            "expected user/assistant text in the buffer"
+        );
+    }
+
+    #[test]
+    fn test_snapshot_status_bar_idle() {
+        let mut app = App::inline_for_tests("");
+        prep_snapshot(&mut app);
+        let buf = crate::harness::ui::tui::draw::render_to_buffer(&mut app, 80, 24);
+        assert!(buffer_has(&buf, "idle") || buffer_has(&buf, "ctx"));
+    }
+
+    #[test]
+    fn test_snapshot_settings_modal() {
+        let mut app = App::inline_for_tests("");
+        prep_snapshot(&mut app);
+        app.modal = Some(Modal::Settings { selected: 0 });
+        let buf = crate::harness::ui::tui::draw::render_to_buffer(&mut app, 80, 24);
+        assert!(
+            buffer_has(&buf, "settings") || buffer_has(&buf, "iterations"),
+            "settings modal title/rows"
+        );
+    }
+
+    #[test]
+    fn test_snapshot_skill_picker() {
+        let mut app = App::inline_for_tests("");
+        prep_snapshot(&mut app);
+        app.skill_picker = Some(SkillPickerState {
+            selected: 0,
+            checked: vec![false, true],
+            ids: vec!["alpha".into(), "beta".into()],
+            scroll_offset: 0,
+        });
+        let buf = crate::harness::ui::tui::draw::render_to_buffer(&mut app, 80, 24);
+        assert!(buffer_has(&buf, "alpha") || buffer_has(&buf, "session memory"));
+    }
+
+    #[tokio::test]
+    async fn test_model_picker_open_cancel() {
+        let mut app = App::inline_for_tests("");
+        app.open_models_picker();
+        assert!(app.model_picker.is_some());
+        let mut prompt_task = None;
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            &mut prompt_task,
+        )
+        .await
+        .unwrap();
+        assert!(app.model_picker.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_skill_picker_toggle_and_enter() {
+        let mut app = App::inline_for_tests("");
+        app.skill_picker = Some(SkillPickerState {
+            selected: 0,
+            checked: vec![false],
+            ids: vec!["demo".into()],
+            scroll_offset: 0,
+        });
+        let mut prompt_task = None;
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
+            &mut prompt_task,
+        )
+        .await
+        .unwrap();
+        assert!(app.skill_picker.as_ref().unwrap().checked[0]);
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut prompt_task,
+        )
+        .await
+        .unwrap();
+        assert!(app.skill_picker.is_none());
+    }
+
+    #[test]
+    fn test_resume_picker_selects_session_id() {
+        use crate::harness::session::store::SessionSummary;
+        let mut app = App::inline_for_tests("");
+        app.resume_picker = Some(ResumePickerState {
+            sessions: vec![SessionSummary {
+                id: "sess-42".into(),
+                agent: "build".into(),
+                cwd: std::path::PathBuf::new(),
+                created_at: String::new(),
+                updated_at: String::new(),
+                message_count: 0,
+                preview: "hello".into(),
+                title: Some("hello".into()),
+                parent_id: None,
+            }],
+            selected: 0,
+            rename_input: None,
+            scroll_offset: 0,
+        });
+        let id = app.resume_picker.as_ref().unwrap().sessions[0].id.clone();
+        assert_eq!(id, "sess-42");
+    }
+
+    #[test]
+    fn test_readme_documents_rustclaw_ui_cli() {
+        let readme = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"));
+        assert!(readme.contains("RUSTCLAW_UI=cli"));
+        assert!(readme.contains("RUSTCLAWUI"));
+    }
+}

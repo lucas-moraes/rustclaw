@@ -172,6 +172,22 @@ pub(crate) async fn handle_key(
         KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.kill_word_back();
         }
+        KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.kill_to_line_end();
+            return Ok(false);
+        }
+        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::ALT) => {
+            app.kill_word_forward();
+            return Ok(false);
+        }
+        KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::ALT) => {
+            app.cursor_word_left();
+            return Ok(false);
+        }
+        KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::ALT) => {
+            app.cursor_word_right();
+            return Ok(false);
+        }
         KeyCode::F(1) => {
             app.show_help = true;
             return Ok(false);
@@ -189,8 +205,14 @@ pub(crate) async fn handle_key(
             return Ok(false);
         }
         KeyCode::Char('y') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            // Copy the last code block to the clipboard.
-            app.copy_last_code_block();
+            // Yank from the kill-ring when the editor has a kill and focus;
+            // otherwise copy the last fenced code block (legacy Ctrl+Y).
+            let has_kill = app.kill_ring.as_ref().is_some_and(|s| !s.is_empty());
+            if has_kill {
+                app.yank_kill_ring();
+            } else {
+                app.copy_last_code_block();
+            }
             return Ok(false);
         }
         // Paste screenshot / image from clipboard (Ctrl+V or Cmd+V on macOS).
@@ -205,12 +227,7 @@ pub(crate) async fn handle_key(
                 Err(_) => {
                     if let Ok(mut cb) = arboard::Clipboard::new() {
                         if let Ok(text) = cb.get_text() {
-                            for c in text.chars() {
-                                if c == '\r' {
-                                    continue;
-                                }
-                                app.insert_char_fixed(c);
-                            }
+                            app.paste_text(&text);
                             return Ok(false);
                         }
                     }
@@ -302,11 +319,26 @@ pub(crate) async fn handle_key(
                 app.insert_char_fixed(c);
             }
         }
+        KeyCode::Backspace if key.modifiers.contains(KeyModifiers::ALT) => {
+            app.kill_word_back();
+        }
         KeyCode::Backspace => app.backspace(),
         KeyCode::Delete => app.delete_forward(),
+        KeyCode::Left if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.cursor_word_left();
+        }
+        KeyCode::Right if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.cursor_word_right();
+        }
         KeyCode::Left => app.cursor_left(),
         KeyCode::Right => app.cursor_right(),
         // Home/End (and Ctrl+A/E) act inside the current logical line.
+        KeyCode::Home if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.scroll_to_top();
+        }
+        KeyCode::End if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.scroll_to_end();
+        }
         KeyCode::Home => app.cursor_line_start(),
         KeyCode::End => app.cursor_line_end(),
         KeyCode::Tab => {
@@ -336,8 +368,14 @@ pub(crate) async fn handle_key(
                 }
             }
         }
-        KeyCode::PageUp => app.scroll_by(-8),
-        KeyCode::PageDown => app.scroll_by(8),
+        KeyCode::PageUp => {
+            let d = app.page_scroll_delta();
+            app.scroll_by(-d);
+        }
+        KeyCode::PageDown => {
+            let d = app.page_scroll_delta();
+            app.scroll_by(d);
+        }
         KeyCode::Esc => {
             // Priority: cancel whatever is in flight first.
             // 1) running turn / streaming → abort
@@ -939,10 +977,21 @@ pub(crate) async fn submit_input(
     }
 
     if text.starts_with('/') {
+        if text == "/copy-code" {
+            app.copy_last_code_block();
+            return Ok(false);
+        }
+        if text == "/save-code" {
+            app.save_last_code_block();
+            return Ok(false);
+        }
+
         if text == "/theme" || text.starts_with("/theme ") {
             let arg = text.strip_prefix("/theme").unwrap_or("").trim();
             if arg.is_empty() {
                 app.open_theme_picker();
+            } else if arg == "list" {
+                app.add_system(&format!("themes: {}", Theme::names().join(", ")));
             } else if app.set_theme(arg) {
                 app.add_system(&format!("theme → {}", app.theme.name));
             } else {
