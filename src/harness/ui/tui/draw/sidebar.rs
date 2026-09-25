@@ -83,6 +83,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
         w,
         inner.width as usize,
         app.runtime.config.cursor_agent,
+        app.runtime.config.cursor_plan,
     ));
     lines.push(blank());
 
@@ -236,9 +237,10 @@ fn mode_rows(
     t: &Theme,
     w: usize,
     full: usize,
-    cursor_on: bool,
+    cursor_build: bool,
+    cursor_plan: bool,
 ) -> Vec<Line<'static>> {
-    let mut out = Vec::with_capacity(MODES.len() + 1);
+    let mut out = Vec::with_capacity(MODES.len() + 2);
     // If the active agent is outside the cycle (custom), show it first.
     let known = MODES.contains(&active);
     if !known && !active.is_empty() {
@@ -246,9 +248,14 @@ fn mode_rows(
     }
     for mode in MODES {
         out.push(mode_row(mode, *mode == active, t, w, full));
-        // When the Cursor delegation toggle is on, `build` is served by the
-        // Cursor CLI — show a dim sub-item right under it.
-        if cursor_on && *mode == "build" {
+        // When a Cursor delegation toggle is on, the matching mode is served
+        // by the Cursor CLI — show a dim sub-item right under it.
+        let delegated = match *mode {
+            "build" => cursor_build,
+            "plan" => cursor_plan,
+            _ => false,
+        };
+        if delegated {
             out.push(Line::from(Span::styled(
                 truncate("   └ cursor", w.saturating_sub(1)),
                 Style::default().fg(t.text_dim),

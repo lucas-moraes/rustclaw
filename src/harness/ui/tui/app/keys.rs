@@ -16,7 +16,7 @@ use super::pickers::{
     handle_resume_picker_key, handle_settings_command, handle_skill_picker_key,
     handle_theme_picker_key,
 };
-use super::state::{App, AuthPromptState, Modal, ResumePickerState};
+use super::state::{App, AuthPromptState, CursorModelTarget, Modal, ResumePickerState};
 use super::undo::{copy_to_clipboard, revert_to_prompt, undo_last_turn, user_prompt_text};
 
 pub(crate) async fn handle_key(
@@ -622,7 +622,11 @@ pub(crate) fn handle_modal_key(app: &mut App, key: KeyEvent) -> Result<bool> {
             let rows = crate::harness::ui::tui::draw::modal::cursor_rows(&app.runtime.config);
             handle_settings_like_key(app, key, rows, selected, Modal::Cursor { selected: 0 });
         }
-        Some(Modal::CursorModel { selected, models }) => {
+        Some(Modal::CursorModel {
+            selected,
+            models,
+            target,
+        }) => {
             let n = models.len();
             let mut sel = selected.min(n.saturating_sub(1));
             let mut keep = true;
@@ -644,9 +648,18 @@ pub(crate) fn handle_modal_key(app: &mut App, key: KeyEvent) -> Result<bool> {
                         } else {
                             model
                         };
-                        match app.runtime.set_cursor_model(stored.clone()) {
+                        let saved = match target {
+                            CursorModelTarget::Build => {
+                                app.runtime.set_cursor_model(stored.clone())
+                            }
+                            CursorModelTarget::Plan => {
+                                app.runtime.set_cursor_plan_model(stored.clone())
+                            }
+                        };
+                        match saved {
                             Ok(()) => app.add_system(&format!(
-                                "cursor_model = {} (Cursor CLI --model)",
+                                "{} = {} (Cursor CLI --model)",
+                                target.label(),
                                 if stored.is_empty() { "auto" } else { &stored }
                             )),
                             Err(e) => {
@@ -662,6 +675,7 @@ pub(crate) fn handle_modal_key(app: &mut App, key: KeyEvent) -> Result<bool> {
                 app.modal = Some(Modal::CursorModel {
                     selected: sel,
                     models,
+                    target,
                 });
             } else {
                 app.close_modal();
@@ -762,16 +776,25 @@ fn handle_settings_like_key(
         KeyCode::Char(' ') | KeyCode::Enter => {
             if let Some((label, _, toggleable)) = rows.get(sel) {
                 if *toggleable {
-                    toggle_setting(app, "cursor_agent");
-                } else if label == "cursor_model" {
+                    // The row label *is* the setting key (cursor_agent /
+                    // cursor_plan), so no per-row mapping is needed.
+                    toggle_setting(app, label);
+                } else if let Some(target) = cursor_model_target(label) {
                     let mut models = vec![("auto".to_string(), "CLI default".to_string())];
                     models.extend(list_cursor_models());
-                    let current = app.runtime.config.cursor_model.clone();
+                    let current = match target {
+                        CursorModelTarget::Build => app.runtime.config.cursor_model.clone(),
+                        CursorModelTarget::Plan => app.runtime.config.cursor_plan_model.clone(),
+                    };
                     let selected = models
                         .iter()
                         .position(|(m, _)| m == &current || (current.is_empty() && m == "auto"))
                         .unwrap_or(0);
-                    next = Next::Replace(Modal::CursorModel { selected, models });
+                    next = Next::Replace(Modal::CursorModel {
+                        selected,
+                        models,
+                        target,
+                    });
                 }
             }
         }
@@ -790,15 +813,42 @@ fn handle_settings_like_key(
 }
 
 fn toggle_setting(app: &mut App, field: &str) {
-    if field == "cursor_agent" {
-        let v = !app.runtime.config.cursor_agent;
-        match app.runtime.set_cursor_agent(v) {
-            Ok(()) => app.add_system(&format!(
-                "cursor_agent = {} (build mode now uses the Cursor CLI)",
-                if v { "on" } else { "off" }
-            )),
-            Err(e) => app.add_system(&format!("[error] failed to save settings: {}", e)),
+    let (value, saved, note) = match field {
+        "cursor_agent" => {
+            let v = !app.runtime.config.cursor_agent;
+            (
+                v,
+                app.runtime.set_cursor_agent(v),
+                "build mode now uses the Cursor CLI",
+            )
         }
+        "cursor_plan" => {
+            let v = !app.runtime.config.cursor_plan;
+            (
+                v,
+                app.runtime.set_cursor_plan(v),
+                "plan mode now uses the Cursor CLI",
+            )
+        }
+        _ => return,
+    };
+    match saved {
+        Ok(()) => app.add_system(&format!(
+            "{} = {} ({})",
+            field,
+            if value { "on" } else { "off" },
+            note
+        )),
+        Err(e) => app.add_system(&format!("[error] failed to save settings: {}", e)),
+    }
+}
+
+/// Maps a Cursor modal row label to the model knob it edits, if any.
+fn cursor_model_target(label: &str) -> Option<CursorModelTarget> {
+    match label {
+        "cursor_model" => Some(CursorModelTarget::Build),
+        "cursor_plan_model" => Some(CursorModelTarget::Plan),
+        _ => None,
     }
 }
 

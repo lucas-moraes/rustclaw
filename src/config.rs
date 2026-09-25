@@ -67,6 +67,14 @@ pub struct GlobalSettings {
     /// is on. Empty (default) means "auto" — the CLI picks the model.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub cursor_model: String,
+    /// When `true`, the `plan` mode is served by the Cursor CLI in read-only
+    /// plan mode (`--mode plan`). Independent from `cursor_agent`. Default
+    /// `false`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub cursor_plan: bool,
+    /// Model passed to the Cursor CLI for plan mode. Empty (default) = "auto".
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub cursor_plan_model: String,
 }
 
 fn is_zero_f64(v: &f64) -> bool {
@@ -100,6 +108,8 @@ impl Default for GlobalSettings {
             compact_trigger_ratio: 0.0,
             cursor_agent: false,
             cursor_model: String::new(),
+            cursor_plan: false,
+            cursor_plan_model: String::new(),
         }
     }
 }
@@ -197,6 +207,11 @@ pub struct RuntimeConfig {
     pub cursor_agent: bool,
     /// Model id passed to the Cursor CLI (`--model`). Empty means "auto".
     pub cursor_model: String,
+    /// When `true`, the `plan` mode is served by the Cursor CLI in read-only
+    /// plan mode instead of the native plan agent.
+    pub cursor_plan: bool,
+    /// Model id passed to the Cursor CLI for plan mode. Empty means "auto".
+    pub cursor_plan_model: String,
 }
 
 impl Default for RuntimeConfig {
@@ -237,6 +252,8 @@ impl RuntimeConfig {
             compact_trigger_ratio: 0.0,
             cursor_agent: false,
             cursor_model: String::new(),
+            cursor_plan: false,
+            cursor_plan_model: String::new(),
         }
     }
 
@@ -297,6 +314,8 @@ impl RuntimeConfig {
         }
         cfg.cursor_agent = settings.cursor_agent;
         cfg.cursor_model = settings.cursor_model.clone();
+        cfg.cursor_plan = settings.cursor_plan;
+        cfg.cursor_plan_model = settings.cursor_plan_model.clone();
 
         // 4. Token from the global auth store for the resolved provider.
         cfg.api_key = auth

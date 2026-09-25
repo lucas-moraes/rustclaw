@@ -172,13 +172,49 @@ pub fn parse_stream_json(payload: &str) -> String {
 /// Builds the fixed argv for the Cursor CLI spawn. `--model <id>` is appended
 /// only when a model is set; an empty/`None` model means the CLI's own default
 /// ("auto").
-fn spawn_args(model: Option<&str>) -> Vec<String> {
+/// Which Cursor CLI mode the delegation runs in.
+///
+/// `Build` writes to the repository (`--force`); `Plan` is read-only and
+/// produces a plan (`--mode plan`), mirroring the harness `plan` agent.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CursorMode {
+    /// `agent -p --force` — full agent, may edit files.
+    #[default]
+    Build,
+    /// `agent -p --mode plan` — read-only planning, no edits.
+    Plan,
+}
+
+impl CursorMode {
+    /// Tool name exposed to the model. Distinct per mode so build and plan
+    /// delegations can coexist in the same registry.
+    pub fn tool_name(self) -> &'static str {
+        match self {
+            CursorMode::Build => "cursor",
+            CursorMode::Plan => "cursor_plan",
+        }
+    }
+
+    /// Extra argv flags that select this mode.
+    fn flags(self) -> &'static [&'static str] {
+        match self {
+            // `--force` is what lets the headless agent write files.
+            CursorMode::Build => &["--force"],
+            // Plan mode is read-only; no `--force`.
+            CursorMode::Plan => &["--mode", "plan"],
+        }
+    }
+}
+
+/// Builds the argv for the Cursor CLI in the given mode. `--model <id>` is
+/// appended only when a model is set (empty = the CLI's own default, "auto").
+fn spawn_args(mode: CursorMode, model: Option<&str>) -> Vec<String> {
     let mut args = vec![
         "-p".to_string(),
-        "--force".to_string(),
         "--output-format".to_string(),
         "stream-json".to_string(),
     ];
+    args.extend(mode.flags().iter().map(|s| s.to_string()));
     if let Some(model) = model {
         args.push("--model".to_string());
         args.push(model.to_string());
@@ -186,20 +222,27 @@ fn spawn_args(model: Option<&str>) -> Vec<String> {
     args
 }
 
-/// The `cursor` tool.
+/// The `cursor` / `cursor_plan` tool.
 ///
 /// `model` is the id passed to the Cursor CLI as `--model <id>`. When `None`
 /// or empty, no `--model` flag is sent and the CLI uses its own default
-/// ("auto").
+/// ("auto"). `mode` selects build (`--force`) or plan (`--mode plan`).
 #[derive(Default)]
 pub struct CursorTool {
     model: Option<String>,
+    mode: CursorMode,
 }
 
 impl CursorTool {
-    /// Builds the tool with the given Cursor model id. An empty string is
-    /// treated as "auto" (no `--model` flag).
+    /// Builds a build-mode tool with the given Cursor model id. An empty
+    /// string is treated as "auto" (no `--model` flag).
     pub fn new(model: impl Into<String>) -> Self {
+        Self::with_mode(CursorMode::Build, model)
+    }
+
+    /// Builds a tool for the given mode and Cursor model id. An empty model
+    /// string is treated as "auto" (no `--model` flag).
+    pub fn with_mode(mode: CursorMode, model: impl Into<String>) -> Self {
         let model = model.into();
         Self {
             model: if model.trim().is_empty() {
@@ -207,6 +250,7 @@ impl CursorTool {
             } else {
                 Some(model)
             },
+            mode,
         }
     }
 }
@@ -214,13 +258,22 @@ impl CursorTool {
 #[async_trait::async_trait]
 impl Tool for CursorTool {
     fn name(&self) -> &str {
-        "cursor"
+        self.mode.tool_name()
     }
 
     fn description(&self) -> &str {
-        "Delega a tarefa inteira ao Cursor CLI (agent -p --force). Use para \
-         executar trabalho de build: ler, editar e verificar código no \
-         repositório. Retorna o resumo produzido pelo Cursor."
+        match self.mode {
+            CursorMode::Build => {
+                "Delega a tarefa inteira ao Cursor CLI (agent -p --force). Use para \
+                 executar trabalho de build: ler, editar e verificar código no \
+                 repositório. Retorna o resumo produzido pelo Cursor."
+            }
+            CursorMode::Plan => {
+                "Delega o planejamento ao Cursor CLI (agent -p --mode plan, read-only). \
+                 Use para investigar o repositório e produzir um plano de mudanças, \
+                 sem editar arquivos. Retorna o plano produzido pelo Cursor."
+            }
+        }
     }
 
     fn parameters(&self) -> Value {
@@ -259,7 +312,7 @@ impl Tool for CursorTool {
         let prompt = build_delegation_prompt(&task, &cwd, mem.as_deref(), None);
 
         let mut cmd = tokio::process::Command::new("agent");
-        cmd.args(spawn_args(self.model.as_deref()));
+        cmd.args(spawn_args(self.mode, self.model.as_deref()));
         let mut child = cmd
             .arg(&prompt)
             .current_dir(&cwd)
@@ -390,10 +443,10 @@ mod tests {
     /// No model set → no `--model` flag (CLI default "auto").
     #[test]
     fn test_spawn_args_without_model() {
-        let args = spawn_args(None);
+        let args = spawn_args(CursorMode::Build, None);
         assert_eq!(
             args,
-            vec!["-p", "--force", "--output-format", "stream-json"]
+            vec!["-p", "--output-format", "stream-json", "--force"]
         );
         assert!(!args.iter().any(|a| a == "--model"));
     }
@@ -401,17 +454,39 @@ mod tests {
     /// A model is forwarded as `--model <id>`.
     #[test]
     fn test_spawn_args_with_model() {
-        let args = spawn_args(Some("composer-2.5"));
+        let args = spawn_args(CursorMode::Build, Some("composer-2.5"));
         assert_eq!(
             args,
             vec![
                 "-p",
-                "--force",
                 "--output-format",
                 "stream-json",
+                "--force",
                 "--model",
                 "composer-2.5",
             ]
+        );
+    }
+
+    /// Plan mode swaps `--force` for `--mode plan` (read-only).
+    #[test]
+    fn test_spawn_args_plan_mode() {
+        let args = spawn_args(CursorMode::Plan, None);
+        assert_eq!(
+            args,
+            vec!["-p", "--output-format", "stream-json", "--mode", "plan"]
+        );
+        assert!(!args.iter().any(|a| a == "--force"));
+    }
+
+    /// The tool name follows the mode so build and plan can coexist.
+    #[test]
+    fn test_cursor_tool_names_by_mode() {
+        use crate::harness::tool::Tool;
+        assert_eq!(CursorTool::new("").name(), "cursor");
+        assert_eq!(
+            CursorTool::with_mode(CursorMode::Plan, "").name(),
+            "cursor_plan"
         );
     }
 
@@ -419,12 +494,15 @@ mod tests {
     #[test]
     fn test_cursor_tool_empty_model_is_auto() {
         assert_eq!(
-            spawn_args(CursorTool::new("").model.as_deref()),
-            spawn_args(None)
+            spawn_args(CursorMode::Build, CursorTool::new("").model.as_deref()),
+            spawn_args(CursorMode::Build, None)
         );
         assert_eq!(
-            spawn_args(CursorTool::new("gpt-5.3-codex").model.as_deref()),
-            spawn_args(Some("gpt-5.3-codex"))
+            spawn_args(
+                CursorMode::Build,
+                CursorTool::new("gpt-5.3-codex").model.as_deref()
+            ),
+            spawn_args(CursorMode::Build, Some("gpt-5.3-codex"))
         );
     }
 

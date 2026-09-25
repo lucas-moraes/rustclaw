@@ -44,10 +44,14 @@ pub fn draw(
             frame.render_widget(Clear, fixed);
             draw_cursor(frame, theme, *selected, fixed, config)
         }
-        Modal::CursorModel { selected, models } => {
+        Modal::CursorModel {
+            selected,
+            models,
+            target,
+        } => {
             let fixed = centered_rect_fixed(56, 20, area);
             frame.render_widget(Clear, fixed);
-            draw_cursor_model(frame, theme, *selected, models, fixed)
+            draw_cursor_model(frame, theme, *selected, models, *target, fixed)
         }
     }
 }
@@ -101,6 +105,16 @@ pub(crate) fn cursor_rows(c: &crate::config::RuntimeConfig) -> Vec<(String, Stri
                 "auto".into()
             } else {
                 c.cursor_model.clone()
+            },
+            false,
+        ),
+        ("cursor_plan".into(), on_off(c.cursor_plan), true),
+        (
+            "cursor_plan_model".into(),
+            if c.cursor_plan_model.is_empty() {
+                "auto".into()
+            } else {
+                c.cursor_plan_model.clone()
             },
             false,
         ),
@@ -231,13 +245,18 @@ fn draw_cursor_model(
     t: &Theme,
     selected: usize,
     models: &[(String, String)],
+    target: crate::harness::ui::tui::app::state::CursorModelTarget,
     area: Rect,
 ) {
+    let title = match target {
+        crate::harness::ui::tui::app::state::CursorModelTarget::Build => " cursor model ",
+        crate::harness::ui::tui::app::state::CursorModelTarget::Plan => " cursor plan model ",
+    };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(t.accent2))
         .title(Span::styled(
-            " cursor model ",
+            title,
             Style::default().fg(t.accent2).add_modifier(Modifier::BOLD),
         ))
         .style(Style::default().bg(t.surface).fg(t.text));

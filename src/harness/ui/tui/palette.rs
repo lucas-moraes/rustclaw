@@ -299,7 +299,7 @@ pub fn all_items() -> Vec<PaletteItem> {
         item(
             "cursor",
             "/cursor",
-            "Cursor CLI: toggle agent + pick model",
+            "Cursor CLI: build/plan toggles + models",
             PaletteKind::Command,
             "/cursor",
         ),

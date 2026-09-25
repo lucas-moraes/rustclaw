@@ -9,6 +9,8 @@ pub const EXPLORE: &str = "explore";
 pub const GENERAL: &str = "general";
 pub const CHAT_FREE: &str = "chat-free";
 pub const CURSOR: &str = "cursor";
+/// Agent name used when the Cursor CLI serves plan mode.
+pub const CURSOR_PLAN: &str = "cursor_plan";
 
 /// All build-mode tools except the file-writing ones (`write`/`edit`).
 ///
@@ -72,6 +74,26 @@ pub fn cursor() -> AgentSpec {
 Call the `cursor` tool exactly once, passing the user's full request verbatim as the `task` \
 argument. Do not attempt to solve the task yourself and do not call any other tool. After the \
 tool returns, relay its summary to the user."
+            .into(),
+        model: None,
+        temperature: Some(0.0),
+        permission_overrides: HashMap::new(),
+    }
+}
+
+/// Plan-mode proxy for the Cursor CLI: delegates the whole planning task to
+/// `agent -p --mode plan` (read-only). Mirrors [`cursor`] for the plan mode.
+pub fn cursor_plan() -> AgentSpec {
+    AgentSpec {
+        name: CURSOR_PLAN.into(),
+        description:
+            "Delegates the whole planning task to the Cursor CLI (agent -p --mode plan, read-only)."
+                .into(),
+        tools: vec!["cursor_plan".to_string()],
+        system_prompt: "You are a proxy for the Cursor CLI in plan mode. The user's request is a \
+planning task. Call the `cursor_plan` tool exactly once, passing the user's full request verbatim \
+as the `task` argument. Do not attempt to solve the task yourself and do not call any other tool. \
+After the tool returns, relay its plan to the user."
             .into(),
         model: None,
         temperature: Some(0.0),

@@ -836,7 +836,15 @@ mod scroll_tests {
         );
         let crows = crate::harness::ui::tui::draw::modal::cursor_rows(&app.runtime.config);
         let labels: Vec<&str> = crows.iter().map(|(l, _, _)| l.as_str()).collect();
-        assert_eq!(labels, vec!["cursor_agent", "cursor_model"]);
+        assert_eq!(
+            labels,
+            vec![
+                "cursor_agent",
+                "cursor_model",
+                "cursor_plan",
+                "cursor_plan_model"
+            ]
+        );
     }
 
     /// `/cursor` with no args opens the dedicated modal.
@@ -914,10 +922,15 @@ mod scroll_tests {
         .unwrap();
 
         match app.modal {
-            Some(Modal::CursorModel { selected, models }) => {
+            Some(Modal::CursorModel {
+                selected,
+                models,
+                target,
+            }) => {
                 // "auto" is always first and pre-selected when unset.
                 assert_eq!(models.first().map(|(id, _)| id.as_str()), Some("auto"));
                 assert_eq!(selected, 0);
+                assert_eq!(target, CursorModelTarget::Build);
             }
             other => panic!(
                 "expected the cursor model picker, got {}",
@@ -928,5 +941,103 @@ mod scroll_tests {
                 }
             ),
         }
+    }
+
+    /// The `/cursor` modal exposes the plan knobs too, in order.
+    #[test]
+    fn test_cursor_rows_include_plan() {
+        let app = App::inline_for_tests("x");
+        let rows = crate::harness::ui::tui::draw::modal::cursor_rows(&app.runtime.config);
+        let labels: Vec<&str> = rows.iter().map(|(l, _, _)| l.as_str()).collect();
+        assert_eq!(
+            labels,
+            vec![
+                "cursor_agent",
+                "cursor_model",
+                "cursor_plan",
+                "cursor_plan_model",
+            ]
+        );
+    }
+
+    /// Space on the `cursor_plan` row flips the plan toggle independently.
+    #[tokio::test]
+    async fn test_cursor_modal_space_toggles_plan() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut app = App::inline_for_tests("x");
+        let before = app.runtime.config.cursor_plan;
+        let rows = crate::harness::ui::tui::draw::modal::cursor_rows(&app.runtime.config);
+        let plan_row = rows
+            .iter()
+            .position(|(label, _, _)| label == "cursor_plan")
+            .expect("cursor modal must expose a cursor_plan row");
+        app.modal = Some(Modal::Cursor { selected: plan_row });
+        let mut prompt_task = None;
+
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
+            &mut prompt_task,
+        )
+        .await
+        .unwrap();
+
+        assert_ne!(app.runtime.config.cursor_plan, before);
+        // The build toggle must be untouched by the plan row.
+        assert!(!app.runtime.config.cursor_agent);
+    }
+
+    /// Enter on `cursor_plan_model` opens the picker tagged for the plan knob.
+    #[tokio::test]
+    async fn test_cursor_modal_plan_model_row_opens_plan_picker() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut app = App::inline_for_tests("x");
+        let rows = crate::harness::ui::tui::draw::modal::cursor_rows(&app.runtime.config);
+        let row = rows
+            .iter()
+            .position(|(label, _, _)| label == "cursor_plan_model")
+            .expect("cursor modal must expose a cursor_plan_model row");
+        app.modal = Some(Modal::Cursor { selected: row });
+        let mut prompt_task = None;
+
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut prompt_task,
+        )
+        .await
+        .unwrap();
+
+        match app.modal {
+            Some(Modal::CursorModel { target, .. }) => {
+                assert_eq!(target, CursorModelTarget::Plan);
+            }
+            _ => panic!("expected the cursor plan model picker"),
+        }
+    }
+
+    /// `/cursor plan on` flips only the plan toggle.
+    #[tokio::test]
+    async fn test_cursor_command_plan_on() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut app = App::inline_for_tests("x");
+        let build_before = app.runtime.config.cursor_agent;
+        app.input = "/cursor plan on".to_string();
+        app.input_cursor = app.input.chars().count();
+        let mut prompt_task = None;
+
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut prompt_task,
+        )
+        .await
+        .unwrap();
+
+        assert!(app.runtime.config.cursor_plan);
+        assert_eq!(app.runtime.config.cursor_agent, build_before);
     }
 }

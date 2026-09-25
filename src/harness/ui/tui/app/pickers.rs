@@ -40,38 +40,95 @@ pub(crate) fn handle_cursor_command(app: &mut App, text: &str) {
         None => {
             app.modal = Some(crate::harness::ui::tui::app::Modal::Cursor { selected: 0 });
         }
-        Some("on") | Some("off") => {
-            let on = rest == "on";
-            match app.runtime.set_cursor_agent(on) {
-                Ok(()) => app.add_system(&format!("cursor_agent = {}", on)),
-                Err(e) => app.add_system(&format!("[error] {}", e)),
-            }
-        }
+        // Bare `on|off|model …` target the build mode (backwards compatible).
+        Some("on") | Some("off") => cursor_set_toggle(app, CursorMode::Build, rest == "on"),
         Some("model") => {
             let Some(arg) = parts.next() else {
                 app.add_system("usage: /cursor model <id|auto>");
                 return;
             };
-            // "auto" is stored as an empty string (no --model flag).
-            let stored = if arg.eq_ignore_ascii_case("auto") {
-                String::new()
+            cursor_set_model(app, CursorMode::Build, arg);
+        }
+        // `agent …` / `plan …` target a specific mode.
+        Some(mode @ ("agent" | "plan")) => {
+            let target = if mode == "plan" {
+                CursorMode::Plan
             } else {
-                arg.to_string()
+                CursorMode::Build
             };
-            match app.runtime.set_cursor_model(stored.clone()) {
-                Ok(()) => app.add_system(&format!(
-                    "cursor_model = {} (Cursor CLI --model)",
-                    if stored.is_empty() { "auto" } else { &stored }
-                )),
-                Err(e) => app.add_system(&format!("[error] {}", e)),
+            match parts.next() {
+                Some(sw @ ("on" | "off")) => {
+                    cursor_set_toggle(app, target, sw == "on");
+                }
+                Some("model") => {
+                    let Some(arg) = parts.next() else {
+                        app.add_system(&format!("usage: /cursor {} model <id|auto>", mode));
+                        return;
+                    };
+                    cursor_set_model(app, target, arg);
+                }
+                _ => app.add_system(&format!("usage: /cursor {} [on|off|model <id|auto>]", mode)),
             }
         }
         Some(other) => {
             app.add_system(&format!(
-                "usage: /cursor [on|off|model <id|auto>]  (unknown: {})",
+                "usage: /cursor [agent|plan on|off|model <id|auto>]  (unknown: {})",
                 other
             ));
         }
+    }
+}
+
+/// Which Cursor knob a `/cursor` subcommand acts on.
+#[derive(Clone, Copy)]
+enum CursorMode {
+    Build,
+    Plan,
+}
+
+impl CursorMode {
+    fn label(self) -> &'static str {
+        match self {
+            CursorMode::Build => "cursor_agent",
+            CursorMode::Plan => "cursor_plan",
+        }
+    }
+}
+
+/// Flips the toggle for the given mode and reports it.
+fn cursor_set_toggle(app: &mut App, mode: CursorMode, on: bool) {
+    let saved = match mode {
+        CursorMode::Build => app.runtime.set_cursor_agent(on),
+        CursorMode::Plan => app.runtime.set_cursor_plan(on),
+    };
+    match saved {
+        Ok(()) => app.add_system(&format!("{} = {}", mode.label(), on)),
+        Err(e) => app.add_system(&format!("[error] {}", e)),
+    }
+}
+
+/// Sets the model for the given mode. "auto" is stored as an empty string
+/// (no `--model` flag).
+fn cursor_set_model(app: &mut App, mode: CursorMode, arg: &str) {
+    let stored = if arg.eq_ignore_ascii_case("auto") {
+        String::new()
+    } else {
+        arg.to_string()
+    };
+    let saved = match mode {
+        CursorMode::Build => app.runtime.set_cursor_model(stored.clone()),
+        CursorMode::Plan => app.runtime.set_cursor_plan_model(stored.clone()),
+    };
+    match saved {
+        Ok(()) => app.add_system(&format!(
+            "{} = {} (Cursor CLI --model)",
+            match mode {
+                CursorMode::Build => "cursor_model",
+                CursorMode::Plan => "cursor_plan_model",
+            },
+            if stored.is_empty() { "auto" } else { &stored }
+        )),
+        Err(e) => app.add_system(&format!("[error] {}", e)),
     }
 }
 

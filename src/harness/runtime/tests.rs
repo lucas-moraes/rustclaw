@@ -362,6 +362,47 @@ Then use the read tool to read src/main.rs. Report what tools you used.";
         assert_eq!(rt.resolve_agent("plan").name, "plan");
     }
 
+    /// The `cursor_plan` toggle diverts `plan` to the Cursor plan agent and
+    /// registers the `cursor_plan` tool, independently of `cursor_agent`.
+    #[tokio::test]
+    async fn test_cursor_plan_toggle_diverts_plan_agent() {
+        let dir = tempfile::tempdir().unwrap();
+        let http = HttpConfig {
+            client: crate::harness::provider::build_http_client(),
+            base_url: "https://api.deepinfra.com/v1/openai".to_string(),
+            api_key: "sk-initial-test-key-123456".to_string(),
+        };
+        let provider = build_provider_from("deepinfra", http, false).unwrap();
+        let db = dir.path().join("test.db");
+        let config = crate::config::RuntimeConfig {
+            model: "deepseek-ai/DeepSeek-V4-Flash-0731".to_string(),
+            provider: "deepinfra".to_string(),
+            base_url: "https://api.deepinfra.com/v1/openai".to_string(),
+            api_key: "sk-initial-test-key-123456".to_string(),
+            cursor_plan: true,
+            cursor_plan_model: "composer-2.5".to_string(),
+            ..Default::default()
+        };
+        let rt = SessionRuntime::new_in(
+            dir.path(),
+            provider,
+            crate::harness::runtime::build_default_registry(),
+            config,
+            &db,
+            Arc::new(crate::harness::permission::PermissionEngine::default()),
+            Arc::new(AllowAsker),
+            Arc::new(NoUserAsker),
+        )
+        .unwrap();
+
+        // plan → cursor_plan agent, whose single tool is `cursor_plan`.
+        let plan = rt.resolve_agent("plan");
+        assert_eq!(plan.name, "cursor_plan");
+        assert_eq!(plan.tools, vec!["cursor_plan"]);
+        // build stays native (its toggle is off).
+        assert_eq!(rt.resolve_agent("build").name, "build");
+    }
+
     #[tokio::test]
     async fn test_session_ops_use_project_root_not_process_cwd() {
         // The runtime's session operations must be scoped to its `project_root`,

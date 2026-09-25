@@ -130,22 +130,43 @@ pub enum Modal {
         /// Index of the highlighted row.
         selected: usize,
     },
-    /// Cursor CLI modal (opened by `/cursor`). Holds the Cursor-specific
-    /// knobs: `cursor_agent` (toggled with Space) and `cursor_model` (Enter
-    /// opens the model picker).
+    /// Cursor CLI modal (opened by `/cursor`). Holds the four Cursor knobs:
+    /// `cursor_agent` / `cursor_plan` (toggled with Space) and
+    /// `cursor_model` / `cursor_plan_model` (Enter opens the model picker).
     Cursor {
         /// Index of the highlighted row.
         selected: usize,
     },
-    /// Picker for the Cursor CLI model (`cursor_model`), opened from the
-    /// `cursor_model` row of the Cursor modal with Enter. The list is the
-    /// output of `agent --list-models`, with "auto" first.
+    /// Picker for a Cursor CLI model, opened from a `*_model` row of the
+    /// Cursor modal with Enter. The list is the output of `agent
+    /// --list-models`, with "auto" first.
     CursorModel {
         /// Index of the highlighted entry.
         selected: usize,
         /// Available models as `(id, description)` pairs ("auto" included).
         models: Vec<(String, String)>,
+        /// Which knob this picker edits (build or plan model).
+        target: CursorModelTarget,
     },
+}
+
+/// Which Cursor CLI model knob a [`Modal::CursorModel`] picker edits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CursorModelTarget {
+    /// `cursor_model` — the build-mode model.
+    Build,
+    /// `cursor_plan_model` — the plan-mode model.
+    Plan,
+}
+
+impl CursorModelTarget {
+    /// The settings label this target corresponds to.
+    pub fn label(self) -> &'static str {
+        match self {
+            CursorModelTarget::Build => "cursor_model",
+            CursorModelTarget::Plan => "cursor_plan_model",
+        }
+    }
 }
 
 /// Case-insensitive substring search over transcript lines.

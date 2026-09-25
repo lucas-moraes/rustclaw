@@ -135,8 +135,7 @@ impl SessionRuntime {
         let cwd = project_root.to_path_buf();
         // Apply the `cursor_agent` kill-switch: the `cursor` tool is only
         // present in the registry when the toggle is on.
-        let registry =
-            registry::apply_cursor_toggle(registry, config.cursor_agent, &config.cursor_model);
+        let registry = registry::apply_cursor_toggle(registry, &config);
         let store = Arc::new(SessionStore::open(db_path).context("failed to open session store")?);
         let skills = Arc::new(crate::harness::skill::loader::load_catalog(&cwd));
         let custom_agents = crate::harness::agent::custom::load_custom_agents(&cwd);
@@ -394,6 +393,11 @@ impl SessionRuntime {
         if self.config.cursor_agent && name == crate::harness::agent::builtin::BUILD {
             return crate::harness::agent::builtin::cursor();
         }
+        // Same for the `plan` mode: served by `cursor_plan` (read-only) when
+        // `cursor_plan` is on. Native plan stays reachable by name.
+        if self.config.cursor_plan && name == crate::harness::agent::builtin::PLAN {
+            return crate::harness::agent::builtin::cursor_plan();
+        }
         crate::harness::agent::find_builtin(name)
             .unwrap_or_else(crate::harness::agent::builtin::build)
     }
@@ -456,11 +460,7 @@ impl SessionRuntime {
     /// and persists the flag to `config.json`. Takes effect on the next turn.
     pub fn set_cursor_agent(&mut self, enabled: bool) -> Result<()> {
         self.config.cursor_agent = enabled;
-        self.registry = registry::apply_cursor_toggle(
-            self.registry.clone(),
-            enabled,
-            &self.config.cursor_model,
-        );
+        self.registry = registry::apply_cursor_toggle(self.registry.clone(), &self.config);
         let mut s = crate::config::GlobalSettings::load();
         s.cursor_agent = enabled;
         s.save().context("failed to persist config.json")?;
@@ -473,13 +473,35 @@ impl SessionRuntime {
     pub fn set_cursor_model(&mut self, model: impl Into<String>) -> Result<()> {
         let model = model.into();
         self.config.cursor_model = model.clone();
-        self.registry = registry::apply_cursor_toggle(
-            self.registry.clone(),
-            self.config.cursor_agent,
-            &self.config.cursor_model,
-        );
+        self.registry = registry::apply_cursor_toggle(self.registry.clone(), &self.config);
         let mut s = crate::config::GlobalSettings::load();
         s.cursor_model = model;
+        s.save().context("failed to persist config.json")?;
+        Ok(())
+    }
+
+    /// Enables or disables the Cursor CLI delegation for the `plan` mode.
+    ///
+    /// Independent from `cursor_agent`: plan can run on the Cursor CLI while
+    /// build stays native (and vice versa). Re-syncs the tool registry and
+    /// persists to `config.json`; takes effect on the next turn.
+    pub fn set_cursor_plan(&mut self, enabled: bool) -> Result<()> {
+        self.config.cursor_plan = enabled;
+        self.registry = registry::apply_cursor_toggle(self.registry.clone(), &self.config);
+        let mut s = crate::config::GlobalSettings::load();
+        s.cursor_plan = enabled;
+        s.save().context("failed to persist config.json")?;
+        Ok(())
+    }
+
+    /// Sets the Cursor CLI model (`--model <id>`) used in plan mode. Empty
+    /// means "auto". Re-syncs the registry and persists to `config.json`.
+    pub fn set_cursor_plan_model(&mut self, model: impl Into<String>) -> Result<()> {
+        let model = model.into();
+        self.config.cursor_plan_model = model.clone();
+        self.registry = registry::apply_cursor_toggle(self.registry.clone(), &self.config);
+        let mut s = crate::config::GlobalSettings::load();
+        s.cursor_plan_model = model;
         s.save().context("failed to persist config.json")?;
         Ok(())
     }
@@ -671,11 +693,7 @@ impl SessionRuntime {
         // Defensive re-sync of the Cursor kill-switch: the registry is normally
         // kept in sync by `new_in`/`set_cursor_agent`, but re-applying here
         // guarantees the tool set matches the current config for this turn.
-        let turn_registry = registry::apply_cursor_toggle(
-            self.registry.clone(),
-            self.config.cursor_agent,
-            &self.config.cursor_model,
-        );
+        let turn_registry = registry::apply_cursor_toggle(self.registry.clone(), &self.config);
         let enabled: Vec<String> = match enabled_skills {
             Some(ids) => ids.to_vec(),
             None => inject::enabled_for_turn(&session.skills, None),

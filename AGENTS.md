@@ -273,17 +273,28 @@ impl Tool for MyTool {
 - Builtins em `agent/builtin.rs` (`build`/`plan`/`explore`/`general`/`cursor`)
 - `tool::task` dispara subagent via `runtime::TaskRunner` (child session isolada)
 
-### Cursor delegation (`cursor_agent` toggle)
-- Quando `cursor_agent` está **on** (config.json / modal `/cursor`), o modo
-  `build` é servido pelo agente `cursor`, cuja única tool (`cursor`) delega a
-  tarefa ao Cursor CLI (`agent -p --force --output-format stream-json`).
+### Cursor delegation (`cursor_agent` / `cursor_plan` toggles)
+- Dois toggles **independentes**:
+  - `cursor_agent` **on** → o modo `build` é servido pelo agente `cursor`,
+    cuja única tool (`cursor`) delega ao Cursor CLI em modo build
+    (`agent -p --force --output-format stream-json`).
+  - `cursor_plan` **on** → o modo `plan` é servido pelo agente `cursor_plan`,
+    cuja única tool (`cursor_plan`) delega em modo **plan read-only**
+    (`agent -p --mode plan --output-format stream-json`; sem `--force`).
+  Cada toggle tem o **seu modelo** (`cursor_model` / `cursor_plan_model`).
+  Dá para ligar só o build, só o plan, ou os dois.
 - O **system prompt do harness nunca é enviado** ao Cursor: a tool monta um
   prompt determinístico (`build_delegation_prompt`) com `## Tarefa`,
   `# Project context` (ProjectProfiler) e `<project-memory>`.
-- Kill-switch: `build_default_registry()` sempre registra a tool; ela é
-  removida via `registry::apply_cursor_toggle(reg, cursor_agent, cursor_model)`
-  quando o toggle está off (aplicado em `new_in`, `set_cursor_agent`,
-  `set_cursor_model` e re-sincronizado por turno).
+- Kill-switch: `build_default_registry()` sempre registra as tools; elas são
+  removidas via `registry::apply_cursor_toggle(reg, &RuntimeConfig)` quando o
+  toggle correspondente está off (aplicado em `new_in`, `set_cursor_agent`,
+  `set_cursor_model`, `set_cursor_plan`, `set_cursor_plan_model` e
+  re-sincronizado por turno). O desvio de agente vive em `resolve_agent`
+  (`build`→`cursor`, `plan`→`cursor_plan`).
+- `CursorTool` carrega um `CursorMode` (`Build`/`Plan`): o `name()` da tool é
+  `cursor` ou `cursor_plan`, e `spawn_args(mode, model)` troca `--force` por
+  `--mode plan`. As duas instâncias coexistem no registry.
 - **Modelo do Cursor**: `cursor_model` (config.json) é repassado como
   `--model <id>` no spawn (`CursorTool::new(model)` → `spawn_args`). Vazio =
   `auto` (sem flag; default do CLI). A lista vem de `agent --list-models`
@@ -292,13 +303,15 @@ impl Tool for MyTool {
 - Permissão default da tool `cursor` = **ask**; allowlist do agente `build`
   nativo não inclui `cursor`.
 - TUI: o comando **`/cursor`** abre um modal dedicado (`Modal::Cursor`) com
-  as duas linhas do Cursor: `cursor_agent` (**Space** alterna) e
-  `cursor_model` (**Enter** abre um picker com a listagem de modelos —
-  `agent --list-models`, id + descrição, `auto` no topo, valor atual
-  pré-selecionado; ↑/↓ + Enter). Atalhos sem modal: `/cursor on|off` e
-  `/cursor model <id|auto>`. Essas linhas **não** ficam mais no `/settings`
-  (que voltou a só iterations/context/theme). Indicador `└ cursor` (dim) sob
-  `build` na sidebar.
+  as **quatro** linhas: `cursor_agent` e `cursor_plan` (**Space** alterna) e
+  `cursor_model` / `cursor_plan_model` (**Enter** abre um picker com a
+  listagem de modelos — `agent --list-models`, id + descrição, `auto` no topo,
+  valor atual pré-selecionado; ↑/↓ + Enter; o picker guarda o
+  `CursorModelTarget` para saber qual knob editar). Atalhos sem modal:
+  `/cursor on|off` e `/cursor model <id|auto>` (build, retrocompatíveis) e
+  `/cursor agent|plan on|off|model <id|auto>`. Essas linhas **não** ficam no
+  `/settings` (que só tem iterations/context/theme). Indicador `└ cursor`
+  (dim) sob `build` **e/ou** `plan` na sidebar, conforme os toggles.
 
 ### Memory (skills)
 - Modelo: **prompt** (pedido atual) + **session** (histórico) + **memory** (skills)

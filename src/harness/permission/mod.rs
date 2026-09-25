@@ -33,6 +33,7 @@ pub const ALL_TOOLS: &[&str] = &[
     "question",
     "remember",
     "cursor",
+    "cursor_plan",
 ];
 
 /// Callback invoked when a tool is marked "always allow", so the decision can
@@ -130,7 +131,14 @@ impl PermissionConfig {
             tools.insert(t.to_string(), Rule::Allow);
         }
         for t in [
-            "write", "edit", "bash", "task", "question", "remember", "cursor",
+            "write",
+            "edit",
+            "bash",
+            "task",
+            "question",
+            "remember",
+            "cursor",
+            "cursor_plan",
         ] {
             tools.insert(t.to_string(), Rule::Ask);
         }
