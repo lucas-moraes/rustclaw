@@ -218,6 +218,7 @@ mod tests {
                     output: "main.rs\nconfig.rs".to_string(),
                     title: String::new(),
                     error: None,
+                    exit_code: None,
                 }),
             ],
         ));

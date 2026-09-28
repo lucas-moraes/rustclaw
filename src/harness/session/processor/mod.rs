@@ -11,7 +11,7 @@ use crate::harness::agent::AgentSpec;
 use crate::harness::event::{EventSender, HarnessEvent};
 use crate::harness::provider::ProviderStream;
 use crate::harness::provider::{LlmRequest, Provider, ToolSpec, Usage};
-use crate::harness::session::{Message, Part, Role, Session};
+use crate::harness::session::{Message, Part, Role, Session, ToolPart};
 use crate::harness::tool::registry::ToolRegistry;
 
 /// Tunables for one turn of the processor.
@@ -247,6 +247,79 @@ fn decide_turn_end(
     }
 }
 
+/// Tools that mutate the workspace. A turn that ran one of these and then
+/// stopped without a passing check is claiming success without evidence.
+const MUTATING_TOOLS: [&str; 2] = ["write", "edit"];
+
+/// Substrings that mark a `bash` command as a project check. Heuristic, not a
+/// shell parser: `echo cargo test` would pass. That is acceptable — the gate
+/// errs toward trusting an explicit check rather than blocking a real one.
+const CHECK_COMMAND_MARKERS: [&str; 4] =
+    ["cargo test", "cargo check", "cargo clippy", "cargo build"];
+
+/// Returns `Some(note)` when the turn mutated files and, after the last
+/// mutation, never ran a check that passed. `None` means the turn is fine to
+/// end (no mutation, or a passing check came after the last edit).
+///
+/// Reads only the terminal tool parts of the current turn. A check counts only
+/// when it ran *after* the last mutation and reported `exit_code == Some(0)`:
+/// a failed or unknown-exit check does not clear the gap. `write`/`edit` that
+/// errored do not count as mutations (the rollback already undid them).
+fn verification_gap(parts: &[ToolPart]) -> Option<String> {
+    let last_mutation = parts.iter().rposition(|p| {
+        MUTATING_TOOLS.contains(&p.name.as_str())
+            && p.status == crate::harness::event::ToolStatus::Completed
+    })?;
+
+    let verified = parts[last_mutation + 1..].iter().any(|p| {
+        if p.exit_code != Some(0) {
+            return false;
+        }
+        match p.name.as_str() {
+            "diagnostics" => true,
+            "bash" => p
+                .input
+                .get("command")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|cmd| CHECK_COMMAND_MARKERS.iter().any(|m| cmd.contains(m))),
+            _ => false,
+        }
+    });
+    if verified {
+        return None;
+    }
+
+    let targets: Vec<String> = parts[last_mutation..]
+        .iter()
+        .filter(|p| MUTATING_TOOLS.contains(&p.name.as_str()))
+        .map(|p| {
+            // `tool_target` reads `path`/`file`; the real `edit`/`write` tools
+            // use `file_path`, so fall back to it before giving up.
+            let t = crate::harness::session::doom_loop::tool_target(&p.name, &p.input);
+            if t.is_empty() {
+                p.input
+                    .get("file_path")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("")
+                    .to_string()
+            } else {
+                t
+            }
+        })
+        .filter(|t| !t.is_empty())
+        .collect();
+    let targets = if targets.is_empty() {
+        "files".to_string()
+    } else {
+        targets.join(", ")
+    };
+    Some(format!(
+        "System note: you changed files ({targets}) but did not verify the change. Run the \
+         project's check (`diagnostics`, or `cargo test`/`cargo check`) and confirm it \
+         passes before reporting success. This reminder is sent once."
+    ))
+}
+
 /// Decides how to handle a response the provider truncated at the output-token
 /// limit (R3). A truncated response with no tool calls is *not* a final answer:
 /// the model was cut off mid-thought, so we continue it. Respects the same
@@ -448,6 +521,12 @@ impl SessionProcessor {
             turn_secs
         );
 
+        // Index of the first message of this turn, so the verification gate can
+        // read only the tool parts produced here (not the whole session).
+        let turn_start = session.messages.len();
+        // The verification nudge fires at most once per turn.
+        let mut verification_nudged = false;
+
         'turn: loop {
             while iterations < self.config.max_iterations {
                 if ctx.abort.is_aborted() {
@@ -621,6 +700,32 @@ impl SessionProcessor {
                             break;
                         }
                         continue 'turn;
+                    }
+                    // Verification gate: a turn that mutated files and never ran
+                    // a passing check is claiming success without evidence.
+                    // Nudge once, then accept on the next stop.
+                    if !verification_nudged {
+                        let turn_parts: Vec<ToolPart> = session.messages[turn_start..]
+                            .iter()
+                            .flat_map(|m| m.parts.iter())
+                            .filter_map(|p| match p {
+                                Part::Tool(t) => Some(t.clone()),
+                                _ => None,
+                            })
+                            .collect();
+                        if let Some(note) = verification_gap(&turn_parts) {
+                            verification_nudged = true;
+                            tracing::info!(
+                                "verification gap: nudging once (session={})",
+                                session.id
+                            );
+                            let msg = Message::user(note);
+                            session.push_message(msg.clone());
+                            let sid = session.id.clone();
+                            let cwd = session.cwd.clone();
+                            self.persist(&sid, &cwd, &msg).await;
+                            continue 'turn;
+                        }
                     }
                     final_text = text;
                     break;

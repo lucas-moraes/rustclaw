@@ -70,6 +70,12 @@ pub struct ToolPart {
     pub title: String,
     #[serde(default)]
     pub error: Option<String>,
+    /// Process exit code for tools that run a command (`bash`, `diagnostics`).
+    /// `None` when the tool does not report one. Kept out of the text sent to
+    /// the model: it is a stable signal for the verification gate, since the
+    /// `[exit: N]` suffix can be lost to output truncation.
+    #[serde(default)]
+    pub exit_code: Option<i32>,
 }
 
 impl ToolPart {
@@ -82,6 +88,7 @@ impl ToolPart {
             output: String::new(),
             title: String::new(),
             error: None,
+            exit_code: None,
         }
     }
 
@@ -445,6 +452,7 @@ mod tests {
                     output: "file.txt".into(),
                     title: "ls".into(),
                     error: None,
+                    exit_code: None,
                 }),
             ],
         );
@@ -460,6 +468,46 @@ mod tests {
         let mut session = Session::new("build", PathBuf::from("/tmp"));
         session.push_message(Message::user("a".repeat(400)));
         assert_eq!(session.approx_tokens(), 100);
+    }
+
+    #[test]
+    fn test_tool_part_exit_code_defaults_to_none() {
+        // Old sessions persisted before `exit_code` existed must still load.
+        let json = r#"{
+            "id": "tc1",
+            "name": "bash",
+            "input": {"command": "ls"},
+            "status": "completed",
+            "output": "file.txt",
+            "title": "ls"
+        }"#;
+        let part: ToolPart = serde_json::from_str(json).unwrap();
+        assert_eq!(part.exit_code, None);
+        assert_eq!(part.status, ToolStatus::Completed);
+    }
+
+    #[test]
+    fn test_tool_part_exit_code_roundtrip() {
+        let part = ToolPart {
+            id: "tc1".into(),
+            name: "bash".into(),
+            input: serde_json::json!({"command": "cargo test"}),
+            status: ToolStatus::Completed,
+            output: "test result: FAILED".into(),
+            title: "cargo test".into(),
+            error: None,
+            exit_code: Some(101),
+        };
+        let json = serde_json::to_string(&part).unwrap();
+        let back: ToolPart = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.exit_code, Some(101));
+    }
+
+    #[test]
+    fn test_tool_part_pending_has_no_exit_code() {
+        let part = ToolPart::pending("tc1", "bash", serde_json::json!({"command": "ls"}));
+        assert_eq!(part.exit_code, None);
+        assert_eq!(part.status, ToolStatus::Pending);
     }
 
     #[test]

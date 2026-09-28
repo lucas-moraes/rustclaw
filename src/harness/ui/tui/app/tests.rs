@@ -106,6 +106,7 @@ mod input_tests {
                     output: "content".into(),
                     title: "read x".into(),
                     error: None,
+                    exit_code: None,
                 }),
             ],
         ));

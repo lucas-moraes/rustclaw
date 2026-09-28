@@ -1172,6 +1172,7 @@ mod tests {
                     output: "out".into(),
                     title: "ls".into(),
                     error: None,
+                    exit_code: None,
                 }),
             ],
         );

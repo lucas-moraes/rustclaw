@@ -14,6 +14,17 @@ use crate::harness::session::processor::SessionProcessor;
 use crate::harness::session::{Message, Part, Session, ToolPart};
 use crate::harness::tool::context::ToolContext;
 
+/// Reads the process exit code a tool reported in its result metadata.
+/// Returns `None` when absent or not a valid `i32`. This is the stable signal
+/// the verification gate reads; it survives output truncation, unlike the
+/// `[exit: N]` suffix.
+fn exit_code_from_metadata(metadata: &serde_json::Value) -> Option<i32> {
+    metadata
+        .get("exit_code")
+        .and_then(|v| v.as_i64())
+        .and_then(|n| i32::try_from(n).ok())
+}
+
 /// Executes all pending tool calls of the assistant message `assistant_id`,
 /// applying results back onto the session in completion order. Aborts the
 /// remaining batch if the shared abort signal fires mid-execution.
@@ -242,6 +253,10 @@ pub async fn execute_tool_calls(
                             r.title
                         };
                         t.error = None;
+                        // Stable success signal for the verification gate.
+                        // Status stays `Completed` even on a non-zero exit so
+                        // the model still sees the full output.
+                        t.exit_code = exit_code_from_metadata(&r.metadata);
                     }
                 }
                 processor.emit(HarnessEvent::ToolEnd {
@@ -502,5 +517,24 @@ mod tests {
         ];
         let snap = IterationSnapshot::capture(&pending, dir.path());
         assert_eq!(snap.files.len(), 1, "same path captured once");
+    }
+
+    #[test]
+    fn test_exit_code_from_metadata() {
+        use serde_json::json;
+        assert_eq!(exit_code_from_metadata(&json!({"exit_code": 0})), Some(0));
+        assert_eq!(exit_code_from_metadata(&json!({"exit_code": 1})), Some(1));
+        assert_eq!(
+            exit_code_from_metadata(&json!({"exit_code": 101})),
+            Some(101)
+        );
+        // Absent, wrong type, or out of i32 range -> None.
+        assert_eq!(exit_code_from_metadata(&json!({})), None);
+        assert_eq!(exit_code_from_metadata(&json!({"exit_code": "0"})), None);
+        assert_eq!(exit_code_from_metadata(&json!({"exit_code": null})), None);
+        assert_eq!(
+            exit_code_from_metadata(&json!({"exit_code": 5_000_000_000i64})),
+            None
+        );
     }
 }

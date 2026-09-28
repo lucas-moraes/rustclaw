@@ -375,4 +375,103 @@ mod tests {
         assert!(text.contains("FAIL  bad_eval — fails"));
         assert!(text.contains("1/2 evals passed"));
     }
+
+    /// V4 — a frozen task with an external criterion.
+    ///
+    /// This is deliberately **not** part of `suite()`: it calls a live model
+    /// and runs `cargo` in a throwaway fixture. Run it by hand with a token in
+    /// the auth store:
+    ///
+    /// ```text
+    /// cargo test --bin rustclaw frozen_verification_task -- --ignored --nocapture
+    /// ```
+    ///
+    /// The criterion is judged **outside** the model: after the turn, `cargo
+    /// test` in the fixture must pass (exit 0). The model's final text is not
+    /// the criterion.
+    #[tokio::test]
+    #[ignore = "live model + cargo in a temp fixture; run with --ignored and a token"]
+    async fn frozen_verification_task() {
+        let config = crate::config::RuntimeConfig::load();
+        if !config.is_configured() {
+            eprintln!(
+                "skipping frozen_verification_task: no provider/token configured \
+                 (run the TUI once with /models + /auth)"
+            );
+            return;
+        }
+
+        // Fixture: a minimal crate whose test fails to compile (wrong type).
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src/lib.rs"),
+            "pub fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n\n\
+             #[cfg(test)]\nmod tests {\n    use super::*;\n\n    #[test]\n    \
+             fn adds() {\n        assert_eq!(add(2, 2), \"4\");\n    }\n}\n",
+        )
+        .unwrap();
+
+        let registry = crate::harness::runtime::build_default_registry();
+        let db = root.join("harness.db");
+        let permission = Arc::new(crate::harness::permission::PermissionEngine::default());
+        let asker = Arc::new(crate::harness::ui::cli::CliAsker::new(permission.clone()));
+        let runtime = SessionRuntime::from_config_in(
+            root,
+            &config,
+            registry,
+            &db,
+            permission,
+            asker,
+            Arc::new(crate::harness::ui::cli::CliUserAsker),
+        )
+        .expect("runtime");
+
+        let mut session = runtime.create_session("build").await.unwrap();
+        let (tx, mut rx) = crate::harness::event::event_channel();
+        let printer = tokio::spawn(async move {
+            while let Some(ev) = rx.recv().await {
+                if let crate::harness::event::HarnessEvent::ToolStart { name, .. } = ev {
+                    println!("  [tool] {}", name);
+                }
+            }
+        });
+
+        let prompt = "The test in src/lib.rs does not compile. Fix the code so that \
+                      `cargo test` passes, then run `cargo test` to confirm.";
+        let result = runtime
+            .prompt(
+                &mut session,
+                &tx,
+                prompt,
+                crate::harness::tool::context::AbortSignal::new(),
+                None,
+            )
+            .await
+            .expect("prompt");
+        let _ = tx.send(crate::harness::event::HarnessEvent::RunFinished {
+            session_id: session.id.clone(),
+            parent_session_id: None,
+        });
+        printer.abort();
+
+        println!("\n===== FINAL TEXT =====\n{}", result.final_text);
+
+        // External criterion: the fixture must now pass `cargo test`.
+        let status = std::process::Command::new("cargo")
+            .arg("test")
+            .current_dir(root)
+            .status()
+            .expect("run cargo test in fixture");
+        assert!(
+            status.success(),
+            "external criterion failed: `cargo test` in the fixture did not pass"
+        );
+    }
 }

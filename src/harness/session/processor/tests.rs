@@ -1295,6 +1295,9 @@ async fn test_successful_edit_prevents_rollback() {
             },
         ],
         final_text_events("done"),
+        // The verification gate nudges once after the successful edit; the
+        // second stop is accepted. This test only cares about rollback.
+        final_text_events("done"),
     ];
     let provider = MockProvider::new(script);
     let (processor, _dir) = test_processor(provider, registry, 10);
@@ -1405,4 +1408,279 @@ fn elide_preserves_tool_name_and_size_in_placeholder() {
         .output;
     assert!(first.contains("bash"), "placeholder names the tool");
     assert!(first.contains("5000"), "placeholder reports original size");
+}
+
+// ---------------------------------------------------------------------------
+// V3 — verification gate
+// ---------------------------------------------------------------------------
+
+use serde_json::json;
+
+/// Builds a terminal `ToolPart` for the pure-function matrix.
+fn part(
+    name: &str,
+    status: ToolStatus,
+    exit_code: Option<i32>,
+    input: serde_json::Value,
+) -> ToolPart {
+    ToolPart {
+        id: format!("{name}-id"),
+        name: name.to_string(),
+        input,
+        status,
+        output: String::new(),
+        title: String::new(),
+        error: None,
+        exit_code,
+    }
+}
+
+fn edit_ok() -> ToolPart {
+    part(
+        "edit",
+        ToolStatus::Completed,
+        None,
+        json!({"file_path": "src/lib.rs"}),
+    )
+}
+
+fn bash(cmd: &str, exit_code: Option<i32>) -> ToolPart {
+    part(
+        "bash",
+        ToolStatus::Completed,
+        exit_code,
+        json!({"command": cmd}),
+    )
+}
+
+fn diagnostics(exit_code: Option<i32>) -> ToolPart {
+    part("diagnostics", ToolStatus::Completed, exit_code, json!({}))
+}
+
+#[test]
+fn verification_gap_edit_without_check_nudges() {
+    let parts = vec![edit_ok()];
+    assert!(super::verification_gap(&parts).is_some());
+}
+
+#[test]
+fn verification_gap_edit_then_passing_diagnostics_is_clean() {
+    let parts = vec![edit_ok(), diagnostics(Some(0))];
+    assert!(super::verification_gap(&parts).is_none());
+}
+
+#[test]
+fn verification_gap_edit_then_failing_diagnostics_nudges() {
+    let parts = vec![edit_ok(), diagnostics(Some(1))];
+    assert!(super::verification_gap(&parts).is_some());
+}
+
+#[test]
+fn verification_gap_edit_then_diagnostics_without_exit_nudges() {
+    let parts = vec![edit_ok(), diagnostics(None)];
+    assert!(super::verification_gap(&parts).is_some());
+}
+
+#[test]
+fn verification_gap_edit_then_echo_nudges() {
+    let parts = vec![edit_ok(), bash("echo hi", Some(0))];
+    assert!(super::verification_gap(&parts).is_some());
+}
+
+#[test]
+fn verification_gap_edit_then_cargo_test_passes_is_clean() {
+    let parts = vec![edit_ok(), bash("cargo test -q", Some(0))];
+    assert!(super::verification_gap(&parts).is_none());
+}
+
+#[test]
+fn verification_gap_edit_then_cargo_check_clippy_build_are_clean() {
+    for cmd in ["cargo check", "cargo clippy", "cargo build"] {
+        let parts = vec![edit_ok(), bash(cmd, Some(0))];
+        assert!(
+            super::verification_gap(&parts).is_none(),
+            "{cmd} with exit 0 should clear the gap"
+        );
+    }
+}
+
+#[test]
+fn verification_gap_edit_then_failing_cargo_test_nudges() {
+    let parts = vec![edit_ok(), bash("cargo test", Some(1))];
+    assert!(super::verification_gap(&parts).is_some());
+    let parts = vec![edit_ok(), bash("cargo test", None)];
+    assert!(super::verification_gap(&parts).is_some());
+}
+
+#[test]
+fn verification_gap_check_before_second_edit_nudges() {
+    let parts = vec![edit_ok(), diagnostics(Some(0)), edit_ok()];
+    assert!(super::verification_gap(&parts).is_some());
+}
+
+#[test]
+fn verification_gap_read_only_turn_is_clean() {
+    let parts = vec![
+        part(
+            "read",
+            ToolStatus::Completed,
+            None,
+            json!({"file_path": "a.rs"}),
+        ),
+        part("grep", ToolStatus::Completed, None, json!({"pattern": "x"})),
+    ];
+    assert!(super::verification_gap(&parts).is_none());
+}
+
+#[test]
+fn verification_gap_errored_edit_is_clean() {
+    let parts = vec![part(
+        "edit",
+        ToolStatus::Error,
+        None,
+        json!({"file_path": "src/lib.rs"}),
+    )];
+    assert!(super::verification_gap(&parts).is_none());
+}
+
+#[test]
+fn verification_gap_write_follows_same_rule_as_edit() {
+    let write = part(
+        "write",
+        ToolStatus::Completed,
+        None,
+        json!({"file_path": "src/lib.rs"}),
+    );
+    assert!(super::verification_gap(std::slice::from_ref(&write)).is_some());
+    assert!(super::verification_gap(&[write, diagnostics(Some(0))]).is_none());
+}
+
+#[test]
+fn verification_gap_note_names_the_target() {
+    let parts = vec![edit_ok()];
+    let note = super::verification_gap(&parts).expect("gap");
+    assert!(
+        note.contains("src/lib.rs"),
+        "note names the edited target: {note}"
+    );
+    assert!(note.contains("once"), "note says it is sent once: {note}");
+}
+
+/// A tool that returns a fixed `exit_code` in its metadata, so the loop tests
+/// can exercise the verification gate without running `cargo`.
+struct MetaTool {
+    name: &'static str,
+    exit_code: Option<i32>,
+}
+
+#[async_trait::async_trait]
+impl Tool for MetaTool {
+    fn name(&self) -> &str {
+        self.name
+    }
+    fn description(&self) -> &str {
+        "fake tool with exit_code metadata"
+    }
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({"type": "object"})
+    }
+    async fn execute(
+        &self,
+        _args: serde_json::Value,
+        _ctx: &ToolContext,
+    ) -> Result<crate::harness::tool::ToolResult, String> {
+        let metadata = match self.exit_code {
+            Some(code) => json!({"exit_code": code}),
+            None => serde_json::Value::Null,
+        };
+        Ok(crate::harness::tool::ToolResult {
+            title: self.name.to_string(),
+            output: format!("{} output", self.name),
+            metadata,
+        })
+    }
+}
+
+#[tokio::test]
+async fn verification_gate_nudges_once_then_accepts() {
+    // edit + "done" + "done": the first stop injects the note and calls the
+    // provider again; the second stop is accepted.
+    let registry = crate::harness::tool::registry::ToolRegistry::builder()
+        .register(StdArc::new(MetaTool {
+            name: "edit",
+            exit_code: None,
+        }))
+        .build();
+    let provider = MockProvider::new(vec![
+        tool_call_events("t1", "edit", r#"{"file_path":"src/lib.rs"}"#),
+        final_text_events("done"),
+        final_text_events("done again"),
+    ]);
+    let (processor, dir) = test_processor(provider, registry, 10);
+    let mut session = processor.store.create_session("build", dir.path()).unwrap();
+    session.messages.push(Message::user("edit the file"));
+    let agent = agent_with_tools(vec!["edit".to_string()]);
+    let ctx = test_ctx();
+
+    let outcome = processor
+        .run_turn(&mut session, &agent, "sys", &ctx)
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.final_text, "done again", "second stop is accepted");
+    assert_eq!(
+        outcome.iterations, 3,
+        "one extra provider call for the nudge"
+    );
+
+    // The note is a user message, not a system one.
+    let note = session
+        .messages
+        .iter()
+        .find(|m| m.role.as_str() == "user" && m.text_content().contains("verify"))
+        .expect("verification note persisted as a user message");
+    assert!(
+        note.text_content().contains("src/lib.rs"),
+        "note names the target"
+    );
+}
+
+#[tokio::test]
+async fn verification_gate_clean_check_ends_on_first_stop() {
+    // edit + diagnostics(exit 0) + "done": no note, a single final call.
+    let registry = crate::harness::tool::registry::ToolRegistry::builder()
+        .register(StdArc::new(MetaTool {
+            name: "edit",
+            exit_code: None,
+        }))
+        .register(StdArc::new(MetaTool {
+            name: "diagnostics",
+            exit_code: Some(0),
+        }))
+        .build();
+    let provider = MockProvider::new(vec![
+        tool_call_events("t1", "edit", "{}"),
+        tool_call_events("t2", "diagnostics", "{}"),
+        final_text_events("done"),
+    ]);
+    let (processor, dir) = test_processor(provider, registry, 10);
+    let mut session = processor.store.create_session("build", dir.path()).unwrap();
+    session.messages.push(Message::user("edit and check"));
+    let agent = agent_with_tools(vec!["edit".to_string(), "diagnostics".to_string()]);
+    let ctx = test_ctx();
+
+    let outcome = processor
+        .run_turn(&mut session, &agent, "sys", &ctx)
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.final_text, "done");
+    assert_eq!(outcome.iterations, 3, "no extra call after a clean check");
+    assert!(
+        !session
+            .messages
+            .iter()
+            .any(|m| m.role.as_str() == "user" && m.text_content().contains("verify")),
+        "no verification note when the check passed"
+    );
 }

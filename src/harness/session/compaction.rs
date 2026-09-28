@@ -871,6 +871,7 @@ mod tests {
                     output: "ok".into(),
                     title: String::new(),
                     error: None,
+                    exit_code: None,
                 }),
             ],
         );

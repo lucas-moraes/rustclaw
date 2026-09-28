@@ -218,7 +218,16 @@ compile errors (file, line, column, message)."
         };
 
         let title = format!("diagnostics {}", workspace.display());
-        Ok(ToolResult::simple(title, body))
+        // Stable success signal for the verification gate: 0 when there are no
+        // compile errors (warnings do not count), 1 otherwise. The formatted
+        // body still goes to the model; the status stays `Completed`.
+        let error_count = diags.iter().filter(|d| d.severity == "error").count();
+        let exit_code = if error_count == 0 { 0 } else { 1 };
+        Ok(ToolResult {
+            title,
+            output: body,
+            metadata: serde_json::json!({ "exit_code": exit_code }),
+        })
     }
 }
 
@@ -314,6 +323,53 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.contains("no Cargo.toml found"), "got: {err}");
+    }
+
+    /// Writes a minimal crate whose `src/lib.rs` is `body`, then runs the tool.
+    async fn run_on_crate(body: &str) -> ToolResult {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("Cargo.toml"),
+            "[package]\nname = \"fixture\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+        std::fs::write(tmp.path().join("src/lib.rs"), body).unwrap();
+        let ctx = ctx_with_cwd(tmp.path().to_path_buf());
+        DiagnosticsTool
+            .execute(json!({"workspace": tmp.path().to_str().unwrap()}), &ctx)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_exit_code_zero_when_no_errors() {
+        let r = run_on_crate("pub fn ok() -> i32 { 1 }\n").await;
+        assert_eq!(
+            r.metadata.get("exit_code").and_then(|v| v.as_i64()),
+            Some(0)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_exit_code_one_when_errors() {
+        let r = run_on_crate("pub fn broken() -> i32 { \"nope\" }\n").await;
+        assert_eq!(
+            r.metadata.get("exit_code").and_then(|v| v.as_i64()),
+            Some(1)
+        );
+        // The formatted body still reaches the model.
+        assert!(r.output.contains("error"), "got: {}", r.output);
+    }
+
+    #[tokio::test]
+    async fn test_exit_code_zero_when_warnings_only() {
+        // Unused variable is a warning, not an error.
+        let r = run_on_crate("pub fn f() { let unused = 1; }\n").await;
+        assert_eq!(
+            r.metadata.get("exit_code").and_then(|v| v.as_i64()),
+            Some(0)
+        );
     }
 
     fn ctx_with_cwd(cwd: std::path::PathBuf) -> ToolContext {
