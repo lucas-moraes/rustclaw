@@ -252,7 +252,7 @@ fn mode_rows(
         // by the Cursor CLI — show a dim sub-item right under it.
         let delegated = match *mode {
             "build" => cursor_build,
-            "plan" => cursor_plan,
+            "reason" => cursor_plan,
             _ => false,
         };
         if delegated {

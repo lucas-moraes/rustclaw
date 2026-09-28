@@ -359,10 +359,10 @@ Then use the read tool to read src/main.rs. Report what tools you used.";
         assert_eq!(build.system_prompt, "Custom build prompt.");
 
         // Builtins not shadowed remain available.
-        assert_eq!(rt.resolve_agent("plan").name, "plan");
+        assert_eq!(rt.resolve_agent("reason").name, "reason");
     }
 
-    /// The `cursor_plan` toggle diverts `plan` to the Cursor plan agent and
+    /// The `cursor_plan` toggle diverts `reason` to the Cursor plan agent and
     /// registers the `cursor_plan` tool, independently of `cursor_agent`.
     #[tokio::test]
     async fn test_cursor_plan_toggle_diverts_plan_agent() {
@@ -395,10 +395,10 @@ Then use the read tool to read src/main.rs. Report what tools you used.";
         )
         .unwrap();
 
-        // plan → cursor_plan agent, whose single tool is `cursor_plan`.
-        let plan = rt.resolve_agent("plan");
-        assert_eq!(plan.name, "cursor_plan");
-        assert_eq!(plan.tools, vec!["cursor_plan"]);
+        // reason → cursor_plan agent, whose single tool is `cursor_plan`.
+        let reason = rt.resolve_agent("reason");
+        assert_eq!(reason.name, "cursor_plan");
+        assert_eq!(reason.tools, vec!["cursor_plan"]);
         // build stays native (its toggle is off).
         assert_eq!(rt.resolve_agent("build").name, "build");
     }
@@ -492,15 +492,22 @@ Then use the read tool to read src/main.rs. Report what tools you used.";
     #[test]
     fn test_build_subagent_allowed_when_write_enabled() {
         assert_eq!(resolve_subagent_agent(true, "build"), "build");
-        assert_eq!(resolve_subagent_agent(true, "explore"), "explore");
+        assert_eq!(resolve_subagent_agent(true, "reason"), "reason");
     }
 
     #[test]
     fn test_build_subagent_demoted_when_write_disabled() {
-        assert_eq!(resolve_subagent_agent(false, "build"), "general");
+        assert_eq!(resolve_subagent_agent(false, "build"), "reason");
         // non-build agents are untouched
-        assert_eq!(resolve_subagent_agent(false, "explore"), "explore");
-        assert_eq!(resolve_subagent_agent(false, "plan"), "plan");
-        assert_eq!(resolve_subagent_agent(false, "general"), "general");
+        assert_eq!(resolve_subagent_agent(false, "reason"), "reason");
+        assert_eq!(resolve_subagent_agent(false, "chat-free"), "chat-free");
+    }
+
+    /// Legacy mode names resolve to `reason` (old sessions persisted them).
+    #[test]
+    fn test_legacy_subagent_names_alias_reason() {
+        for legacy in ["plan", "explore", "general"] {
+            assert_eq!(resolve_subagent_agent(false, legacy), "reason");
+        }
     }
 }

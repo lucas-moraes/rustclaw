@@ -154,9 +154,7 @@ pub fn unknown_tools(spec: &AgentSpec, available: &[String]) -> Vec<String> {
 pub fn builtin_names() -> Vec<String> {
     vec![
         builtin::BUILD.to_string(),
-        builtin::PLAN.to_string(),
-        builtin::EXPLORE.to_string(),
-        builtin::GENERAL.to_string(),
+        builtin::REASON.to_string(),
         builtin::CHAT_FREE.to_string(),
         builtin::CURSOR.to_string(),
         builtin::CURSOR_PLAN.to_string(),
@@ -168,9 +166,10 @@ pub fn find_builtin(name: &str) -> Option<AgentSpec> {
     let lower = name.to_lowercase();
     let agent = match lower.as_str() {
         "build" => builtin::build(),
-        "plan" => builtin::plan(),
-        "explore" => builtin::explore(),
-        "general" => builtin::general(),
+        "reason" => builtin::reason(),
+        // Legacy aliases: sessions recorded before plan/explore/general were
+        // merged into `reason` still resolve to a valid agent.
+        "plan" | "explore" | "general" => builtin::reason(),
         "chat-free" | "chat_free" | "chatfree" => builtin::chat_free(),
         "cursor" => builtin::cursor(),
         "cursor_plan" | "cursor-plan" | "cursorplan" => builtin::cursor_plan(),
@@ -194,15 +193,46 @@ mod tests {
     }
 
     #[test]
-    fn test_explore_has_build_tools_except_write() {
-        let explore = builtin::explore();
-        assert!(explore.allows_tool("read"));
-        assert!(explore.allows_tool("grep"));
-        assert!(explore.allows_tool("bash"));
-        assert!(explore.allows_tool("task"));
-        assert!(explore.allows_tool("remember"));
-        assert!(!explore.allows_tool("write"));
-        assert!(!explore.allows_tool("edit"));
+    fn test_reason_has_build_tools_except_write() {
+        let reason = builtin::reason();
+        assert!(reason.allows_tool("read"));
+        assert!(reason.allows_tool("grep"));
+        assert!(reason.allows_tool("bash"));
+        assert!(reason.allows_tool("task"));
+        assert!(reason.allows_tool("remember"));
+        assert!(!reason.allows_tool("write"));
+        assert!(!reason.allows_tool("edit"));
+    }
+
+    /// The reason prompt must frame planning as the *primary* task (it is the
+    /// dominant read-only use), and must keep the plan distinct from the todo
+    /// list — a todo list is progress tracking, not a deliverable.
+    #[test]
+    fn test_reason_prompt_prioritises_planning_over_todos() {
+        let prompt = builtin::reason().system_prompt;
+
+        // Planning is stated up front, not hedged behind a conditional.
+        assert!(
+            prompt.contains("your final answer is the plan itself"),
+            "reason must declare the plan as its deliverable"
+        );
+        // The plan/todo distinction is explicit.
+        assert!(
+            prompt.contains("they are not the plan"),
+            "reason must separate the todo list from the plan"
+        );
+        // Research remains a secondary, still-supported case.
+        assert!(prompt.contains("cite file paths"));
+    }
+
+    /// `plan`/`explore`/`general` were merged into `reason`; the old names
+    /// must still resolve (sessions and transcripts persist them).
+    #[test]
+    fn test_legacy_mode_names_alias_reason() {
+        for legacy in ["plan", "explore", "general"] {
+            let spec = find_builtin(legacy).unwrap();
+            assert_eq!(spec.name, "reason", "{legacy} must alias reason");
+        }
     }
 
     /// Every non-build mode gets the full build toolset except file writing
@@ -227,7 +257,7 @@ mod tests {
             "git_diff",
             "git_log",
         ];
-        for name in ["plan", "explore", "general", "chat-free"] {
+        for name in ["reason", "chat-free"] {
             let spec = crate::harness::agent::find_builtin(name).unwrap();
             for m in file_writing {
                 assert!(!spec.allows_tool(m), "{name} must not allow {m}");
@@ -349,13 +379,7 @@ mod tests {
     fn test_default_temperature_per_mode() {
         // Builtins carry an explicit temperature override; `turn_temperature`
         // is the effective value used at runtime.
-        let cases = [
-            ("build", 0.0),
-            ("plan", 0.2),
-            ("explore", 0.5),
-            ("general", 0.7),
-            ("chat-free", 0.8),
-        ];
+        let cases = [("build", 0.0), ("reason", 0.3), ("chat-free", 0.8)];
         for (name, expected) in cases {
             let spec = find_builtin(name).unwrap();
             assert!(
@@ -380,11 +404,11 @@ mod tests {
 
     #[test]
     fn test_turn_temperature_override_wins() {
-        let mut custom = find_builtin("explore").unwrap();
+        let mut custom = find_builtin("reason").unwrap();
         custom.temperature = Some(1.0);
         assert!((custom.turn_temperature() - 1.0).abs() < 1e-6);
         // The explicit override wins over the builtin's own temperature.
-        assert!((find_builtin("explore").unwrap().turn_temperature() - 0.5).abs() < 1e-6);
+        assert!((find_builtin("reason").unwrap().turn_temperature() - 0.3).abs() < 1e-6);
         // `default_temperature` is only the fallback for agents without an
         // override; it is not the per-mode calibration anymore.
         assert_eq!(custom.default_temperature(), 0.0);

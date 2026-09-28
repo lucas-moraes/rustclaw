@@ -4,9 +4,9 @@ use super::AgentSpec;
 use std::collections::HashMap;
 
 pub const BUILD: &str = "build";
-pub const PLAN: &str = "plan";
-pub const EXPLORE: &str = "explore";
-pub const GENERAL: &str = "general";
+/// Unified read-only reasoning agent (merges the former `plan`, `explore`
+/// and `general` modes).
+pub const REASON: &str = "reason";
 pub const CHAT_FREE: &str = "chat-free";
 pub const CURSOR: &str = "cursor";
 /// Agent name used when the Cursor CLI serves plan mode.
@@ -14,7 +14,7 @@ pub const CURSOR_PLAN: &str = "cursor_plan";
 
 /// All build-mode tools except the file-writing ones (`write`/`edit`).
 ///
-/// Used by plan/explore/general/chat-free so they get the full build
+/// Used by reason/chat-free so they get the full build
 /// capability set (bash, task, question, remember, todo_write, git, ...)
 /// without being able to modify project files directly.
 const BUILD_TOOLS_NO_WRITE: &[&str] = &[
@@ -101,63 +101,35 @@ After the tool returns, relay its plan to the user."
     }
 }
 
-/// Planning agent: analysis and design with the full build toolset, but no
-/// direct file writing (write/edit are excluded).
-pub fn plan() -> AgentSpec {
+/// Unified read-only reasoning agent: analysis, design, codebase research
+/// and general assistance, all with the full build toolset except direct
+/// file writing (write/edit are excluded).
+///
+/// Merges the former `plan` (0.2), `explore` (0.5) and `general` (0.7)
+/// modes into one agent calibrated at 0.3 — low enough to keep file paths
+/// and APIs faithful, high enough that prose doesn't come out stilted.
+pub fn reason() -> AgentSpec {
     AgentSpec {
-        name: PLAN.into(),
-        description:
-            "Plans and designs solutions. Full build tool access except file writing (write/edit)."
-                .into(),
-        tools: BUILD_TOOLS_NO_WRITE.iter().map(|s| s.to_string()).collect(),
-        system_prompt: "You are RustClaw in planning mode. Explore the codebase (read/glob/grep/\
-ast_search), understand requirements, and produce a concrete step-by-step plan using the todo \
-tools. You have access to most build tools — you can run commands (bash), ask the user \
-(question), delegate research (task) and persist learnings (remember) — but you cannot write \
-or edit files directly (write/edit are disabled). Return the plan as your final answer with \
-clear, ordered steps."
-            .into(),
-        model: None,
-        temperature: Some(0.2),
-        permission_overrides: HashMap::new(),
-    }
-}
-
-/// Exploration subagent: fast research with the full build toolset, but no
-/// direct file writing. Returns summaries.
-pub fn explore() -> AgentSpec {
-    AgentSpec {
-        name: EXPLORE.into(),
-        description: "Research agent for codebase exploration via the task tool. Full build tool access except file writing."
+        name: REASON.into(),
+        description: "Read-only reasoning agent: plans, researches and answers. Full build tool access except file writing (write/edit)."
             .into(),
         tools: BUILD_TOOLS_NO_WRITE.iter().map(|s| s.to_string()).collect(),
-        system_prompt: "You are an exploration agent. Research the codebase quickly using \
-read/glob/grep and answer the given question with a concise, factual summary. \
-Cite file paths. You have access to most build tools (bash, task, question, remember) but \
-cannot write or edit files directly (write/edit are disabled). \
-To map or inspect symbol definitions (structs, enums, traits, functions, impls) in .rs \
-files, prefer the ast_search tool — it extracts exactly the blocks you need without \
-reading whole files."
+        system_prompt: "You are RustClaw in reasoning mode. You explore, analyse and plan — you \
+do not modify project files (write/edit are disabled). \
+Explore the codebase with read/glob/grep/ast_search and understand the requirements first. \
+When asked to plan, your final answer is the plan itself: write it as prose with ordered steps, \
+each naming the files involved and the reason for the change. The todo tools track progress — \
+they are not the plan, so never reply with just a todo list. \
+When asked to research something, answer with a concise, factual summary and cite file paths. \
+For general questions, answer directly. \
+You can run commands (bash), ask the user (question), delegate research (task) and persist \
+learnings (remember). \
+To inspect a symbol definition (struct, enum, trait, function, impl) in a .rs file, prefer the \
+ast_search tool over reading the whole file — it extracts exactly the block you need without \
+loading the full source into context."
             .into(),
         model: None,
-        temperature: Some(0.5),
-        permission_overrides: HashMap::new(),
-    }
-}
-
-/// General chat agent: full build toolset except file writing, conversational.
-pub fn general() -> AgentSpec {
-    AgentSpec {
-        name: GENERAL.into(),
-        description: "General-purpose assistant with full build tool access except file writing."
-            .into(),
-        tools: BUILD_TOOLS_NO_WRITE.iter().map(|s| s.to_string()).collect(),
-        system_prompt: "You are RustClaw, a helpful assistant. You can inspect the project with \
-read/glob/grep, run commands (bash), delegate research (task) and ask the user (question), but \
-you cannot write or edit files directly (write/edit are disabled). Keep answers direct and useful."
-            .into(),
-        model: None,
-        temperature: Some(0.7),
+        temperature: Some(0.3),
         permission_overrides: HashMap::new(),
     }
 }

@@ -94,7 +94,7 @@ pub(crate) async fn handle_session_cmd(
             if arg.is_empty() {
                 out.push(format!("current agent: {}", session.agent));
                 let mut names: Vec<String> = runtime.custom_agents.keys().cloned().collect();
-                for b in ["build", "plan", "explore", "general", "chat-free"] {
+                for b in ["build", "reason", "chat-free"] {
                     if !runtime.custom_agents.contains_key(b) {
                         names.push(b.to_string());
                     }

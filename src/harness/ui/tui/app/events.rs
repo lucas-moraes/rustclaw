@@ -131,7 +131,7 @@ impl App {
                 // A `task` call opens a live subagent panel. The spawned
                 // subagent runs one level deeper than the caller.
                 if name == "task" {
-                    let agent = input["agent"].as_str().unwrap_or("explore").to_string();
+                    let agent = input["agent"].as_str().unwrap_or("reason").to_string();
                     self.subagent_panels.push((
                         String::new(), // tool_id unknown here; matched on ToolEnd
                         SubagentPanel {

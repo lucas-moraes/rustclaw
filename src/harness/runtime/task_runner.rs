@@ -20,13 +20,21 @@ pub struct TaskRunner {
 
 /// Resolves the effective subagent agent given whether the parent allows file
 /// writes. When writes are not allowed, a requested `build` subagent is
-/// demoted to `general` (same toolset minus write/edit) so subagents can
+/// demoted to `reason` (same toolset minus write/edit) so subagents can
 /// never edit files when the root agent isn't `build`.
 pub(crate) fn resolve_subagent_agent(allow_write: bool, requested: &str) -> &str {
-    if !allow_write && requested == crate::harness::agent::builtin::BUILD {
-        crate::harness::agent::builtin::GENERAL
-    } else {
-        requested
+    use crate::harness::agent::builtin::{BUILD, REASON};
+
+    // `build` is demoted to `reason` when writing is disabled.
+    if !allow_write && requested == BUILD {
+        return REASON;
+    }
+
+    // Normalise the merged-away mode names so subagent panels and events show
+    // `reason` rather than a name that no longer exists in MODES.
+    match requested {
+        "plan" | "explore" | "general" => REASON,
+        _ => requested,
     }
 }
 
@@ -39,8 +47,12 @@ impl SubagentRunner for TaskRunner {
         events: crate::harness::event::EventSender,
         depth: usize,
     ) -> Result<TaskOutcome, String> {
-        // Resolve agent to allow "explore" by default.
-        let agent = if agent.is_empty() { "explore" } else { &agent };
+        // Resolve agent to allow "reason" by default.
+        let agent = if agent.is_empty() {
+            crate::harness::agent::builtin::REASON
+        } else {
+            &agent
+        };
         // Demote `build` subagents when the root agent can't write files.
         let agent = resolve_subagent_agent(self.allow_write, agent);
         let mut child = self

@@ -37,7 +37,7 @@ impl App {
         } = ev
         {
             if name == "task" {
-                let agent = input["agent"].as_str().unwrap_or("explore").to_string();
+                let agent = input["agent"].as_str().unwrap_or("reason").to_string();
                 self.subagent_panels.push((
                     String::new(),
                     SubagentPanel {

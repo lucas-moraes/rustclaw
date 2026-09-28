@@ -393,9 +393,9 @@ impl SessionRuntime {
         if self.config.cursor_agent && name == crate::harness::agent::builtin::BUILD {
             return crate::harness::agent::builtin::cursor();
         }
-        // Same for the `plan` mode: served by `cursor_plan` (read-only) when
-        // `cursor_plan` is on. Native plan stays reachable by name.
-        if self.config.cursor_plan && name == crate::harness::agent::builtin::PLAN {
+        // Same for the `reason` mode: served by `cursor_plan` (read-only) when
+        // `cursor_plan` is on. Native reason stays reachable by name.
+        if self.config.cursor_plan && name == crate::harness::agent::builtin::REASON {
             return crate::harness::agent::builtin::cursor_plan();
         }
         crate::harness::agent::find_builtin(name)

@@ -244,14 +244,13 @@ impl Theme {
         Style::default().fg(self.error).add_modifier(Modifier::BOLD)
     }
 
-    /// Accent color per agent mode: build=blue, plan=yellow, explore=orange,
-    /// general=purple, chat-free=teal. `None` for agents outside the MODES cycle.
+    /// Accent color per agent mode: build=blue, reason=amber, chat-free=teal.
+    /// `None` for agents outside the MODES cycle. The legacy `plan`/`explore`/
+    /// `general` names map to the reason accent so old sessions still color.
     pub fn mode_accent(agent: &str) -> Option<Color> {
         match agent {
             "build" => Some(Color::Rgb(70, 150, 255)),
-            "plan" => Some(Color::Rgb(255, 210, 70)),
-            "explore" => Some(Color::Rgb(255, 150, 60)),
-            "general" => Some(Color::Rgb(185, 120, 255)),
+            "reason" | "plan" | "explore" | "general" => Some(Color::Rgb(255, 190, 90)),
             "chat-free" => Some(Color::Rgb(60, 200, 180)),
             _ => None,
         }
@@ -261,9 +260,7 @@ impl Theme {
     pub fn mode_accent_light(agent: &str) -> Option<Color> {
         match agent {
             "build" => Some(Color::Rgb(0, 90, 200)),
-            "plan" => Some(Color::Rgb(170, 110, 0)),
-            "explore" => Some(Color::Rgb(190, 80, 0)),
-            "general" => Some(Color::Rgb(110, 60, 190)),
+            "reason" | "plan" | "explore" | "general" => Some(Color::Rgb(150, 95, 0)),
             "chat-free" => Some(Color::Rgb(0, 130, 120)),
             _ => None,
         }
@@ -325,15 +322,11 @@ mod tests {
     #[test]
     fn test_mode_accent_mapping() {
         assert_eq!(Theme::mode_accent("build"), Some(Color::Rgb(70, 150, 255)));
-        assert_eq!(Theme::mode_accent("plan"), Some(Color::Rgb(255, 210, 70)));
-        assert_eq!(
-            Theme::mode_accent("explore"),
-            Some(Color::Rgb(255, 150, 60))
-        );
-        assert_eq!(
-            Theme::mode_accent("general"),
-            Some(Color::Rgb(185, 120, 255))
-        );
+        assert_eq!(Theme::mode_accent("reason"), Some(Color::Rgb(255, 190, 90)));
+        // Legacy names must keep resolving to the reason accent.
+        for legacy in ["plan", "explore", "general"] {
+            assert_eq!(Theme::mode_accent(legacy), Theme::mode_accent("reason"));
+        }
         assert_eq!(
             Theme::mode_accent("chat-free"),
             Some(Color::Rgb(60, 200, 180))

@@ -34,4 +34,4 @@ pub use undo::copy_to_clipboard;
 
 /// Modes cycled by the prompt mode selector (like opencode's primary agents).
 /// `general` stays available via `/agent general` and the palette.
-pub const MODES: &[&str] = &["build", "plan", "explore", "general", "chat-free"];
+pub const MODES: &[&str] = &["build", "reason", "chat-free"];
