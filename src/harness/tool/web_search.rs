@@ -11,9 +11,14 @@
 //! - F5: User-Agent rotation (modern desktop browsers only)
 //! - F9: in-memory result cache (never caches empty/error responses)
 //! - F10: diagnostic logging of failures/blocks
-//! - F11: multiple providers (DDG HTML, DDG Lite, Mojeek) with wide fallback
-//!   (HTTP error, block detection, or 0 parsed results) and per-provider
-//!   cooldown after rate-limit failures.
+//! - F11: multiple providers (Tavily, DDG HTML, DDG Lite, Mojeek) with wide
+//!   fallback (HTTP error, block detection, or 0 parsed results) and
+//!   per-provider cooldown after rate-limit failures.
+//! - F12: Tavily is always registered as the primary engine; its API key is
+//!   resolved at use time (so `/auth tavily <key>` applies without restart).
+//!   Without a key the provider is skipped up-front (no retry, no cooldown)
+//!   and the HTML scrapers take over; the winning engine is reported in the
+//!   result footer.
 
 use scraper::{Html, Selector};
 use serde_json::{json, Value};
@@ -116,6 +121,9 @@ enum FailureKind {
     Blocked,
     /// Page fetched fine but the parser extracted 0 results.
     Empty,
+    /// F12: the provider needs an API key and none is configured. Never
+    /// triggers a cooldown (it is a configuration state, not a failure).
+    NoKey,
 }
 
 /// F11.1: a single search provider (HTML scraping, no API key).
@@ -252,7 +260,9 @@ impl SearchProvider for TavilyProvider {
         _ua: &str,
         api_key: Option<&str>,
     ) -> Result<Vec<SearchResult>, FailureKind> {
-        let key = api_key.ok_or(FailureKind::Http)?;
+        // F12: the facade short-circuits keyless Tavily before calling here;
+        // this guard is a safety net and must not be treated as a real failure.
+        let key = api_key.ok_or(FailureKind::NoKey)?;
         let body = serde_json::json!({
             "query": query,
             "max_results": 10,
@@ -303,39 +313,61 @@ pub struct WebSearchTool {
 struct CacheEntry {
     inserted: Instant,
     results: Vec<SearchResult>,
+    /// F12: engine that produced these results (reported on cache hits).
+    provider: ProviderId,
 }
 
 /// Resolves the Tavily API key: env var `TAVILY_API_KEY` wins, then the
 /// `tavily` entry in `auth.json` (set via `/auth tavily <key>`).
 fn resolve_tavily_key() -> Option<String> {
+    resolve_tavily_key_from(&crate::harness::auth::AuthStore::path())
+}
+
+/// Same as [`resolve_tavily_key`], but reads the auth store from an explicit
+/// path. Split out so tests can isolate the store in a temp dir without
+/// mutating the process-wide `RUSTCLAW_HOME` env var.
+fn resolve_tavily_key_from(auth_path: &std::path::Path) -> Option<String> {
     if let Ok(k) = std::env::var("TAVILY_API_KEY") {
         let k = k.trim().to_string();
         if !k.is_empty() {
             return Some(k);
         }
     }
-    crate::harness::auth::AuthStore::load()
-        .get_key("tavily")
+    crate::harness::auth::AuthStore::load_from(auth_path)
+        .ok()
+        .and_then(|store| store.get_key("tavily"))
         .map(|k| k.trim().to_string())
         .filter(|k| !k.is_empty())
 }
 
+/// Whether a Tavily API key is available (env `TAVILY_API_KEY` or the
+/// `tavily` entry in `auth.json`).
+///
+/// Used by the startup warnings in the TUI and CLI: without a key
+/// `web_search` still works through the HTML fallback, but with lower
+/// quality. The key can be registered with `/auth tavily <key>`.
+pub fn tavily_configured() -> bool {
+    resolve_tavily_key().is_some()
+}
+
 impl WebSearchTool {
     pub fn new() -> Self {
-        // Tavily (keyed, JSON) is preferred when configured; the HTML
-        // scrapers remain as fallback. The key is resolved at use time so
-        // tokens saved via `/auth` mid-session take effect without restart.
-        let mut providers: Vec<Box<dyn SearchProvider>> = Vec::new();
-        if resolve_tavily_key().is_some() {
-            providers.push(Box::new(TavilyProvider));
-        }
-        providers.push(Box::new(DuckDuckGoProvider {
-            id: ProviderId::DdgHtml,
-        }));
-        providers.push(Box::new(DuckDuckGoProvider {
-            id: ProviderId::DdgLite,
-        }));
-        providers.push(Box::new(MojeekProvider));
+        // F12: Tavily (keyed, JSON) is ALWAYS registered as the primary
+        // engine — the tool is built once at startup, so gating registration
+        // on the key would make a later `/auth tavily <key>` useless. The key
+        // is resolved at use time instead: without one the provider is
+        // skipped up-front (no retry, no cooldown) and the HTML scrapers
+        // below take over as explicit fallback.
+        let providers: Vec<Box<dyn SearchProvider>> = vec![
+            Box::new(TavilyProvider),
+            Box::new(DuckDuckGoProvider {
+                id: ProviderId::DdgHtml,
+            }),
+            Box::new(DuckDuckGoProvider {
+                id: ProviderId::DdgLite,
+            }),
+            Box::new(MojeekProvider),
+        ];
 
         Self {
             last_request: Arc::new(tokio::sync::Mutex::new(None)),
@@ -361,8 +393,9 @@ impl Tool for WebSearchTool {
     }
 
     fn description(&self) -> &str {
-        "Pesquisa na web por documentação atualizada, crates de Rust, artigos \
-técnicos ou resoluções de erros de compilação."
+        "Pesquisa na web (motor Tavily; fallback HTML) por documentação \
+atualizada, crates de Rust, artigos técnicos ou resoluções de erros de \
+compilação."
     }
 
     fn parameters(&self) -> Value {
@@ -420,9 +453,9 @@ técnicos ou resoluções de erros de compilação."
         let cache_key = normalize_cache_key(&full_query, max_results);
 
         // F9: check cache before hitting the network.
-        if let Some(results) = self.cache_get(&cache_key).await {
+        if let Some((results, provider)) = self.cache_get(&cache_key).await {
             tracing::debug!(query = %preview(query, 40), "web_search cache hit");
-            return Ok(render_results(&full_query, &results, max_results));
+            return Ok(render_results(&full_query, &results, max_results, provider));
         }
 
         // F1.2: acquire the concurrency permit (serializes concurrent searches).
@@ -455,6 +488,15 @@ técnicos ou resoluções de erros de compilação."
                     provider = provider.id().name(),
                     "web_search skipping provider in cooldown"
                 );
+                continue;
+            }
+
+            // F12: Tavily is always registered, but without a key there is
+            // nothing to try — skip it up-front (no retry, no cooldown) so a
+            // keyless machine does not burn the backoff sleeps.
+            if provider.id() == ProviderId::Tavily && resolve_tavily_key().is_none() {
+                tracing::debug!("web_search skipping tavily: no api key");
+                last_failure = Some((provider.id(), FailureKind::NoKey));
                 continue;
             }
 
@@ -495,7 +537,8 @@ técnicos ou resoluções de erros de compilação."
                 match result {
                     Ok(results) => {
                         // F9: cache only successful, non-empty results.
-                        self.cache_put(&cache_key, results.clone()).await;
+                        self.cache_put(&cache_key, results.clone(), provider.id())
+                            .await;
                         break Ok(results);
                     }
                     Err(kind) => {
@@ -520,11 +563,17 @@ técnicos ou resoluções de erros de compilação."
 
             match outcome {
                 Ok(results) => {
-                    return Ok(render_results(&full_query, &results, max_results));
+                    return Ok(render_results(
+                        &full_query,
+                        &results,
+                        max_results,
+                        provider.id(),
+                    ));
                 }
                 Err(kind) => {
                     // F11.4: rate-limit/block failures put the provider in
-                    // cooldown so subsequent searches skip it.
+                    // cooldown so subsequent searches skip it. F12: a missing
+                    // key is a configuration state, never a cooldown trigger.
                     let blocked = matches!(kind, FailureKind::Blocked);
                     if blocked {
                         self.set_cooldown(provider.id()).await;
@@ -559,6 +608,11 @@ alguns instantes ou reformule a consulta.",
             FailureKind::Http => Err(format!(
                 "Falha na busca web: todos os provedores retornaram erro HTTP \
 (último: {}). Verifique a conexão e tente novamente.",
+                pid.name()
+            )),
+            FailureKind::NoKey => Err(format!(
+                "Falha na busca web: o provedor {} requer uma API key e nenhuma \
+está configurada (use `/auth tavily <key>`).",
                 pid.name()
             )),
         }
@@ -612,7 +666,7 @@ impl WebSearchTool {
 
     /// F9: returns cached results for `key` if present and not expired.
     /// Lazily removes expired entries.
-    async fn cache_get(&self, key: &str) -> Option<Vec<SearchResult>> {
+    async fn cache_get(&self, key: &str) -> Option<(Vec<SearchResult>, ProviderId)> {
         let mut cache = self.cache.lock().await;
         // F9.2: lazy cleanup of expired entries.
         cache.retain(|_, e| e.inserted.elapsed() < CACHE_TTL);
@@ -621,12 +675,12 @@ impl WebSearchTool {
             cache.remove(key);
             return None;
         }
-        Some(entry.results.clone())
+        Some((entry.results.clone(), entry.provider))
     }
 
     /// F9: stores results under `key` (only non-empty results are cached by
     /// the caller). Enforces the max entry count.
-    async fn cache_put(&self, key: &str, results: Vec<SearchResult>) {
+    async fn cache_put(&self, key: &str, results: Vec<SearchResult>, provider: ProviderId) {
         let mut cache = self.cache.lock().await;
         // F9.2: cap the cache size (drop oldest by insertion order).
         if cache.len() >= CACHE_MAX_ENTRIES && !cache.contains_key(key) {
@@ -643,6 +697,7 @@ impl WebSearchTool {
             CacheEntry {
                 inserted: Instant::now(),
                 results,
+                provider,
             },
         );
     }
@@ -881,9 +936,14 @@ fn normalize_cache_key(query: &str, max_results: usize) -> String {
     format!("{}|{}", query.trim().to_lowercase(), max_results)
 }
 
-/// Renders results as the model-facing text output, including the domain and
-/// (when available) the publication date.
-fn render_results(query: &str, results: &[SearchResult], max_results: usize) -> ToolResult {
+/// Renders results as the model-facing text output, including the domain,
+/// (when available) the publication date, and the engine that produced them.
+fn render_results(
+    query: &str,
+    results: &[SearchResult],
+    max_results: usize,
+    provider: ProviderId,
+) -> ToolResult {
     let mut body = String::new();
     for (i, r) in results.iter().take(max_results).enumerate() {
         let date = r
@@ -901,6 +961,8 @@ fn render_results(query: &str, results: &[SearchResult], max_results: usize) -> 
             r.snippet
         ));
     }
+    // F12: make the winning engine visible so fallbacks are diagnosable.
+    body.push_str(&format!("_Fonte: {}_\n", provider.name()));
     ToolResult::simple(format!("web_search {}", preview(query, 40)), body)
 }
 
@@ -981,6 +1043,43 @@ mod tests {
         assert_ne!(got.as_deref(), Some(""));
         assert_ne!(got.as_deref(), Some("   "));
         match prev {
+            Some(v) => std::env::set_var("TAVILY_API_KEY", v),
+            None => std::env::remove_var("TAVILY_API_KEY"),
+        }
+    }
+
+    #[test]
+    fn tavily_configured_true_with_env_key() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::var("TAVILY_API_KEY").ok();
+        // Use the path-injectable helper so the test never reads the
+        // process-wide RUSTCLAW_HOME (which other modules' tests mutate).
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let auth_path = tmp.path().join("auth.json");
+        std::env::set_var("TAVILY_API_KEY", "env-key-123");
+        assert_eq!(
+            resolve_tavily_key_from(&auth_path).as_deref(),
+            Some("env-key-123")
+        );
+        match prev {
+            Some(v) => std::env::set_var("TAVILY_API_KEY", v),
+            None => std::env::remove_var("TAVILY_API_KEY"),
+        }
+    }
+
+    #[test]
+    fn tavily_configured_false_without_env_or_auth() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev_key = std::env::var("TAVILY_API_KEY").ok();
+        // Isolate the auth store in an empty temp dir so the real machine's
+        // auth.json (which may hold a tavily key) is never consulted. We pass
+        // the path explicitly instead of mutating RUSTCLAW_HOME, which is
+        // process-wide and would race with other modules' tests.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let auth_path = tmp.path().join("auth.json");
+        std::env::remove_var("TAVILY_API_KEY");
+        assert!(resolve_tavily_key_from(&auth_path).is_none());
+        match prev_key {
             Some(v) => std::env::set_var("TAVILY_API_KEY", v),
             None => std::env::remove_var("TAVILY_API_KEY"),
         }
@@ -1179,6 +1278,72 @@ mod tests {
     }
 
     #[test]
+    fn test_tavily_always_registered_first() {
+        // F12: registration must not depend on the key — the tool is built
+        // once at startup, so a key added later via `/auth` must still work.
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::var("TAVILY_API_KEY").ok();
+        std::env::remove_var("TAVILY_API_KEY");
+
+        let tool = WebSearchTool::new();
+        let ids: Vec<ProviderId> = tool.providers.iter().map(|p| p.id()).collect();
+        assert_eq!(
+            ids,
+            vec![
+                ProviderId::Tavily,
+                ProviderId::DdgHtml,
+                ProviderId::DdgLite,
+                ProviderId::Mojeek
+            ]
+        );
+
+        match prev {
+            Some(v) => std::env::set_var("TAVILY_API_KEY", v),
+            None => std::env::remove_var("TAVILY_API_KEY"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_keyless_tavily_skipped_without_cooldown() {
+        // F12: without a key the Tavily provider is skipped up-front — no
+        // retry sleeps and, crucially, no cooldown applied.
+        //
+        // The env lock is a std Mutex, so it must not be held across an
+        // await: do the env manipulation + construction, then drop it.
+        let (tool, keyless) = {
+            let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let prev = std::env::var("TAVILY_API_KEY").ok();
+            std::env::remove_var("TAVILY_API_KEY");
+            let tool = WebSearchTool::new();
+            let keyless = resolve_tavily_key().is_none();
+            match prev {
+                Some(v) => std::env::set_var("TAVILY_API_KEY", v),
+                None => std::env::remove_var("TAVILY_API_KEY"),
+            }
+            (tool, keyless)
+        };
+
+        assert!(!tool.provider_in_cooldown(ProviderId::Tavily).await);
+
+        // The keyless guard in `execute` must leave the provider out of
+        // cooldown (NoKey is a config state, not a failure).
+        if keyless {
+            let provider = tool
+                .providers
+                .iter()
+                .find(|p| p.id() == ProviderId::Tavily)
+                .expect("tavily registered");
+            let client = reqwest::Client::new();
+            match provider.search(&client, "q", "test-ua", None).await {
+                Err(FailureKind::NoKey) => {}
+                Err(other) => panic!("expected NoKey, got {:?}", other),
+                Ok(_) => panic!("keyless tavily must not return results"),
+            }
+            assert!(!tool.provider_in_cooldown(ProviderId::Tavily).await);
+        }
+    }
+
+    #[test]
     fn test_parse_tavily() {
         let json = r#"{
             "query": "rust async",
@@ -1320,12 +1485,14 @@ mod tests {
             domain: "docs.rs".into(),
             date: None,
         }];
-        let out = render_results("tokio", &results, 8);
+        let out = render_results("tokio", &results, 8, ProviderId::DdgHtml);
         assert!(out.output.contains("docs.rs"));
         assert!(out.output.contains("Tokio"));
         assert!(out.output.contains("Domínio"));
         // No date → no "Data:" line.
         assert!(!out.output.contains("Data:"));
+        // F12: the winning engine is reported in the footer.
+        assert!(out.output.contains("_Fonte: ddg_html_"));
     }
 
     #[test]
@@ -1337,8 +1504,9 @@ mod tests {
             domain: "example.com".into(),
             date: Some("2 de jan. de 2026".into()),
         }];
-        let out = render_results("q", &results, 8);
+        let out = render_results("q", &results, 8, ProviderId::Tavily);
         assert!(out.output.contains("Data: 2 de jan. de 2026"));
+        assert!(out.output.contains("_Fonte: tavily_"));
     }
 
     #[test]
@@ -1352,10 +1520,11 @@ mod tests {
                 date: None,
             })
             .collect();
-        let out = render_results("q", &results, 3);
+        let out = render_results("q", &results, 3, ProviderId::Mojeek);
         assert!(out.output.contains("1. **T0**"));
         assert!(out.output.contains("3. **T2**"));
         assert!(!out.output.contains("4. **T3**"));
+        assert!(out.output.contains("_Fonte: mojeek_"));
     }
 
     #[test]
@@ -1378,10 +1547,13 @@ mod tests {
             domain: "example.com".into(),
             date: None,
         }];
-        tool.cache_put("key", results.clone()).await;
+        tool.cache_put("key", results.clone(), ProviderId::Tavily)
+            .await;
         let got = tool.cache_get("key").await;
         assert!(got.is_some());
-        assert_eq!(got.unwrap().len(), 1);
+        let (cached, provider) = got.unwrap();
+        assert_eq!(cached.len(), 1);
+        assert_eq!(provider, ProviderId::Tavily);
     }
 
     #[tokio::test]
@@ -1394,7 +1566,8 @@ mod tests {
     async fn test_cache_evicts_oldest_when_full() {
         let tool = WebSearchTool::new();
         for i in 0..(CACHE_MAX_ENTRIES + 5) {
-            tool.cache_put(&format!("k{}", i), vec![]).await;
+            tool.cache_put(&format!("k{}", i), vec![], ProviderId::DdgLite)
+                .await;
         }
         let cache = tool.cache.lock().await;
         assert!(cache.len() <= CACHE_MAX_ENTRIES);
