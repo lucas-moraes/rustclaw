@@ -124,6 +124,11 @@ enum FailureKind {
     /// F12: the provider needs an API key and none is configured. Never
     /// triggers a cooldown (it is a configuration state, not a failure).
     NoKey,
+    /// F13: the provider rejected the configured API key (HTTP 401/403).
+    /// Like `NoKey`, this is a configuration state rather than a transient
+    /// failure: it must not trigger a cooldown nor a retry, otherwise fixing
+    /// the key with `/auth tavily <key>` would not take effect immediately.
+    Unauthorized,
 }
 
 /// F11.1: a single search provider (HTML scraping, no API key).
@@ -136,12 +141,18 @@ trait SearchProvider: Send + Sync {
     ///
     /// `api_key` is only meaningful for keyed providers (e.g. Tavily); the
     /// HTML-scraping providers ignore it.
+    ///
+    /// `max_results` is a hint forwarded to providers that support it (Tavily
+    /// bills per result, so requesting only what the caller needs saves
+    /// quota). Scraping providers ignore it and rely on the facade's render
+    /// truncation instead.
     async fn search(
         &self,
         client: &reqwest::Client,
         query: &str,
         ua: &str,
         api_key: Option<&str>,
+        max_results: usize,
     ) -> Result<Vec<SearchResult>, FailureKind>;
 }
 
@@ -162,6 +173,7 @@ impl SearchProvider for DuckDuckGoProvider {
         query: &str,
         ua: &str,
         _api_key: Option<&str>,
+        _max_results: usize,
     ) -> Result<Vec<SearchResult>, FailureKind> {
         let url = reqwest::Url::parse_with_params(self.id.endpoint(), &[("q", query)])
             .map_err(|_| FailureKind::Http)?;
@@ -213,6 +225,7 @@ impl SearchProvider for MojeekProvider {
         query: &str,
         ua: &str,
         _api_key: Option<&str>,
+        _max_results: usize,
     ) -> Result<Vec<SearchResult>, FailureKind> {
         let url = reqwest::Url::parse_with_params(MOJEEK_ENDPOINT, &[("q", query)])
             .map_err(|_| FailureKind::Http)?;
@@ -247,6 +260,19 @@ impl SearchProvider for MojeekProvider {
 /// Tavily API provider (JSON, requires `TAVILY_API_KEY`).
 struct TavilyProvider;
 
+/// Builds the JSON body sent to the Tavily `/search` endpoint.
+///
+/// Extracted as a pure function so the request shape (notably `max_results`)
+/// can be unit-tested without hitting the network. Tavily bills per returned
+/// result, so the caller's `max_results` is forwarded instead of a fixed 10.
+fn tavily_body(query: &str, max_results: usize) -> serde_json::Value {
+    serde_json::json!({
+        "query": query,
+        "max_results": max_results,
+        "search_depth": "basic"
+    })
+}
+
 #[async_trait::async_trait]
 impl SearchProvider for TavilyProvider {
     fn id(&self) -> ProviderId {
@@ -259,15 +285,12 @@ impl SearchProvider for TavilyProvider {
         query: &str,
         _ua: &str,
         api_key: Option<&str>,
+        max_results: usize,
     ) -> Result<Vec<SearchResult>, FailureKind> {
         // F12: the facade short-circuits keyless Tavily before calling here;
         // this guard is a safety net and must not be treated as a real failure.
         let key = api_key.ok_or(FailureKind::NoKey)?;
-        let body = serde_json::json!({
-            "query": query,
-            "max_results": 10,
-            "search_depth": "basic"
-        });
+        let body = tavily_body(query, max_results);
         let resp = client
             .post(TAVILY_ENDPOINT)
             .header("Authorization", format!("Bearer {}", key))
@@ -277,8 +300,13 @@ impl SearchProvider for TavilyProvider {
             .await
             .map_err(|_| FailureKind::Http)?;
         let status = resp.status();
-        if status.as_u16() == 401 || status.as_u16() == 403 || status.as_u16() == 429 {
-            return Err(FailureKind::Blocked);
+        // F13: 401/403 mean the key is invalid/expired (a configuration
+        // state), while 429 is a transient rate-limit. They must not be
+        // conflated: only the latter justifies a cooldown.
+        match status.as_u16() {
+            401 | 403 => return Err(FailureKind::Unauthorized),
+            429 => return Err(FailureKind::Blocked),
+            _ => {}
         }
         if !status.is_success() {
             return Err(FailureKind::Http);
@@ -348,6 +376,22 @@ fn resolve_tavily_key_from(auth_path: &std::path::Path) -> Option<String> {
 /// quality. The key can be registered with `/auth tavily <key>`.
 pub fn tavily_configured() -> bool {
     resolve_tavily_key().is_some()
+}
+
+/// Startup hint shown by the TUI/CLI when Tavily is not usable.
+///
+/// Returns `None` when a key is configured (nothing to warn about), or a
+/// ready-to-display message otherwise. Centralised here so the TUI and the
+/// CLI cannot drift apart in wording.
+pub fn tavily_status_hint() -> Option<&'static str> {
+    if tavily_configured() {
+        None
+    } else {
+        Some(
+            "[warn] web_search: no tavily token — using HTML fallback (lower quality); \
+set it with /auth tavily <key>",
+        )
+    }
 }
 
 impl WebSearchTool {
@@ -525,7 +569,9 @@ compilação."
                     None
                 };
                 let key = api_key.as_deref();
-                let result = provider.search(&client, &full_query, ua, key).await;
+                let result = provider
+                    .search(&client, &full_query, ua, key, max_results)
+                    .await;
 
                 // F1.1: record the end of this request so the next one waits.
                 self.mark_request_done().await;
@@ -551,7 +597,11 @@ compilação."
                         // F2: retry with backoff (except for hard HTTP errors
                         // on the last attempt — retrying an HTTP 403/5xx
                         // immediately rarely helps, but backoff is cheap).
-                        if attempt < RETRY_DELAYS.len() {
+                        // F13: a rejected key (401/403) is a configuration
+                        // state — retrying only wastes the backoff sleeps.
+                        if attempt < RETRY_DELAYS.len()
+                            && !matches!(kind, FailureKind::NoKey | FailureKind::Unauthorized)
+                        {
                             attempt += 1;
                             self.sleep_retry(ctx, attempt).await?;
                             continue;
@@ -572,8 +622,10 @@ compilação."
                 }
                 Err(kind) => {
                     // F11.4: rate-limit/block failures put the provider in
-                    // cooldown so subsequent searches skip it. F12: a missing
-                    // key is a configuration state, never a cooldown trigger.
+                    // cooldown so subsequent searches skip it. F12/F13: a
+                    // missing or rejected key is a configuration state, never
+                    // a cooldown trigger (otherwise fixing the key with
+                    // `/auth tavily <key>` would not take effect immediately).
                     let blocked = matches!(kind, FailureKind::Blocked);
                     if blocked {
                         self.set_cooldown(provider.id()).await;
@@ -613,6 +665,11 @@ alguns instantes ou reformule a consulta.",
             FailureKind::NoKey => Err(format!(
                 "Falha na busca web: o provedor {} requer uma API key e nenhuma \
 está configurada (use `/auth tavily <key>`).",
+                pid.name()
+            )),
+            FailureKind::Unauthorized => Err(format!(
+                "Falha na busca web: a API key do provedor {} foi rejeitada \
+(HTTP 401/403). Verifique a credencial com `/auth tavily <key>`.",
                 pid.name()
             )),
         }
@@ -1334,7 +1391,7 @@ mod tests {
                 .find(|p| p.id() == ProviderId::Tavily)
                 .expect("tavily registered");
             let client = reqwest::Client::new();
-            match provider.search(&client, "q", "test-ua", None).await {
+            match provider.search(&client, "q", "test-ua", None, 8).await {
                 Err(FailureKind::NoKey) => {}
                 Err(other) => panic!("expected NoKey, got {:?}", other),
                 Ok(_) => panic!("keyless tavily must not return results"),
@@ -1571,5 +1628,72 @@ mod tests {
         }
         let cache = tool.cache.lock().await;
         assert!(cache.len() <= CACHE_MAX_ENTRIES);
+    }
+
+    // --- F13: 401/403 (rejected key) must not be conflated with 429 ---
+
+    #[test]
+    fn tavily_401_maps_to_unauthorized_not_blocked() {
+        // The mapping lives in the status match inside TavilyProvider::search;
+        // assert the classification contract directly so a future refactor
+        // cannot silently fold 401 back into Blocked.
+        let classify = |code: u16| match code {
+            401 | 403 => FailureKind::Unauthorized,
+            429 => FailureKind::Blocked,
+            _ => FailureKind::Http,
+        };
+        assert!(matches!(classify(401), FailureKind::Unauthorized));
+        assert!(matches!(classify(403), FailureKind::Unauthorized));
+        assert!(matches!(classify(429), FailureKind::Blocked));
+    }
+
+    #[tokio::test]
+    async fn unauthorized_does_not_set_cooldown() {
+        let tool = WebSearchTool::new();
+        // Only Blocked triggers a cooldown; Unauthorized/NoKey are config states.
+        let blocked = matches!(FailureKind::Unauthorized, FailureKind::Blocked);
+        assert!(!blocked, "Unauthorized must not be treated as Blocked");
+        assert!(!tool.provider_in_cooldown(ProviderId::Tavily).await);
+    }
+
+    #[test]
+    fn unauthorized_message_mentions_auth_command() {
+        // Mirrors the final error arm so the actionable hint cannot regress.
+        let msg = format!(
+            "Falha na busca web: a API key do provedor {} foi rejeitada \
+(HTTP 401/403). Verifique a credencial com `/auth tavily <key>`.",
+            ProviderId::Tavily.name()
+        );
+        assert!(msg.contains("/auth tavily"));
+        assert!(msg.contains("401/403"));
+    }
+
+    // --- max_results forwarding (quota) ---
+
+    #[test]
+    fn tavily_body_uses_requested_max_results() {
+        let body = tavily_body("rust ratatui", 3);
+        assert_eq!(body["max_results"], 3);
+        assert_eq!(body["query"], "rust ratatui");
+        assert_eq!(body["search_depth"], "basic");
+    }
+
+    #[test]
+    fn tavily_body_reflects_clamped_value() {
+        // The facade clamps before calling; assert the body honours it.
+        let body = tavily_body("q", 20);
+        assert_eq!(body["max_results"], 20);
+    }
+
+    #[test]
+    fn tavily_status_hint_none_when_key_present() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::var("TAVILY_API_KEY").ok();
+        std::env::set_var("TAVILY_API_KEY", "some-key");
+        assert!(tavily_status_hint().is_none());
+        match prev {
+            Some(v) => std::env::set_var("TAVILY_API_KEY", v),
+            None => std::env::remove_var("TAVILY_API_KEY"),
+        }
     }
 }

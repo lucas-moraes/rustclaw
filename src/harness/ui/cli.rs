@@ -292,10 +292,8 @@ pub async fn run(config: crate::config::RuntimeConfig, cwd: std::path::PathBuf) 
 
     // Warn (non-fatally) when the tavily tool service has no token: web_search
     // still works via the HTML fallback, but with lower quality. `/auth` sets it.
-    if !crate::harness::tool::web_search::tavily_configured() {
-        eprintln!(
-            "[warn] web_search: no tavily token — using HTML fallback (lower quality); set it with /auth"
-        );
+    if let Some(hint) = crate::harness::tool::web_search::tavily_status_hint() {
+        eprintln!("{}", hint);
     }
 
     println!(

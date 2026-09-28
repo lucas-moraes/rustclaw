@@ -1,26 +1,26 @@
 {
   "permission": {
     "tools": {
-      "bash": "allow",
-      "write": "allow",
-      "diagnostics": "allow",
-      "todo_read": "allow",
-      "question": "allow",
-      "cursor_plan": "allow",
-      "fetch_webpage": "allow",
-      "grep": "allow",
-      "web_search": "allow",
-      "todo_write": "allow",
       "glob": "allow",
-      "git_log": "allow",
+      "question": "allow",
+      "bash": "allow",
+      "todo_read": "allow",
+      "grep": "allow",
       "edit": "allow",
-      "remember": "allow",
-      "task": "allow",
-      "git_status": "allow",
       "git_diff": "allow",
-      "read": "allow",
+      "remember": "allow",
       "ast_search": "allow",
-      "cursor": "allow"
+      "task": "allow",
+      "fetch_webpage": "allow",
+      "todo_write": "allow",
+      "cursor": "allow",
+      "write": "allow",
+      "web_search": "allow",
+      "git_status": "allow",
+      "read": "allow",
+      "diagnostics": "allow",
+      "cursor_plan": "allow",
+      "git_log": "allow"
     },
     "default": null
   }

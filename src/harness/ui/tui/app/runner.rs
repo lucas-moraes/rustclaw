@@ -82,9 +82,8 @@ pub async fn run_tui(
 
     // Warn (non-fatally) when the tavily tool service has no token: web_search
     // still works via the HTML fallback, but with lower quality. `/auth` sets it.
-    if !crate::harness::tool::web_search::tavily_configured() {
-        app.add_system("[warn] web_search: no tavily token — using HTML fallback (lower quality)");
-        app.add_system("[warn] run /auth to add a tavily key");
+    if let Some(hint) = crate::harness::tool::web_search::tavily_status_hint() {
+        app.add_system(hint);
     }
 
     // Auto-compact oversized sessions on open so the first turn doesn't start
