@@ -4,7 +4,7 @@ use crate::harness::ui::tui::theme::Theme;
 use anyhow::Result;
 use crossterm::event::KeyEvent;
 
-use super::state::{AddProviderForm, App, ModelPickerState, ResumePickerState};
+use super::state::{AddProviderForm, App, AuthPromptState, ModelPickerState, ResumePickerState};
 use super::undo::paste_clipboard;
 
 pub(crate) fn handle_skill_picker_key(app: &mut App, key: KeyEvent) -> Result<bool> {
@@ -585,6 +585,20 @@ pub(crate) fn handle_auth_prompt_key(app: &mut App, key: KeyEvent) -> Result<boo
                 store.set_key(&provider, token.clone());
                 match store.save() {
                     Ok(()) => {
+                        let is_tool_service = crate::harness::ui::tui::app::state::TOOL_SERVICES
+                            .iter()
+                            .any(|s| s.eq_ignore_ascii_case(&provider));
+                        if is_tool_service {
+                            // Tool services (e.g. tavily) are not LLM
+                            // providers: never point the model runtime at
+                            // them.
+                            app.add_system(&format!(
+                                "token saved for service `{}` (auth.json, 0600) — \
+                                 will be validated on first use",
+                                provider
+                            ));
+                            return Ok(false);
+                        }
                         // Point the runtime at this provider and rebuild the
                         // provider so the freshly saved token is live. This
                         // also force-enables the prompt (`is_configured`).
@@ -599,7 +613,7 @@ pub(crate) fn handle_auth_prompt_key(app: &mut App, key: KeyEvent) -> Result<boo
                         }
                         app.runtime.config.api_key = token.clone();
                         app.add_system(&format!(
-                            "token saved for provider `{}` (auth.json, 0600){}",
+                            "token saved for model provider `{}` (auth.json, 0600){}",
                             provider,
                             if app.runtime.config.is_configured() {
                                 " — ready to go"
@@ -618,6 +632,53 @@ pub(crate) fn handle_auth_prompt_key(app: &mut App, key: KeyEvent) -> Result<boo
         KeyCode::Char('v') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             if let Some(pasted) = paste_clipboard() {
                 prompt.input.push_str(&pasted);
+            }
+        }
+        _ => {}
+    }
+    Ok(false)
+}
+
+/// Key handler for the `/auth` picker (choose which token to set).
+pub(crate) fn handle_auth_picker_key(app: &mut App, key: KeyEvent) -> Result<bool> {
+    use crossterm::event::KeyCode;
+    let Some(picker) = app.auth_picker.as_mut() else {
+        return Ok(false);
+    };
+    if picker.items.is_empty() {
+        app.auth_picker = None;
+        return Ok(false);
+    }
+
+    match key.code {
+        KeyCode::Up | KeyCode::Char('k') => picker.move_sel(-1),
+        KeyCode::Down | KeyCode::Char('j') => picker.move_sel(1),
+        KeyCode::PageUp => picker.move_sel(-10),
+        KeyCode::PageDown => picker.move_sel(10),
+        KeyCode::Esc => {
+            app.auth_picker = None;
+        }
+        KeyCode::Enter => {
+            let name = picker.items[picker.selected].name.clone();
+            app.auth_picker = None;
+            app.auth_prompt = Some(AuthPromptState::new(&name));
+        }
+        // `d` deletes the token of the selected item immediately.
+        KeyCode::Char('d') => {
+            let item = &picker.items[picker.selected];
+            if item.has_token {
+                let name = item.name.clone();
+                let mut store = crate::harness::auth::AuthStore::load();
+                let removed = store.remove_key(&name);
+                if removed {
+                    if let Err(e) = store.save() {
+                        app.add_system(&format!("[error] failed to save auth store: {}", e));
+                    }
+                }
+                app.auth_picker = Some(crate::harness::ui::tui::app::state::AuthPickerState::new());
+                if removed {
+                    app.add_system(&format!("token removed for `{}`", name));
+                }
             }
         }
         _ => {}

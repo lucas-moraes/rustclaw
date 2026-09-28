@@ -5,6 +5,18 @@
 use crate::harness::runtime::SessionRuntime;
 use anyhow::Result;
 
+/// Tool services that authenticate with a token (not model providers).
+const TOOL_SERVICES: &[&str] = &["tavily"];
+
+/// `✓` when a token is stored, `✗` otherwise.
+fn mark(present: bool) -> &'static str {
+    if present {
+        "✓"
+    } else {
+        "✗"
+    }
+}
+
 pub(crate) async fn handle_provider_cmd(
     runtime: &mut SessionRuntime,
     cmd: &str,
@@ -179,6 +191,25 @@ pub(crate) async fn handle_provider_cmd(
         }
         "/auth" => {
             use crate::harness::auth::AuthStore;
+            // `/auth --remove <provider>` deletes the stored token.
+            let mut parts = arg.split_whitespace();
+            if parts.next() == Some("--remove") {
+                let name = parts.next().unwrap_or("");
+                if name.is_empty() {
+                    out.push("usage: /auth --remove <provider>".to_string());
+                } else {
+                    let mut store = AuthStore::load();
+                    if store.remove_key(name) {
+                        match store.save() {
+                            Ok(()) => out.push(format!("token removed for `{}`", name)),
+                            Err(e) => out.push(format!("[error] failed to save auth store: {}", e)),
+                        }
+                    } else {
+                        out.push(format!("no token stored for `{}`", name));
+                    }
+                }
+                return Ok(());
+            }
             // No argument → update the token for the current provider/model.
             let provider = if arg.is_empty() {
                 runtime.config.provider.clone()
@@ -186,13 +217,49 @@ pub(crate) async fn handle_provider_cmd(
                 arg.to_string()
             };
             if provider.is_empty() {
+                use crate::harness::provider::catalog;
                 let store = AuthStore::load();
-                let names = store.entries.keys().cloned().collect::<Vec<_>>();
-                out.push("usage: /auth <provider> — stored providers:".to_string());
-                if names.is_empty() {
-                    out.push("  (none)".to_string());
-                } else {
-                    out.push(format!("  {}", names.join(", ")));
+                out.push(
+                    "usage: /auth [provider] — shows/sets tokens; re-running overwrites. \
+                     /auth --remove <provider> deletes a token."
+                        .to_string(),
+                );
+
+                let model_providers = catalog::provider_names();
+                out.push("model providers:".to_string());
+                for name in &model_providers {
+                    out.push(format!(
+                        "  {} {}",
+                        mark(store.get_key(name).is_some()),
+                        name
+                    ));
+                }
+
+                out.push("tool services:".to_string());
+                for name in TOOL_SERVICES {
+                    out.push(format!(
+                        "  {} {}",
+                        mark(store.get_key(name).is_some()),
+                        name
+                    ));
+                }
+
+                // Tokens that belong to neither a model provider nor a known
+                // tool service (e.g. leftovers from a removed provider).
+                let mut others: Vec<&String> = store
+                    .entries
+                    .keys()
+                    .filter(|k| {
+                        !model_providers.iter().any(|p| p.eq_ignore_ascii_case(k))
+                            && !TOOL_SERVICES.iter().any(|s| s.eq_ignore_ascii_case(k))
+                    })
+                    .collect();
+                if !others.is_empty() {
+                    others.sort();
+                    out.push("other stored tokens:".to_string());
+                    for name in others {
+                        out.push(format!("  ✓ {}", name));
+                    }
                 }
             } else {
                 // Prompt goes straight to stdout so it shows before blocking on input.
@@ -213,10 +280,23 @@ pub(crate) async fn handle_provider_cmd(
                     let mut store = AuthStore::load();
                     store.set_key(&provider, key.trim());
                     match store.save() {
-                        Ok(()) => out.push(format!(
-                            "token saved for `{}` (auth.json, chmod 600)",
-                            provider
-                        )),
+                        Ok(()) => {
+                            out.push(format!(
+                                "token saved for {} `{}` (auth.json, chmod 600)",
+                                if TOOL_SERVICES
+                                    .iter()
+                                    .any(|s| s.eq_ignore_ascii_case(&provider))
+                                {
+                                    "service"
+                                } else {
+                                    "model provider"
+                                },
+                                provider
+                            ));
+                            if provider == "tavily" {
+                                out.push(validate_tavily_key(key.trim()).await);
+                            }
+                        }
                         Err(e) => out.push(format!("[error] failed to save token: {}", e)),
                     }
                 }
@@ -229,4 +309,43 @@ pub(crate) async fn handle_provider_cmd(
         _ => unreachable!("handle_provider_cmd called with unknown cmd: {}", cmd),
     }
     Ok(())
+}
+
+/// Pings the Tavily API to check whether `key` is valid. Informational only:
+/// the key is already saved regardless of the outcome.
+async fn validate_tavily_key(key: &str) -> String {
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => return format!("[warn] could not build HTTP client to validate key: {}", e),
+    };
+    let body = serde_json::json!({ "query": "ping", "max_results": 1 });
+    match client
+        .post("https://api.tavily.com/search")
+        .header("Authorization", format!("Bearer {}", key))
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .await
+    {
+        Ok(resp) => {
+            let status = resp.status();
+            if status.is_success() {
+                "✓ tavily key validated (API responded 200)".to_string()
+            } else if status.as_u16() == 401 || status.as_u16() == 403 {
+                format!(
+                    "[warn] tavily rejected the key (HTTP {}) — check it and re-run /auth tavily",
+                    status.as_u16()
+                )
+            } else {
+                format!(
+                    "[warn] tavily returned HTTP {} — key saved but unverified",
+                    status.as_u16()
+                )
+            }
+        }
+        Err(e) => format!("[warn] could not reach tavily to validate key: {}", e),
+    }
 }

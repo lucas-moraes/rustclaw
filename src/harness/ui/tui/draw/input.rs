@@ -69,22 +69,9 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
 
     // Opencode-style compaction: keep the top rows, a dim "hidden" marker in
     // the middle and the cursor region at the bottom (cursor stays visible).
+    // Only the visible window matters now — the hardware-cursor offset this
+    // used to compute went away with `set_cursor_position`.
     let compaction = compact_window(rows.len(), crow, max_rows);
-    let display_row = |r: usize| -> Option<u16> {
-        match compaction {
-            None => Some(r as u16),
-            Some((head, from, _)) => {
-                if r < head {
-                    Some(r as u16)
-                } else if r >= from {
-                    // +1 for the marker line drawn between head and bottom.
-                    Some((head + 1 + (r - from)) as u16)
-                } else {
-                    None // hidden behind the marker
-                }
-            }
-        }
-    };
     let (vis_from, vis_to) = match compaction {
         Some((_, from, to)) => (from, to),
         None => {
@@ -139,15 +126,10 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
         inner,
     );
 
-    // Terminal cursor at the logical position (visual row/col + prefix).
-    if focused && inner.width > 0 {
-        if let Some(drow) = display_row(crow) {
-            let x = (inner.x + (prefix_len + ccol as u16).min(inner.width.saturating_sub(1)))
-                .min(inner.right().saturating_sub(1));
-            let y = inner.y + drow.min(inner.height.saturating_sub(1));
-            frame.set_cursor_position((x, y));
-        }
-    }
+    // No `set_cursor_position` here on purpose: the terminal cursor is hidden
+    // for the whole TUI session (see `runner::run_tui`) and the blinking
+    // `anim::CURSOR_ON` glyph rendered above is the only cursor. Positioning
+    // the hardware cursor too used to overlay it on the glyph.
 }
 
 fn row_chars(chars: &[char], idxs: &[usize], from: usize, to: usize) -> String {

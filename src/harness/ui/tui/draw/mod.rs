@@ -1,5 +1,6 @@
 //! TUI rendering (ratatui widgets) — Cyberclaw chrome.
 
+mod auth_picker;
 mod fuzzy_list;
 pub mod help;
 mod input;
@@ -137,6 +138,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         palette_view::draw_palette(frame, pal, &app.theme, area);
     } else if app.model_picker.is_some() {
         model_picker::draw_picker(frame, app, area);
+    } else if app.auth_picker.is_some() {
+        auth_picker::draw(frame, app, area);
     } else if let Some(auth) = &app.auth_prompt {
         model_picker::draw_auth(frame, app, auth, area);
     } else if app.resume_picker.is_some() {

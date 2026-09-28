@@ -15,7 +15,13 @@ pub const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", 
 pub const CLAW_SPIN: &[&str] = &["ᕙ", "ᕗ", "ᕕ", "ᕙ", "ᕗ", "ᕕ"];
 
 /// Streaming / cursor blink glyphs.
-pub const CURSOR_ON: &str = "▍";
+///
+/// The TUI hides the terminal's own cursor (see `runner::run_tui`) and draws
+/// this glyph instead, so its shape is fully under our control and does not
+/// fight with the terminal's cursor style. U+258F (left one eighth block) is
+/// the thinnest of the block family and stays left-aligned in the cell, so
+/// the layout is untouched (width 1, same as before).
+pub const CURSOR_ON: &str = "▏";
 pub const CURSOR_OFF: &str = " ";
 
 pub fn spinner_frame(tick: u64) -> &'static str {
@@ -233,7 +239,7 @@ pub fn placeholder(tick: u64) -> &'static str {
         "ask the claw…",
         "type / for commands",
         "Ctrl+P · command palette",
-        "build · plan · explore",
+        "build · reason · chat-free",
     ];
     PHRASES[((tick / 40) as usize) % PHRASES.len()]
 }

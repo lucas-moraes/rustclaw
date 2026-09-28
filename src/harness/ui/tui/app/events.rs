@@ -348,6 +348,11 @@ impl App {
             self.mark_dirty();
             return true;
         }
+        if let Some(p) = self.auth_picker.as_mut() {
+            p.scroll_by(delta);
+            self.mark_dirty();
+            return true;
+        }
         if let Some(p) = self.theme_picker.as_mut() {
             p.scroll_by(delta);
             self.mark_dirty();

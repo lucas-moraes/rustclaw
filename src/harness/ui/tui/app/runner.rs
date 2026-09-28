@@ -31,7 +31,11 @@ pub async fn run_tui(
 
     enable_raw_mode()?;
     let mut stdout = stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    // Hide the terminal's own cursor for the whole session: the input editor
+    // draws its own blinking glyph (`anim::CURSOR_ON`), and leaving the
+    // hardware cursor visible put two cursors in the same cell with
+    // independent blink phases.
+    execute!(stdout, EnterAlternateScreen, crossterm::cursor::Hide)?;
     crossterm::execute!(stdout, crossterm::event::EnableMouseCapture)?;
     let _ = crossterm::execute!(stdout, crossterm::event::EnableBracketedPaste);
     // Kitty keyboard protocol: lets Shift+Enter reach the app as a distinct
@@ -509,6 +513,9 @@ pub(crate) fn restore_terminal() {
     use crossterm::terminal::{disable_raw_mode, LeaveAlternateScreen};
     let _ = disable_raw_mode();
     let _ = execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
+    // Bring the terminal cursor back: it was hidden on entry and the user is
+    // returning to a normal shell prompt.
+    let _ = execute!(std::io::stdout(), crossterm::cursor::Show);
     let _ = execute!(std::io::stdout(), LeaveAlternateScreen);
     let _ = crossterm::execute!(
         std::io::stdout(),

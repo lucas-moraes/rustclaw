@@ -83,20 +83,41 @@ impl AuthStore {
         Ok(())
     }
 
-    /// Returns the stored API key for `provider`, if any.
+    /// Returns the stored API key for `provider` (case-insensitive), if any.
     pub fn get_key(&self, provider: &str) -> Option<String> {
-        self.entries.get(provider).map(|e| e.key.clone())
+        self.entries
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(provider))
+            .map(|(_, e)| e.key.clone())
     }
 
-    /// Inserts or updates the API key for `provider`.
+    /// Inserts or updates the API key for `provider` (case-insensitive:
+    /// overwrites an existing entry that differs only in case).
     pub fn set_key(&mut self, provider: impl Into<String>, key: impl Into<String>) {
+        let provider = provider.into();
+        let existing = self
+            .entries
+            .keys()
+            .find(|k| k.eq_ignore_ascii_case(&provider))
+            .cloned();
         self.entries.insert(
-            provider.into(),
+            existing.unwrap_or(provider),
             AuthEntry {
                 kind: "api".to_string(),
                 key: key.into(),
             },
         );
+    }
+
+    /// Removes the key for `provider` (case-insensitive).
+    /// Returns true if an entry was removed.
+    pub fn remove_key(&mut self, provider: &str) -> bool {
+        let existing = self
+            .entries
+            .keys()
+            .find(|k| k.eq_ignore_ascii_case(provider))
+            .cloned();
+        existing.is_some_and(|k| self.entries.remove(&k).is_some())
     }
 }
 
@@ -167,6 +188,15 @@ mod tests {
         assert!(json.contains("\"deepinfra\""));
         assert!(json.contains("\"type\":\"api\"") || json.contains("\"type\": \"api\""));
         assert!(json.contains("\"key\": \"sk-1\"") || json.contains("\"key\":\"sk-1\""));
+    }
+
+    #[test]
+    fn test_remove_key_case_insensitive() {
+        let mut s = AuthStore::default();
+        s.set_key("DeepInfra", "sk-1");
+        assert!(s.remove_key("deepinfra"));
+        assert_eq!(s.get_key("deepinfra"), None);
+        assert!(!s.remove_key("deepinfra"));
     }
 
     #[test]

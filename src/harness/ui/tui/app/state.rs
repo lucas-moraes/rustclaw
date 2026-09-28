@@ -116,6 +116,8 @@ pub struct App {
     pub model_picker: Option<ModelPickerState>,
     /// Open `/auth` token prompt (masked input).
     pub auth_prompt: Option<AuthPromptState>,
+    /// `/auth` picker: choose which provider/service token to set.
+    pub auth_picker: Option<AuthPickerState>,
     /// Open `/resume` session picker.
     pub resume_picker: Option<ResumePickerState>,
     /// Open theme picker overlay (Ctrl+T / `/theme`).
@@ -668,6 +670,108 @@ impl ResumePickerState {
     }
 }
 
+/// Tool services that take a token but are not model providers.
+pub(crate) const TOOL_SERVICES: &[&str] = &["tavily"];
+
+/// One selectable row in the `/auth` picker.
+pub struct AuthItem {
+    /// Token key stored in auth.json (e.g. "deepinfra", "tavily").
+    pub name: String,
+    /// Section label: "model providers" | "tool services" | "other stored tokens".
+    pub section: &'static str,
+    /// Whether a token is already stored for this key.
+    pub has_token: bool,
+}
+
+/// `/auth` picker: lists model providers and tool services with a ✓/✗
+/// marker, letting the user pick which token to set (or overwrite).
+pub struct AuthPickerState {
+    pub items: Vec<AuthItem>,
+    pub selected: usize,
+    pub scroll_offset: usize,
+}
+
+impl AuthPickerState {
+    /// Builds the picker from the builtin provider catalog, the known tool
+    /// services and any other tokens already present in `auth.json`.
+    pub fn new() -> Self {
+        let store = crate::harness::auth::AuthStore::load();
+        let providers = crate::harness::provider::catalog::provider_names();
+        let mut items: Vec<AuthItem> = Vec::new();
+
+        for name in &providers {
+            items.push(AuthItem {
+                name: name.clone(),
+                section: "model providers",
+                has_token: store.get_key(name).is_some(),
+            });
+        }
+        for name in TOOL_SERVICES {
+            items.push(AuthItem {
+                name: (*name).to_string(),
+                section: "tool services",
+                has_token: store.get_key(name).is_some(),
+            });
+        }
+        for name in store.entries.keys() {
+            let known = providers.iter().any(|p| p.eq_ignore_ascii_case(name))
+                || TOOL_SERVICES.iter().any(|s| s.eq_ignore_ascii_case(name));
+            if !known {
+                items.push(AuthItem {
+                    name: name.clone(),
+                    section: "other stored tokens",
+                    has_token: true,
+                });
+            }
+        }
+
+        Self {
+            items,
+            selected: 0,
+            scroll_offset: 0,
+        }
+    }
+
+    /// Moves the selection by `delta`, wrapping around the list.
+    pub fn move_sel(&mut self, delta: i32) {
+        if self.items.is_empty() {
+            return;
+        }
+        let len = self.items.len() as i32;
+        self.selected = ((self.selected as i32 + delta).rem_euclid(len)) as usize;
+    }
+
+    /// Keeps the selected row within the visible window, scrolling as needed.
+    pub fn ensure_selected_visible(&mut self, visible: usize) {
+        if visible == 0 || self.items.is_empty() {
+            return;
+        }
+        if self.selected < self.scroll_offset {
+            self.scroll_offset = self.selected;
+        } else if self.selected >= self.scroll_offset + visible {
+            self.scroll_offset = self.selected + 1 - visible;
+        }
+        let max_offset = self.items.len().saturating_sub(visible);
+        self.scroll_offset = self.scroll_offset.min(max_offset);
+    }
+
+    /// Scrolls the list by `delta` rows (mouse wheel), keeping selection.
+    pub fn scroll_by(&mut self, delta: i32) {
+        if self.items.is_empty() {
+            return;
+        }
+        let max_offset = self.items.len().saturating_sub(1);
+        self.scroll_offset =
+            (self.scroll_offset as i32 + delta).clamp(0, max_offset as i32) as usize;
+    }
+}
+
+impl Default for AuthPickerState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl App {
     /// Test-only lightweight App editor instance.
     #[cfg(test)]
@@ -776,6 +880,7 @@ impl App {
             skill_picker: None,
             model_picker: None,
             auth_prompt: None,
+            auth_picker: None,
             resume_picker: None,
             theme_picker: None,
             transcript_row_map: Vec::new(),

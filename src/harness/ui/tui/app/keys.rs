@@ -12,11 +12,13 @@ use anyhow::Result;
 use crossterm::event::KeyEvent;
 
 use super::pickers::{
-    handle_auth_prompt_key, handle_cursor_command, handle_model_picker_key,
+    handle_auth_picker_key, handle_auth_prompt_key, handle_cursor_command, handle_model_picker_key,
     handle_resume_picker_key, handle_settings_command, handle_skill_picker_key,
     handle_theme_picker_key,
 };
-use super::state::{App, AuthPromptState, CursorModelTarget, Modal, ResumePickerState};
+use super::state::{
+    App, AuthPickerState, AuthPromptState, CursorModelTarget, Modal, ResumePickerState,
+};
 use super::undo::{copy_to_clipboard, revert_to_prompt, undo_last_turn, user_prompt_text};
 
 pub(crate) async fn handle_key(
@@ -34,6 +36,7 @@ pub(crate) async fn handle_key(
         && app.modal.is_none()
         && app.skill_picker.is_none()
         && app.model_picker.is_none()
+        && app.auth_picker.is_none()
         && app.auth_prompt.is_none()
         && app.resume_picker.is_none()
     {
@@ -53,6 +56,10 @@ pub(crate) async fn handle_key(
 
     if app.model_picker.is_some() {
         return handle_model_picker_key(app, key);
+    }
+
+    if app.auth_picker.is_some() {
+        return handle_auth_picker_key(app, key);
     }
 
     if app.auth_prompt.is_some() {
@@ -1095,25 +1102,17 @@ pub(crate) async fn submit_input(
         }
         if text == "/auth" || text.starts_with("/auth ") {
             let arg = text.strip_prefix("/auth").unwrap_or("").trim();
-            // No argument → update the token for the current provider/model.
-            let provider = if arg.is_empty() {
-                app.runtime.config.provider.clone()
-            } else {
-                arg.to_string()
-            };
-            if provider.is_empty() {
-                let store = crate::harness::auth::AuthStore::load();
-                app.add_system("usage: /auth <provider> — stored providers:");
-                let names: Vec<&str> = store.entries.keys().map(|s| s.as_str()).collect();
-                if names.is_empty() {
-                    app.add_system("  (none)");
+            if arg.is_empty() {
+                // No argument → open a picker to choose which token to set.
+                if app.running {
+                    app.add_system("[busy] cannot run /auth while a turn is running");
                 } else {
-                    app.add_system(&format!("  {}", names.join(", ")));
+                    app.auth_picker = Some(AuthPickerState::new());
                 }
             } else if app.running {
                 app.add_system("[busy] cannot run /auth while a turn is running");
             } else {
-                app.auth_prompt = Some(AuthPromptState::new(provider));
+                app.auth_prompt = Some(AuthPromptState::new(arg));
             }
             return Ok(false);
         }

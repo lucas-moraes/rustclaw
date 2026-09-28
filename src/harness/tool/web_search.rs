@@ -31,6 +31,8 @@ const DDG_ENDPOINT: &str = "https://html.duckduckgo.com/html/";
 const DDG_LITE_ENDPOINT: &str = "https://lite.duckduckgo.com/lite/";
 /// F11.1: Mojeek HTML endpoint (no API key required).
 const MOJEEK_ENDPOINT: &str = "https://www.mojeek.com/search";
+/// Tavily search API endpoint (JSON, requires `TAVILY_API_KEY`).
+const TAVILY_ENDPOINT: &str = "https://api.tavily.com/search";
 
 const MAX_RESULTS: usize = 8;
 const TIMEOUT_SECS: u64 = 10;
@@ -68,6 +70,7 @@ const COOLDOWN_SECS: u64 = 120;
 /// F11.1: identifier of a search provider.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ProviderId {
+    Tavily,
     DdgHtml,
     DdgLite,
     Mojeek,
@@ -76,6 +79,7 @@ pub enum ProviderId {
 impl ProviderId {
     fn name(self) -> &'static str {
         match self {
+            ProviderId::Tavily => "tavily",
             ProviderId::DdgHtml => "ddg_html",
             ProviderId::DdgLite => "ddg_lite",
             ProviderId::Mojeek => "mojeek",
@@ -84,16 +88,22 @@ impl ProviderId {
 
     fn endpoint(self) -> &'static str {
         match self {
+            ProviderId::Tavily => TAVILY_ENDPOINT,
             ProviderId::DdgHtml => DDG_ENDPOINT,
             ProviderId::DdgLite => DDG_LITE_ENDPOINT,
             ProviderId::Mojeek => MOJEEK_ENDPOINT,
         }
     }
 
-    /// F11.2: default order of preference.
+    /// F11.2: default order of preference (Tavily first when a key is set).
     #[cfg(test)]
-    fn all() -> [ProviderId; 3] {
-        [ProviderId::DdgHtml, ProviderId::DdgLite, ProviderId::Mojeek]
+    fn all() -> Vec<ProviderId> {
+        vec![
+            ProviderId::Tavily,
+            ProviderId::DdgHtml,
+            ProviderId::DdgLite,
+            ProviderId::Mojeek,
+        ]
     }
 }
 
@@ -115,11 +125,15 @@ trait SearchProvider: Send + Sync {
 
     /// Fetches and parses results for `query`. Returns the parsed results or
     /// the failure kind (which drives fallback/cooldown in the facade).
+    ///
+    /// `api_key` is only meaningful for keyed providers (e.g. Tavily); the
+    /// HTML-scraping providers ignore it.
     async fn search(
         &self,
         client: &reqwest::Client,
         query: &str,
         ua: &str,
+        api_key: Option<&str>,
     ) -> Result<Vec<SearchResult>, FailureKind>;
 }
 
@@ -139,6 +153,7 @@ impl SearchProvider for DuckDuckGoProvider {
         client: &reqwest::Client,
         query: &str,
         ua: &str,
+        _api_key: Option<&str>,
     ) -> Result<Vec<SearchResult>, FailureKind> {
         let url = reqwest::Url::parse_with_params(self.id.endpoint(), &[("q", query)])
             .map_err(|_| FailureKind::Http)?;
@@ -189,6 +204,7 @@ impl SearchProvider for MojeekProvider {
         client: &reqwest::Client,
         query: &str,
         ua: &str,
+        _api_key: Option<&str>,
     ) -> Result<Vec<SearchResult>, FailureKind> {
         let url = reqwest::Url::parse_with_params(MOJEEK_ENDPOINT, &[("q", query)])
             .map_err(|_| FailureKind::Http)?;
@@ -220,6 +236,53 @@ impl SearchProvider for MojeekProvider {
     }
 }
 
+/// Tavily API provider (JSON, requires `TAVILY_API_KEY`).
+struct TavilyProvider;
+
+#[async_trait::async_trait]
+impl SearchProvider for TavilyProvider {
+    fn id(&self) -> ProviderId {
+        ProviderId::Tavily
+    }
+
+    async fn search(
+        &self,
+        client: &reqwest::Client,
+        query: &str,
+        _ua: &str,
+        api_key: Option<&str>,
+    ) -> Result<Vec<SearchResult>, FailureKind> {
+        let key = api_key.ok_or(FailureKind::Http)?;
+        let body = serde_json::json!({
+            "query": query,
+            "max_results": 10,
+            "search_depth": "basic"
+        });
+        let resp = client
+            .post(TAVILY_ENDPOINT)
+            .header("Authorization", format!("Bearer {}", key))
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|_| FailureKind::Http)?;
+        let status = resp.status();
+        if status.as_u16() == 401 || status.as_u16() == 403 || status.as_u16() == 429 {
+            return Err(FailureKind::Blocked);
+        }
+        if !status.is_success() {
+            return Err(FailureKind::Http);
+        }
+        let text = resp.text().await.map_err(|_| FailureKind::Http)?;
+        let results = parse_tavily(&text);
+        if results.is_empty() {
+            Err(FailureKind::Empty)
+        } else {
+            Ok(results)
+        }
+    }
+}
+
 /// Shared state for the web search tool, kept across calls within a runtime.
 pub struct WebSearchTool {
     /// F1.1: timestamp of the last completed request (for dynamic min-delay).
@@ -242,22 +305,44 @@ struct CacheEntry {
     results: Vec<SearchResult>,
 }
 
+/// Resolves the Tavily API key: env var `TAVILY_API_KEY` wins, then the
+/// `tavily` entry in `auth.json` (set via `/auth tavily <key>`).
+fn resolve_tavily_key() -> Option<String> {
+    if let Ok(k) = std::env::var("TAVILY_API_KEY") {
+        let k = k.trim().to_string();
+        if !k.is_empty() {
+            return Some(k);
+        }
+    }
+    crate::harness::auth::AuthStore::load()
+        .get_key("tavily")
+        .map(|k| k.trim().to_string())
+        .filter(|k| !k.is_empty())
+}
+
 impl WebSearchTool {
     pub fn new() -> Self {
+        // Tavily (keyed, JSON) is preferred when configured; the HTML
+        // scrapers remain as fallback. The key is resolved at use time so
+        // tokens saved via `/auth` mid-session take effect without restart.
+        let mut providers: Vec<Box<dyn SearchProvider>> = Vec::new();
+        if resolve_tavily_key().is_some() {
+            providers.push(Box::new(TavilyProvider));
+        }
+        providers.push(Box::new(DuckDuckGoProvider {
+            id: ProviderId::DdgHtml,
+        }));
+        providers.push(Box::new(DuckDuckGoProvider {
+            id: ProviderId::DdgLite,
+        }));
+        providers.push(Box::new(MojeekProvider));
+
         Self {
             last_request: Arc::new(tokio::sync::Mutex::new(None)),
             semaphore: Arc::new(tokio::sync::Semaphore::new(1)),
             ua_index: Arc::new(AtomicUsize::new(0)),
             cache: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
-            providers: vec![
-                Box::new(DuckDuckGoProvider {
-                    id: ProviderId::DdgHtml,
-                }),
-                Box::new(DuckDuckGoProvider {
-                    id: ProviderId::DdgLite,
-                }),
-                Box::new(MojeekProvider),
-            ],
+            providers,
             cooldowns: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         }
     }
@@ -390,7 +475,15 @@ técnicos ou resoluções de erros de compilação."
                     "web_search request"
                 );
 
-                let result = provider.search(&client, &full_query, ua).await;
+                // Resolve the Tavily key at use time so `/auth` changes apply
+                // immediately without a restart.
+                let api_key = if provider.id() == ProviderId::Tavily {
+                    resolve_tavily_key()
+                } else {
+                    None
+                };
+                let key = api_key.as_deref();
+                let result = provider.search(&client, &full_query, ua, key).await;
 
                 // F1.1: record the end of this request so the next one waits.
                 self.mark_request_done().await;
@@ -731,6 +824,49 @@ fn parse_results_mojeek(html: &str) -> Vec<SearchResult> {
         .collect()
 }
 
+/// Parses the Tavily JSON response into `SearchResult`s.
+fn parse_tavily(json: &str) -> Vec<SearchResult> {
+    let v: serde_json::Value = match serde_json::from_str(json) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    if let Some(arr) = v.get("results").and_then(|r| r.as_array()) {
+        for item in arr {
+            let title = item
+                .get("title")
+                .and_then(|s| s.as_str())
+                .unwrap_or("")
+                .to_string();
+            let url = item
+                .get("url")
+                .and_then(|s| s.as_str())
+                .unwrap_or("")
+                .to_string();
+            let snippet = item
+                .get("content")
+                .and_then(|s| s.as_str())
+                .unwrap_or("")
+                .to_string();
+            if url.is_empty() {
+                continue;
+            }
+            let domain = extract_domain(&url);
+            out.push(SearchResult {
+                title,
+                url,
+                snippet,
+                domain,
+                date: None,
+            });
+            if out.len() >= MAX_RESULTS {
+                break;
+            }
+        }
+    }
+    out
+}
+
 /// F6.1: extracts the host/domain from a URL (e.g. "https://docs.rs/tokio"
 /// → "docs.rs"). Returns empty string on parse failure.
 fn extract_domain(url: &str) -> String {
@@ -817,6 +953,38 @@ mod tests {
     use crate::harness::permission::PermissionEngine;
     use crate::harness::tool::context::{AbortSignal, PathBufGuard};
     use std::sync::Arc;
+
+    /// Serializes tests that mutate process-global env vars.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn resolve_tavily_key_env_var_wins() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::var("TAVILY_API_KEY").ok();
+        std::env::set_var("TAVILY_API_KEY", "  env-key-123  ");
+        // Env var wins, so the real auth.json is never consulted.
+        assert_eq!(resolve_tavily_key().as_deref(), Some("env-key-123"));
+        match prev {
+            Some(v) => std::env::set_var("TAVILY_API_KEY", v),
+            None => std::env::remove_var("TAVILY_API_KEY"),
+        }
+    }
+
+    #[test]
+    fn resolve_tavily_key_blank_env_falls_through() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::var("TAVILY_API_KEY").ok();
+        std::env::set_var("TAVILY_API_KEY", "   ");
+        // Blank env var must not be returned; result comes from auth.json
+        // (or None if unset) — we only assert it is never the blank string.
+        let got = resolve_tavily_key();
+        assert_ne!(got.as_deref(), Some(""));
+        assert_ne!(got.as_deref(), Some("   "));
+        match prev {
+            Some(v) => std::env::set_var("TAVILY_API_KEY", v),
+            None => std::env::remove_var("TAVILY_API_KEY"),
+        }
+    }
 
     fn test_ctx() -> ToolContext {
         ToolContext {
@@ -997,12 +1165,57 @@ mod tests {
 
     #[test]
     fn test_provider_order_and_cooldown_constant() {
-        // F11.2: preference order is DDG HTML → DDG Lite → Mojeek.
+        // F11.2: preference order is Tavily → DDG HTML → DDG Lite → Mojeek.
         assert_eq!(
             ProviderId::all(),
-            [ProviderId::DdgHtml, ProviderId::DdgLite, ProviderId::Mojeek]
+            vec![
+                ProviderId::Tavily,
+                ProviderId::DdgHtml,
+                ProviderId::DdgLite,
+                ProviderId::Mojeek
+            ]
         );
         assert_eq!(COOLDOWN_SECS, 120);
+    }
+
+    #[test]
+    fn test_parse_tavily() {
+        let json = r#"{
+            "query": "rust async",
+            "results": [
+                {
+                    "title": "Async Rust",
+                    "url": "https://docs.rs/tokio",
+                    "content": "Tokio is an async runtime.",
+                    "score": 0.98
+                },
+                {
+                    "title": "No content result",
+                    "url": "https://example.com/page"
+                }
+            ]
+        }"#;
+        let results = parse_tavily(json);
+        assert_eq!(results.len(), 2);
+
+        assert_eq!(results[0].title, "Async Rust");
+        assert_eq!(results[0].url, "https://docs.rs/tokio");
+        assert_eq!(results[0].snippet, "Tokio is an async runtime.");
+        assert_eq!(results[0].domain, "docs.rs");
+        assert!(results[0].date.is_none());
+
+        // Missing `content` degrades to an empty snippet, not a dropped result.
+        assert_eq!(results[1].title, "No content result");
+        assert_eq!(results[1].url, "https://example.com/page");
+        assert_eq!(results[1].snippet, "");
+        assert_eq!(results[1].domain, "example.com");
+    }
+
+    #[test]
+    fn test_parse_tavily_skips_empty_url_and_bad_json() {
+        assert!(parse_tavily("not json").is_empty());
+        let json = r#"{"results": [{"title": "x", "url": "", "content": "y"}]}"#;
+        assert!(parse_tavily(json).is_empty());
     }
 
     #[tokio::test]

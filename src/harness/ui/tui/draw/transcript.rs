@@ -11,6 +11,10 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 
+/// Display label + glyph for the assistant bubble.
+const ASSISTANT_LABEL: &str = "RustClaw";
+const ASSISTANT_ICON: &str = "🤖";
+
 pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     let theme = app.theme.clone();
     let tick = app.tick;
@@ -191,11 +195,11 @@ fn render_line(
         LineKind::Assistant => {
             let mut lines = bubble(
                 if streaming {
-                    "claw · streaming"
+                    "RustClaw · streaming"
                 } else {
-                    "claw"
+                    ASSISTANT_LABEL
                 },
-                "✦",
+                ASSISTANT_ICON,
                 &line.text,
                 t.accent,
                 t.assistant_fg,
@@ -391,7 +395,7 @@ fn bubble(
 
     // Rounded header: ╭─ ◆ you ────────────
     let label = format!(" {glyph} {title} ");
-    let label_w = label.chars().count();
+    let label_w = Span::width(&Span::raw(&label));
     let rule_w = width.saturating_sub(2 + label_w).max(1);
     let top = Line::from(vec![
         Span::styled("╭─".to_string(), Style::default().fg(border)),
