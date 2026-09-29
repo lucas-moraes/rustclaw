@@ -46,25 +46,22 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let has_image_chip = !app.pending_images.is_empty();
     let has_chips = has_skill_chips || has_image_chip;
 
-    // Left info panel + main content column.
-    // Fixed-ish sidebar (~32 cols) so model names / modes stay readable;
-    // hide entirely on very narrow terminals.
-    let side_w = if area.width < sidebar::MIN_TERMINAL_WIDTH {
+    // Top navbar (the old left panel, laid out horizontally) so the
+    // transcript gets the full width. Hidden only when the terminal is
+    // too short to keep a transcript under it.
+    let nav_h = if area.height >= sidebar::MIN_TERMINAL_HEIGHT {
+        sidebar::HEIGHT
+    } else {
         0
-    } else {
-        sidebar::PREFERRED_WIDTH
-            .min(area.width.saturating_sub(40))
-            .max(sidebar::MIN_WIDTH)
-            .min(area.width / 3)
     };
-    let cols = if side_w == 0 {
-        Layout::horizontal([Constraint::Percentage(100)]).split(area)
+    let nav_rows = if nav_h == 0 {
+        Layout::vertical([Constraint::Percentage(100)]).split(area)
     } else {
-        Layout::horizontal([Constraint::Length(side_w), Constraint::Min(40)]).split(area)
+        Layout::vertical([Constraint::Length(nav_h), Constraint::Min(0)]).split(area)
     };
-    let content = if side_w == 0 { cols[0] } else { cols[1] };
-    if side_w > 0 {
-        sidebar::draw(frame, app, cols[0]);
+    let content = if nav_h == 0 { nav_rows[0] } else { nav_rows[1] };
+    if nav_h > 0 {
+        sidebar::draw(frame, app, nav_rows[0]);
     }
 
     let footer_h: u16 = 1;

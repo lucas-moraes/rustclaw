@@ -270,6 +270,7 @@ impl Session {
 
     /// Display title: custom title if set, else first user-visible prompt
     /// (skips runtime-injected `<project-memory>` parts).
+    #[allow(dead_code)] // usado por testes; removido do navbar da TUI
     pub fn display_title(&self) -> String {
         if let Some(t) = &self.title {
             let t = t.trim();

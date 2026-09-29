@@ -6,32 +6,17 @@ use crate::harness::ui::tui::input::{compact_window, visual_row_col, wrap_visual
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     let t = &app.theme;
     let focused = !app.running && app.modal.is_none() && app.palette.is_none();
-    let border = if focused { t.border_focus } else { t.border };
 
-    let title = if app.pending_images.is_empty() {
-        " prompt ".to_string()
-    } else {
-        format!(" prompt · {} img ", app.pending_images.len())
-    };
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(border))
-        .title(Span::styled(
-            title,
-            Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
-        ))
-        .style(Style::default().bg(t.surface));
-
-    let inner = block.inner(area);
+    // Borderless input: the whole area is text.
+    let inner = area;
     // No left prefix: the full inner width is available for text on every row.
     app.input_inner_width = inner.width;
-    frame.render_widget(block, area);
 
     let prefix = "";
     let prefix_len = prefix.chars().count() as u16;

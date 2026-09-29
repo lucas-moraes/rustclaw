@@ -123,15 +123,34 @@ pub fn draw_autocomplete(
     input_area: Rect,
     full: Rect,
 ) {
-    let n = ac.matches.len().min(8) as u16;
+    let shown: Vec<_> = ac.matches.iter().take(8).collect();
+    let n = shown.len() as u16;
     if n == 0 {
         return;
     }
     let height = n + 2;
-    let width = 56.min(full.width.saturating_sub(4));
+    // Pad to the longest slash name. A fixed 14-wide column glued
+    // `/allow-all-permissions` (22 cols) onto its description.
+    let label_w = shown
+        .iter()
+        .map(|item| Span::width(&Span::raw(&item.label)))
+        .max()
+        .unwrap_or(0)
+        + 2;
+    let desc_w = shown
+        .iter()
+        .map(|item| Span::width(&Span::raw(&item.description)))
+        .max()
+        .unwrap_or(0);
+    // " ▸ " (3) + label + description + borders (2) + 1 col of air.
+    let desired = (3 + label_w + desc_w + 3) as u16;
+    let cap = full.width.saturating_sub(2).max(1);
+    let width = desired.max(56).min(cap);
     let y = input_area.y.saturating_sub(height);
+    let max_x = full.x.saturating_add(full.width.saturating_sub(width));
+    let x = input_area.x.saturating_add(1).min(max_x);
     let area = Rect {
-        x: input_area.x + 1,
+        x,
         y,
         width,
         height,
@@ -169,7 +188,7 @@ pub fn draw_autocomplete(
                     .fg(t.accent)
                     .bg(if sel { t.bg } else { t.surface }),
             ),
-            Span::styled(format!("{:<14}", item.label), style),
+            Span::styled(format!("{:<label_w$}", item.label), style),
             Span::styled(
                 item.description.clone(),
                 Style::default()

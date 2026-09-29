@@ -4,7 +4,7 @@ use crate::harness::ui::tui::app::Modal;
 use crate::harness::ui::tui::draw::{centered_rect, centered_rect_fixed};
 use crate::harness::ui::tui::theme::Theme;
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use ratatui::Frame;
@@ -376,10 +376,6 @@ fn draw_permission(
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(t.warn))
-        .title(Span::styled(
-            format!(" {} permission required ", warn_icon),
-            Style::default().fg(t.warn).add_modifier(Modifier::BOLD),
-        ))
         .style(Style::default().bg(t.surface).fg(t.text));
 
     let path = req.input.path.as_deref().unwrap_or("—");
@@ -415,6 +411,57 @@ fn draw_permission(
     let inner = block.inner(area);
     frame.render_widget(block, area);
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+    cyber_badge(
+        frame,
+        area,
+        t.warn,
+        &format!(" {} permission required ", warn_icon),
+    );
+}
+
+/// Cyberpunk title badge: yellow chip with black bold text and a diagonal
+/// `╱` cut, drawn over the top-left corner of a bordered block.
+///
+/// `area` is the block's outer rect; the badge overlays the top border row.
+/// The block must be rendered BEFORE calling this (the badge paints over it).
+pub fn cyber_badge(frame: &mut Frame, area: Rect, accent: Color, title: &str) {
+    if area.width < 4 || area.height < 2 {
+        return;
+    }
+    let label = format!(" {title} ");
+    let label_w = Span::width(&Span::raw(&label)) as u16;
+    // badge + diagonal cut must fit inside the top border, leaving room for
+    // the right corner.
+    let w = (label_w + 1).min(area.width.saturating_sub(2));
+    if w == 0 {
+        return;
+    }
+    let chip = Rect {
+        x: area.x + 1,
+        y: area.y,
+        width: w,
+        height: 1,
+    };
+    let buf = frame.buffer_mut();
+    let mut x = chip.x;
+    for ch in label.chars() {
+        if x >= chip.x + label_w {
+            break;
+        }
+        buf[(x, chip.y)].set_symbol(&ch.to_string()).set_style(
+            Style::default()
+                .fg(Color::Black)
+                .bg(accent)
+                .add_modifier(Modifier::BOLD),
+        );
+        x += 1;
+    }
+    // diagonal cut right after the chip
+    if chip.x + label_w < area.x + area.width - 1 {
+        buf[(chip.x + label_w, chip.y)]
+            .set_symbol("╱")
+            .set_style(Style::default().fg(accent).bg(Color::Reset));
+    }
 }
 
 fn draw_question(

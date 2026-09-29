@@ -8,7 +8,7 @@ use crate::harness::ui::tui::theme::Theme;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::Frame;
 
 /// Display label + glyph for the assistant bubble.
@@ -19,20 +19,8 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     let theme = app.theme.clone();
     let tick = app.tick;
 
-    // Soft content frame: left accent rail + subtle top chrome.
-    let frame_block = Block::default()
-        .borders(Borders::LEFT | Borders::TOP)
-        .border_style(Style::default().fg(theme.border))
-        .title(Span::styled(
-            content_title(app),
-            Style::default().fg(theme.text_dim),
-        ))
-        .style(Style::default().bg(theme.bg));
-    let inner = frame_block.inner(area);
-    frame.render_widget(frame_block, area);
-
-    // Horizontal margins: keep breathing room on both sides of the chat,
-    // plus room for the scrollbar on the right.
+    // Content area: no frame border. Horizontal margins keep breathing room
+    // on both sides of the chat, plus room for the scrollbar on the right.
     const H_MARGIN: u16 = 3;
     // Vertical padding: one blank row at the top and one at the bottom so the
     // first/last visible line never sits flush against the frame. This is
@@ -40,10 +28,10 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     // transcript keeps its full height and the last line stays readable.
     const V_PAD: u16 = 1;
     let content = Rect {
-        x: inner.x.saturating_add(H_MARGIN),
-        y: inner.y.saturating_add(V_PAD),
-        width: inner.width.saturating_sub(H_MARGIN * 2).max(1),
-        height: inner.height.saturating_sub(V_PAD * 2).max(1),
+        x: area.x.saturating_add(H_MARGIN),
+        y: area.y.saturating_add(V_PAD),
+        width: area.width.saturating_sub(H_MARGIN * 2).max(1),
+        height: area.height.saturating_sub(V_PAD * 2).max(1),
     };
     let width = content.width as usize;
 
@@ -167,18 +155,6 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     if total > view_h && area.width > 0 {
         draw_scrollbar(frame, area, start, view_h, total, &theme);
     }
-}
-
-fn content_title(app: &App) -> String {
-    let agent = app.session.agent.as_str();
-    let model = app.runtime.config.model.clone();
-    let short = if model.chars().count() > 28 {
-        let t: String = model.chars().take(26).collect();
-        format!("{t}…")
-    } else {
-        model
-    };
-    format!(" conversation · {agent} · {short} ")
 }
 
 fn render_line(

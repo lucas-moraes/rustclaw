@@ -49,6 +49,8 @@ pub struct App {
     pub runtime: SessionRuntime,
     pub session: Session,
     pub cwd: std::path::PathBuf,
+    /// Git branch of `cwd`, resolved once at boot ("" when not a repo).
+    pub git_branch: String,
     pub lines: Vec<TranscriptLine>,
     pub streaming: Option<String>,
     pub input: String,
@@ -837,6 +839,14 @@ impl App {
         Self {
             runtime,
             session,
+            git_branch: std::fs::read_to_string(cwd.join(".git/HEAD"))
+                .ok()
+                .and_then(|head| {
+                    head.trim()
+                        .strip_prefix("ref: refs/heads/")
+                        .map(str::to_string)
+                })
+                .unwrap_or_default(),
             cwd,
             lines: Vec::new(),
             streaming: None,
