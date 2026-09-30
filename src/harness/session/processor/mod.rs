@@ -705,7 +705,10 @@ impl SessionProcessor {
                     // a passing check is claiming success without evidence.
                     // Nudge once, then accept on the next stop.
                     if !verification_nudged {
-                        let turn_parts: Vec<ToolPart> = session.messages[turn_start..]
+                        // Compaction may have shrunk the message list mid-turn;
+                        // clamp so the slice index stays in range.
+                        let start = turn_start.min(session.messages.len());
+                        let turn_parts: Vec<ToolPart> = session.messages[start..]
                             .iter()
                             .flat_map(|m| m.parts.iter())
                             .filter_map(|p| match p {

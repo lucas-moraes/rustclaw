@@ -303,22 +303,23 @@ fn render_line(
         ])],
         LineKind::Diff => {
             let mut out = vec![Line::from(vec![
-                Span::styled("  ╭ ".to_string(), Style::default().fg(t.accent3)),
+                Span::styled("  ╭─ ".to_string(), Style::default().fg(t.accent3)),
                 Span::styled(
                     "diff",
                     Style::default().fg(t.accent3).add_modifier(Modifier::BOLD),
                 ),
+                Span::styled(" ─────".to_string(), Style::default().fg(t.accent3)),
             ])];
             for dl in markdown::render_diff(&line.text, t).into_iter().take(40) {
                 let mut spans = vec![Span::styled(
                     "  │ ".to_string(),
-                    Style::default().fg(t.border),
+                    Style::default().fg(t.accent3),
                 )];
                 spans.extend(dl.spans);
                 out.push(Line::from(spans));
             }
             out.push(Line::from(Span::styled(
-                "  ╰────",
+                "  ╰─────",
                 Style::default().fg(t.accent3),
             )));
             out

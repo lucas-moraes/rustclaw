@@ -8,7 +8,7 @@
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Block, BorderType, Paragraph};
 use ratatui::Frame;
 
 use crate::harness::ui::tui::app::{App, MODES};
@@ -20,29 +20,30 @@ pub const HEIGHT: u16 = 2;
 /// Hide the bar when the terminal is too short to keep a transcript under it.
 pub const MIN_TERMINAL_HEIGHT: u16 = 16;
 
-/// Rows the navbar actually occupies: `HEIGHT`, plus one for the Cursor
-/// feedback rail when a Cursor mode is on.
+/// Rows the navbar actually occupies: `HEIGHT`, plus three for the Cursor
+/// feedback rail (rounded border top, content, border bottom) when a Cursor
+/// mode is on.
 pub fn height(app: &App) -> u16 {
     let cfg = &app.runtime.config;
     if cfg.cursor_agent || cfg.cursor_plan {
-        HEIGHT + 1
+        HEIGHT + 3
     } else {
         HEIGHT
     }
 }
 
-/// Cursor CLI feedback rail, rendered as the navbar's last row so it sits
-/// directly under the mode selector. Right-aligned, matching the selector
-/// above it. `None` when no Cursor mode is on.
-fn feedback_line(app: &App, width: usize) -> Option<Line<'static>> {
+/// Cursor CLI feedback rail content: ` cursor ● build ● plan`. `None` when no
+/// Cursor mode is on.
+fn feedback_spans(app: &App) -> Option<Vec<Span<'static>>> {
     let t = &app.theme;
     let cfg = &app.runtime.config;
     if !cfg.cursor_agent && !cfg.cursor_plan {
         return None;
     }
+    let accent = t.accent2;
     let mut spans = vec![Span::styled(
         " cursor ",
-        Style::default().fg(t.bg).bg(t.accent2),
+        Style::default().fg(accent).add_modifier(Modifier::BOLD),
     )];
     let mut push = |label: &str, on: bool, model: &str| {
         let (mark, fg) = if on {
@@ -63,15 +64,32 @@ fn feedback_line(app: &App, width: usize) -> Option<Line<'static>> {
     };
     push("build", cfg.cursor_agent, &cfg.cursor_model);
     push("plan", cfg.cursor_plan, &cfg.cursor_plan_model);
-    // Right-align: the mode selector sits at the right edge of the row above,
-    // so the rail ends at the same column.
-    let used = spans_width(&spans);
-    if used < width {
-        spans.insert(0, Span::raw(" ".repeat(width - used)));
-    } else if used > width {
-        spans = clip_spans(spans, width);
+    Some(spans)
+}
+
+/// Draws the Cursor rail as a rounded box, right-aligned under the mode
+/// selector. Skipped when the terminal is too narrow to fit the box.
+fn draw_feedback(frame: &mut Frame, app: &App, area: Rect) {
+    let t = &app.theme;
+    let Some(spans) = feedback_spans(app) else {
+        return;
+    };
+    let content_w = spans_width(&spans) as u16;
+    let box_w = content_w + 2;
+    if box_w > area.width || area.height < 3 {
+        return;
     }
-    Some(Line::from(spans))
+    let x = area.x + area.width - box_w;
+    let rail = Rect {
+        x,
+        y: area.y + 2,
+        width: box_w,
+        height: 3,
+    };
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(t.accent2));
+    frame.render_widget(Paragraph::new(Line::from(spans)).block(block), rail);
 }
 
 pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
@@ -80,11 +98,9 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
     let width = area.width as usize;
-    let mut lines = vec![system_line(app, t, width), session_line(app, t, width)];
-    if let Some(feedback) = feedback_line(app, width) {
-        lines.push(feedback);
-    }
+    let lines = vec![system_line(app, t, width), session_line(app, t, width)];
     frame.render_widget(Paragraph::new(lines), area);
+    draw_feedback(frame, app, area);
     cyber_badge(frame, area, t.accent, "rustclaw");
 }
 
@@ -110,9 +126,17 @@ fn system_line(app: &App, t: &Theme, width: usize) -> Line<'static> {
     };
     loop {
         let left = system_left(app, t, opts.status_max);
+        let right = mode_spans(app, t);
         let left_w = spans_width(&left);
-        if left_w <= width {
-            return Line::from(left);
+        let right_w = spans_width(&right);
+        if left_w + right_w <= width {
+            let gap = width - left_w - right_w;
+            let mut spans = left;
+            if gap > 0 {
+                spans.push(Span::raw(" ".repeat(gap)));
+            }
+            spans.extend(right);
+            return Line::from(spans);
         }
         if opts.status_max > 8 {
             opts.status_max = 8;
@@ -215,10 +239,7 @@ fn mode_spans(app: &App, t: &Theme) -> Vec<Span<'static>> {
             let fg = mode_color(name, t);
             spans.push(Span::styled(
                 format!(" {name} "),
-                Style::default()
-                    .fg(t.status_bg)
-                    .bg(fg)
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(fg).add_modifier(Modifier::BOLD),
             ));
             if cursor {
                 spans.push(Span::styled(
@@ -254,17 +275,9 @@ fn session_line(app: &App, t: &Theme, width: usize) -> Line<'static> {
     };
     loop {
         let left = session_left(app, t, &opts);
-        let right = mode_spans(app, t);
         let left_w = spans_width(&left);
-        let right_w = spans_width(&right);
-        if left_w + right_w <= width {
-            let gap = width - left_w - right_w;
-            let mut spans = left;
-            if gap > 0 {
-                spans.push(Span::raw(" ".repeat(gap)));
-            }
-            spans.extend(right);
-            return Line::from(spans);
+        if left_w <= width {
+            return Line::from(left);
         }
         if opts.title {
             opts.title = false;
@@ -281,10 +294,7 @@ fn session_line(app: &App, t: &Theme, width: usize) -> Line<'static> {
 }
 
 fn session_left(app: &App, t: &Theme, opts: &SessionOpts) -> Vec<Span<'static>> {
-    let mut spans = vec![Span::styled(
-        format!(" {} msgs", app.session.messages.len()),
-        Style::default().fg(t.text_dim),
-    )];
+    let mut spans: Vec<Span<'static>> = Vec::new();
     if opts.skills {
         if let Some(skill) = skills_span(app, t) {
             spans.push(skill);

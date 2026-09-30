@@ -419,8 +419,8 @@ fn draw_permission(
     );
 }
 
-/// Cyberpunk title badge: yellow chip with black bold text and a diagonal
-/// `╱` cut, drawn over the top-left corner of a bordered block.
+/// Cyberpunk title badge: bold accent text with a diagonal `╱` cut, drawn
+/// over the top-left corner of a bordered block.
 ///
 /// `area` is the block's outer rect; the badge overlays the top border row.
 /// The block must be rendered BEFORE calling this (the badge paints over it).
@@ -448,12 +448,9 @@ pub fn cyber_badge(frame: &mut Frame, area: Rect, accent: Color, title: &str) {
         if x >= chip.x + label_w {
             break;
         }
-        buf[(x, chip.y)].set_symbol(&ch.to_string()).set_style(
-            Style::default()
-                .fg(Color::Black)
-                .bg(accent)
-                .add_modifier(Modifier::BOLD),
-        );
+        buf[(x, chip.y)]
+            .set_symbol(&ch.to_string())
+            .set_style(Style::default().fg(accent).add_modifier(Modifier::BOLD));
         x += 1;
     }
     // diagonal cut right after the chip
