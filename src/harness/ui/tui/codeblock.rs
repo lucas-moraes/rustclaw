@@ -3,6 +3,7 @@
 //! (Ctrl+S). Extracted from `app.rs`.
 
 use crate::harness::ui::tui::app::{copy_to_clipboard, App, LineKind};
+use crate::harness::ui::tui::draw::toast::ToastKind;
 
 impl App {
     /// Extracts the most recent fenced code block (```…```) from assistant
@@ -46,13 +47,16 @@ impl App {
             Some(code) => {
                 if copy_to_clipboard(&code) {
                     let n = code.chars().count();
-                    self.status_msg = Some(format!("copied code block ({n} chars)"));
+                    self.push_toast_kind(
+                        format!("copied code block ({n} chars)"),
+                        ToastKind::Success,
+                    );
                 } else {
                     self.push(LineKind::Error, "[error] clipboard unavailable".to_string());
                 }
             }
             None => {
-                self.status_msg = Some("no code block found".to_string());
+                self.push_toast_kind("no code block found", ToastKind::Error);
             }
         }
     }
@@ -61,7 +65,7 @@ impl App {
     /// `rustclaw-code-<n>.txt` in the project cwd (or appends a counter).
     pub fn save_last_code_block(&mut self) {
         let Some(code) = self.last_code_block() else {
-            self.status_msg = Some("no code block found".to_string());
+            self.push_toast_kind("no code block found", ToastKind::Error);
             return;
         };
         for n in 1..=999 {
@@ -71,7 +75,10 @@ impl App {
             }
             match std::fs::write(&path, &code) {
                 Ok(()) => {
-                    self.status_msg = Some(format!("saved code block → {}", path.display()));
+                    self.push_toast_kind(
+                        format!("saved code block → {}", path.display()),
+                        ToastKind::Success,
+                    );
                 }
                 Err(e) => {
                     self.push(LineKind::Error, format!("[error] failed to save: {e}"));

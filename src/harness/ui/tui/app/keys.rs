@@ -5,6 +5,7 @@ use crate::harness::session::Session;
 use crate::harness::tool::context::AbortSignal;
 use crate::harness::ui::commands::CommandOutcome;
 use crate::harness::ui::tui::askers::QuestionRequest;
+use crate::harness::ui::tui::draw::toast::ToastKind;
 use crate::harness::ui::tui::palette::{AutoComplete, PaletteState};
 use crate::harness::ui::tui::theme::Theme;
 use crate::harness::ui::tui::transcript::{preview, LineKind};
@@ -238,7 +239,10 @@ pub(crate) async fn handle_key(
                             return Ok(false);
                         }
                     }
-                    app.status_msg = Some("clipboard has no image or text to paste".into());
+                    app.push_toast_kind(
+                        "clipboard has no image or text to paste",
+                        ToastKind::Error,
+                    );
                     return Ok(false);
                 }
             }
@@ -403,7 +407,7 @@ pub(crate) async fn handle_key(
                 app.autocomplete = None;
             } else if !app.pending_images.is_empty() {
                 app.clear_pending_images();
-                app.status_msg = Some("cleared pending images".into());
+                app.push_toast("cleared pending images");
             } else if !app.input.is_empty() {
                 app.clear_prompt_input();
             }

@@ -113,19 +113,15 @@ fn badge_width() -> usize {
 
 struct SystemOpts {
     branch: bool,
-    status_max: usize,
 }
 
 fn system_line(app: &App, t: &Theme, width: usize) -> Line<'static> {
     if width == 0 {
         return Line::from("");
     }
-    let mut opts = SystemOpts {
-        branch: true,
-        status_max: 24,
-    };
+    let mut opts = SystemOpts { branch: true };
     loop {
-        let left = system_left(app, t, opts.status_max);
+        let left = system_left(app, t);
         let right = mode_spans(app, t);
         let left_w = spans_width(&left);
         let right_w = spans_width(&right);
@@ -138,9 +134,7 @@ fn system_line(app: &App, t: &Theme, width: usize) -> Line<'static> {
             spans.extend(right);
             return Line::from(spans);
         }
-        if opts.status_max > 8 {
-            opts.status_max = 8;
-        } else if opts.branch {
+        if opts.branch {
             opts.branch = false;
         } else {
             let fallback = clip_spans(left, width);
@@ -149,7 +143,7 @@ fn system_line(app: &App, t: &Theme, width: usize) -> Line<'static> {
     }
 }
 
-fn system_left(app: &App, t: &Theme, status_max: usize) -> Vec<Span<'static>> {
+fn system_left(app: &App, t: &Theme) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     // The badge is painted over the first columns of this row, so pad past it
     // before drawing the branch.
@@ -160,43 +154,7 @@ fn system_left(app: &App, t: &Theme, status_max: usize) -> Vec<Span<'static>> {
             Style::default().fg(t.text_dim),
         ));
     }
-    spans.extend(status_spans(app, t, status_max));
     spans
-}
-
-fn status_spans(app: &App, t: &Theme, max_label: usize) -> Vec<Span<'static>> {
-    let (icon, label, color) = if app.modal.is_some() {
-        ("?".to_string(), "waiting".to_string(), t.warn)
-    } else if app.running {
-        if app.active_tools.is_empty() {
-            let streaming = app.streaming.is_some();
-            let fallback = if streaming { "streaming" } else { "working" };
-            let label = app
-                .status_msg
-                .clone()
-                .unwrap_or_else(|| fallback.to_string());
-            let color = if streaming { t.accent } else { t.warn };
-            ("●".to_string(), label, color)
-        } else {
-            let names: Vec<&str> = app
-                .active_tools
-                .iter()
-                .map(|tool| tool.name.as_str())
-                .collect();
-            ("●".to_string(), names.join(" · "), t.warn)
-        }
-    } else if let Some(msg) = &app.status_msg {
-        ("●".to_string(), msg.clone(), t.accent2)
-    } else {
-        // Idle and configured: the brand badge already says who we are, so
-        // there is no status chip to show.
-        return Vec::new();
-    };
-    vec![
-        Span::styled(icon, Style::default().fg(color)),
-        Span::raw(" "),
-        Span::styled(fit_width(&label, max_label), Style::default().fg(color)),
-    ]
 }
 
 // ---------------------------------------------------------------- row 2

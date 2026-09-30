@@ -74,10 +74,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
         }
     }
     if let Some(s) = &app.streaming {
-        let stream_line = TranscriptLine {
-            kind: LineKind::Assistant,
-            text: s.clone(),
-        };
+        let stream_line = TranscriptLine::static_line(LineKind::Assistant, s.clone());
         let base = rows.len();
         rows.extend(render_line(&stream_line, &theme, render_width, tick, true));
         for _ in base..rows.len() {
@@ -86,10 +83,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     }
     if let Some(b) = &app.tool_status {
         if b.pending > 0 {
-            let live = TranscriptLine {
-                kind: LineKind::ToolStart,
-                text: b.live_label(),
-            };
+            let live = TranscriptLine::static_line(LineKind::ToolStart, b.live_label());
             let base = rows.len();
             rows.extend(render_line(&live, &theme, render_width, tick, false));
             for _ in base..rows.len() {
@@ -122,6 +116,21 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
                 ]));
             }
         }
+        for _ in base..rows.len() {
+            row_map.push(app.lines.len());
+        }
+    }
+    // Live activity status: a single ephemeral line at the very tail of the
+    // transcript (never part of the history). It replaces the old navbar chip
+    // so "working / streaming / tools / waiting" read in the chat itself.
+    // Pushed *after* every other live block (streaming text, tool status,
+    // subagent panels) so it is always the last line, never wedged mid-text.
+    if let Some((icon, label, color)) = live_status(app, &theme) {
+        let base = rows.len();
+        rows.push(Line::from(vec![
+            Span::styled(format!("  {icon} "), Style::default().fg(color)),
+            Span::styled(label, Style::default().fg(color)),
+        ]));
         for _ in base..rows.len() {
             row_map.push(app.lines.len());
         }
@@ -193,11 +202,7 @@ fn render_line(
         ),
         LineKind::Assistant => {
             let mut lines = bubble(
-                if streaming {
-                    "RustClaw · streaming"
-                } else {
-                    ASSISTANT_LABEL
-                },
+                ASSISTANT_LABEL,
                 ASSISTANT_ICON,
                 &line.text,
                 t.accent,
@@ -221,15 +226,23 @@ fn render_line(
             let collapsed = line
                 .text
                 .contains(crate::harness::ui::tui::transcript::THINKING_COLLAPSED_MARKER);
+            // Freshly streamed reasoning fades from the accent color to the
+            // resting dim color; older lines are already at rest.
+            let body_color = anim::reasoning_fade(line.born_tick, tick, t.accent, t.text_dim);
+            let active =
+                line.born_tick != 0 && tick.saturating_sub(line.born_tick) < anim::FADE_TICKS;
+            let header = if collapsed {
+                "💭 thinking (collapsed)".to_string()
+            } else if active {
+                format!("💭 thinking {}", anim::think_frame(tick))
+            } else {
+                "💭 reasoning".to_string()
+            };
             let mut out = vec![Line::from(vec![
                 Span::styled("  ╭ ", Style::default().fg(t.border)),
                 Span::styled(
-                    if collapsed {
-                        "💭 thinking (collapsed)"
-                    } else {
-                        "💭 reasoning"
-                    },
-                    Style::default().fg(t.text_dim).add_modifier(Modifier::DIM),
+                    header,
+                    Style::default().fg(body_color).add_modifier(Modifier::DIM),
                 ),
             ])];
             if collapsed {
@@ -237,7 +250,7 @@ fn render_line(
                     Span::styled("  │ ".to_string(), Style::default().fg(t.border)),
                     Span::styled(
                         line.text.clone(),
-                        Style::default().fg(t.text_dim).add_modifier(Modifier::DIM),
+                        Style::default().fg(body_color).add_modifier(Modifier::DIM),
                     ),
                 ]));
             } else {
@@ -245,7 +258,7 @@ fn render_line(
                 for w in markdown::wrap_plain(&line.text, body_w) {
                     out.push(Line::from(vec![
                         Span::styled("  │ ".to_string(), Style::default().fg(t.border)),
-                        Span::styled(w, Style::default().fg(t.text_dim)),
+                        Span::styled(w, Style::default().fg(body_color)),
                     ]));
                 }
             }
@@ -469,6 +482,39 @@ pub(crate) fn draw_scrollbar(
     }
 }
 
+/// The ephemeral activity line shown at the tail of the transcript.
+///
+/// Returns `(icon, label, color)` for the current state, or `None` when idle
+/// with nothing to report. Every active state spins the same dense braille orb
+/// (see [`anim::think_frame`]); the state is told apart by color and label.
+fn live_status(app: &App, t: &Theme) -> Option<(String, String, ratatui::style::Color)> {
+    let orb = || anim::think_frame(app.tick).to_string();
+    if app.modal.is_some() {
+        return Some(("?".to_string(), "waiting".to_string(), t.warn));
+    }
+    if app.running {
+        if app.active_tools.is_empty() {
+            let streaming = app.streaming.is_some();
+            let fallback = if streaming { "streaming" } else { "working" };
+            let label = app
+                .status_msg
+                .clone()
+                .unwrap_or_else(|| fallback.to_string());
+            let color = if streaming { t.accent } else { t.warn };
+            return Some((orb(), label, color));
+        }
+        let names: Vec<&str> = app
+            .active_tools
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect();
+        return Some((orb(), names.join(" · "), t.warn));
+    }
+    app.status_msg
+        .clone()
+        .map(|msg| ("●".to_string(), msg, t.accent2))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -641,6 +687,107 @@ mod tests {
         assert!(
             !joined.contains("| Rust |"),
             "raw markdown pipes leaked:\n{joined}"
+        );
+    }
+
+    #[test]
+    fn live_status_uses_the_animated_orb_for_active_states() {
+        use crate::harness::ui::tui::anim::{think_frame, THINK_SPIN};
+        let t = Theme::cyberclaw();
+        let mut app = App::inline_for_tests("");
+
+        // Streaming: orb + accent color.
+        app.running = true;
+        app.streaming = Some("partial".to_string());
+        app.tick = 4;
+        let (icon, label, _) = live_status(&app, &t).expect("streaming status");
+        assert_eq!(icon, think_frame(4));
+        assert!(THINK_SPIN.contains(&icon.as_str()));
+        assert_eq!(label, "streaming");
+
+        // Working (no tools, no stream): same orb, "working" label.
+        app.streaming = None;
+        let (icon, label, _) = live_status(&app, &t).expect("working status");
+        assert_eq!(icon, think_frame(4));
+        assert_eq!(label, "working");
+
+        // Tools running: still the orb, label lists the tools.
+        app.active_tools = vec![crate::harness::ui::tui::transcript::ActiveTool {
+            name: "bash".to_string(),
+        }];
+        let (icon, label, _) = live_status(&app, &t).expect("tool status");
+        assert_eq!(icon, think_frame(4));
+        assert_eq!(label, "bash");
+
+        // The orb actually animates across ticks.
+        app.tick = 6;
+        let (icon, _, _) = live_status(&app, &t).expect("tool status");
+        assert_ne!(icon, think_frame(4));
+    }
+
+    #[test]
+    fn live_status_is_none_when_idle() {
+        let t = Theme::cyberclaw();
+        let app = App::inline_for_tests("");
+        assert!(live_status(&app, &t).is_none());
+    }
+
+    #[test]
+    fn live_status_shows_status_msg_when_idle() {
+        let t = Theme::cyberclaw();
+        let mut app = App::inline_for_tests("");
+        app.status_msg = Some("copied 120 chars".to_string());
+        let (icon, label, _) = live_status(&app, &t).expect("status msg");
+        assert_eq!(icon, "●");
+        assert_eq!(label, "copied 120 chars");
+    }
+
+    /// The live status line must be the *last* live row: after the streaming
+    /// assistant text and after the tool-status batch. Regression guard for the
+    /// bug where `⣼ streaming` was wedged between the tool block and the
+    /// assistant block.
+    #[test]
+    fn live_status_renders_after_streaming_and_tool_status() {
+        use crate::harness::ui::tui::transcript::{ActiveTool, ToolBatch};
+
+        let mut app = App::inline_for_tests("");
+        app.splash = None; // skip the splash screen so the transcript draws
+                           // An in-flight tool batch (renders "read src/main.rs (1/2)").
+        app.tool_status = Some(ToolBatch {
+            counts: vec![("read".to_string(), 1)],
+            last_path: "src/main.rs".to_string(),
+            last_name: "read".to_string(),
+            done: 1,
+            failed: 0,
+            pending: 1,
+        });
+        // Assistant text still streaming, turn in flight.
+        app.running = true;
+        app.streaming = Some("ASSISTANT_STREAM_MARKER".to_string());
+        // An in-flight tool so `live_status` yields the "tools" line.
+        app.active_tools = vec![ActiveTool {
+            name: "bash".to_string(),
+        }];
+
+        let buf = crate::harness::ui::tui::draw::render_to_buffer(&mut app, 100, 40);
+        let text: String = buf
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>()
+            .replace('\u{0}', " ");
+
+        let stream_at = text.find("ASSISTANT_STREAM_MARKER").expect("stream text");
+        let tool_at = text.find("read src/main.rs").expect("tool status");
+        let status_at = text.find("bash").expect("live status");
+
+        assert!(
+            status_at > stream_at,
+            "live status must come after streaming text"
+        );
+        assert!(
+            status_at > tool_at,
+            "live status must come after the tool-status batch"
         );
     }
 }

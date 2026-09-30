@@ -340,6 +340,7 @@ mod code_block_tests {
                     _ => LineKind::System,
                 },
                 text: t.to_string(),
+                born_tick: 0,
             })
             .collect();
         app
@@ -390,14 +391,17 @@ mod search_tests {
             TranscriptLine {
                 kind: LineKind::User,
                 text: "Fix the Parser bug".into(),
+                born_tick: 0,
             },
             TranscriptLine {
                 kind: LineKind::Assistant,
                 text: "done, parser updated".into(),
+                born_tick: 0,
             },
             TranscriptLine {
                 kind: LineKind::System,
                 text: "unrelated".into(),
+                born_tick: 0,
             },
         ];
         assert_eq!(search_lines(&lines, "parser"), vec![0, 1]);
@@ -411,6 +415,7 @@ mod search_tests {
         let lines = vec![TranscriptLine {
             kind: LineKind::User,
             text: "hello".into(),
+            born_tick: 0,
         }];
         assert!(search_lines(&lines, "").is_empty());
         assert!(search_lines(&lines, "   ").is_empty());
@@ -422,14 +427,17 @@ mod search_tests {
             TranscriptLine {
                 kind: LineKind::User,
                 text: "alpha".into(),
+                born_tick: 0,
             },
             TranscriptLine {
                 kind: LineKind::Assistant,
                 text: "beta".into(),
+                born_tick: 0,
             },
             TranscriptLine {
                 kind: LineKind::User,
                 text: "ALPHA again".into(),
+                born_tick: 0,
             },
         ];
         let mut st = SearchState::new();
@@ -453,6 +461,7 @@ mod search_tests {
         let lines = vec![TranscriptLine {
             kind: LineKind::User,
             text: "x".into(),
+            born_tick: 0,
         }];
         let mut st = SearchState::new();
         st.push_char('z');
@@ -470,6 +479,7 @@ mod thinking_tests {
         TranscriptLine {
             kind: LineKind::Reasoning,
             text: text.to_string(),
+            born_tick: 0,
         }
     }
 
@@ -477,6 +487,7 @@ mod thinking_tests {
         TranscriptLine {
             kind: LineKind::Assistant,
             text: text.to_string(),
+            born_tick: 0,
         }
     }
 

@@ -275,6 +275,7 @@ pub async fn run_tui(
             }
         }
 
+        app.tick_toast();
         let now = std::time::Instant::now();
         let anim = app.needs_anim();
         if should_draw(app.needs_redraw, anim, last_draw, now) {

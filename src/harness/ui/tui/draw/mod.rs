@@ -14,6 +14,7 @@ mod skill_picker;
 mod splash;
 mod status;
 mod theme_picker;
+pub(crate) mod toast;
 pub(crate) mod transcript;
 
 use crate::harness::ui::tui::app::App;
@@ -120,6 +121,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             palette_view::draw_autocomplete(frame, ac, &app.theme, rows[3], area);
         }
     }
+
+    // Floating toast: drawn over the transcript but under any modal, so a
+    // permission prompt always wins visually.
+    toast::draw(frame, app, content);
 
     if let Some(modal) = &app.modal {
         modal::draw(
@@ -256,4 +261,44 @@ pub fn render_to_buffer(app: &mut App, width: u16, height: u16) -> ratatui::buff
     let mut terminal = Terminal::new(backend).expect("test terminal");
     terminal.draw(|frame| draw(frame, app)).expect("test draw");
     terminal.backend().buffer().clone()
+}
+
+#[cfg(test)]
+mod toast_tests {
+    use super::*;
+    use crate::harness::ui::tui::app::App;
+    use crate::harness::ui::tui::draw::toast::{ToastKind, TOAST_TICKS};
+
+    fn buffer_text(app: &mut App) -> String {
+        let buf = render_to_buffer(app, 100, 40);
+        buf.content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>()
+            .replace('\u{0}', " ")
+    }
+
+    #[test]
+    fn toast_is_rendered_over_the_transcript() {
+        let mut app = App::inline_for_tests("");
+        app.splash = None;
+        app.push_toast_kind("copied 42 chars", ToastKind::Success);
+        let text = buffer_text(&mut app);
+        assert!(
+            text.contains("copied 42 chars"),
+            "toast text should be visible in the frame"
+        );
+    }
+
+    #[test]
+    fn expired_toast_disappears_after_tick() {
+        let mut app = App::inline_for_tests("");
+        app.splash = None;
+        app.push_toast("hello toast");
+        app.tick = app.tick.wrapping_add(TOAST_TICKS + 1);
+        app.tick_toast();
+        assert!(app.toast.is_none(), "toast should be dropped once expired");
+        let text = buffer_text(&mut app);
+        assert!(!text.contains("hello toast"), "expired toast must not draw");
+    }
 }

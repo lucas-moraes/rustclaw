@@ -10,6 +10,7 @@ use crate::harness::skill::PromptSkillToggle;
 use crate::harness::tool::context::AbortSignal;
 use crate::harness::ui::tui::anim::{Particle, SplashState};
 use crate::harness::ui::tui::askers::{PermissionRequest, QuestionRequest};
+use crate::harness::ui::tui::draw::toast::{Toast, ToastKind};
 use crate::harness::ui::tui::palette::{AutoComplete, PaletteState};
 use crate::harness::ui::tui::selection::{self, CellPos, PendingClick, TextSelection};
 use crate::harness::ui::tui::subagent::SubagentPanel;
@@ -95,6 +96,9 @@ pub struct App {
     /// Cumulative tokens for the current UI session.
     pub session_usage: Usage,
     pub status_msg: Option<String>,
+    /// Ephemeral bottom-right notification (copied text, attached image, …).
+    /// Independent of `status_msg` so turn state is never clobbered.
+    pub toast: Option<Toast>,
     pub show_help: bool,
     pub help_section: usize,
     pub modal: Option<Modal>,
@@ -874,6 +878,7 @@ impl App {
             last_usage: Usage::default(),
             session_usage: Usage::default(),
             status_msg: None,
+            toast: None,
             show_help: false,
             help_section: 0,
             modal: None,
@@ -953,7 +958,7 @@ impl App {
             .unwrap_or("paste.png")
             .to_string();
         self.attach_pending_image(path);
-        self.status_msg = Some(format!("image attached: {name} (send with next prompt)"));
+        self.push_toast_kind(format!("image attached: {name}"), ToastKind::Success);
         Ok(true)
     }
 
@@ -966,7 +971,7 @@ impl App {
                     crate::harness::session::image::resolve_and_validate(&s, &self.cwd)?
                 }
                 None => {
-                    self.status_msg = Some("image picker cancelled".into());
+                    self.push_toast("image picker cancelled");
                     return Ok(());
                 }
             }
@@ -979,7 +984,7 @@ impl App {
             .unwrap_or("image")
             .to_string();
         self.attach_pending_image(path);
-        self.status_msg = Some(format!("image attached: {name} (send with next prompt)"));
+        self.push_toast_kind(format!("image attached: {name}"), ToastKind::Success);
         self.add_system(&format!(
             "image attached: {name} — send your next prompt (or Ctrl+V to paste more)"
         ));
@@ -1006,6 +1011,21 @@ impl App {
     pub fn scroll_to_top(&mut self) {
         self.stick_bottom = false;
         self.scroll = 0;
+        self.mark_dirty();
+    }
+
+    /// Raises an ephemeral bottom-right toast (info flavor).
+    pub(crate) fn push_toast(&mut self, text: impl Into<String>) {
+        self.push_toast_kind(text, ToastKind::Info);
+    }
+
+    /// Raises an ephemeral bottom-right toast with an explicit flavor. A new
+    /// toast replaces any still-visible one and restarts its lifetime.
+    pub(crate) fn push_toast_kind(&mut self, text: impl Into<String>, kind: ToastKind) {
+        // `born_tick == 0` is reserved for "never animated" (static toasts in
+        // tests), so a toast raised on the very first frame is stamped 1.
+        let born = self.tick.max(1);
+        self.toast = Some(Toast::new(text, kind, born));
         self.mark_dirty();
     }
 
@@ -1037,6 +1057,21 @@ impl App {
             || self.theme_picker.is_some()
             || self.search.is_some()
             || self.selection.as_ref().map(|s| s.dragging).unwrap_or(false)
+            || self.toast.is_some()
+    }
+
+    /// Drops the toast once it has outlived its lifetime. Called once per
+    /// frame before drawing so the notification disappears on its own.
+    pub(crate) fn tick_toast(&mut self) {
+        if self
+            .toast
+            .as_ref()
+            .map(|t| t.expired(self.tick))
+            .unwrap_or(false)
+        {
+            self.toast = None;
+            self.mark_dirty();
+        }
     }
 
     /// Opens the `/models` picker (only while idle).
@@ -1189,9 +1224,17 @@ impl App {
     }
 
     pub(crate) fn push(&mut self, kind: LineKind, text: impl Into<String>) {
+        self.push_at(kind, text, self.tick);
+    }
+
+    /// Pushes a line stamped with an explicit birth tick. Reasoning deltas use
+    /// the current tick so the draw layer can fade them in; history rebuilds
+    /// pass `0` to render them already at rest.
+    pub(crate) fn push_at(&mut self, kind: LineKind, text: impl Into<String>, born_tick: u64) {
         self.lines.push(TranscriptLine {
             kind,
             text: text.into(),
+            born_tick,
         });
         self.mark_dirty();
     }
@@ -1243,7 +1286,7 @@ impl App {
         }
         if copy_to_clipboard(&text) {
             let n = text.chars().count();
-            self.status_msg = Some(format!("copied {n} chars"));
+            self.push_toast_kind(format!("copied {n} chars"), ToastKind::Success);
             true
         } else {
             self.push(LineKind::Error, "[error] clipboard unavailable".to_string());

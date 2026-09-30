@@ -105,7 +105,9 @@ impl App {
             HarnessEvent::ReasoningDelta { delta, .. } => {
                 if delta.chars().count() >= 40 {
                     self.flush_stream_now();
-                    self.push(LineKind::Reasoning, delta);
+                    // Stamp with the current tick so the draw layer fades the
+                    // freshly arrived reasoning block in.
+                    self.push_at(LineKind::Reasoning, delta, self.tick);
                 }
             }
             HarnessEvent::MessageUpdated { .. } => {

@@ -8,6 +8,12 @@ use super::theme::Theme;
 /// Braille spinner frames.
 pub const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
+/// Dense circular braille spinner used for every *active* state (streaming,
+/// working, tools running). Heavier than `SPINNER` so activity reads as a
+/// spinning orb. All glyphs are braille (U+28xx, width 1), so they never
+/// disturb layout the way a wide emoji would.
+pub const THINK_SPIN: &[&str] = &["⣼", "⣹", "⢻", "⠿", "⡟", "⣏", "⣧", "⣶"];
+
 /// Claw-ish alternate spinner.
 // Kept as part of the animation API (alternate spinner style); not currently
 // wired into the UI, but intentionally public for future use.
@@ -26,6 +32,54 @@ pub const CURSOR_OFF: &str = " ";
 
 pub fn spinner_frame(tick: u64) -> &'static str {
     SPINNER[(tick as usize / 2) % SPINNER.len()]
+}
+
+/// Frame of the dense circular braille orb used for active states.
+pub fn think_frame(tick: u64) -> &'static str {
+    THINK_SPIN[(tick as usize / 2) % THINK_SPIN.len()]
+}
+
+/// Number of draw ticks a freshly streamed reasoning line takes to settle from
+/// its "hot" accent color to the resting dim color (~0.4 s at 30 fps).
+pub const FADE_TICKS: u64 = 12;
+
+/// Linear blend between two RGB colors. `t` is clamped to `0.0..=1.0`.
+/// Non-RGB colors fall back to `to` (the resting color).
+pub fn blend(
+    from: ratatui::style::Color,
+    to: ratatui::style::Color,
+    t: f32,
+) -> ratatui::style::Color {
+    use ratatui::style::Color;
+    let t = t.clamp(0.0, 1.0);
+    match (from, to) {
+        (Color::Rgb(fr, fg, fb), Color::Rgb(tr, tg, tb)) => {
+            let mix = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * t).round() as u8;
+            Color::Rgb(mix(fr, tr), mix(fg, tg), mix(fb, tb))
+        }
+        _ => to,
+    }
+}
+
+/// Color for a reasoning line born at `born_tick`, observed at `tick`.
+///
+/// `born_tick == 0` means the line is already at rest (history/tests), so it
+/// returns `rest` directly. Otherwise it fades from `hot` to `rest` over
+/// [`FADE_TICKS`], after which it is stable and costs nothing to render.
+pub fn reasoning_fade(
+    born_tick: u64,
+    tick: u64,
+    hot: ratatui::style::Color,
+    rest: ratatui::style::Color,
+) -> ratatui::style::Color {
+    if born_tick == 0 {
+        return rest;
+    }
+    let age = tick.saturating_sub(born_tick);
+    if age >= FADE_TICKS {
+        return rest;
+    }
+    blend(hot, rest, age as f32 / FADE_TICKS as f32)
 }
 
 /// Alternate claw spinner frame. Part of the animation API; not currently
@@ -262,5 +316,52 @@ mod tests {
         // Early frames show fewer rows; by frame 12 the full art is visible.
         assert!(claw_logo(0).len() < claw_logo(100).len());
         assert_eq!(claw_logo(12).len(), claw_logo(100).len());
+    }
+
+    #[test]
+    fn think_frame_cycles_through_all_orb_glyphs() {
+        // The orb must actually animate: consecutive ticks yield different
+        // frames, and every glyph in the set is reachable.
+        let seen: std::collections::HashSet<&str> = (0..(THINK_SPIN.len() as u64 * 2))
+            .map(think_frame)
+            .collect();
+        assert_eq!(seen.len(), THINK_SPIN.len());
+        assert_ne!(think_frame(0), think_frame(2));
+    }
+
+    #[test]
+    fn reasoning_fade_is_stable_when_born_tick_is_zero() {
+        // History/tests stamp `0`; those lines must render at rest, never hot.
+        let hot = ratatui::style::Color::Rgb(255, 0, 0);
+        let rest = ratatui::style::Color::Rgb(0, 0, 255);
+        assert_eq!(reasoning_fade(0, 0, hot, rest), rest);
+        assert_eq!(reasoning_fade(0, 999, hot, rest), rest);
+    }
+
+    #[test]
+    fn reasoning_fade_interpolates_then_settles() {
+        let hot = ratatui::style::Color::Rgb(255, 0, 0);
+        let rest = ratatui::style::Color::Rgb(0, 0, 255);
+        // At birth the line is fully hot.
+        assert_eq!(reasoning_fade(100, 100, hot, rest), hot);
+        // Midway it is a blend, distinct from both endpoints.
+        let mid = reasoning_fade(100, 100 + FADE_TICKS / 2, hot, rest);
+        assert_ne!(mid, hot);
+        assert_ne!(mid, rest);
+        // Once the fade window elapses it is stable at rest.
+        assert_eq!(reasoning_fade(100, 100 + FADE_TICKS, hot, rest), rest);
+        assert_eq!(reasoning_fade(100, 100 + FADE_TICKS * 10, hot, rest), rest);
+    }
+
+    #[test]
+    fn blend_clamps_and_falls_back_for_non_rgb() {
+        use ratatui::style::Color;
+        let a = Color::Rgb(0, 0, 0);
+        let b = Color::Rgb(100, 200, 50);
+        assert_eq!(blend(a, b, 0.0), a);
+        assert_eq!(blend(a, b, 1.0), b);
+        assert_eq!(blend(a, b, 2.0), b); // clamped
+                                         // Non-RGB endpoints fall back to the resting color.
+        assert_eq!(blend(Color::Red, b, 0.5), b);
     }
 }

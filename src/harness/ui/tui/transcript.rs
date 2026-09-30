@@ -22,6 +22,21 @@ pub enum LineKind {
 pub struct TranscriptLine {
     pub kind: LineKind,
     pub text: String,
+    /// Draw tick at which this line appeared. Used to animate a short
+    /// "fade-in" for freshly streamed reasoning lines. `0` means "already at
+    /// rest" (history rebuilds, tests, static lines) and renders as stable.
+    pub born_tick: u64,
+}
+
+impl TranscriptLine {
+    /// A line that is already at rest (no fade-in animation).
+    pub fn static_line(kind: LineKind, text: impl Into<String>) -> Self {
+        Self {
+            kind,
+            text: text.into(),
+            born_tick: 0,
+        }
+    }
 }
 
 /// Marker appended to the collapsed thinking summary line; the draw layer
@@ -66,6 +81,7 @@ pub fn collapse_thinking(lines: &[TranscriptLine], expanded: bool) -> Vec<Transc
                 "{}{} ({} chars thinking — {}",
                 preview, ellipsis, total_chars, THINKING_COLLAPSED_MARKER
             ),
+            born_tick: 0,
         });
     }
     out
