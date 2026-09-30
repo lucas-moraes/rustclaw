@@ -84,6 +84,8 @@ impl McpManager {
                         .insert(name, McpServerStatus::Connected);
                 }
                 Err(e) => {
+                    // Safe on stderr: `reconnect_all` runs from `connect_all` during
+                    // `init_mcp` before the TUI enters the alternate screen.
                     eprintln!("[warn] mcp server `{name}` failed: {e:#}");
                     self.status
                         .write()
@@ -175,8 +177,8 @@ impl McpManager {
                     .count()
                     >= MAX_TOOLS_PER_SERVER
                 {
-                    eprintln!(
-                        "[warn] mcp server `{name}` exposes more than {MAX_TOOLS_PER_SERVER} tools; truncating"
+                    tracing::warn!(
+                        "mcp server `{name}` exposes more than {MAX_TOOLS_PER_SERVER} tools; truncating"
                     );
                     break;
                 }
@@ -211,8 +213,8 @@ impl McpManager {
             Ok(out) => Ok(out),
             Err(first_err) => {
                 // Transport may have died: try one reconnect + retry.
-                eprintln!(
-                    "[warn] mcp server `{server}` call failed ({first_err:#}); attempting reconnect"
+                tracing::warn!(
+                    "mcp server `{server}` call failed ({first_err:#}); attempting reconnect"
                 );
                 self.restart(server).await.map_err(|e| {
                     anyhow::anyhow!(

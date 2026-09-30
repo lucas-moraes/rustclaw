@@ -443,15 +443,14 @@ pub fn cyber_badge(frame: &mut Frame, area: Rect, accent: Color, title: &str) {
         height: 1,
     };
     let buf = frame.buffer_mut();
-    let mut x = chip.x;
-    for ch in label.chars() {
-        if x >= chip.x + label_w {
+    for (i, ch) in label.chars().enumerate() {
+        if i >= label_w as usize {
             break;
         }
+        let x = chip.x + i as u16;
         buf[(x, chip.y)]
             .set_symbol(&ch.to_string())
             .set_style(Style::default().fg(accent).add_modifier(Modifier::BOLD));
-        x += 1;
     }
     // diagonal cut right after the chip
     if chip.x + label_w < area.x + area.width - 1 {

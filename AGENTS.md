@@ -180,10 +180,13 @@ src/
             └── markdown.rs # Renderização de Markdown
 ```
 
-TUI draw loop (`app/runner.rs`): `needs_redraw` + teto `MIN_FRAME_DT` (~30 fps);
-`tick++` só no frame desenhado. Streaming usa `pending_stream` (flush ~64 ms / 80
-chars). `TerminalGuard` + panic hook restauram o terminal (idempotente; abort
-não restaura). Pickers compartilham `FuzzyList` (`fuzzy.rs`).
+TUI draw loop (`app/runner.rs`): após `EnterAlternateScreen`, `terminal.clear()`
+antes do loop (remove resquícios do shell). `needs_redraw` + teto `MIN_FRAME_DT`
+(~30 fps); `tick++` só no frame desenhado. `last_draw` inicia offsetado por
+`MIN_FRAME_DT` para o primeiro frame não esperar o throttle. Streaming usa
+`pending_stream` (flush ~64 ms / 80 chars). `TerminalGuard` + panic hook restauram
+o terminal (idempotente; abort não restaura). Pickers compartilham `FuzzyList`
+(`fuzzy.rs`).
 
 ## Configuration (file-based, no `.env`)
 

@@ -51,6 +51,9 @@ pub async fn run_tui(
     );
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
+    // Physical clear before any draw or async boot work so shell scrollback
+    // does not bleed through the alternate screen.
+    terminal.clear()?;
     let _guard = TerminalGuard;
 
     let prev_hook = std::sync::Arc::new(std::panic::take_hook());
