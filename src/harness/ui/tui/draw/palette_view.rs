@@ -3,7 +3,9 @@
 use crate::harness::ui::tui::draw::centered_rect;
 use crate::harness::ui::tui::draw::centered_rect_fixed;
 use crate::harness::ui::tui::draw::transcript::draw_scrollbar;
-use crate::harness::ui::tui::palette::{kind_label, AutoComplete, PaletteKind, PaletteState};
+use crate::harness::ui::tui::palette::{
+    kind_label, AutoComplete, PaletteItem, PaletteKind, PaletteState,
+};
 use crate::harness::ui::tui::theme::Theme;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
@@ -123,7 +125,24 @@ pub fn draw_autocomplete(
     input_area: Rect,
     full: Rect,
 ) {
-    let shown: Vec<_> = ac.matches.iter().take(8).collect();
+    // Sliding window: keep the selected item visible when there are more
+    // matches than fit (navigation wraps over the full match list).
+    let max_show = 8usize;
+    let total = ac.matches.len();
+    let start = if total <= max_show {
+        0
+    } else {
+        let sel = ac.selected;
+        if sel + max_show / 2 >= max_show {
+            (sel + max_show / 2 + 1)
+                .saturating_sub(max_show)
+                .min(total - max_show)
+        } else {
+            0
+        }
+    };
+    let shown: Vec<&PaletteItem> = ac.matches.iter().skip(start).take(max_show).collect();
+    let sel_in_window = ac.selected.saturating_sub(start);
     let n = shown.len() as u16;
     if n == 0 {
         return;
@@ -165,14 +184,21 @@ pub fn draw_autocomplete(
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(t.accent2))
-        .title(Span::styled(" / ", Style::default().fg(t.accent2)))
+        .title(Span::styled(
+            if total > max_show {
+                format!(" / ({}/{}) ", ac.selected + 1, total)
+            } else {
+                " / ".to_string()
+            },
+            Style::default().fg(t.accent2),
+        ))
         .style(Style::default().bg(t.surface));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
     let mut lines = Vec::new();
-    for (i, item) in ac.matches.iter().take(8).enumerate() {
-        let sel = i == ac.selected;
+    for (i, item) in shown.iter().enumerate() {
+        let sel = i == sel_in_window;
         let style = if sel {
             Style::default()
                 .fg(t.text_bright)
@@ -208,5 +234,46 @@ fn truncate(s: &str, max: usize) -> String {
         let mut o: String = s.chars().take(max.saturating_sub(1)).collect();
         o.push('…');
         o
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::harness::ui::tui::palette::{AutoComplete, PaletteItem, PaletteKind};
+
+    fn item(id: &str) -> PaletteItem {
+        PaletteItem {
+            id: id.into(),
+            label: format!("/{id}"),
+            description: "desc".into(),
+            kind: PaletteKind::Command,
+            payload: id.into(),
+        }
+    }
+
+    #[test]
+    fn autocomplete_window_keeps_selected_visible() {
+        let items: Vec<_> = (0..12).map(|i| item(&format!("cmd{i}"))).collect();
+        let mut ac = AutoComplete {
+            selected: 0,
+            matches: items,
+        };
+        // navega até o último item (wrap-around)
+        ac.move_sel(11);
+        assert_eq!(ac.selected, 11);
+
+        // janela: total=12 > 8, sel=11 -> start=4, item 11 visível
+        let total = ac.matches.len();
+        let max_show = 8usize;
+        let start = if total <= max_show {
+            0
+        } else {
+            (ac.selected + max_show / 2 + 1)
+                .saturating_sub(max_show)
+                .min(total - max_show)
+        };
+        assert!(start <= ac.selected && ac.selected < start + max_show);
+        assert_eq!(start, 4);
     }
 }
