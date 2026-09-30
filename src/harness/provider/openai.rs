@@ -258,7 +258,9 @@ pub fn parse_response(json: &Value) -> anyhow::Result<(Vec<Part>, Option<Usage>,
         cache_read_tokens: u["prompt_tokens_details"]["cached_tokens"]
             .as_u64()
             .unwrap_or(0),
-        cache_write_tokens: 0,
+        cache_write_tokens: u["prompt_tokens_details"]["cache_write_tokens"]
+            .as_u64()
+            .unwrap_or(0),
     });
     let stop_reason = choice
         .get("finish_reason")
@@ -415,7 +417,9 @@ impl super::SseHandler for OpenAiStreamState {
                 cache_read_tokens: usage["prompt_tokens_details"]["cached_tokens"]
                     .as_u64()
                     .unwrap_or(0),
-                cache_write_tokens: 0,
+                cache_write_tokens: usage["prompt_tokens_details"]["cache_write_tokens"]
+                    .as_u64()
+                    .unwrap_or(0),
             });
         }
         if let Some(fr) = json["choices"][0]["finish_reason"]
@@ -711,14 +715,14 @@ mod tests {
             "usage": {
                 "prompt_tokens": 5000,
                 "completion_tokens": 100,
-                "prompt_tokens_details": {"cached_tokens": 4200}
+                "prompt_tokens_details": {"cached_tokens": 4200, "cache_write_tokens": 800}
             }
         });
         let (_, usage, _) = parse_response(&json).unwrap();
         let u = usage.unwrap();
         assert_eq!(u.input_tokens, 5000);
         assert_eq!(u.cache_read_tokens, 4200);
-        assert_eq!(u.cache_write_tokens, 0);
+        assert_eq!(u.cache_write_tokens, 800);
     }
 
     #[test]

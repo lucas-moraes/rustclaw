@@ -302,7 +302,8 @@ pub fn estimate_cost(provider: &str, model: &str, input_tokens: u64, output_toke
 /// - Anthropic: `input_tokens` EXCLUDES cache tokens, so billable input is
 ///   `input + 1.25×cache_write + 0.1×cache_read`.
 /// - OpenAI-compatible: `prompt_tokens` INCLUDES cached tokens, so billable
-///   input is `(input − cache_read) + 0.5×cache_read` (writes don't exist).
+///   input is `(input − cache_read) + 0.5×cache_read + 1.25×cache_write`
+///   (DeepInfra write premium at the 5m TTL; OpenAI never reports writes).
 pub fn estimate_cost_cached(
     provider: &str,
     model: &str,
@@ -317,6 +318,7 @@ pub fn estimate_cost_cached(
     } else {
         (usage.input_tokens.saturating_sub(usage.cache_read_tokens)) as f64
             + 0.5 * usage.cache_read_tokens as f64
+            + 1.25 * usage.cache_write_tokens as f64
     };
     per_m(input_billable) * pi + per_m(usage.output_tokens as f64) * po
 }
