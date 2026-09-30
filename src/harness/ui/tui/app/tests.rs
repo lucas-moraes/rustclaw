@@ -1386,8 +1386,14 @@ mod snapshot_and_picker_tests {
     fn test_snapshot_status_bar_idle() {
         let mut app = App::inline_for_tests("");
         prep_snapshot(&mut app);
+        app.runtime.config.model = "test-model".to_string();
+        app.runtime.config.provider = "testprov".to_string();
         let buf = crate::harness::ui::tui::draw::render_to_buffer(&mut app, 80, 24);
-        assert!(buffer_has(&buf, "idle") || buffer_has(&buf, "ctx"));
+        // The status bar now shows only the model and provider.
+        assert!(buffer_has(&buf, "test-model"));
+        assert!(buffer_has(&buf, "testprov"));
+        assert!(!buffer_has(&buf, "idle"));
+        assert!(!buffer_has(&buf, "ctx"));
     }
 
     #[test]

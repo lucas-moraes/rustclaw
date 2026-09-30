@@ -50,7 +50,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // transcript gets the full width. Hidden only when the terminal is
     // too short to keep a transcript under it.
     let nav_h = if area.height >= sidebar::MIN_TERMINAL_HEIGHT {
-        sidebar::HEIGHT
+        sidebar::height(app)
     } else {
         0
     };
@@ -71,11 +71,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         (true, false) | (false, true) => 1,
         (false, false) => 0,
     };
-    // The input box grows with soft-wrapped visual rows (border + 1 text row
-    // + up to 9 extra wrapped/newline rows), cap at 12 total.
-    // Text width used for wrapping: inner width minus borders (2). No left
-    // prefix in the prompt input.
-    let est_inner = content.width.saturating_sub(2).max(1) as usize;
+    // The input box grows with soft-wrapped visual rows (1 text row + up to
+    // 9 extra wrapped/newline rows), cap at 10 total, plus 2 rows for the
+    // rounded border (top + bottom). The border costs 2 columns and the prompt
+    // adds 1 column of padding inside it, so wrapping sees width - 4.
+    let est_inner = content.width.saturating_sub(4).max(1) as usize;
     let vis_rows = crate::harness::ui::tui::input::wrap_input_rows(&app.input, est_inner).len();
     let input_h: u16 = 3 + (vis_rows_extra(vis_rows)).min(9);
 
@@ -90,16 +90,17 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     transcript::draw(frame, app, rows[0]);
     status::draw(frame, app, rows[1]);
+    let chips_row = rows[2];
     if has_chips {
         if has_skill_chips && has_image_chip {
             let chip_rows =
-                Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).split(rows[2]);
+                Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).split(chips_row);
             skill_picker::draw_chips(frame, app, chip_rows[0]);
             input::draw_pending_images(frame, app, chip_rows[1]);
         } else if has_skill_chips {
-            skill_picker::draw_chips(frame, app, rows[2]);
+            skill_picker::draw_chips(frame, app, chips_row);
         } else {
-            input::draw_pending_images(frame, app, rows[2]);
+            input::draw_pending_images(frame, app, chips_row);
         }
     }
     if app.runtime.config.is_configured() {
@@ -157,7 +158,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
 
     let t = &app.theme;
     let line = Line::from(vec![
-        Span::styled(" ", Style::default()),
+        Span::styled(" ", Style::default().fg(t.border)),
         Span::styled("?", Style::default().fg(t.accent)),
         Span::styled(" help", Style::default().fg(t.text_dim)),
         Span::styled("  ·  ", Style::default().fg(t.border)),
@@ -186,11 +187,12 @@ fn vis_rows_extra(n: usize) -> u16 {
 fn draw_unconfigured_hint(frame: &mut Frame, app: &App, area: Rect) {
     use ratatui::style::Style;
     use ratatui::text::{Line, Span};
-    use ratatui::widgets::{Block, Borders, Paragraph};
+    use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
     let t = &app.theme;
     let block = Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(t.warn))
         .title(Span::styled(
             " setup required ",

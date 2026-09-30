@@ -19,18 +19,24 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     let theme = app.theme.clone();
     let tick = app.tick;
 
-    // Content area: no frame border. Horizontal margins keep breathing room
-    // on both sides of the chat, plus room for the scrollbar on the right.
-    const H_MARGIN: u16 = 3;
+    // Content area: no frame border and no outer margin — the transcript uses
+    // the full width. The 1-col gutter that keeps text off the terminal edge
+    // is applied per line inside `bubble` (BODY_PAD), so the scrollbar and the
+    // hit-testing still see the whole area.
+    const H_PAD: u16 = 0;
+    // Inner padding: one column on each side of the text, applied per line
+    // (not by shrinking the area) so the scrollbar keeps the last column and
+    // hit-testing still maps to the full width.
+    const INNER_PAD: usize = 1;
     // Vertical padding: one blank row at the top and one at the bottom so the
     // first/last visible line never sits flush against the frame. This is
     // internal padding (it does not steal a row from the layout), so the
     // transcript keeps its full height and the last line stays readable.
     const V_PAD: u16 = 1;
     let content = Rect {
-        x: area.x.saturating_add(H_MARGIN),
+        x: area.x.saturating_add(H_PAD),
         y: area.y.saturating_add(V_PAD),
-        width: area.width.saturating_sub(H_MARGIN * 2).max(1),
+        width: area.width.saturating_sub(H_PAD * 2).max(1),
         height: area.height.saturating_sub(V_PAD * 2).max(1),
     };
     let width = content.width as usize;
@@ -42,10 +48,25 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     for (li, line) in collapsed.iter().enumerate() {
         let base = rows.len();
         rows.extend(render_line(line, &theme, width, tick, false));
-        // Breathing room between messages.
+        // Breathing room between messages: a blank row plus a 1-col left
+        // gutter so blocks read as separate cards.
         rows.push(Line::from(""));
         for _ in base..rows.len() {
             row_map.push(li);
+        }
+    }
+    // Inner side padding: indent every row by INNER_PAD columns on the left and
+    // pad the right edge so text never touches the terminal border. Applied
+    // here (after rendering) so the markdown wrap width already accounts for
+    // the left gutter.
+    if INNER_PAD > 0 {
+        let pad = " ".repeat(INNER_PAD);
+        for row in rows.iter_mut() {
+            let mut spans = Vec::with_capacity(row.spans.len() + 2);
+            spans.push(Span::raw(pad.clone()));
+            spans.append(&mut row.spans);
+            spans.push(Span::raw(pad.clone()));
+            row.spans = spans;
         }
     }
     if let Some(s) = &app.streaming {
@@ -147,9 +168,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
         Vec::new()
     };
 
-    let para = Paragraph::new(visible)
-        .style(Style::default().bg(theme.bg))
-        .wrap(Wrap { trim: false });
+    let para = Paragraph::new(visible).wrap(Wrap { trim: false });
     frame.render_widget(para, content);
 
     if total > view_h && area.width > 0 {
@@ -318,18 +337,12 @@ fn bubble(
     body_fg: ratatui::style::Color,
     t: &Theme,
     width: usize,
-    streaming: bool,
-    tick: u64,
+    _streaming: bool,
+    _tick: u64,
 ) -> Vec<Line<'static>> {
-    let border = if streaming {
-        anim::pulse_border(tick, t)
-    } else {
-        t.border
-    };
-    // Bubble body prefix is "│ " (2 cols). Size markdown to that inner width
-    // so tables/fences already fit — never re-wrap them (that destroys grids).
-    let pad = 2usize;
-    let inner_w = width.saturating_sub(pad).max(8);
+    // Borderless body: markdown is sized to the full width; the left gutter
+    // that indents the body under the header is applied globally in `draw`.
+    let inner_w = width.max(8);
     let body = markdown::render_text(text, t, Style::default().fg(body_fg), inner_w);
 
     let mut body_lines: Vec<Line<'static>> = Vec::new();
@@ -369,37 +382,22 @@ fn bubble(
             .is_empty()
     });
 
-    // Rounded header: ╭─ ◆ you ────────────
-    let label = format!(" {glyph} {title} ");
+    // Header: ◆ you ──────────── (no box chrome; the label carries the color)
+    let label = format!("{glyph} {title} ");
     let label_w = Span::width(&Span::raw(&label));
-    let rule_w = width.saturating_sub(2 + label_w).max(1);
+    let rule_w = width.saturating_sub(label_w).max(1);
     let top = Line::from(vec![
-        Span::styled("╭─".to_string(), Style::default().fg(border)),
         Span::styled(
             label,
             Style::default().fg(title_fg).add_modifier(Modifier::BOLD),
         ),
-        Span::styled("─".repeat(rule_w), Style::default().fg(border)),
+        Span::styled("─".repeat(rule_w), Style::default().fg(t.border)),
     ]);
 
     let mut out = vec![top];
-    if body_lines.is_empty() {
-        out.push(Line::from(vec![
-            Span::styled("│ ".to_string(), Style::default().fg(border)),
-            Span::styled(" ".to_string(), Style::default().fg(body_fg)),
-        ]));
-    } else {
-        for bl in body_lines {
-            let mut spans = vec![Span::styled("│ ".to_string(), Style::default().fg(border))];
-            spans.extend(bl.spans);
-            out.push(Line::from(spans));
-        }
+    for bl in body_lines {
+        out.push(Line::from(bl.spans));
     }
-    // Soft footer rule (not a full box — keeps density low).
-    out.push(Line::from(Span::styled(
-        format!("╰{}", "─".repeat(width.saturating_sub(1).max(1))),
-        Style::default().fg(border),
-    )));
     out
 }
 
@@ -493,8 +491,8 @@ mod tests {
             0,
         );
         let plain = plain_lines(&out);
-        // top + 1 body + footer only; no blank rows.
-        assert_eq!(out.len(), 3, "got {:?}", plain);
+        // top + 1 body only; no blank rows, no footer rule.
+        assert_eq!(out.len(), 2, "got {:?}", plain);
         assert!(plain.iter().all(|p| !p.trim().is_empty()));
     }
 
@@ -514,8 +512,8 @@ mod tests {
             0,
         );
         let plain = plain_lines(&out);
-        // top + 3 body + footer; blank separators removed entirely.
-        assert_eq!(out.len(), 5, "got {:?}", plain);
+        // top + 3 body; blank separators removed entirely.
+        assert_eq!(out.len(), 4, "got {:?}", plain);
         assert!(plain.iter().all(|p| !p.trim().is_empty()));
     }
 
@@ -525,10 +523,8 @@ mod tests {
         let text = "linha 1\n   \n\nlinha 2";
         let out = bubble("you", "◆", text, t.user_fg, t.user_fg, &t, 60, false, 0);
         let plain = plain_lines(&out);
-        assert_eq!(out.len(), 4, "got {:?}", plain); // top + 2 body + footer
-        assert!(plain
-            .iter()
-            .all(|p| !p.trim().is_empty() || p.starts_with('╰')));
+        assert_eq!(out.len(), 3, "got {:?}", plain); // top + 2 body
+        assert!(plain.iter().all(|p| !p.trim().is_empty()));
     }
 
     #[test]

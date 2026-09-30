@@ -94,9 +94,6 @@ pub async fn run_tui(
             .maybe_compact(&mut app.session, false, None)
             .await
         {
-            Ok(n) if n > 0 => {
-                app.add_system(&format!("auto-compacted {n} message(s) on open"));
-            }
             Ok(_) => {}
             Err(e) => app.add_system(&format!("[warn] auto-compact on open failed: {e}")),
         }

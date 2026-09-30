@@ -1,25 +1,78 @@
-//! Top navbar, two rows: row 1 is app/system status (brand, ready state,
-//! git branch, context gauge, cost); row 2 is session info (messages,
-//! model) and the mode selector. Each row is left/right aligned; on narrow
-//! terminals the right side sheds optional pieces instead of squeezing.
-//! Width is measured with `Span::width`, not `chars().count()`.
+//! Top navbar: row 1 is app/system status (brand, ready state, git branch,
+//! status chip); row 2 is session info (messages, skills, model) and the mode
+//! selector; row 3 is the Cursor CLI feedback rail, shown only when a Cursor
+//! mode is on. Each row is left/right aligned; on narrow terminals the right
+//! side sheds optional pieces instead of squeezing. Width is measured with
+//! `Span::width`, not `chars().count()`.
 
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
-use crate::harness::provider::catalog::format_cost;
-use crate::harness::provider::format_tokens;
 use crate::harness::ui::tui::app::{App, MODES};
 use crate::harness::ui::tui::draw::modal::cyber_badge;
 use crate::harness::ui::tui::theme::Theme;
 
-/// Two text rows.
+/// Two text rows, plus a third when the Cursor feedback rail is visible.
 pub const HEIGHT: u16 = 2;
 /// Hide the bar when the terminal is too short to keep a transcript under it.
 pub const MIN_TERMINAL_HEIGHT: u16 = 16;
+
+/// Rows the navbar actually occupies: `HEIGHT`, plus one for the Cursor
+/// feedback rail when a Cursor mode is on.
+pub fn height(app: &App) -> u16 {
+    let cfg = &app.runtime.config;
+    if cfg.cursor_agent || cfg.cursor_plan {
+        HEIGHT + 1
+    } else {
+        HEIGHT
+    }
+}
+
+/// Cursor CLI feedback rail, rendered as the navbar's last row so it sits
+/// directly under the mode selector. Right-aligned, matching the selector
+/// above it. `None` when no Cursor mode is on.
+fn feedback_line(app: &App, width: usize) -> Option<Line<'static>> {
+    let t = &app.theme;
+    let cfg = &app.runtime.config;
+    if !cfg.cursor_agent && !cfg.cursor_plan {
+        return None;
+    }
+    let mut spans = vec![Span::styled(
+        " cursor ",
+        Style::default().fg(t.bg).bg(t.accent2),
+    )];
+    let mut push = |label: &str, on: bool, model: &str| {
+        let (mark, fg) = if on {
+            ("●", t.success)
+        } else {
+            ("○", t.text_dim)
+        };
+        spans.push(Span::styled(
+            format!(" {mark} {label}"),
+            Style::default().fg(fg),
+        ));
+        if on && !model.is_empty() {
+            spans.push(Span::styled(
+                format!(" ({model})"),
+                Style::default().fg(t.text_dim),
+            ));
+        }
+    };
+    push("build", cfg.cursor_agent, &cfg.cursor_model);
+    push("plan", cfg.cursor_plan, &cfg.cursor_plan_model);
+    // Right-align: the mode selector sits at the right edge of the row above,
+    // so the rail ends at the same column.
+    let used = spans_width(&spans);
+    if used < width {
+        spans.insert(0, Span::raw(" ".repeat(width - used)));
+    } else if used > width {
+        spans = clip_spans(spans, width);
+    }
+    Some(Line::from(spans))
+}
 
 pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
     let t = &app.theme;
@@ -27,19 +80,23 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
     let width = area.width as usize;
-    let lines = vec![system_line(app, t, width), session_line(app, t, width)];
+    let mut lines = vec![system_line(app, t, width), session_line(app, t, width)];
+    if let Some(feedback) = feedback_line(app, width) {
+        lines.push(feedback);
+    }
     frame.render_widget(Paragraph::new(lines), area);
     cyber_badge(frame, area, t.accent, "rustclaw");
+}
+
+/// Width of the brand badge chip, including the diagonal `╱` cut.
+fn badge_width() -> usize {
+    Span::width(&Span::raw(" rustclaw ")) + 1
 }
 
 // ---------------------------------------------------------------- row 1
 
 struct SystemOpts {
     branch: bool,
-    gauge: bool,
-    used: bool,
-    free: bool,
-    cost: bool,
     status_max: usize,
 }
 
@@ -49,38 +106,18 @@ fn system_line(app: &App, t: &Theme, width: usize) -> Line<'static> {
     }
     let mut opts = SystemOpts {
         branch: true,
-        gauge: true,
-        used: true,
-        free: false,
-        cost: true,
         status_max: 24,
     };
     loop {
         let left = system_left(app, t, opts.status_max);
-        let right = system_right(app, t, &opts);
         let left_w = spans_width(&left);
-        let right_w = spans_width(&right);
-        if left_w + right_w <= width {
-            let gap = width - left_w - right_w;
-            let mut spans = left;
-            if gap > 0 {
-                spans.push(Span::raw(" ".repeat(gap)));
-            }
-            spans.extend(right);
-            return Line::from(spans);
+        if left_w <= width {
+            return Line::from(left);
         }
         if opts.status_max > 8 {
             opts.status_max = 8;
-        } else if opts.free {
-            opts.free = false;
-        } else if opts.used {
-            opts.used = false;
         } else if opts.branch {
             opts.branch = false;
-        } else if opts.cost {
-            opts.cost = false;
-        } else if opts.gauge {
-            opts.gauge = false;
         } else {
             let fallback = clip_spans(left, width);
             return Line::from(fallback);
@@ -90,53 +127,16 @@ fn system_line(app: &App, t: &Theme, width: usize) -> Line<'static> {
 
 fn system_left(app: &App, t: &Theme, status_max: usize) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
-    spans.extend(status_spans(app, t, status_max));
+    // The badge is painted over the first columns of this row, so pad past it
+    // before drawing the branch.
+    spans.push(Span::raw(" ".repeat(badge_width())));
     if !app.git_branch.is_empty() {
-        spans.push(Span::raw("  "));
         spans.push(Span::styled(
-            format!(" {} {}", '\u{e0a0}', app.git_branch),
+            format!(" {} ", app.git_branch),
             Style::default().fg(t.text_dim),
         ));
     }
-    spans
-}
-
-fn system_right(app: &App, t: &Theme, opts: &SystemOpts) -> Vec<Span<'static>> {
-    let ctx = app.context_tokens() as u64;
-    let max = app.max_context_tokens() as u64;
-    let pct = (ctx * 100).checked_div(max).unwrap_or(0).min(100) as u16;
-    let color = context_color(pct, t);
-    let mut spans = Vec::new();
-    if opts.gauge {
-        spans.extend(gauge(pct, t));
-        spans.push(Span::raw(" "));
-    }
-    spans.push(Span::styled(
-        format!("{pct:>3}%"),
-        Style::default().fg(color).add_modifier(Modifier::BOLD),
-    ));
-    if opts.used {
-        spans.push(Span::styled(
-            format!(" {}/{}", format_tokens(ctx), format_tokens(max)),
-            Style::default().fg(t.text_bright),
-        ));
-    }
-    if opts.free {
-        spans.push(Span::styled(
-            format!(" · {} free", format_tokens(max.saturating_sub(ctx))),
-            Style::default().fg(t.text_dim),
-        ));
-    }
-    if opts.cost {
-        let session = app.session_cost();
-        let last = app.last_cost();
-        let text = if last > 0.0 {
-            format!("  {} +{}", format_cost(session), format_cost(last))
-        } else {
-            format!("  {}", format_cost(session))
-        };
-        spans.push(Span::styled(text, Style::default().fg(t.accent3)));
-    }
+    spans.extend(status_spans(app, t, status_max));
     spans
 }
 
@@ -163,10 +163,10 @@ fn status_spans(app: &App, t: &Theme, max_label: usize) -> Vec<Span<'static>> {
         }
     } else if let Some(msg) = &app.status_msg {
         ("●".to_string(), msg.clone(), t.accent2)
-    } else if app.runtime.config.is_configured() {
-        ("●".to_string(), "ready".to_string(), t.success)
     } else {
-        ("●".to_string(), "no auth".to_string(), t.error)
+        // Idle and configured: the brand badge already says who we are, so
+        // there is no status chip to show.
+        return Vec::new();
     };
     vec![
         Span::styled(icon, Style::default().fg(color)),
@@ -182,6 +182,64 @@ struct SessionOpts {
     skills: bool,
     provider: bool,
     model_max: usize,
+}
+
+/// Per-mode accent so the selector reads at a glance: the active mode is a
+/// filled chip in its own color, the others stay dim. Colors come from
+/// `Theme::mode_accent` (the same source the theme tint uses), with a
+/// `text_dim` fallback for agents outside the cycle.
+fn mode_color(mode: &str, t: &Theme) -> Color {
+    let accent = if t.is_light() {
+        Theme::mode_accent_light(mode)
+    } else {
+        Theme::mode_accent(mode)
+    };
+    accent.unwrap_or(t.text_dim)
+}
+
+/// The mode selector: every known mode, the active one highlighted.
+fn mode_spans(app: &App, t: &Theme) -> Vec<Span<'static>> {
+    let active = app.session.agent.as_str();
+    let cursor = app.runtime.config.cursor_agent;
+    let mut spans = Vec::new();
+    let mut first = true;
+    let mut push = |name: &str, on: bool| {
+        if !first {
+            spans.push(Span::styled(
+                " · ".to_string(),
+                Style::default().fg(t.text_dim),
+            ));
+        }
+        first = false;
+        if on {
+            let fg = mode_color(name, t);
+            spans.push(Span::styled(
+                format!(" {name} "),
+                Style::default()
+                    .fg(t.status_bg)
+                    .bg(fg)
+                    .add_modifier(Modifier::BOLD),
+            ));
+            if cursor {
+                spans.push(Span::styled(
+                    " →".to_string(),
+                    Style::default().fg(t.accent2),
+                ));
+            }
+        } else {
+            spans.push(Span::styled(
+                format!(" {name} "),
+                Style::default().fg(t.text_dim),
+            ));
+        }
+    };
+    if !MODES.contains(&active) {
+        push(active, true);
+    }
+    for mode in MODES {
+        push(mode, *mode == active);
+    }
+    spans
 }
 
 fn session_line(app: &App, t: &Theme, width: usize) -> Line<'static> {
@@ -217,8 +275,7 @@ fn session_line(app: &App, t: &Theme, width: usize) -> Line<'static> {
         } else if opts.model_max > 8 {
             opts.model_max = 8;
         } else {
-            let fallback = clip_spans(left, width);
-            return Line::from(fallback);
+            return Line::from(clip_spans(left, width));
         }
     }
 }
@@ -236,76 +293,7 @@ fn session_left(app: &App, t: &Theme, opts: &SessionOpts) -> Vec<Span<'static>> 
     spans
 }
 
-fn mode_spans(app: &App, t: &Theme) -> Vec<Span<'static>> {
-    let active = app.session.agent.as_str();
-    let cursor = app.runtime.config.cursor_agent;
-    let mut spans = Vec::new();
-    let mut first = true;
-    let mut push = |name: &str, on: bool| {
-        if !first {
-            spans.push(Span::styled(
-                " · ".to_string(),
-                Style::default().fg(t.text_dim),
-            ));
-        }
-        first = false;
-        let (icon, fg) = if on {
-            ("► ", t.success)
-        } else {
-            ("· ", t.text_dim)
-        };
-        let mods = if on {
-            Modifier::BOLD
-        } else {
-            Modifier::empty()
-        };
-        spans.push(Span::styled(icon.to_string(), Style::default().fg(fg)));
-        spans.push(Span::styled(
-            name.to_string(),
-            Style::default().fg(fg).add_modifier(mods),
-        ));
-        if on && cursor {
-            spans.push(Span::styled(
-                " →".to_string(),
-                Style::default().fg(t.accent2),
-            ));
-        }
-    };
-    if !MODES.contains(&active) {
-        push(active, true);
-    }
-    for mode in MODES {
-        if *mode == active {
-            push(mode, true);
-        } else {
-            push(mode, false);
-        }
-    }
-    spans
-}
-
 // ---------------------------------------------------------------- helpers
-
-fn gauge(pct: u16, t: &Theme) -> Vec<Span<'static>> {
-    const BAR: usize = 10;
-    let filled = (pct as usize * BAR) / 100;
-    let empty = BAR - filled;
-    let color = context_color(pct, t);
-    vec![
-        Span::styled("█".repeat(filled), Style::default().fg(color)),
-        Span::styled("░".repeat(empty), Style::default().fg(t.border)),
-    ]
-}
-
-fn context_color(pct: u16, t: &Theme) -> ratatui::style::Color {
-    if pct >= 90 {
-        t.error
-    } else if pct >= 70 {
-        t.warn
-    } else {
-        t.success
-    }
-}
 
 fn has_skills(app: &App) -> bool {
     app.prompt_toggles

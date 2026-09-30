@@ -6,19 +6,29 @@ use crate::harness::ui::tui::input::{compact_window, visual_row_col, wrap_visual
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 use ratatui::Frame;
 
 pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     let t = &app.theme;
     let focused = !app.running && app.modal.is_none() && app.palette.is_none();
 
-    // Borderless input: the whole area is text.
-    let inner = area;
-    // No left prefix: the full inner width is available for text on every row.
-    app.input_inner_width = inner.width;
+    // Rounded frame around the prompt. The border costs 2 rows and 2 columns;
+    // the layout in `draw::draw` reserves them (see `input_h`/`est_inner`).
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(t.border))
+        .style(Style::default().bg(t.surface));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
 
-    let prefix = "";
+    // One column of padding inside the border so the prompt lines up with the
+    // transcript.
+    const H_PAD: u16 = 1;
+    app.input_inner_width = inner.width.saturating_sub(H_PAD);
+
+    let prefix = " ";
     let prefix_len = prefix.chars().count() as u16;
 
     let max_rows = inner.height.max(1) as usize;
@@ -80,6 +90,8 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
         let mut spans: Vec<Span> = Vec::new();
         if r == 0 {
             spans.push(Span::styled(prefix, Style::default().fg(t.accent2)));
+        } else {
+            spans.push(Span::styled(" ", Style::default()));
         }
         let row_text: String = idxs.iter().map(|i| input_chars[*i]).collect();
         if focused && r == crow {
@@ -132,11 +144,14 @@ pub fn draw_pending_images(frame: &mut Frame, app: &App, area: Rect) {
         None => return,
     };
     let line = Line::from(vec![
-        Span::styled("  ", Style::default()),
+        Span::styled(" ", Style::default()),
         Span::styled(
             label,
             Style::default().fg(t.accent2).add_modifier(Modifier::BOLD),
         ),
     ]);
-    frame.render_widget(Paragraph::new(line).style(Style::default().bg(t.bg)), area);
+    frame.render_widget(
+        Paragraph::new(line).style(Style::default().bg(t.surface)),
+        area,
+    );
 }

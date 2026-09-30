@@ -102,7 +102,7 @@ pub fn draw_chips(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     let focused = app.skills_focused;
-    let mut spans = vec![Span::styled("  ", Style::default().fg(t.text_dim))];
+    let mut spans = vec![Span::styled(" ", Style::default().fg(t.text_dim))];
     if focused {
         spans.push(Span::styled(
             "⇥ ",

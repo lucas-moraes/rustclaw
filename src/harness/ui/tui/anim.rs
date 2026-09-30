@@ -43,11 +43,6 @@ pub fn cursor_glyph(tick: u64) -> &'static str {
     }
 }
 
-pub fn thinking_dots(tick: u64) -> String {
-    let n = ((tick / 5) % 4) as usize;
-    format!("thinking{}", ".".repeat(n))
-}
-
 /// Floating particle for header / splash.
 #[derive(Clone, Debug)]
 pub struct Particle {
