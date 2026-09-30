@@ -356,23 +356,29 @@ pub(crate) async fn handle_key(
             }
         }
         KeyCode::Up => {
-            if app.autocomplete.is_none() {
+            // Active history navigation wins over `/` autocomplete, so a
+            // recalled prompt starting with `/` can still be browsed.
+            if app.history_pos.is_some() {
+                app.history_up();
+            } else if let Some(ac) = app.autocomplete.as_mut() {
+                ac.move_sel(-1);
+            } else if app.input.contains('\n') {
                 // Multi-line input → move inside the editor; single-line falls
                 // back to prompt history (opencode behavior).
-                if app.input.contains('\n') {
-                    app.cursor_visual_up();
-                } else if !app.running {
-                    app.history_up();
-                }
+                app.cursor_visual_up();
+            } else if !app.running {
+                app.history_up();
             }
         }
         KeyCode::Down => {
-            if app.autocomplete.is_none() {
-                if app.input.contains('\n') {
-                    app.cursor_visual_down();
-                } else if !app.running {
-                    app.history_down();
-                }
+            if app.history_pos.is_some() {
+                app.history_down();
+            } else if let Some(ac) = app.autocomplete.as_mut() {
+                ac.move_sel(1);
+            } else if app.input.contains('\n') {
+                app.cursor_visual_down();
+            } else if !app.running {
+                app.history_down();
             }
         }
         KeyCode::PageUp => {

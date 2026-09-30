@@ -40,6 +40,10 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
         height: area.height.saturating_sub(V_PAD * 2).max(1),
     };
     let width = content.width as usize;
+    // Markdown is rendered to this width; the INNER_PAD pass below adds one
+    // column on each side afterwards, so the render width must be reduced by
+    // 2*INNER_PAD or full-width lines (code fences, rules) overflow the frame.
+    let render_width = width.saturating_sub(INNER_PAD * 2).max(1);
 
     let mut rows: Vec<Line<'static>> = Vec::new();
     let mut row_map: Vec<usize> = Vec::new();
@@ -47,7 +51,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
         crate::harness::ui::tui::transcript::collapse_thinking(&app.lines, app.thinking_expanded);
     for (li, line) in collapsed.iter().enumerate() {
         let base = rows.len();
-        rows.extend(render_line(line, &theme, width, tick, false));
+        rows.extend(render_line(line, &theme, render_width, tick, false));
         // Breathing room between messages: a blank row plus a 1-col left
         // gutter so blocks read as separate cards.
         rows.push(Line::from(""));
@@ -75,7 +79,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
             text: s.clone(),
         };
         let base = rows.len();
-        rows.extend(render_line(&stream_line, &theme, width, tick, true));
+        rows.extend(render_line(&stream_line, &theme, render_width, tick, true));
         for _ in base..rows.len() {
             row_map.push(app.lines.len());
         }
@@ -87,7 +91,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
                 text: b.live_label(),
             };
             let base = rows.len();
-            rows.extend(render_line(&live, &theme, width, tick, false));
+            rows.extend(render_line(&live, &theme, render_width, tick, false));
             for _ in base..rows.len() {
                 row_map.push(app.lines.len());
             }
@@ -126,7 +130,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     // the tail of a response is never flush against the frame's bottom edge.
     // `clamp_scroll` sticks to `total - view_h`, so these rows push the real
     // content up by `BOTTOM_PAD` and keep the final lines fully visible.
-    const BOTTOM_PAD: usize = 10;
+    const BOTTOM_PAD: usize = 5;
     for _ in 0..BOTTOM_PAD {
         rows.push(Line::from(""));
         row_map.push(app.lines.len());
