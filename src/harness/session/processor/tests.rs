@@ -85,6 +85,9 @@ async fn test_turn_timeout_stops_run() {
             max_total_iterations: None,
             compact_trigger_ratio: 0.0,
             summary_model: String::new(),
+            fail_fast: false,
+            service_tier: String::new(),
+            reasoning_effort: String::new(),
         },
     };
     let mut session = store.create_session("build", dir.path()).unwrap();
@@ -174,6 +177,9 @@ async fn test_auto_continuation_resumes_after_max_iterations() {
             max_total_iterations: Some(11),
             compact_trigger_ratio: 0.0,
             summary_model: String::new(),
+            fail_fast: false,
+            service_tier: String::new(),
+            reasoning_effort: String::new(),
         },
     };
     let mut session = store.create_session("build", dir.path()).unwrap();
@@ -370,6 +376,9 @@ fn test_processor_with_budget(
             max_total_iterations,
             compact_trigger_ratio: 0.0,
             summary_model: String::new(),
+            fail_fast: false,
+            service_tier: String::new(),
+            reasoning_effort: String::new(),
         },
     };
     (processor, dir)
@@ -970,6 +979,9 @@ fn processor_with(provider: StdArc<dyn Provider>, max_iterations: usize) -> Sess
             max_total_iterations: None,
             compact_trigger_ratio: 0.0,
             summary_model: String::new(),
+            fail_fast: false,
+            service_tier: String::new(),
+            reasoning_effort: String::new(),
         },
     }
 }

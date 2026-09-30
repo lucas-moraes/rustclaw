@@ -71,8 +71,22 @@ pub async fn handle(
                         c.summary_model.as_str()
                     }
                 ));
+                out.push(format!(
+                    "fail_fast {} · service_tier {} · reasoning_effort {}",
+                    c.fail_fast,
+                    if c.service_tier.is_empty() {
+                        "(provider default)"
+                    } else {
+                        c.service_tier.as_str()
+                    },
+                    if c.reasoning_effort.is_empty() {
+                        "(provider default)"
+                    } else {
+                        c.reasoning_effort.as_str()
+                    }
+                ));
                 out.push(
-                    "usage: /settings iterations <n> · context <n> · turn_timeout <secs> · compact_ratio <0.0-1.0> · summary_model <name|off>"
+                    "usage: /settings iterations <n> · context <n> · turn_timeout <secs> · compact_ratio <0.0-1.0> · summary_model <name|off> · fail_fast <on|off> · service_tier <tier|off> · reasoning_effort <low|medium|high|off>"
                         .to_string(),
                 );
             } else {
@@ -127,8 +141,55 @@ pub async fn handle(
                             }
                         }
                     }
+                    Some("fail_fast") => {
+                        let v = parts.next().unwrap_or("");
+                        let enabled = match v {
+                            "on" | "true" | "1" | "yes" => Some(true),
+                            "off" | "false" | "0" | "no" => Some(false),
+                            _ => None,
+                        };
+                        match enabled {
+                            Some(b) => match runtime.set_fail_fast(b) {
+                                Ok(()) => out.push(format!("settings · fail_fast = {}", b)),
+                                Err(e) => out.push(format!("[error] {}", e)),
+                            },
+                            None => out.push("usage: /settings fail_fast <on|off>".to_string()),
+                        }
+                    }
+                    Some("service_tier") => {
+                        let v = parts.next().unwrap_or("");
+                        if v.is_empty() {
+                            out.push("usage: /settings service_tier <tier|off>".to_string());
+                        } else {
+                            let val = if v == "off" { "" } else { v };
+                            match runtime.set_service_tier(val) {
+                                Ok(()) => out.push(format!(
+                                    "settings · service_tier = {}",
+                                    if val.is_empty() { "(provider default)" } else { val }
+                                )),
+                                Err(e) => out.push(format!("[error] {}", e)),
+                            }
+                        }
+                    }
+                    Some("reasoning_effort") => {
+                        let v = parts.next().unwrap_or("");
+                        if v.is_empty() {
+                            out.push(
+                                "usage: /settings reasoning_effort <low|medium|high|off>".to_string(),
+                            );
+                        } else {
+                            let val = if v == "off" { "" } else { v };
+                            match runtime.set_reasoning_effort(val) {
+                                Ok(()) => out.push(format!(
+                                    "settings · reasoning_effort = {}",
+                                    if val.is_empty() { "(provider default)" } else { val }
+                                )),
+                                Err(e) => out.push(format!("[error] {}", e)),
+                            }
+                        }
+                    }
                     Some(other) => out.push(format!(
-                        "unknown setting: {} (iterations · context · turn_timeout · compact_ratio · summary_model)",
+                        "unknown setting: {} (iterations · context · turn_timeout · compact_ratio · summary_model · fail_fast · service_tier · reasoning_effort)",
                         other
                     )),
                     None => {}

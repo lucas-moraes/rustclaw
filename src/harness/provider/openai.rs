@@ -164,6 +164,45 @@ fn build_request_body(req: &LlmRequest, stream: bool) -> Value {
             body["prompt_cache_key"] = json!(key);
         }
     }
+    // DeepInfra `fail_fast`: fail immediately instead of waiting for a cold
+    // model to warm up. Providers that don't support it ignore unknown fields.
+    if let Some(v) = req.fail_fast {
+        body["fail_fast"] = json!(v);
+    }
+    // DeepInfra `service_tier` (e.g. "priority"/"flex"). Omit when unset.
+    if let Some(tier) = &req.service_tier {
+        if !tier.is_empty() {
+            body["service_tier"] = json!(tier);
+        }
+    }
+    // Reasoning effort for reasoning models ("low"/"medium"/"high"). Omit when
+    // unset so non-reasoning models never receive an unknown field.
+    if let Some(effort) = &req.reasoning_effort {
+        if !effort.is_empty() {
+            body["reasoning_effort"] = json!(effort);
+        }
+    }
+    // Structured output (OpenAI `response_format`). Emitted verbatim when set.
+    if let Some(fmt) = &req.response_format {
+        body["response_format"] = fmt.clone();
+    }
+    // Sampling controls. Each is emitted only when set so the provider default
+    // applies otherwise (a sentinel of 0.0 would be a real, wrong value).
+    if let Some(top_p) = req.top_p {
+        body["top_p"] = json!(top_p);
+    }
+    if let Some(pp) = req.presence_penalty {
+        body["presence_penalty"] = json!(pp);
+    }
+    if let Some(fp) = req.frequency_penalty {
+        body["frequency_penalty"] = json!(fp);
+    }
+    if !req.stop.is_empty() {
+        body["stop"] = json!(req.stop);
+    }
+    if let Some(seed) = req.seed {
+        body["seed"] = json!(seed);
+    }
     if !req.tools.is_empty() {
         body["tools"] = tools_body(&req.tools);
     }
@@ -692,6 +731,15 @@ mod tests {
             max_tokens: None,
             temperature: 0.0,
             prompt_cache_key: None,
+            fail_fast: None,
+            service_tier: None,
+            reasoning_effort: None,
+            response_format: None,
+            top_p: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            stop: Vec::new(),
+            seed: None,
         };
         let streaming = build_request_body(&req, true);
         assert_eq!(streaming["stream_options"]["include_usage"], true);
@@ -709,6 +757,15 @@ mod tests {
             max_tokens: None,
             temperature: 0.0,
             prompt_cache_key: None,
+            fail_fast: None,
+            service_tier: None,
+            reasoning_effort: None,
+            response_format: None,
+            top_p: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            stop: Vec::new(),
+            seed: None,
         };
         // Absent key -> field omitted entirely.
         let body = build_request_body(&base, false);
@@ -729,5 +786,189 @@ mod tests {
         };
         let body = build_request_body(&empty, false);
         assert!(body.get("prompt_cache_key").is_none());
+    }
+
+    #[test]
+    fn test_build_request_body_fail_fast_and_service_tier() {
+        let base = LlmRequest {
+            model: "glm".into(),
+            system: "sys".into(),
+            messages: std::sync::Arc::new(vec![Message::user("hi")]),
+            tools: vec![],
+            max_tokens: None,
+            temperature: 0.0,
+            prompt_cache_key: None,
+            fail_fast: None,
+            service_tier: None,
+            reasoning_effort: None,
+            response_format: None,
+            top_p: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            stop: Vec::new(),
+            seed: None,
+        };
+        // Unset -> both fields omitted (providers without support ignore them).
+        let body = build_request_body(&base, false);
+        assert!(body.get("fail_fast").is_none());
+        assert!(body.get("service_tier").is_none());
+
+        // fail_fast=true -> emitted as a boolean.
+        let ff = LlmRequest {
+            fail_fast: Some(true),
+            ..base.clone()
+        };
+        let body = build_request_body(&ff, false);
+        assert_eq!(body["fail_fast"], true);
+
+        // service_tier set -> emitted; empty string -> omitted (defensive).
+        let tier = LlmRequest {
+            service_tier: Some("priority".into()),
+            ..base.clone()
+        };
+        let body = build_request_body(&tier, false);
+        assert_eq!(body["service_tier"], "priority");
+
+        let empty_tier = LlmRequest {
+            service_tier: Some(String::new()),
+            ..base
+        };
+        let body = build_request_body(&empty_tier, false);
+        assert!(body.get("service_tier").is_none());
+    }
+
+    #[test]
+    fn test_build_request_body_reasoning_effort() {
+        let base = LlmRequest {
+            model: "glm".into(),
+            system: "sys".into(),
+            messages: std::sync::Arc::new(vec![Message::user("hi")]),
+            tools: vec![],
+            max_tokens: None,
+            temperature: 0.0,
+            prompt_cache_key: None,
+            fail_fast: None,
+            service_tier: None,
+            reasoning_effort: None,
+            response_format: None,
+            top_p: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            stop: Vec::new(),
+            seed: None,
+        };
+        // Unset -> omitted so non-reasoning models never see the field.
+        let body = build_request_body(&base, false);
+        assert!(body.get("reasoning_effort").is_none());
+
+        // Set -> emitted verbatim.
+        let effort = LlmRequest {
+            reasoning_effort: Some("high".into()),
+            ..base.clone()
+        };
+        let body = build_request_body(&effort, false);
+        assert_eq!(body["reasoning_effort"], "high");
+
+        // Empty string -> omitted (defensive).
+        let empty = LlmRequest {
+            reasoning_effort: Some(String::new()),
+            ..base
+        };
+        let body = build_request_body(&empty, false);
+        assert!(body.get("reasoning_effort").is_none());
+    }
+
+    #[test]
+    fn test_build_request_body_response_format() {
+        let base = LlmRequest {
+            model: "glm".into(),
+            system: "sys".into(),
+            messages: std::sync::Arc::new(vec![Message::user("hi")]),
+            tools: vec![],
+            max_tokens: None,
+            temperature: 0.0,
+            prompt_cache_key: None,
+            fail_fast: None,
+            service_tier: None,
+            reasoning_effort: None,
+            response_format: None,
+            top_p: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            stop: Vec::new(),
+            seed: None,
+        };
+        // Unset -> omitted (free-form text).
+        let body = build_request_body(&base, false);
+        assert!(body.get("response_format").is_none());
+
+        // json_object -> emitted verbatim.
+        let json_obj = LlmRequest {
+            response_format: Some(json!({"type": "json_object"})),
+            ..base.clone()
+        };
+        let body = build_request_body(&json_obj, false);
+        assert_eq!(body["response_format"]["type"], "json_object");
+
+        // json_schema -> nested schema preserved.
+        let schema = json!({
+            "type": "json_schema",
+            "json_schema": {"name": "out", "schema": {"type": "object"}}
+        });
+        let json_schema = LlmRequest {
+            response_format: Some(schema.clone()),
+            ..base
+        };
+        let body = build_request_body(&json_schema, false);
+        assert_eq!(body["response_format"], schema);
+    }
+
+    #[test]
+    fn test_build_request_body_sampling_controls() {
+        let base = LlmRequest {
+            model: "glm".into(),
+            system: "sys".into(),
+            messages: std::sync::Arc::new(vec![Message::user("hi")]),
+            tools: vec![],
+            max_tokens: None,
+            temperature: 0.0,
+            prompt_cache_key: None,
+            fail_fast: None,
+            service_tier: None,
+            reasoning_effort: None,
+            response_format: None,
+            top_p: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            stop: Vec::new(),
+            seed: None,
+        };
+        // All unset -> none of the sampling fields are emitted.
+        let body = build_request_body(&base, false);
+        for k in [
+            "top_p",
+            "presence_penalty",
+            "frequency_penalty",
+            "stop",
+            "seed",
+        ] {
+            assert!(body.get(k).is_none(), "{k} should be omitted when unset");
+        }
+
+        // All set -> emitted verbatim.
+        let full = LlmRequest {
+            top_p: Some(0.9),
+            presence_penalty: Some(0.5),
+            frequency_penalty: Some(-0.25),
+            stop: vec!["END".into(), "STOP".into()],
+            seed: Some(42),
+            ..base
+        };
+        let body = build_request_body(&full, false);
+        assert_eq!(body["top_p"], 0.9);
+        assert_eq!(body["presence_penalty"], 0.5);
+        assert_eq!(body["frequency_penalty"], -0.25);
+        assert_eq!(body["stop"], json!(["END", "STOP"]));
+        assert_eq!(body["seed"], 42);
     }
 }

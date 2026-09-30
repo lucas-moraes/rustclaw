@@ -75,6 +75,19 @@ pub struct GlobalSettings {
     /// Model passed to the Cursor CLI for plan mode. Empty (default) = "auto".
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub cursor_plan_model: String,
+    /// DeepInfra `fail_fast`: when `true`, a request fails immediately instead
+    /// of waiting for a cold model to warm up. Enables client-side failover.
+    /// Default `false` (wait for the model).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub fail_fast: bool,
+    /// DeepInfra `service_tier` (e.g. `"priority"` / `"flex"`). Empty (default)
+    /// = omit the field and let the provider decide.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub service_tier: String,
+    /// Reasoning effort for reasoning models (`"low"` / `"medium"` / `"high"`).
+    /// Empty (default) = omit the field and use the provider default.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub reasoning_effort: String,
 }
 
 fn is_zero_f64(v: &f64) -> bool {
@@ -110,6 +123,9 @@ impl Default for GlobalSettings {
             cursor_model: String::new(),
             cursor_plan: false,
             cursor_plan_model: String::new(),
+            fail_fast: false,
+            service_tier: String::new(),
+            reasoning_effort: String::new(),
         }
     }
 }
@@ -212,6 +228,13 @@ pub struct RuntimeConfig {
     pub cursor_plan: bool,
     /// Model id passed to the Cursor CLI for plan mode. Empty means "auto".
     pub cursor_plan_model: String,
+    /// DeepInfra `fail_fast`: fail immediately instead of waiting for a cold
+    /// model to warm up. Default `false`.
+    pub fail_fast: bool,
+    /// DeepInfra `service_tier` (e.g. `"priority"` / `"flex"`). Empty = omit.
+    pub service_tier: String,
+    /// Reasoning effort for reasoning models. Empty = provider default.
+    pub reasoning_effort: String,
 }
 
 impl Default for RuntimeConfig {
@@ -254,6 +277,9 @@ impl RuntimeConfig {
             cursor_model: String::new(),
             cursor_plan: false,
             cursor_plan_model: String::new(),
+            fail_fast: false,
+            service_tier: String::new(),
+            reasoning_effort: String::new(),
         }
     }
 
@@ -316,6 +342,9 @@ impl RuntimeConfig {
         cfg.cursor_model = settings.cursor_model.clone();
         cfg.cursor_plan = settings.cursor_plan;
         cfg.cursor_plan_model = settings.cursor_plan_model.clone();
+        cfg.fail_fast = settings.fail_fast;
+        cfg.service_tier = settings.service_tier.clone();
+        cfg.reasoning_effort = settings.reasoning_effort.clone();
 
         // 4. Token from the global auth store for the resolved provider.
         cfg.api_key = auth

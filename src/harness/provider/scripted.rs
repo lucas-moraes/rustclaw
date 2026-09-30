@@ -208,6 +208,15 @@ mod tests {
             max_tokens: None,
             temperature: 0.0,
             prompt_cache_key: None,
+            fail_fast: None,
+            service_tier: None,
+            reasoning_effort: None,
+            response_format: None,
+            top_p: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            stop: Vec::new(),
+            seed: None,
         }
     }
 

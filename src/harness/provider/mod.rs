@@ -185,6 +185,29 @@ pub struct LlmRequest {
     /// hitting the KV cache even when the prefix isn't byte-identical.
     /// `None` = omit the field (providers without support ignore it).
     pub prompt_cache_key: Option<String>,
+    /// DeepInfra `fail_fast`: when true, the request fails immediately instead
+    /// of waiting for a cold model to warm up. Enables client-side failover.
+    /// `None` = omit the field (providers without support ignore it).
+    pub fail_fast: Option<bool>,
+    /// DeepInfra `service_tier` (e.g. `"priority"` / `"flex"`). `None` = omit.
+    pub service_tier: Option<String>,
+    /// Reasoning effort for reasoning models (`"low"` / `"medium"` / `"high"`).
+    /// `None` = omit the field and let the provider use its default.
+    pub reasoning_effort: Option<String>,
+    /// Structured-output request (OpenAI `response_format`). Either
+    /// `{"type":"json_object"}` or a full `{"type":"json_schema", ...}` object.
+    /// `None` = omit the field (free-form text).
+    pub response_format: Option<serde_json::Value>,
+    /// Nucleus sampling. `None` = omit (provider default).
+    pub top_p: Option<f64>,
+    /// Presence penalty. `None` = omit (provider default).
+    pub presence_penalty: Option<f64>,
+    /// Frequency penalty. `None` = omit (provider default).
+    pub frequency_penalty: Option<f64>,
+    /// Stop sequences. Empty = omit.
+    pub stop: Vec<String>,
+    /// Deterministic sampling seed. `None` = omit (non-deterministic).
+    pub seed: Option<u64>,
 }
 
 pub struct LlmResponse {

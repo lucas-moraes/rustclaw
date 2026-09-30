@@ -454,6 +454,39 @@ impl SessionRuntime {
         Ok(())
     }
 
+    /// Sets DeepInfra `fail_fast`: when `true`, a request fails immediately
+    /// instead of waiting for a cold model to warm up (enables failover).
+    /// Persists to `config.json`; takes effect on the next turn.
+    pub fn set_fail_fast(&mut self, enabled: bool) -> Result<()> {
+        self.config.fail_fast = enabled;
+        let mut s = crate::config::GlobalSettings::load();
+        s.fail_fast = enabled;
+        s.save().context("failed to persist config.json")?;
+        Ok(())
+    }
+
+    /// Sets DeepInfra `service_tier` (e.g. `"priority"` / `"flex"`). An empty
+    /// string omits the field. Persists to `config.json`; next turn.
+    pub fn set_service_tier(&mut self, tier: impl Into<String>) -> Result<()> {
+        let tier = tier.into();
+        self.config.service_tier = tier.clone();
+        let mut s = crate::config::GlobalSettings::load();
+        s.service_tier = tier;
+        s.save().context("failed to persist config.json")?;
+        Ok(())
+    }
+
+    /// Sets the reasoning effort for reasoning models (`"low"` / `"medium"` /
+    /// `"high"`). An empty string omits the field. Persists to `config.json`.
+    pub fn set_reasoning_effort(&mut self, effort: impl Into<String>) -> Result<()> {
+        let effort = effort.into();
+        self.config.reasoning_effort = effort.clone();
+        let mut s = crate::config::GlobalSettings::load();
+        s.reasoning_effort = effort;
+        s.save().context("failed to persist config.json")?;
+        Ok(())
+    }
+
     /// Enables or disables the Cursor CLI delegation for the `build` mode.
     ///
     /// Updates the in-memory config, re-syncs the tool registry (kill-switch)
@@ -756,6 +789,9 @@ impl SessionRuntime {
                     .then_some(self.config.max_total_iterations),
                 compact_trigger_ratio: self.config.compact_trigger_ratio,
                 summary_model: self.config.summary_model.clone(),
+                fail_fast: self.config.fail_fast,
+                service_tier: self.config.service_tier.clone(),
+                reasoning_effort: self.config.reasoning_effort.clone(),
             },
         };
 

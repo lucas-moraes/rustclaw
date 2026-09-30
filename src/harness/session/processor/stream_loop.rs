@@ -223,6 +223,9 @@ mod tests {
                 max_total_iterations: None,
                 compact_trigger_ratio: 0.0,
                 summary_model: String::new(),
+                fail_fast: false,
+                service_tier: String::new(),
+                reasoning_effort: String::new(),
             },
         }
     }

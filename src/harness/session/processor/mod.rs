@@ -32,6 +32,13 @@ pub struct ProcessorConfig {
     pub compact_trigger_ratio: f64,
     /// Optional cheaper model for compaction summaries. Empty = main model.
     pub summary_model: String,
+    /// DeepInfra `fail_fast`: fail immediately instead of waiting for a cold
+    /// model to warm up. Default `false`.
+    pub fail_fast: bool,
+    /// DeepInfra `service_tier` (e.g. `"priority"` / `"flex"`). Empty = omit.
+    pub service_tier: String,
+    /// Reasoning effort for reasoning models. Empty = provider default.
+    pub reasoning_effort: String,
     // Temperature is agent-calibrated: see AgentSpec::turn_temperature.
 }
 
@@ -45,6 +52,9 @@ impl Default for ProcessorConfig {
             max_total_iterations: None,
             compact_trigger_ratio: 0.0,
             summary_model: String::new(),
+            fail_fast: false,
+            service_tier: String::new(),
+            reasoning_effort: String::new(),
         }
     }
 }
@@ -567,6 +577,27 @@ impl SessionProcessor {
                     // message per iteration, so a stable key maximizes cache
                     // hits on providers that honor it (e.g. DeepInfra).
                     prompt_cache_key: Some(session.id.clone()),
+                    fail_fast: if self.config.fail_fast {
+                        Some(true)
+                    } else {
+                        None
+                    },
+                    service_tier: if self.config.service_tier.is_empty() {
+                        None
+                    } else {
+                        Some(self.config.service_tier.clone())
+                    },
+                    reasoning_effort: if self.config.reasoning_effort.is_empty() {
+                        None
+                    } else {
+                        Some(self.config.reasoning_effort.clone())
+                    },
+                    response_format: None,
+                    top_p: None,
+                    presence_penalty: None,
+                    frequency_penalty: None,
+                    stop: Vec::new(),
+                    seed: None,
                 };
 
                 let stream = match self.stream_with_image_fallback(&req, &ctx.abort).await {

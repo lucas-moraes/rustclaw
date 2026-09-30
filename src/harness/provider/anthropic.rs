@@ -618,6 +618,15 @@ mod tests {
             max_tokens: Some(100),
             temperature: 0.5,
             prompt_cache_key: None,
+            fail_fast: None,
+            service_tier: None,
+            reasoning_effort: None,
+            response_format: None,
+            top_p: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            stop: Vec::new(),
+            seed: None,
         };
         let body = build_request_body(&req, true, false);
         assert_eq!(body["system"], "sys");
@@ -656,6 +665,15 @@ mod tests {
             max_tokens: Some(100),
             temperature: 0.5,
             prompt_cache_key: None,
+            fail_fast: None,
+            service_tier: None,
+            reasoning_effort: None,
+            response_format: None,
+            top_p: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            stop: Vec::new(),
+            seed: None,
         };
         let body = build_request_body(&req, true, false);
         assert_eq!(body["system"], "sys");
@@ -692,6 +710,15 @@ mod tests {
             max_tokens: Some(100),
             temperature: 0.5,
             prompt_cache_key: None,
+            fail_fast: None,
+            service_tier: None,
+            reasoning_effort: None,
+            response_format: None,
+            top_p: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            stop: Vec::new(),
+            seed: None,
         };
         let body = build_request_body(&req, true, true);
         // Breakpoint 1: system is an array with cache_control.
@@ -718,6 +745,15 @@ mod tests {
             max_tokens: Some(100),
             temperature: 0.5,
             prompt_cache_key: None,
+            fail_fast: None,
+            service_tier: None,
+            reasoning_effort: None,
+            response_format: None,
+            top_p: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            stop: Vec::new(),
+            seed: None,
         };
         let body = build_request_body(&req, false, true);
         let last_msg = body["messages"].as_array().unwrap().last().unwrap();
