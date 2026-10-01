@@ -1,0 +1,215 @@
+//! Tool execution context: session info, abort signal, permission/user askers,
+//! and hooks for subagent spawning.
+
+use crate::harness::event::EventSender;
+use crate::harness::permission::{PermissionDecision, PermissionEngine};
+use crate::harness::project::ProjectMemoryStore;
+use crate::harness::session::TodoItem;
+use serde_json::Value;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
+/// Cooperative cancellation flag checked between tool/loop steps.
+#[derive(Clone, Default)]
+pub struct AbortSignal {
+    flag: Arc<AtomicBool>,
+    notify: Arc<tokio::sync::Notify>,
+}
+
+impl AbortSignal {
+    pub fn new() -> Self {
+        Self {
+            flag: Arc::new(AtomicBool::new(false)),
+            notify: Arc::new(tokio::sync::Notify::new()),
+        }
+    }
+
+    pub fn abort(&self) {
+        self.flag.store(true, Ordering::SeqCst);
+        self.notify.notify_waiters();
+    }
+
+    pub fn is_aborted(&self) -> bool {
+        self.flag.load(Ordering::SeqCst)
+    }
+
+    /// Resolves when the signal is aborted. If already aborted, resolves
+    /// immediately. Used to make sleeps/waits abort-aware.
+    pub async fn wait(&self) {
+        if self.is_aborted() {
+            return;
+        }
+        let notified = self.notify.notified();
+        tokio::pin!(notified);
+        // Re-check to avoid a lost-wakeup race between the check above and
+        // registering the notification.
+        if self.is_aborted() {
+            return;
+        }
+        notified.await;
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct PermissionAskInput {
+    pub tool: String,
+    pub args_summary: String,
+    pub path: Option<String>,
+}
+
+/// Decides whether a tool call may proceed.
+#[async_trait::async_trait]
+pub trait PermissionAsker: Send + Sync {
+    /// Returns true if the user allowed the operation (for this run or "always").
+    async fn ask(&self, request: PermissionAskInput) -> bool;
+}
+
+/// Free-form question to the end user (used by the `question` tool).
+#[async_trait::async_trait]
+pub trait UserAsker: Send + Sync {
+    /// Presents the question + options; returns the chosen answer (free text allowed).
+    async fn ask(&self, question: String, options: Vec<String>) -> Option<String>;
+}
+
+/// Runs a subagent task (implemented by the runtime; injected to avoid cycles).
+#[async_trait::async_trait]
+pub trait SubagentRunner: Send + Sync {
+    /// Runs the task in a child session, forwarding its events to `events`
+    /// (tagged with the child's `session_id` and the parent's id).
+    ///
+    /// `depth` is the nesting depth of the *child* (root agent = 0, its
+    /// subagents = 1, and so on). The runner propagates `depth + 1` to any
+    /// subagent the child itself spawns.
+    async fn run_task(
+        &self,
+        agent: String,
+        prompt: String,
+        events: crate::harness::event::EventSender,
+        depth: usize,
+    ) -> Result<TaskOutcome, String>;
+}
+
+/// Result of a completed subagent task.
+#[derive(Clone, Debug)]
+pub struct TaskOutcome {
+    pub final_text: String,
+    /// Child session id (persisted with `parent_id` set). Read by tests.
+    #[allow(dead_code)]
+    pub session_id: String,
+    /// Number of iterations the child turn used. Read by tests.
+    #[allow(dead_code)]
+    pub iterations: usize,
+}
+
+/// Everything a tool needs to run, scoped to the current session.
+#[derive(Clone)]
+pub struct ToolContext {
+    pub session_id: String,
+    pub agent: String,
+    /// Tools the current agent may use (empty = all). Mirrors the AgentSpec
+    /// allowlist and is enforced defensively at execution time, so a
+    /// hallucinated tool name can never be executed.
+    pub agent_tools: Vec<String>,
+    pub cwd: PathBufGuard,
+    pub abort: AbortSignal,
+    pub permission: Arc<PermissionEngine>,
+    pub asker: Arc<dyn PermissionAsker>,
+    pub user_asker: Arc<dyn UserAsker>,
+    pub todos: Arc<tokio::sync::RwLock<Vec<TodoItem>>>,
+    /// Extra shared state (e.g. task runner installed by the runtime).
+    pub task_runner: Option<Arc<dyn SubagentRunner>>,
+    /// Event channel of the current run; subagents forward their events here
+    /// (tagged with their own session id + this session as parent).
+    pub events: EventSender,
+    /// Project memory store (SQLite) used by the `remember` tool.
+    pub project_memory: Option<Arc<ProjectMemoryStore>>,
+    /// File checkpoints (pre-agent snapshots) powering `/diff` and `/restore`.
+    pub checkpoints: Arc<crate::harness::tool::checkpoint::FileCheckpoints>,
+    /// Project hooks (pre_tool/post_tool/on_turn_end) from rustclaw.json.
+    pub hooks: crate::harness::hooks::HooksConfig,
+    /// Shared registry of background bash jobs (`bash --background`, `/jobs`).
+    pub jobs: Arc<crate::harness::tool::jobs::JobRegistry>,
+    /// Subagent nesting depth. `0` for the root agent; incremented by one for
+    /// each nested `task` spawn. Used to enforce `MAX_SUBAGENT_DEPTH`.
+    pub depth: usize,
+    /// Semantic code index (SQLite + FTS5 + optional embeddings) used by the
+    /// `semantic_search` tool. `None` when the index is unavailable.
+    pub semantic_index: Option<Arc<crate::harness::index::SemanticIndex>>,
+    /// Embeddings backend for semantic search. `None` degrades to BM25-only.
+    pub embedder: Option<Arc<dyn crate::harness::index::Embedder>>,
+    /// Sandbox policy for the `bash` tool, from `rustclaw.json` (`"off" |
+    /// "landlock"`). `None` = off.
+    pub sandbox_policy: Option<String>,
+}
+
+/// Working directory guard: all path resolution goes through this.
+#[derive(Clone, Debug)]
+pub struct PathBufGuard(pub std::path::PathBuf);
+
+impl PathBufGuard {
+    pub fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+
+    /// Resolves `p` against the session cwd if relative.
+    pub fn resolve(&self, p: &str) -> std::path::PathBuf {
+        let path = std::path::Path::new(p);
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            self.0.join(path)
+        }
+    }
+}
+
+impl ToolContext {
+    /// Checks permission for a tool call. Escalates to the asker when the
+    /// engine says `Ask`. Returns an Err with a friendly model-facing message on deny.
+    pub async fn check_permission(&self, tool: &str, args: &Value) -> Result<(), String> {
+        // Agent allowlist (defense-in-depth; the LLM only sees allowed specs).
+        if !self.agent_tools.is_empty() && !self.agent_tools.iter().any(|t| t == tool) {
+            return Err(format!(
+                "Tool `{}` is not available to the `{}` agent (file changes are only \
+                 allowed in build mode).",
+                tool, self.agent
+            ));
+        }
+        let path = extract_path(args).map(|p| self.cwd.resolve(&p).to_string_lossy().to_string());
+        let decision = self
+            .permission
+            .check(tool, path.as_deref(), self.cwd.path());
+        match decision {
+            PermissionDecision::Allow => Ok(()),
+            PermissionDecision::Deny => Err(format!(
+                "Permission denied: tool `{}` is not allowed by policy.",
+                tool
+            )),
+            PermissionDecision::Ask => {
+                let input = PermissionAskInput {
+                    tool: tool.to_string(),
+                    args_summary: crate::harness::session::preview(&args.to_string(), 200),
+                    path,
+                };
+                let allowed = self.asker.ask(input).await;
+                if allowed {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "The user denied permission for tool `{}`. Do not retry the same call; \
+                         explain and ask how to proceed.",
+                        tool
+                    ))
+                }
+            }
+        }
+    }
+}
+
+fn extract_path(args: &Value) -> Option<String> {
+    for key in ["path", "file_path", "working_dir", "pattern_path"] {
+        if let Some(p) = args.get(key).and_then(|v| v.as_str()) {
+            return Some(p.to_string());
+        }
+    }
+    None
+}

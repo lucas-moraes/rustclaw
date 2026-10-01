@@ -1,0 +1,27 @@
+{
+  "permission": {
+    "tools": {
+      "remember": "allow",
+      "todo_read": "allow",
+      "edit": "allow",
+      "git_diff": "allow",
+      "git_status": "allow",
+      "question": "allow",
+      "todo_write": "allow",
+      "read": "allow",
+      "cursor": "allow",
+      "task": "allow",
+      "grep": "allow",
+      "ast_search": "allow",
+      "bash": "allow",
+      "fetch_webpage": "allow",
+      "cursor_plan": "allow",
+      "web_search": "allow",
+      "git_log": "allow",
+      "write": "allow",
+      "glob": "allow",
+      "diagnostics": "allow"
+    },
+    "default": null
+  }
+}

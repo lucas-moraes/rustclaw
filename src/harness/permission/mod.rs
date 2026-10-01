@@ -1,0 +1,577 @@
+//! Permission engine: allow / ask / deny rules per tool, with path escalation.
+//!
+//! Defaults mirror OpenCode/Claude Code conventions:
+//! - read-only tools (read/glob/grep/todo_read) => Allow
+//! - mutating tools (write/edit/bash) => Ask
+//! - paths outside the session cwd => escalated to Ask even for read tools.
+
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+/// Every builtin harness tool name. Used by `allow_all` to grant the harness
+/// full freedom over files inside the project.
+pub const ALL_TOOLS: &[&str] = &[
+    "read",
+    "glob",
+    "grep",
+    "ast_search",
+    "semantic_search",
+    "diagnostics",
+    "todo_read",
+    "todo_write",
+    "web_search",
+    "fetch_webpage",
+    "git_status",
+    "git_diff",
+    "git_log",
+    "write",
+    "edit",
+    "bash",
+    "task",
+    "question",
+    "remember",
+    "cursor",
+    "cursor_plan",
+];
+
+/// Callback invoked when a tool is marked "always allow", so the decision can
+/// be persisted (e.g. to the project's `rustclaw.json`).
+type PersistFn = Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
+
+/// Request shown to the user when a tool needs approval.
+// Fields are part of the event-bus data API (carried in `HarnessEvent::PermissionAsk`);
+// not all are read by the current UI, but they are intentionally public.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[allow(dead_code)]
+pub struct PermissionRequest {
+    pub id: String,
+    pub session_id: String,
+    pub tool: String,
+    pub args_summary: String,
+    pub path: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PermissionDecision {
+    Allow,
+    Ask,
+    Deny,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Rule {
+    Allow,
+    Ask,
+    Deny,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct PermissionConfig {
+    /// Per-tool rules, e.g. { "bash": "ask", "edit": "allow" }
+    #[serde(default)]
+    pub tools: HashMap<String, Rule>,
+    /// Wildcard default, e.g. "*": "ask"
+    #[serde(default)]
+    pub default: Option<Rule>,
+}
+
+impl PermissionConfig {
+    /// Parses a project config file (JSON subset, opencode-like `permission` object).
+    /// Public parsing helper; kept for API completeness.
+    #[allow(dead_code)]
+    pub fn from_json(value: &serde_json::Value) -> Option<Self> {
+        serde_json::from_value(value.get("permission")?.clone()).ok()
+    }
+
+    /// True when no explicit rules or default are set.
+    pub fn is_empty(&self) -> bool {
+        self.tools.is_empty() && self.default.is_none()
+    }
+}
+
+pub struct PermissionEngine {
+    rules: std::sync::Mutex<HashMap<String, Rule>>,
+    default: std::sync::Mutex<Option<Rule>>,
+    /// "always allow" decisions cached per session run.
+    always_allow: std::sync::Mutex<std::collections::HashSet<String>>,
+    /// Optional callback invoked when a tool is marked "always allow", so the
+    /// decision can be persisted (e.g. to the project's `rustclaw.json`).
+    persist: std::sync::Mutex<Option<PersistFn>>,
+}
+
+impl Default for PermissionEngine {
+    fn default() -> Self {
+        Self::from_config(&PermissionConfig::with_defaults())
+    }
+}
+
+impl PermissionConfig {
+    /// Sensible default permission rules: read-only tools are allowed, mutating
+    /// tools fall back to Ask (human-in-the-loop).
+    pub fn with_defaults() -> Self {
+        let mut tools = HashMap::new();
+        for t in [
+            "read",
+            "glob",
+            "grep",
+            "ast_search",
+            "semantic_search",
+            "todo_read",
+            "todo_write",
+            "web_search",
+            "fetch_webpage",
+            "git_status",
+            "git_diff",
+            "git_log",
+        ] {
+            tools.insert(t.to_string(), Rule::Allow);
+        }
+        for t in [
+            "write",
+            "edit",
+            "bash",
+            "task",
+            "question",
+            "remember",
+            "cursor",
+            "cursor_plan",
+        ] {
+            tools.insert(t.to_string(), Rule::Ask);
+        }
+        Self {
+            tools,
+            default: Some(Rule::Ask),
+        }
+    }
+}
+
+impl PermissionEngine {
+    pub fn from_config(config: &PermissionConfig) -> Self {
+        Self {
+            rules: std::sync::Mutex::new(config.tools.clone()),
+            default: std::sync::Mutex::new(config.default),
+            always_allow: std::sync::Mutex::new(std::collections::HashSet::new()),
+            persist: std::sync::Mutex::new(None),
+        }
+    }
+
+    /// Merges project-level rules into the engine. Project rules override the
+    /// builtin defaults; the project `default` (if any) overrides ours.
+    pub fn apply_project_config(&self, config: &PermissionConfig) {
+        let mut rules = self.rules.lock().unwrap_or_else(|e| e.into_inner());
+        for (tool, rule) in &config.tools {
+            rules.insert(tool.clone(), *rule);
+        }
+        if let Some(d) = config.default {
+            *self.default.lock().unwrap_or_else(|e| e.into_inner()) = Some(d);
+        }
+    }
+
+    /// Installs a callback invoked whenever a tool is marked "always allow",
+    /// so the decision can be persisted across sessions.
+    pub fn set_persist(&self, f: Option<PersistFn>) {
+        *self.persist.lock().unwrap_or_else(|e| e.into_inner()) = f;
+    }
+
+    /// Returns a clone of the persist callback (used by tests to exercise
+    /// concurrent persistence).
+    #[allow(dead_code)] // used in runtime.rs tests, clippy false positive
+    pub fn persist_callback(&self) -> Option<PersistFn> {
+        self.persist
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    pub fn set_always_allow(&self, tool: &str) {
+        self.always_allow
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(tool.to_string());
+        if let Some(persist) = self
+            .persist
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
+            if let Err(e) = persist(tool) {
+                eprintln!(
+                    "[warn] failed to persist always-allow for `{}`: {}",
+                    tool, e
+                );
+            }
+        }
+    }
+
+    /// Grants the harness full freedom to run **any** tool on files inside the
+    /// project (the session cwd). Marks every known tool as `always_allow` and
+    /// sets the default rule to `Allow`, so unknown/MCP tools are also admitted
+    /// within the project. Paths outside the project still escalate to `Ask`
+    /// (see `check`), so this never grants access beyond the project root.
+    pub fn allow_all(&self) {
+        let mut always = self.always_allow.lock().unwrap_or_else(|e| e.into_inner());
+        for t in ALL_TOOLS {
+            always.insert(t.to_string());
+        }
+        drop(always);
+        *self.default.lock().unwrap_or_else(|e| e.into_inner()) = Some(Rule::Allow);
+    }
+
+    /// Snapshot of the current per-tool rules (for `/permissions list`).
+    pub fn rules_snapshot(&self) -> Vec<(String, Rule)> {
+        let mut v: Vec<(String, Rule)> = self
+            .rules
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(k, r)| (k.clone(), *r))
+            .collect();
+        v.sort_by(|a, b| a.0.cmp(&b.0));
+        v
+    }
+
+    /// Sets a per-tool rule in memory (used by `/permissions set`).
+    pub fn set_rule(&self, tool: &str, rule: Rule) {
+        self.rules
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(tool.to_string(), rule);
+    }
+
+    /// Removes a per-tool rule, falling back to the default (used by `/permissions rm`).
+    pub fn remove_rule(&self, tool: &str) -> bool {
+        self.rules
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(tool)
+            .is_some()
+    }
+
+    /// Resolves the decision for `tool` with optional `path` (absolute).
+    /// Paths escaping the session cwd always escalate to Ask — even with an
+    /// "always allow" cached for the tool — so "a" (always) only grants
+    /// blanket permission for files inside the project.
+    pub fn check(&self, tool: &str, path: Option<&str>, cwd: &Path) -> PermissionDecision {
+        // Explicit "always allow" wins for this run, but only inside the cwd.
+        let always = self
+            .always_allow
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(tool);
+
+        let rule = self
+            .rules
+            .lock()
+            .unwrap()
+            .get(tool)
+            .or(self
+                .default
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref())
+            .copied()
+            .unwrap_or(Rule::Ask);
+
+        // Paths outside the workspace always escalate to Ask (unless denied).
+        // Both sides are canonicalized first so lexical escapes like
+        // `/proj/../etc/passwd` or symlinks pointing outside are caught.
+        if let Some(p) = path {
+            // Canonicalize both sides so lexical escapes (`/proj/../etc`)
+            // and symlinks pointing outside are caught. For nonexistent
+            // paths, canonicalize the deepest existing ancestor and rejoin
+            // the remainder (handles symlinked parents like /tmp on macOS).
+            let abs = canonicalize_best_effort(Path::new(p));
+            let root = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+            if !abs.starts_with(&root) {
+                if rule == Rule::Deny {
+                    return PermissionDecision::Deny;
+                }
+                return PermissionDecision::Ask;
+            }
+        }
+
+        if always {
+            return PermissionDecision::Allow;
+        }
+
+        match rule {
+            Rule::Allow => PermissionDecision::Allow,
+            Rule::Ask => PermissionDecision::Ask,
+            Rule::Deny => PermissionDecision::Deny,
+        }
+    }
+}
+
+/// Canonicalizes `p`, or, if it does not exist yet, the deepest existing
+/// ancestor with the non-existing tail re-joined lexically. Falls back to
+/// the raw path when nothing can be canonicalized.
+fn canonicalize_best_effort(p: &Path) -> PathBuf {
+    if let Ok(c) = std::fs::canonicalize(p) {
+        return c;
+    }
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+    let mut cur = p.to_path_buf();
+    loop {
+        let parent = match cur.parent() {
+            Some(par) if par != cur => par.to_path_buf(),
+            _ => break,
+        };
+        tail.push(cur.file_name().unwrap_or_default().to_os_string());
+        if let Ok(c) = std::fs::canonicalize(&parent) {
+            let mut abs = c;
+            for part in tail.iter().rev() {
+                abs.push(part);
+            }
+            return abs;
+        }
+        cur = parent;
+    }
+    p.to_path_buf()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_readonly_allow_by_default() {
+        let engine = PermissionEngine::default();
+        let cwd = Path::new("/proj");
+        assert_eq!(engine.check("read", None, cwd), PermissionDecision::Allow);
+        assert_eq!(engine.check("glob", None, cwd), PermissionDecision::Allow);
+        assert_eq!(engine.check("grep", None, cwd), PermissionDecision::Allow);
+    }
+
+    #[test]
+    fn test_mutating_ask_by_default() {
+        let engine = PermissionEngine::default();
+        let cwd = Path::new("/proj");
+        assert_eq!(engine.check("write", None, cwd), PermissionDecision::Ask);
+        assert_eq!(engine.check("bash", None, cwd), PermissionDecision::Ask);
+        assert_eq!(engine.check("edit", None, cwd), PermissionDecision::Ask);
+    }
+
+    #[test]
+    fn test_unknown_tool_asks() {
+        let engine = PermissionEngine::default();
+        assert_eq!(
+            engine.check("mystery", None, Path::new("/proj")),
+            PermissionDecision::Ask
+        );
+    }
+
+    #[test]
+    fn test_path_outside_cwd_escalates() {
+        let engine = PermissionEngine::default();
+        let cwd = Path::new("/proj");
+        assert_eq!(
+            engine.check("read", Some("/etc/passwd"), cwd),
+            PermissionDecision::Ask
+        );
+        assert_eq!(
+            engine.check("read", Some("/proj/src/main.rs"), cwd),
+            PermissionDecision::Allow
+        );
+    }
+
+    #[test]
+    fn test_lexical_escape_is_canonicalized() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("proj");
+        std::fs::create_dir_all(&root).unwrap();
+        let engine = PermissionEngine::default();
+
+        // `/proj/../etc/passwd` is lexically inside but really outside.
+        let escape = root.join("..").join("etc").join("passwd");
+        assert_eq!(
+            engine.check("read", Some(escape.to_str().unwrap()), &root),
+            PermissionDecision::Ask
+        );
+        // A real file inside the project still passes.
+        std::fs::write(root.join("f.txt"), b"x").unwrap();
+        assert_eq!(
+            engine.check("read", Some(root.join("f.txt").to_str().unwrap()), &root),
+            PermissionDecision::Allow
+        );
+    }
+
+    #[test]
+    fn test_symlink_escape_is_canonicalized() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("proj");
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let link = root.join("link");
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        let engine = PermissionEngine::default();
+        assert_eq!(
+            engine.check("read", Some(link.to_str().unwrap()), &root),
+            PermissionDecision::Ask
+        );
+    }
+
+    #[test]
+    fn test_nonexistent_path_falls_back_lexical() {
+        let engine = PermissionEngine::default();
+        let cwd = Path::new("/proj");
+        // Nonexistent path inside cwd: lexical fallback keeps it inside.
+        assert_eq!(
+            engine.check("read", Some("/proj/new-file.txt"), cwd),
+            PermissionDecision::Allow
+        );
+        // Nonexistent path outside cwd: still escalates.
+        assert_eq!(
+            engine.check("read", Some("/etc/nonexistent"), cwd),
+            PermissionDecision::Ask
+        );
+    }
+
+    #[test]
+    fn test_always_allow_cache() {
+        let engine = PermissionEngine::default();
+        let cwd = Path::new("/proj");
+        engine.set_always_allow("bash");
+        assert_eq!(engine.check("bash", None, cwd), PermissionDecision::Allow);
+    }
+
+    #[test]
+    fn test_always_allow_grants_all_project_files() {
+        let engine = PermissionEngine::default();
+        let cwd = Path::new("/proj");
+        engine.set_always_allow("edit");
+        assert_eq!(
+            engine.check("edit", Some("/proj/src/main.rs"), cwd),
+            PermissionDecision::Allow
+        );
+        assert_eq!(
+            engine.check("edit", Some("/proj/README.md"), cwd),
+            PermissionDecision::Allow
+        );
+        // Other mutating tools still ask.
+        assert_eq!(engine.check("write", None, cwd), PermissionDecision::Ask);
+    }
+
+    #[test]
+    fn test_allow_all_grants_every_tool_inside_project() {
+        let engine = PermissionEngine::default();
+        let cwd = Path::new("/proj");
+        engine.allow_all();
+
+        // Every builtin tool is allowed inside the project.
+        for tool in ALL_TOOLS {
+            assert_eq!(
+                engine.check(tool, Some("/proj/src/main.rs"), cwd),
+                PermissionDecision::Allow,
+                "tool `{}` should be allowed inside the project",
+                tool
+            );
+        }
+        // Unknown/MCP tools are also allowed (default = Allow).
+        assert_eq!(
+            engine.check("mcp_fs_write", Some("/proj/x"), cwd),
+            PermissionDecision::Allow
+        );
+        // Paths outside the project still escalate to Ask.
+        assert_eq!(
+            engine.check("edit", Some("/etc/passwd"), cwd),
+            PermissionDecision::Ask
+        );
+    }
+
+    #[test]
+    fn test_always_allow_keeps_asking_outside_cwd() {
+        let engine = PermissionEngine::default();
+        let cwd = Path::new("/proj");
+        engine.set_always_allow("write");
+        assert_eq!(
+            engine.check("write", Some("/etc/passwd"), cwd),
+            PermissionDecision::Ask
+        );
+        assert_eq!(
+            engine.check("write", Some("/proj/src/main.rs"), cwd),
+            PermissionDecision::Allow
+        );
+    }
+
+    #[test]
+    fn test_config_override() {
+        let mut tools = HashMap::new();
+        tools.insert("bash".to_string(), Rule::Allow);
+        let engine = PermissionEngine::from_config(&PermissionConfig {
+            tools,
+            default: Some(Rule::Deny),
+        });
+        let cwd = Path::new("/proj");
+        assert_eq!(engine.check("bash", None, cwd), PermissionDecision::Allow);
+        assert_eq!(engine.check("edit", None, cwd), PermissionDecision::Deny);
+    }
+
+    #[test]
+    fn test_apply_project_config_overrides_defaults() {
+        let engine = PermissionEngine::default();
+        let cwd = Path::new("/proj");
+        assert_eq!(engine.check("bash", None, cwd), PermissionDecision::Ask);
+        let mut tools = HashMap::new();
+        tools.insert("bash".to_string(), Rule::Allow);
+        engine.apply_project_config(&PermissionConfig {
+            tools,
+            default: None,
+        });
+        assert_eq!(engine.check("bash", None, cwd), PermissionDecision::Allow);
+        // Unrelated defaults survive.
+        assert_eq!(engine.check("read", None, cwd), PermissionDecision::Allow);
+    }
+
+    #[test]
+    fn test_set_and_remove_rule() {
+        let engine = PermissionEngine::default();
+        let cwd = Path::new("/proj");
+        engine.set_rule("bash", Rule::Allow);
+        assert_eq!(engine.check("bash", None, cwd), PermissionDecision::Allow);
+        assert!(engine.remove_rule("bash"));
+        assert_eq!(engine.check("bash", None, cwd), PermissionDecision::Ask);
+        assert!(!engine.remove_rule("bash"));
+    }
+
+    #[test]
+    fn test_rules_snapshot_sorted() {
+        let engine = PermissionEngine::default();
+        engine.set_rule("zzz", Rule::Deny);
+        engine.set_rule("aa", Rule::Allow);
+        let snap = engine.rules_snapshot();
+        let names: Vec<&str> = snap.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names.first().copied(), Some("aa"));
+        assert!(names.contains(&"zzz"));
+    }
+
+    #[test]
+    fn test_persist_callback_invoked_on_always_allow() {
+        let engine = PermissionEngine::default();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        engine.set_persist(Some(Arc::new(move |tool: &str| {
+            sink.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(tool.to_string());
+            Ok(())
+        })));
+        engine.set_always_allow("bash");
+        assert_eq!(
+            *seen.lock().unwrap_or_else(|e| e.into_inner()),
+            vec!["bash".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_persist_error_does_not_panic() {
+        let engine = PermissionEngine::default();
+        engine.set_persist(Some(Arc::new(|_: &str| Err("boom".to_string()))));
+        // Must not panic even when the callback fails.
+        engine.set_always_allow("bash");
+    }
+}

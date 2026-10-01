@@ -1,0 +1,69 @@
+[package]
+name = "rustclaw"
+version = "1.0.1"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "stream"] }
+bytes = "1"
+futures-util = "0.3"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+rand = "0.9"
+anyhow = "1.0"
+regex = "1"
+scraper = "0.27"
+async-trait = "0.1"
+glob = "0.3"
+rusqlite = { version = "0.37", features = ["chrono", "bundled"] }
+base64 = "0.23"
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive"] }
+rustyline = "17"
+dirs = "6"
+ratatui = "0.30"
+crossterm = "0.29"
+sha2 = "0.10"
+arboard = "3"
+png = "0.17"
+htmd = "0.1"
+urlencoding = "2.1"
+tree-sitter = "0.25"
+tree-sitter-rust = "0.24"
+# Headless Chrome for `fetch_webpage` render="browser" (JS/SPA pages).
+# Shipped in the default binary (ROADMAP item 6); requires a Chrome/Chromium
+# binary on the host — see `harness::deps` and `rustclaw doctor`.
+chromiumoxide = "0.9"
+rmcp = { version = "3.2.0", features = ["client", "transport-child-process", "transport-streamable-http-client", "transport-streamable-http-client-reqwest"] }
+cpal = { version = "0.15", optional = true }
+tempfile = "3"
+
+[features]
+default = ["voice"]
+voice = ["dep:cpal"]
+
+[dev-dependencies]
+wiremock = "0.6"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+# unwind (not abort) so a panicking tool can be isolated via catch_unwind
+# (F3.3) without taking down the whole interactive harness.
+panic = "unwind"
+strip = true
+
+[profile.release.package."*"]
+opt-level = "z"
+
+# ROADMAP item 5: bash sandbox. Landlock is Linux-only; on other targets the
+# sandbox module compiles to a no-op stub.
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock = "0.4"
+libc = "0.2"

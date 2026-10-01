@@ -1,0 +1,399 @@
+# AGENTS.md - RustClaw Development Guide
+
+RustClaw é um **coding agent harness** (estilo OpenCode / Claude Code) em Rust.
+O core é o módulo `src/harness/`; o restante são módulos de suporte.
+
+## Build Commands
+
+```bash
+# Development build
+cargo build
+
+# Run (CLI harness)
+cargo run
+
+# Run a live smoke test (uses the token in the auth store, see Configuration)
+cargo test --bin rustclaw smoke_native_tool_calling -- --ignored --nocapture
+```
+
+## Linting & Testing
+
+```bash
+cargo test            # all tests
+cargo test harness    # only harness tests
+cargo test test_name  # single test
+cargo clippy          # lint
+cargo fmt             # format
+cargo fmt --check     # formatting check
+cargo check           # full check
+```
+
+## Code Style Guidelines
+
+### Imports
+- Use absolute imports within crate: `use crate::module::Item`
+- Group std, external crates, and local modules with blank lines between
+- Order: std → external → crate
+- Example:
+  ```rust
+  use std::path::{Path, PathBuf};
+  use anyhow::Result;
+  use serde::{Deserialize, Serialize};
+  use crate::config::Config;
+  ```
+
+### Formatting
+- Use `cargo fmt` for automatic formatting
+- Maximum line length: 100 characters
+- Use 4 spaces for indentation (Rust standard)
+
+### Types & Naming
+- Structs/Enums: PascalCase with `///` doc comments; derive `Clone`, `Debug`,
+  `Serialize`, `Deserialize` where appropriate
+- Functions/variables: snake_case, descriptive
+- Constants: SCREAMING_SNAKE_CASE at module level
+- `pub` for public API, `pub(crate)` for intra-crate, keep private by default
+
+### Error Handling
+- Use `anyhow::Result<T>` for application code
+- Add context with `.context("failed to X")` or `map_err(...)`
+- Avoid bare `unwrap()` in production code
+- Propagate with `?`
+
+### Async Code
+- Use `tokio` runtime
+- Prefer `async fn`
+- Use `Arc<T>` / `Arc<RwLock<T>>` for shared state
+- Avoid blocking calls in async context (use `spawn_blocking` when needed)
+
+### SQLite
+- `rusqlite`; wrap `Connection` in `Mutex` when shared across tasks
+- `SessionStore` (sessions) é o único store; skills vivem em `skills_json` na session
+
+### Testing
+- Tests in same file under `#[cfg(test)]`
+- Descriptive names: `test_loads_config_from_env()`
+- Use `tempfile` for temp DB/files
+
+## Project Structure
+
+```
+src/
+├── main.rs          # Entry point (runs harness CLI)
+├── config.rs        # Configuração por env (TOKEN/PROVIDER/MODEL/BASE_URL/limits)
+├── error.rs         # Tipos de erro (AgentError, ConfigError)
+└── harness/         # O harness em si
+    ├── mod.rs
+    ├── event.rs     # Event bus (HarnessEvent)
+    ├── runtime/     # SessionRuntime (facade)
+    │   ├── mod.rs       # SessionRuntime + PromptResult + re-exports
+    │   ├── registry.rs  # build_default_registry
+    │   ├── task_runner.rs # TaskRunner (subagentes via tool::task)
+    │   └── context.rs   # frozen_summary_for + memory_block_for
+    ├── auth.rs      # Auth token store (~/Library/.../rustclaw/auth.json)
+    ├── budget.rs    # BudgetTracker (token usage + cost estimation)
+    ├── hooks.rs     # Pre/post tool hooks (run_pre_tool, spawn_post_tool)
+    ├── skill/       # Skills = memória da sessão (prompt/session/memory)
+    │   ├── mod.rs   # SkillSpec, SessionSkill, PromptSkillToggle
+    │   ├── loader.rs# Discovery de SKILL.md (projeto+home+env) + parse
+    │   └── inject.rs# Render de skills habilitadas no system prompt
+    ├── session/
+    │   ├── mod.rs       # Session, Message, Part, ToolPart, ToolStatus, preview()
+    │   ├── store.rs     # SessionStore (SQLite)
+    │   ├── processor/   # Loop central (native tool calling + paralelo)
+    │   │   ├── mod.rs       # SessionProcessor + run_turn
+    │   │   └── stream_loop.rs # consume_stream + StreamOutcome
+    │   ├── tool_exec.rs # Execução de tools (JoinSet + permissões + catch_unwind)
+    │   ├── doom_loop.rs # DoomLoopDetector (detecção de ciclos de tool calls)
+    │   ├── compaction.rs# Compactação de contexto em overflow
+    │   └── image.rs     # Suporte a imagens nas mensagens
+    ├── provider/
+    │   ├── mod.rs       # Trait Provider + ProviderEvent + SSE parser
+    │   ├── catalog.rs   # Catálogo builtin + merge com user providers
+    │   ├── user_store.rs# providers.json (provedores personalizados)
+    │   ├── openai.rs    # /chat/completions + tool_calls
+    │   ├── anthropic.rs # /messages + tool_use
+    │   ├── opencode_go.rs # roteia minimax→/messages, senão→/chat/completions
+    │   └── retry.rs     # RetryPolicy para falhas de provider
+    ├── tool/
+    │   ├── mod.rs       # Trait Tool (JSON Schema) + ToolResult + ToolSpec
+    │   ├── registry.rs  # ToolRegistry (builder)
+    │   ├── context.rs   # ToolContext (cwd, abort, permission, askers, todos)
+    │   ├── bash.rs read.rs write.rs edit.rs glob.rs grep.rs
+    │   ├── ast_search.rs web_search.rs fetch_webpage.rs
+    │   ├── todo.rs question.rs task.rs remember.rs
+    │   ├── diff.rs git.rs diagnostics.rs checkpoint.rs
+    │   ├── cursor.rs    # CursorTool: delega a tarefa ao Cursor CLI
+    │   ├── env.rs jobs.rs truncate.rs
+    │   └── mod.rs
+    ├── permission/mod.rs # allow/ask/deny engine
+    ├── project/       # Memória persistente do projeto
+    │   ├── mod.rs
+    │   ├── memory.rs  # ProjectMemoryStore (SQLite, facts CRUD, dedup, GC)
+    │   ├── scoring.rs # Scoring/ranking de facts (recência+uso+BM25) + render
+    │   ├── profiler.rs# ProjectContext, StackKind, análise de código
+    │   ├── table.rs   # table_name() helper para nomes de tabela SQLite
+    │   └── config_file.rs # rustclaw.json per-project config
+    ├── mcp/          # MCP (Model Context Protocol) client
+    │   ├── mod.rs    # McpManager (connect_all, status, restart, health)
+    │   ├── config.rs # McpConfig (mcpServers) + load/merge global+projeto
+    │   ├── client.rs # McpClient (stdio/HTTP, handshake, list/call, reconnect)
+    │   └── tool.rs   # McpTool impl Tool (mcp_<server>_<tool>)
+    ├── agent/
+    │   ├── mod.rs        # AgentSpec + build_system_prompt
+    │   ├── builtin.rs    # build/plan/explore/general
+    │   └── custom.rs     # Agentes customizados (user-defined)
+    └── ui/
+        ├── mod.rs
+        ├── cli.rs       # streaming CLI (fallback / RUSTCLAW_UI=cli)
+        ├── commands/    # slash commands (/help, /settings, /undo, /fork, ...)
+        │   ├── mod.rs   # handle() dispatcher + tests
+        │   ├── memory.rs# /memory list|rm|clear|promote|gc
+        │   ├── export.rs# /export (Markdown/JSON)
+        │   ├── apply_plan.rs # /apply-plan
+        │   └── replay.rs# /record, /replay
+        └── tui/         # TUI ratatui + crossterm
+            ├── mod.rs   # entry + TTY selection + askers wiring
+            ├── app/     # App state + loop (split modules)
+            │   ├── mod.rs    # re-exports + MODES
+            │   ├── state.rs  # App + Modal + picker states
+            │   ├── events.rs # apply_event + transcript rebuild
+            │   ├── skills.rs # toggles/pickers/comando /skills
+            │   ├── usage.rs  # contabilidade de custo
+            │   ├── undo.rs   # undo/revert helpers
+            │   ├── keys.rs   # handle_key + submit_input
+            │   ├── pickers.rs# key handlers dos modais
+            │   ├── runner.rs # run_tui + TerminalGuard
+            │   └── tests.rs  # input/code_block tests
+            ├── editor.rs# prompt input editor (cursor/editing/history)
+            ├── fuzzy.rs # FuzzyList + subsequence match (pickers)
+            ├── subagent.rs # live subagent panels (task tool)
+            ├── codeblock.rs # last-code-block copy/save helpers
+            ├── toast.rs # toasts flutuantes (draw/toast.rs: Toast/ToastKind)
+            ├── transcript.rs # LineKind/TranscriptLine/ToolBatch types
+            ├── draw/    # widgets (status chips, fuzzy_list, toast, TestBackend helper)
+            ├── input.rs # key bindings
+            ├── askers.rs# TuiAsker/TuiUserAsker (channels oneshot)
+            ├── theme.rs # Tema e cores (NO_COLOR lock, high-contrast)
+            ├── palette.rs # Paleta de comandos (Ctrl+P)
+            ├── selection.rs # Seleção de texto no transcript
+            ├── anim.rs  # Animações (spinner, fade)
+            └── markdown.rs # Renderização de Markdown
+```
+
+TUI draw loop (`app/runner.rs`): após `EnterAlternateScreen`, `terminal.clear()`
+antes do loop (remove resquícios do shell). `needs_redraw` + teto `MIN_FRAME_DT`
+(~30 fps); `tick++` só no frame desenhado. `last_draw` inicia offsetado por
+`MIN_FRAME_DT` para o primeiro frame não esperar o throttle. Streaming usa
+`pending_stream` (flush ~64 ms / 80 chars). `TerminalGuard` + panic hook restauram
+o terminal (idempotente; abort não restaura). Pickers compartilham `FuzzyList`
+(`fuzzy.rs`).
+
+## Voice (feature `voice`)
+
+STT por voz no TUI, atrás de `--features voice` (dep `cpal` opcional):
+
+- `harness/voice.rs` — `encode_wav` (PCM f32→WAV 16-bit), `transcribe` (POST
+  JSON `{audio: data:audio/wav;base64,...}` para DeepInfra whisper), erros
+  tipados com hint (rate limit, auth, rede). `DEFAULT_STT_MODEL` vive em
+  `config.rs` (sempre compilado, usado por `/settings`) e é reexportado aqui.
+- `tool/`-less: `Recorder` (cpal) com start/stop/elapsed, limite de 60s
+  (`MAX_RECORDING`), formatos F32/I16/U16.
+- TUI: `Ctrl+R` grava/para (`app/keys.rs`), canal `voice_tx/voice_rx` drenado
+  no loop (`app/runner.rs`, auto-stop de 60s), estado `recording`/
+  `transcribing` no `App`, indicador `🎙 gravando… 0:07` na status line
+  (`draw/status.rs`). Modelo configurável via `stt_model` no RuntimeConfig
+  (`/settings`).
+- Smoke test real: `RUSTCLAW_HOME="$HOME/Library/Application Support/rustclaw"
+  cargo test --features voice smoke_voice_transcribe -- --ignored --nocapture`
+  (precisa do token deepinfra no auth store; o binário usa
+  `<exe-dir>/rustclaw-data` como base dir por padrão, então o teste precisa do
+  override).
+
+## Configuration (file-based, no `.env`)
+
+**Provider request params** (sentinel pattern — `""`/`0`/`0.0` = unset, never
+emitted in the request body): `fail_fast`, `service_tier`, `reasoning_effort`,
+`response_format`, `top_p`, `presence_penalty`, `frequency_penalty`, `stop`,
+`seed`. Flow: `LlmRequest` → `build_request_body` (openai.rs) →
+GlobalSettings/RuntimeConfig (`config.rs`, merge in `resolve()`) →
+ProcessorConfig → `/settings` subcommands. Cache accounting reads
+`cache_write_tokens` from usage (DeepInfra) and bills write premium 1.25×.
+
+All system-level data lives under a single **base dir**, resolved by
+`harness::paths::base_dir()` in this order:
+
+1. `RUSTCLAW_HOME` env var (explicit override, also used by tests)
+2. `<dir-of-executable>/rustclaw-data/` — portable layout: data travels
+   with the binary; binary updates never touch it
+3. Fallback: `~/.local/share/rustclaw` (Linux) /
+   `~/Library/Application Support/rustclaw` (macOS)
+
+There is **no migration** from the old location; a fresh base dir starts
+empty. Files inside the base dir:
+
+- `auth.json` — API token per provider (0600, via `/auth`)
+- `config.json` — provider/model, `max_iterations`,
+  `max_context_tokens`, theme (via `/settings`, `/models`)
+- `providers.json` — user-defined providers/models
+  (via `/provider add|rm|list`, `/models add`, or the `/models` picker
+  "add provider…"). Merged with the builtin catalog at runtime; a user
+  provider with the same name as a builtin overrides it.
+- `mcp.json` — MCP servers (`mcpServers` format);
+  merged with the `mcp` section of `rustclaw.json` (project wins by name)
+- `harness.db` — SQLite: sessions, messages, project memory
+- `usage-YYYY-MM.json` — monthly token/cost reports
+- `log.txt`, `attachments/` — app log and pasted images
+- `rustclaw.json` in the project root — per-project provider/model override
+  + optional `mcp` section
+- Precedence: catalog (builtin + user) → config.json → rustclaw.json → auth token
+- UX env vars still honored: `RUSTCLAWUI`/`RUSTCLAW_UI`, `RUSTCLAW_THEME`,
+  `RUSTCLAW_SKILLS_DIR`, `NO_COLOR`
+- Install: `scripts/install.sh` (curl releases) / `scripts/link-local.sh` (dev)
+
+## Key Patterns
+
+### Tool trait (native tool calling)
+Adicionar tools em `src/harness/tool/` e registrá-las em
+`runtime::build_default_registry`. Implementar:
+
+```rust
+#[async_trait::async_trait]
+impl Tool for MyTool {
+    fn name(&self) -> &str;
+    fn description(&self) -> &str;
+    fn parameters(&self) -> serde_json::Value; // JSON Schema
+    // opcional: fn read_only(&self) -> bool { true }  // MCP readOnlyHint
+    async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolResult, String>;
+}
+```
+
+### ast_search (Tree-Sitter)
+- `tool/ast_search.rs` usa `tree-sitter` 0.25 + `tree-sitter-rust` 0.24 para
+  busca sintática em `.rs` (structs/enums/traits/functions/impls) sem regex.
+- API da crate: `tree_sitter_rust::LANGUAGE` (constante `Language`); cria-se
+  `tree_sitter::Language::new(LANGUAGE)` e `Parser::set_language(&language)`
+  recebe referência.
+- Nó `impl_item` NÃO tem campo `name` — o nome é montado dos fields `trait`
+  e `type` ("Trait for Type"). `child_by_field_name("name")` vale para
+  function/struct/enum/trait items.
+- `read_only() = true`; registrado em `build_default_registry` e na lista
+  `Allow` do `PermissionEngine`.
+- Nós >3000 chars são truncados para o cabeçalho (protege a janela de contexto).
+
+### Provider
+- `provider::Provider` tem `stream(LlmRequest)` e `complete(LlmRequest)`
+- Adaptadores convertem `Message`/`Part` e emitem `ProviderEvent` unificado
+- `ProviderEvent::ToolCallEnd` carrega os argumentos completos da tool call
+- Prompt caching: `AnthropicProvider.prompt_cache` injeta até 3 breakpoints
+  `cache_control` (system/tools/última message); flag efetiva =
+  `config.json prompt_caching` && (providers.json `prompt_cache` ?? default
+  por provider — `true` só para `anthropic`); custo via
+  `catalog::estimate_cost_cached` (Anthropic write 1.25×/read 0.1×,
+  OpenAI cached 0.5×)
+
+### Loop do processor
+- `session/processor/mod.rs::run_turn`: stream → tool_calls → execução paralela
+  (JoinSet) com `ctx.check_permission` → results → repete até resposta final
+- Tool execution extraída para `session/tool_exec.rs` (JoinSet + permissões +
+  catch_unwind)
+- Doom-loop detection em `session/doom_loop.rs`: `DoomLoopDetector` com
+  `record()` e `should_stop()`; mesma tool call 3x (warn) / 5x (stop);
+  detecta ciclos multi-call (A,B,A,B...)
+- Compaction automática em overflow de contexto (`session/compaction.rs`)
+
+### Agents
+- Builtins em `agent/builtin.rs` (`build`/`plan`/`explore`/`general`/`cursor`)
+- `tool::task` dispara subagent via `runtime::TaskRunner` (child session isolada)
+
+### Cursor delegation (`cursor_agent` / `cursor_plan` toggles)
+- Dois toggles **independentes**:
+  - `cursor_agent` **on** → o modo `build` é servido pelo agente `cursor`,
+    cuja única tool (`cursor`) delega ao Cursor CLI em modo build
+    (`agent -p --force --output-format stream-json`).
+  - `cursor_plan` **on** → o modo `plan` é servido pelo agente `cursor_plan`,
+    cuja única tool (`cursor_plan`) delega em modo **plan read-only**
+    (`agent -p --mode plan --output-format stream-json`; sem `--force`).
+  Cada toggle tem o **seu modelo** (`cursor_model` / `cursor_plan_model`).
+  Dá para ligar só o build, só o plan, ou os dois.
+- O **system prompt do harness nunca é enviado** ao Cursor: a tool monta um
+  prompt determinístico (`build_delegation_prompt`) com `## Tarefa`,
+  `# Project context` (ProjectProfiler) e `<project-memory>`.
+- Kill-switch: `build_default_registry()` sempre registra as tools; elas são
+  removidas via `registry::apply_cursor_toggle(reg, &RuntimeConfig)` quando o
+  toggle correspondente está off (aplicado em `new_in`, `set_cursor_agent`,
+  `set_cursor_model`, `set_cursor_plan`, `set_cursor_plan_model` e
+  re-sincronizado por turno). O desvio de agente vive em `resolve_agent`
+  (`build`→`cursor`, `plan`→`cursor_plan`).
+- `CursorTool` carrega um `CursorMode` (`Build`/`Plan`): o `name()` da tool é
+  `cursor` ou `cursor_plan`, e `spawn_args(mode, model)` troca `--force` por
+  `--mode plan`. As duas instâncias coexistem no registry.
+- **Modelo do Cursor**: `cursor_model` (config.json) é repassado como
+  `--model <id>` no spawn (`CursorTool::new(model)` → `spawn_args`). Vazio =
+  `auto` (sem flag; default do CLI). A lista vem de `agent --list-models`
+  (parser `parse_model_list`). Mudar o modelo **não** altera o modelo do
+  harness — são camadas distintas.
+- Permissão default da tool `cursor` = **ask**; allowlist do agente `build`
+  nativo não inclui `cursor`.
+- TUI: o comando **`/cursor`** abre um modal dedicado (`Modal::Cursor`) com
+  as **quatro** linhas: `cursor_agent` e `cursor_plan` (**Space** alterna) e
+  `cursor_model` / `cursor_plan_model` (**Enter** abre um picker com a
+  listagem de modelos — `agent --list-models`, id + descrição, `auto` no topo,
+  valor atual pré-selecionado; ↑/↓ + Enter; o picker guarda o
+  `CursorModelTarget` para saber qual knob editar). Atalhos sem modal:
+  `/cursor on|off` e `/cursor model <id|auto>` (build, retrocompatíveis) e
+  `/cursor agent|plan on|off|model <id|auto>`. Essas linhas **não** ficam no
+  `/settings` (que só tem iterations/context/theme). Indicador `└ cursor`
+  (dim) sob `build` **e/ou** `plan` na sidebar, conforme os toggles.
+
+### Memory (skills)
+- Modelo: **prompt** (pedido atual) + **session** (histórico) + **memory** (skills)
+- Skills escolhidas na criação da session (SkillPicker) ou via `/skills`
+- Skills marcadas no turno (checkbox) entram no system prompt (`# Session skills`)
+- Persistidas em `harness_sessions.skills_json` (DB: `dirs::data_local_dir()/rustclaw/harness.db`)
+
+### Permissions
+- `PermissionEngine` decide Allow/Ask/Deny por tool + path (fora do CWD → Ask)
+- Tools mutáveis pedem confirmação no CLI (y/n/always)
+
+### MCP (Model Context Protocol)
+- `McpManager` (`mcp/mod.rs`): `connect_all` paralelo no boot (falha de um
+  server não bloqueia os outros; timeout de conexão 10s), `restart`,
+  health check a cada 60s, reconnect 1x em falha de transporte
+- Config: formato padrão `mcpServers` (Claude/Cursor); `command` (stdio) XOR
+  `url` (streamable HTTP + `headers.Authorization`); `${VAR}` expandido em
+  `args`/`env`; `timeout_secs` por chamada (default 60)
+- `McpTool` (`mcp/tool.rs`) impl `Tool` com nome `mcp_<server>_<tool>`
+  (sanitizado `[a-z0-9_]`); descrição truncada 200 chars; cap 50 tools/server
+- Registro: `SessionRuntime::init_mcp()` (chamado no boot do CLI/TUI) injeta
+  as tools no `ToolRegistry` via `registry.with_tool`
+- Permissões: MCP tools caem no default `Ask`; `/permissions set mcp_... allow`
+  persiste. Todos os modos admitem tools MCP com `readOnlyHint` via marcador
+  `mcp_readonly` na allowlist (`Tool::read_only()` no trait)
+- Comandos: `/mcp list|status|restart` (`ui/commands/mod.rs`)
+
+### Project Memory (remember tool)
+- `project/memory.rs`: `ProjectMemoryStore` — SQLite per-project facts table
+  (`<cwd_hash>_facts`) com CRUD: `append_fact`, `list_fact_rows`, `active_facts`,
+  `delete_fact_by_index`, `clear_memory`, `bump_usage`, `set_archived`, `dedup`,
+  `archive_stale`, `compact`, `auto_promote` (→ skills), `search_facts` (FTS5)
+- `project/scoring.rs`: `MemoryFact` struct, `score_fact`/`score_fact_bm25`
+  (recência + hit_count + lexical + BM25), `render_memory`/`render_memory_ranked`
+  (top-N por score, orçamento `MAX_MEMORY_CHARS=2048`), `is_memory_block`
+- `project/profiler.rs`: `ProjectContext`, `StackKind` (Rust/Node/Python/Go)
+- `project/table.rs`: `table_name()` — nomes de tabela sanitizados por projeto
+- `project/config_file.rs`: `rustclaw.json` per-project config
+- Constantes de kind: `KIND_FACT`, `KIND_COMMAND`, `KIND_CONVENTION`,
+  `KIND_PATTERN`, `KIND_DECISION`, `KIND_TRAP`
+- Confiança: `CONFIDENCE_INFERRED`, `CONFIDENCE_CONFIRMED`
+- Comandos: `/memory list|rm|clear|promote <id>|gc` (`ui/commands/memory.rs`)
+
+### Auth & Budget
+- `auth.rs`: `AuthStore` — gerencia tokens de API por provider em
+  `dirs::data_local_dir()/rustclaw/auth.json` (0600)
+- `budget.rs`: `BudgetTracker` — contabilidade de uso de tokens + estimativa
+  de custo via `catalog::estimate_cost` e `catalog::estimate_cost_cached`
+
+### Hooks
+- `hooks.rs`: `run_pre_tool` (antes da execução) e `spawn_post_tool` (depois,
+  fire-and-forget) — pontos de extensão para plugins/observability

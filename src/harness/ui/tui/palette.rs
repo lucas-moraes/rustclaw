@@ -1,0 +1,577 @@
+//! Command palette + slash autocomplete.
+
+use super::theme::Theme;
+
+#[derive(Clone, Debug)]
+pub struct PaletteItem {
+    pub id: String,
+    pub label: String,
+    pub description: String,
+    pub kind: PaletteKind,
+    /// Text inserted / command executed on select.
+    pub payload: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PaletteKind {
+    Command,
+    Agent,
+    Theme,
+    Action,
+}
+
+#[derive(Clone, Debug)]
+pub struct PaletteState {
+    pub query: String,
+    pub selected: usize,
+    pub items: Vec<PaletteItem>,
+    pub filtered: Vec<usize>,
+}
+
+impl PaletteState {
+    #[allow(dead_code)] // convenience wrapper kept for API symmetry
+    pub fn open(seed: &str) -> Self {
+        Self::open_with(seed, &[])
+    }
+
+    /// `extra_agents`: custom agents (name, description) discovered from
+    /// `.agents/agents/*.md`, appended after the builtin agent entries.
+    pub fn open_with(seed: &str, extra_agents: &[(String, String)]) -> Self {
+        let mut items = all_items();
+        for (name, desc) in extra_agents {
+            items.push(item(
+                &format!("agent-{name}"),
+                &format!("agent · {name}"),
+                &desc.clone(),
+                PaletteKind::Agent,
+                &format!("/agent {name}"),
+            ));
+        }
+        let mut s = Self {
+            query: seed.to_string(),
+            selected: 0,
+            items,
+            filtered: Vec::new(),
+        };
+        s.refilter();
+        s
+    }
+
+    pub fn refilter(&mut self) {
+        let q = self.query.to_lowercase();
+        self.filtered = self
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(_, it)| {
+                if q.is_empty() {
+                    return true;
+                }
+                it.label.to_lowercase().contains(&q)
+                    || it.description.to_lowercase().contains(&q)
+                    || it.id.to_lowercase().contains(&q)
+                    || it.payload.to_lowercase().contains(&q)
+            })
+            .map(|(i, _)| i)
+            .collect();
+        if self.selected >= self.filtered.len() {
+            self.selected = self.filtered.len().saturating_sub(1);
+        }
+    }
+
+    pub fn move_sel(&mut self, delta: i32) {
+        if self.filtered.is_empty() {
+            return;
+        }
+        let len = self.filtered.len() as i32;
+        let cur = self.selected as i32;
+        self.selected = ((cur + delta).rem_euclid(len)) as usize;
+    }
+
+    pub fn current(&self) -> Option<&PaletteItem> {
+        self.filtered
+            .get(self.selected)
+            .and_then(|i| self.items.get(*i))
+    }
+
+    pub fn push_char(&mut self, c: char) {
+        self.query.push(c);
+        self.selected = 0;
+        self.refilter();
+    }
+
+    pub fn backspace(&mut self) {
+        self.query.pop();
+        self.selected = 0;
+        self.refilter();
+    }
+}
+
+/// Inline autocomplete when typing `/…` in the prompt.
+#[derive(Clone, Debug)]
+pub struct AutoComplete {
+    pub selected: usize,
+    pub matches: Vec<PaletteItem>,
+}
+
+impl AutoComplete {
+    pub fn from_input(input: &str) -> Option<Self> {
+        if !input.starts_with('/') {
+            return None;
+        }
+        // Don't show after a space (args mode) unless still matching command name.
+        let cmd_part = input.split_whitespace().next().unwrap_or(input);
+        let q = cmd_part.to_lowercase();
+        let matches: Vec<PaletteItem> = all_items()
+            .into_iter()
+            .filter(|it| {
+                it.kind == PaletteKind::Command
+                    && (it.payload.to_lowercase().starts_with(&q)
+                        || it.id.to_lowercase().contains(q.trim_start_matches('/')))
+            })
+            .collect();
+        if matches.is_empty() {
+            return None;
+        }
+        Some(Self {
+            selected: 0,
+            matches,
+        })
+    }
+
+    pub fn move_sel(&mut self, delta: i32) {
+        if self.matches.is_empty() {
+            return;
+        }
+        let len = self.matches.len() as i32;
+        self.selected = ((self.selected as i32 + delta).rem_euclid(len)) as usize;
+    }
+
+    pub fn current(&self) -> Option<&PaletteItem> {
+        self.matches.get(self.selected)
+    }
+}
+
+pub fn all_items() -> Vec<PaletteItem> {
+    // Grouped by kind, alphabetically ordered by label within each group.
+    let mut items = vec![
+        // ── Commands ────────────────────────────────────────────────
+        item(
+            "agent",
+            "/agent",
+            "Switch agent (build/plan/explore/general/chat-free)",
+            PaletteKind::Command,
+            "/agent ",
+        ),
+        item(
+            "allow-all-permissions",
+            "/allow-all-permissions",
+            "Grant all in-project permissions",
+            PaletteKind::Command,
+            "/allow-all-permissions",
+        ),
+        item(
+            "apply-plan",
+            "/apply-plan",
+            "Inject the plan agent's plan and switch to build",
+            PaletteKind::Command,
+            "/apply-plan",
+        ),
+        item(
+            "auth",
+            "/auth",
+            "Save an API token for a provider (auth.json)",
+            PaletteKind::Command,
+            "/auth ",
+        ),
+        item(
+            "compact",
+            "/compact",
+            "Compact conversation context",
+            PaletteKind::Command,
+            "/compact",
+        ),
+        item(
+            "diff",
+            "/diff",
+            "Show file changes since the pre-agent snapshot",
+            PaletteKind::Command,
+            "/diff ",
+        ),
+        item(
+            "exit",
+            "/exit",
+            "Quit RustClaw",
+            PaletteKind::Command,
+            "/exit",
+        ),
+        item(
+            "export",
+            "/export",
+            "Export session transcript to Markdown or JSON",
+            PaletteKind::Command,
+            "/export ",
+        ),
+        item(
+            "fork",
+            "/fork",
+            "Fork the session (copy first N messages into a new one)",
+            PaletteKind::Command,
+            "/fork ",
+        ),
+        item(
+            "help",
+            "/help",
+            "Show commands and tips",
+            PaletteKind::Command,
+            "/help",
+        ),
+        item(
+            "image",
+            "/image",
+            "Attach an image — picker if no path; Ctrl/Cmd+V pastes screenshot",
+            PaletteKind::Command,
+            "/image",
+        ),
+        item(
+            "mcp",
+            "/mcp",
+            "MCP servers: list / status / restart",
+            PaletteKind::Command,
+            "/mcp ",
+        ),
+        item(
+            "memory",
+            "/memory",
+            "List / search / rm / clear project memory (remember tool)",
+            PaletteKind::Command,
+            "/memory ",
+        ),
+        item(
+            "model",
+            "/model",
+            "Set the model for this project",
+            PaletteKind::Command,
+            "/model ",
+        ),
+        item(
+            "models",
+            "/models",
+            "Switch provider/model (opencode-style picker)",
+            PaletteKind::Command,
+            "/models",
+        ),
+        item(
+            "new",
+            "/new",
+            "Start a fresh session",
+            PaletteKind::Command,
+            "/new",
+        ),
+        item(
+            "permissions",
+            "/permissions",
+            "Set per-tool permission rules (allow · ask · deny)",
+            PaletteKind::Command,
+            "/permissions ",
+        ),
+        item(
+            "provider",
+            "/provider",
+            "Switch provider (default model)",
+            PaletteKind::Command,
+            "/provider ",
+        ),
+        item(
+            "restore",
+            "/restore",
+            "Restore a file to its pre-agent snapshot",
+            PaletteKind::Command,
+            "/restore ",
+        ),
+        item(
+            "sessions",
+            "/sessions",
+            "Manage sessions (list · select · delete · rename)",
+            PaletteKind::Command,
+            "/sessions",
+        ),
+        item(
+            "cursor",
+            "/cursor",
+            "Cursor CLI: build/plan toggles + models",
+            PaletteKind::Command,
+            "/cursor",
+        ),
+        item(
+            "audio-settings",
+            "/audio-settings",
+            "Voice: push-to-talk toggle + STT model",
+            PaletteKind::Command,
+            "/audio-settings",
+        ),
+        item(
+            "settings",
+            "/settings",
+            "View / edit global limits and theme (config.json)",
+            PaletteKind::Command,
+            "/settings",
+        ),
+        item(
+            "skills",
+            "/skills",
+            "Manage this session's skill memory",
+            PaletteKind::Command,
+            "/skills",
+        ),
+        item(
+            "theme",
+            "/theme",
+            "List or set color theme",
+            PaletteKind::Command,
+            "/theme ",
+        ),
+        item(
+            "undo",
+            "/undo",
+            "Revert to before the last prompt",
+            PaletteKind::Command,
+            "/undo",
+        ),
+        item(
+            "usage",
+            "/usage",
+            "Show tokens and context usage",
+            PaletteKind::Command,
+            "/usage",
+        ),
+        item(
+            "stats",
+            "/stats",
+            "Session + project metrics (turns, tools, cost)",
+            PaletteKind::Command,
+            "/stats",
+        ),
+        // ── Agents ──────────────────────────────────────────────────
+        item(
+            "agent-build",
+            "agent · build",
+            "Implementation-focused agent",
+            PaletteKind::Agent,
+            "/agent build",
+        ),
+        item(
+            "agent-chat-free",
+            "agent · chat-free",
+            "Free-form conversational assistant (Gemini/ChatGPT style)",
+            PaletteKind::Agent,
+            "/agent chat-free",
+        ),
+        item(
+            "agent-explore",
+            "agent · explore",
+            "Read-only codebase explorer",
+            PaletteKind::Agent,
+            "/agent explore",
+        ),
+        item(
+            "agent-general",
+            "agent · general",
+            "General-purpose agent",
+            PaletteKind::Agent,
+            "/agent general",
+        ),
+        item(
+            "agent-plan",
+            "agent · plan",
+            "Planning / design agent",
+            PaletteKind::Agent,
+            "/agent plan",
+        ),
+        // ── Actions ─────────────────────────────────────────────────
+        item(
+            "action-clear",
+            "clear transcript",
+            "Clear local transcript view",
+            PaletteKind::Action,
+            "__clear__",
+        ),
+        item(
+            "action-theme",
+            "select theme",
+            "Open the theme picker",
+            PaletteKind::Action,
+            "__theme_picker__",
+        ),
+        item(
+            "action-quit",
+            "quit",
+            "Exit when idle",
+            PaletteKind::Action,
+            "__quit__",
+        ),
+        item(
+            "skills-picker",
+            "skills · picker",
+            "Reopen the skill selection overlay",
+            PaletteKind::Action,
+            "__skills__",
+        ),
+        item(
+            "action-help",
+            "toggle help",
+            "Open the help overlay",
+            PaletteKind::Action,
+            "__help__",
+        ),
+    ];
+
+    for name in Theme::names() {
+        items.push(item(
+            &format!("theme-{name}"),
+            &format!("theme · {name}"),
+            &format!("Apply the {name} theme"),
+            PaletteKind::Theme,
+            &format!("/theme {name}"),
+        ));
+    }
+
+    items
+}
+
+fn item(id: &str, label: &str, description: &str, kind: PaletteKind, payload: &str) -> PaletteItem {
+    PaletteItem {
+        id: id.to_string(),
+        label: label.to_string(),
+        description: description.to_string(),
+        kind,
+        payload: payload.to_string(),
+    }
+}
+
+pub fn kind_label(k: PaletteKind) -> &'static str {
+    match k {
+        PaletteKind::Command => "cmd",
+        PaletteKind::Agent => "agent",
+        PaletteKind::Theme => "theme",
+        PaletteKind::Action => "action",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_open_filters_by_query() {
+        let p = PaletteState::open("mem");
+        assert!(!p.filtered.is_empty(), "expected /memory-like matches");
+        for i in &p.filtered {
+            let it = &p.items[*i];
+            let hay =
+                format!("{}{}{}{}", it.label, it.description, it.id, it.payload).to_lowercase();
+            assert!(
+                hay.contains("mem"),
+                "item `{}` does not match `mem`",
+                it.label
+            );
+        }
+    }
+
+    #[test]
+    fn test_open_empty_query_shows_all() {
+        let p = PaletteState::open("");
+        assert_eq!(p.filtered.len(), p.items.len());
+        assert_eq!(p.selected, 0);
+    }
+
+    #[test]
+    fn test_push_char_and_backspace_refilter() {
+        let mut p = PaletteState::open("");
+        let all = p.filtered.len();
+        p.push_char('z');
+        p.push_char('z');
+        p.push_char('z');
+        assert!(p.filtered.is_empty(), "no item should match `zzz`");
+        p.backspace();
+        p.backspace();
+        p.backspace();
+        assert_eq!(p.filtered.len(), all);
+        assert_eq!(p.query, "");
+    }
+
+    #[test]
+    fn test_move_sel_wraps_and_handles_empty() {
+        let mut p = PaletteState::open("mem");
+        let len = p.filtered.len();
+        p.move_sel(-1);
+        assert_eq!(p.selected, len - 1, "should wrap to last");
+        p.move_sel(1);
+        assert_eq!(p.selected, 0, "should wrap back to first");
+        // empty filtered list is a no-op
+        let mut q = PaletteState::open("zzz");
+        q.move_sel(1);
+        assert_eq!(q.selected, 0);
+    }
+
+    #[test]
+    fn test_current_returns_selected_item() {
+        let mut p = PaletteState::open("");
+        p.selected = 1;
+        let cur = p.current().expect("non-empty palette has a selection");
+        assert_eq!(cur.id, p.items[p.filtered[1]].id);
+    }
+
+    #[test]
+    fn test_extra_agents_appended_and_matchable() {
+        let p = PaletteState::open_with("", &[("reviewer".into(), "reviews diffs".into())]);
+        let agent = p
+            .items
+            .iter()
+            .find(|it| it.kind == PaletteKind::Agent && it.id == "agent-reviewer")
+            .expect("custom agent appended");
+        assert_eq!(agent.payload, "/agent reviewer");
+        // reachable via query
+        let mut q = PaletteState::open_with("", &[("reviewer".into(), "reviews diffs".into())]);
+        q.push_char('r');
+        q.push_char('e');
+        q.push_char('v');
+        assert!(q
+            .filtered
+            .iter()
+            .any(|&i| q.items[i].id == "agent-reviewer"));
+    }
+
+    #[test]
+    fn test_autocomplete_none_for_plain_text() {
+        assert!(AutoComplete::from_input("hello world").is_none());
+    }
+
+    #[test]
+    fn test_autocomplete_matches_slash_commands() {
+        let ac = AutoComplete::from_input("/me").expect("`/me` should match /memory");
+        assert!(!ac.matches.is_empty());
+        assert!(ac.matches.iter().all(|it| it.kind == PaletteKind::Command));
+        assert!(ac.matches.iter().any(|it| it.payload.starts_with("/me")));
+
+        // args mode: only the command part is matched
+        let ac2 = AutoComplete::from_input("/memory list").expect("command part still matches");
+        assert!(ac2
+            .matches
+            .iter()
+            .any(|it| it.payload.starts_with("/memory")));
+
+        // no match → None
+        assert!(AutoComplete::from_input("/zzz").is_none());
+    }
+
+    #[test]
+    fn test_autocomplete_move_sel_wraps() {
+        let mut ac = AutoComplete::from_input("/").expect("`/` matches commands");
+        let len = ac.matches.len();
+        ac.move_sel(-1);
+        assert_eq!(ac.selected, len - 1);
+        ac.move_sel(1);
+        assert_eq!(ac.selected, 0);
+    }
+}

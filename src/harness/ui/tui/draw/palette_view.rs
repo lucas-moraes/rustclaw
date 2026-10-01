@@ -1,0 +1,279 @@
+//! Command palette and autocomplete overlays.
+
+use crate::harness::ui::tui::draw::centered_rect;
+use crate::harness::ui::tui::draw::centered_rect_fixed;
+use crate::harness::ui::tui::draw::transcript::draw_scrollbar;
+use crate::harness::ui::tui::palette::{
+    kind_label, AutoComplete, PaletteItem, PaletteKind, PaletteState,
+};
+use crate::harness::ui::tui::theme::Theme;
+use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::Frame;
+
+pub fn draw_palette(frame: &mut Frame, pal: &PaletteState, t: &Theme, area: Rect) {
+    let parea = centered_rect(60, 55, area);
+    frame.render_widget(Clear, parea);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(t.accent))
+        .title(Span::styled(
+            " ⌘ command palette ",
+            Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+        ))
+        .style(Style::default().bg(t.surface));
+
+    let inner = block.inner(parea);
+    frame.render_widget(block, parea);
+
+    let rows = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Min(3),
+        Constraint::Length(1),
+    ])
+    .split(inner);
+
+    // Query
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("  🔍 ", Style::default().fg(t.accent2)),
+            Span::styled(pal.query.clone(), Style::default().fg(t.text_bright)),
+            Span::styled("▌", Style::default().fg(t.accent)),
+        ])),
+        rows[0],
+    );
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            "─".repeat(rows[1].width as usize),
+            Style::default().fg(t.border),
+        )),
+        rows[1],
+    );
+
+    let mut list_lines = Vec::new();
+    let max_show = rows[2].height as usize;
+    let start = pal.selected.saturating_sub(max_show.saturating_sub(1));
+    for (vis_i, &idx) in pal.filtered.iter().enumerate().skip(start).take(max_show) {
+        let item = &pal.items[idx];
+        let selected = vis_i == pal.selected;
+        let kind_color = match item.kind {
+            PaletteKind::Command => t.accent,
+            PaletteKind::Agent => t.accent3,
+            PaletteKind::Theme => t.accent2,
+            PaletteKind::Action => t.warn,
+        };
+        let bg = if selected { t.bg } else { t.surface };
+        let marker = if selected { "▸ " } else { "  " };
+        list_lines.push(Line::from(vec![
+            Span::styled(marker.to_string(), Style::default().fg(t.accent).bg(bg)),
+            Span::styled(
+                format!("{:<6}", kind_label(item.kind)),
+                Style::default().fg(kind_color).bg(bg),
+            ),
+            Span::styled(
+                format!(" {:<24}", truncate(&item.label, 24)),
+                Style::default()
+                    .fg(if selected { t.text_bright } else { t.text })
+                    .bg(bg)
+                    .add_modifier(if selected {
+                        Modifier::BOLD
+                    } else {
+                        Modifier::empty()
+                    }),
+            ),
+            Span::styled(
+                truncate(&item.description, 56),
+                Style::default().fg(t.text_dim).bg(bg),
+            ),
+        ]));
+    }
+    if list_lines.is_empty() {
+        list_lines.push(Line::from(Span::styled(
+            "  no matches",
+            Style::default().fg(t.text_dim),
+        )));
+    }
+    frame.render_widget(Paragraph::new(list_lines), rows[2]);
+
+    // Lateral scrollbar on the right edge of the list area.
+    let total = pal.filtered.len();
+    if total > max_show {
+        draw_scrollbar(frame, rows[2], start, max_show, total, t);
+    }
+
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(" ↑↓ ", Style::default().fg(t.accent)),
+            Span::styled("navigate  ", Style::default().fg(t.text_dim)),
+            Span::styled("Enter ", Style::default().fg(t.accent)),
+            Span::styled("run  ", Style::default().fg(t.text_dim)),
+            Span::styled("Esc ", Style::default().fg(t.accent2)),
+            Span::styled("close", Style::default().fg(t.text_dim)),
+        ])),
+        rows[3],
+    );
+}
+
+pub fn draw_autocomplete(
+    frame: &mut Frame,
+    ac: &AutoComplete,
+    t: &Theme,
+    input_area: Rect,
+    full: Rect,
+) {
+    // Sliding window: keep the selected item visible when there are more
+    // matches than fit (navigation wraps over the full match list).
+    let max_show = 8usize;
+    let total = ac.matches.len();
+    let start = if total <= max_show {
+        0
+    } else {
+        let sel = ac.selected;
+        if sel + max_show / 2 >= max_show {
+            (sel + max_show / 2 + 1)
+                .saturating_sub(max_show)
+                .min(total - max_show)
+        } else {
+            0
+        }
+    };
+    let shown: Vec<&PaletteItem> = ac.matches.iter().skip(start).take(max_show).collect();
+    let sel_in_window = ac.selected.saturating_sub(start);
+    let n = shown.len() as u16;
+    if n == 0 {
+        return;
+    }
+    let height = n + 2;
+    // Pad to the longest slash name. A fixed 14-wide column glued
+    // `/allow-all-permissions` (22 cols) onto its description.
+    let label_w = shown
+        .iter()
+        .map(|item| Span::width(&Span::raw(&item.label)))
+        .max()
+        .unwrap_or(0)
+        + 2;
+    let desc_w = shown
+        .iter()
+        .map(|item| Span::width(&Span::raw(&item.description)))
+        .max()
+        .unwrap_or(0);
+    // " ▸ " (3) + label + description + borders (2) + 1 col of air.
+    let desired = (3 + label_w + desc_w + 3) as u16;
+    let cap = full.width.saturating_sub(2).max(1);
+    let width = desired.max(56).min(cap);
+    let y = input_area.y.saturating_sub(height);
+    let max_x = full.x.saturating_add(full.width.saturating_sub(width));
+    let x = input_area.x.saturating_add(1).min(max_x);
+    let area = Rect {
+        x,
+        y,
+        width,
+        height,
+    };
+    let area = if area.y < full.y {
+        centered_rect_fixed(width, height, full)
+    } else {
+        area
+    };
+    frame.render_widget(Clear, area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(t.accent2))
+        .title(Span::styled(
+            if total > max_show {
+                format!(" / ({}/{}) ", ac.selected + 1, total)
+            } else {
+                " / ".to_string()
+            },
+            Style::default().fg(t.accent2),
+        ))
+        .style(Style::default().bg(t.surface));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let mut lines = Vec::new();
+    for (i, item) in shown.iter().enumerate() {
+        let sel = i == sel_in_window;
+        let style = if sel {
+            Style::default()
+                .fg(t.text_bright)
+                .bg(t.bg)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(t.text)
+        };
+        lines.push(Line::from(vec![
+            Span::styled(
+                if sel { " ▸ " } else { "   " }.to_string(),
+                Style::default()
+                    .fg(t.accent)
+                    .bg(if sel { t.bg } else { t.surface }),
+            ),
+            Span::styled(format!("{:<label_w$}", item.label), style),
+            Span::styled(
+                item.description.clone(),
+                Style::default()
+                    .fg(t.text_dim)
+                    .bg(if sel { t.bg } else { t.surface }),
+            ),
+        ]));
+    }
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    let c = s.chars().count();
+    if c <= max {
+        s.to_string()
+    } else {
+        let mut o: String = s.chars().take(max.saturating_sub(1)).collect();
+        o.push('…');
+        o
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::harness::ui::tui::palette::{AutoComplete, PaletteItem, PaletteKind};
+
+    fn item(id: &str) -> PaletteItem {
+        PaletteItem {
+            id: id.into(),
+            label: format!("/{id}"),
+            description: "desc".into(),
+            kind: PaletteKind::Command,
+            payload: id.into(),
+        }
+    }
+
+    #[test]
+    fn autocomplete_window_keeps_selected_visible() {
+        let items: Vec<_> = (0..12).map(|i| item(&format!("cmd{i}"))).collect();
+        let mut ac = AutoComplete {
+            selected: 0,
+            matches: items,
+        };
+        // navega até o último item (wrap-around)
+        ac.move_sel(11);
+        assert_eq!(ac.selected, 11);
+
+        // janela: total=12 > 8, sel=11 -> start=4, item 11 visível
+        let total = ac.matches.len();
+        let max_show = 8usize;
+        let start = if total <= max_show {
+            0
+        } else {
+            (ac.selected + max_show / 2 + 1)
+                .saturating_sub(max_show)
+                .min(total - max_show)
+        };
+        assert!(start <= ac.selected && ac.selected < start + max_show);
+        assert_eq!(start, 4);
+    }
+}
