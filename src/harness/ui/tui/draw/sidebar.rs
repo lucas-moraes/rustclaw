@@ -101,12 +101,17 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
     let lines = vec![system_line(app, t, width), session_line(app, t, width)];
     frame.render_widget(Paragraph::new(lines), area);
     draw_feedback(frame, app, area);
-    cyber_badge(frame, area, t.accent, "rustclaw");
+    cyber_badge(frame, area, t.accent, &badge_label());
+}
+
+/// Brand badge text: `RUSTCLAW v<version>` (version from Cargo.toml).
+fn badge_label() -> String {
+    format!("RUSTCLAW v{}", env!("CARGO_PKG_VERSION"))
 }
 
 /// Width of the brand badge chip, including the diagonal `╱` cut.
 fn badge_width() -> usize {
-    Span::width(&Span::raw(" rustclaw ")) + 1
+    Span::width(&Span::raw(badge_label())) + 2
 }
 
 // ---------------------------------------------------------------- row 1
