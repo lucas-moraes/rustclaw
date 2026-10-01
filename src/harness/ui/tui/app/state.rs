@@ -52,6 +52,9 @@ pub struct App {
     pub cwd: std::path::PathBuf,
     /// Git branch of `cwd`, resolved once at boot ("" when not a repo).
     pub git_branch: String,
+    /// Project name shown before the branch in the navbar: the cwd folder
+    /// name (e.g. `rustclaw / main`).
+    pub project_name: String,
     pub lines: Vec<TranscriptLine>,
     pub streaming: Option<String>,
     pub input: String,
@@ -899,6 +902,10 @@ impl App {
                         .strip_prefix("ref: refs/heads/")
                         .map(str::to_string)
                 })
+                .unwrap_or_default(),
+            project_name: cwd
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default(),
             cwd,
             lines: Vec::new(),

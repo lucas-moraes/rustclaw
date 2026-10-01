@@ -148,9 +148,15 @@ fn system_left(app: &App, t: &Theme) -> Vec<Span<'static>> {
     // The badge is painted over the first columns of this row, so pad past it
     // before drawing the branch.
     spans.push(Span::raw(" ".repeat(badge_width())));
+    if !app.project_name.is_empty() {
+        spans.push(Span::styled(
+            format!(" {}", app.project_name),
+            Style::default().fg(t.text),
+        ));
+    }
     if !app.git_branch.is_empty() {
         spans.push(Span::styled(
-            format!(" {} ", app.git_branch),
+            format!(" /{} ", app.git_branch),
             Style::default().fg(t.text_dim),
         ));
     }
