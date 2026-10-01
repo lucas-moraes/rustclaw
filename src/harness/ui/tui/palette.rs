@@ -304,6 +304,13 @@ pub fn all_items() -> Vec<PaletteItem> {
             "/cursor",
         ),
         item(
+            "audio-settings",
+            "/audio-settings",
+            "Voice: push-to-talk toggle + STT model",
+            PaletteKind::Command,
+            "/audio-settings",
+        ),
+        item(
             "settings",
             "/settings",
             "View / edit global limits and theme (config.json)",

@@ -16,3 +16,5 @@ pub mod session;
 pub mod skill;
 pub mod tool;
 pub mod ui;
+#[cfg(feature = "voice")]
+pub mod voice;

@@ -487,6 +487,28 @@ impl SessionRuntime {
         Ok(())
     }
 
+    /// Sets the speech-to-text model for push-to-talk (persisted to config.json).
+    /// Empty string resets to the default (`openai/whisper-large-v3`).
+    pub fn set_stt_model(&mut self, model: impl Into<String>) -> Result<()> {
+        let model = model.into();
+        self.config.stt_model = model.clone();
+        let mut s = crate::config::GlobalSettings::load();
+        s.stt_model = model;
+        s.save().context("failed to persist config.json")?;
+        Ok(())
+    }
+
+    /// Enables or disables push-to-talk (`Ctrl+R` in the TUI). Persists the
+    /// flag to `config.json`; takes effect immediately (the key handler checks
+    /// this flag before starting a recording).
+    pub fn set_voice_enabled(&mut self, enabled: bool) -> Result<()> {
+        self.config.voice_enabled = enabled;
+        let mut s = crate::config::GlobalSettings::load();
+        s.voice_enabled = enabled;
+        s.save().context("failed to persist config.json")?;
+        Ok(())
+    }
+
     /// Enables or disables the Cursor CLI delegation for the `build` mode.
     ///
     /// Updates the in-memory config, re-syncs the tool registry (kill-switch)

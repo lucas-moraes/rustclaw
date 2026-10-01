@@ -182,6 +182,32 @@ pub async fn run_tui(
             });
         }
         app.flush_pending_stream_if_due();
+        // Drain voice transcription results (push-to-talk).
+        #[cfg(feature = "voice")]
+        {
+            while let Ok(ev) = app.voice_rx.try_recv() {
+                app.transcribing = false;
+                match ev {
+                    super::state::VoiceEvent::Transcribed(text) => {
+                        app.paste_text(&text);
+                    }
+                    super::state::VoiceEvent::Failed(msg) => {
+                        app.push_toast_kind(
+                            msg,
+                            crate::harness::ui::tui::draw::toast::ToastKind::Error,
+                        );
+                    }
+                }
+            }
+            // Auto-stop at the max recording length.
+            if app
+                .recording
+                .as_ref()
+                .is_some_and(|r| r.recorder.exceeded_max())
+            {
+                super::keys::stop_and_transcribe_pub(&mut app);
+            }
+        }
         while let Ok(req) = app.permission_rx.try_recv() {
             app.flush_stream_now();
             app.push(

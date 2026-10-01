@@ -160,6 +160,31 @@ pub struct App {
     pub thinking_expanded: bool,
     /// Images queued for the next prompt (paste / file picker / `/image`).
     pub pending_images: Vec<std::path::PathBuf>,
+    /// Active push-to-talk recording (`Ctrl+R`), if any.
+    #[cfg(feature = "voice")]
+    pub recording: Option<RecordingState>,
+    /// Whether a transcription request is in flight (between stop and result).
+    #[cfg(feature = "voice")]
+    pub transcribing: bool,
+    /// Channel delivering transcription results to the TUI loop.
+    #[cfg(feature = "voice")]
+    pub voice_tx: mpsc::UnboundedSender<VoiceEvent>,
+    #[cfg(feature = "voice")]
+    pub voice_rx: mpsc::UnboundedReceiver<VoiceEvent>,
+}
+
+/// State of an in-progress push-to-talk recording.
+#[cfg(feature = "voice")]
+pub struct RecordingState {
+    pub recorder: crate::harness::voice::Recorder,
+    pub started_at: std::time::Instant,
+}
+
+/// Result of a transcription request, delivered to the TUI loop.
+#[cfg(feature = "voice")]
+pub enum VoiceEvent {
+    Transcribed(String),
+    Failed(String),
 }
 
 /// A modal dialog waiting for user input.
@@ -205,6 +230,14 @@ pub enum Modal {
         models: Vec<(String, String)>,
         /// Which knob this picker edits (build or plan model).
         target: CursorModelTarget,
+    },
+    /// Audio/voice settings modal (opened by `/audio-settings`). Toggles
+    /// push-to-talk on/off with Space and edits the STT model with Enter.
+    AudioSettings {
+        /// Index of the highlighted row.
+        selected: usize,
+        /// When set, the user is typing a new `stt_model` value inline.
+        custom_input: Option<String>,
     },
 }
 
@@ -853,6 +886,8 @@ impl App {
         question_rx: mpsc::UnboundedReceiver<QuestionRequest>,
     ) -> Self {
         let (events_tx, events_rx) = crate::harness::event::event_channel();
+        #[cfg(feature = "voice")]
+        let (voice_tx_for_init, voice_rx_for_init) = mpsc::unbounded_channel::<VoiceEvent>();
         let (theme, theme_id) = theme::initial_theme();
         Self {
             runtime,
@@ -929,6 +964,14 @@ impl App {
             search: None,
             thinking_expanded: false,
             pending_images: Vec::new(),
+            #[cfg(feature = "voice")]
+            recording: None,
+            #[cfg(feature = "voice")]
+            transcribing: false,
+            #[cfg(feature = "voice")]
+            voice_tx: voice_tx_for_init,
+            #[cfg(feature = "voice")]
+            voice_rx: voice_rx_for_init,
         }
     }
 

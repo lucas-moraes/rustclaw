@@ -188,6 +188,27 @@ antes do loop (remove resquícios do shell). `needs_redraw` + teto `MIN_FRAME_DT
 o terminal (idempotente; abort não restaura). Pickers compartilham `FuzzyList`
 (`fuzzy.rs`).
 
+## Voice (feature `voice`)
+
+STT por voz no TUI, atrás de `--features voice` (dep `cpal` opcional):
+
+- `harness/voice.rs` — `encode_wav` (PCM f32→WAV 16-bit), `transcribe` (POST
+  JSON `{audio: data:audio/wav;base64,...}` para DeepInfra whisper), erros
+  tipados com hint (rate limit, auth, rede). `DEFAULT_STT_MODEL` vive em
+  `config.rs` (sempre compilado, usado por `/settings`) e é reexportado aqui.
+- `tool/`-less: `Recorder` (cpal) com start/stop/elapsed, limite de 60s
+  (`MAX_RECORDING`), formatos F32/I16/U16.
+- TUI: `Ctrl+R` grava/para (`app/keys.rs`), canal `voice_tx/voice_rx` drenado
+  no loop (`app/runner.rs`, auto-stop de 60s), estado `recording`/
+  `transcribing` no `App`, indicador `🎙 gravando… 0:07` na status line
+  (`draw/status.rs`). Modelo configurável via `stt_model` no RuntimeConfig
+  (`/settings`).
+- Smoke test real: `RUSTCLAW_HOME="$HOME/Library/Application Support/rustclaw"
+  cargo test --features voice smoke_voice_transcribe -- --ignored --nocapture`
+  (precisa do token deepinfra no auth store; o binário usa
+  `<exe-dir>/rustclaw-data` como base dir por padrão, então o teste precisa do
+  override).
+
 ## Configuration (file-based, no `.env`)
 
 All system-level data lives under a single **base dir**, resolved by
