@@ -23,6 +23,8 @@ pub struct Recorder {
     stop_tx: Option<std_mpsc::Sender<bool>>,
     /// Result of the capture thread (samples + rate), set on stop.
     result_rx: std_mpsc::Receiver<(Vec<f32>, u32)>,
+    /// Live input level (RMS, 0..=1000), updated by the capture callback.
+    level: std::sync::Arc<std::sync::atomic::AtomicU32>,
     started_at: Instant,
 }
 
@@ -32,12 +34,14 @@ impl Recorder {
         // Channel for the capture thread to report back (stop result).
         let (result_tx, result_rx) = std_mpsc::channel::<(Vec<f32>, u32)>();
         let (stop_tx, stop_rx) = std_mpsc::channel::<bool>();
+        let level = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let level_thread = std::sync::Arc::clone(&level);
 
         // Spawn the dedicated capture thread. All CoreAudio work happens here.
         let handle = std::thread::Builder::new()
             .name("rustclaw-voice-capture".into())
             .spawn(move || {
-                let result = run_capture(&stop_rx);
+                let result = run_capture(&stop_rx, level_thread);
                 // Report samples (or empty on error); then the thread ends,
                 // dropping the stream on *this* thread.
                 let _ = result_tx.send(result);
@@ -61,6 +65,7 @@ impl Recorder {
             return Ok(Self {
                 stop_tx: None,
                 result_rx,
+                level,
                 started_at: Instant::now(),
             });
         }
@@ -68,6 +73,7 @@ impl Recorder {
         Ok(Self {
             stop_tx: Some(stop_tx),
             result_rx,
+            level,
             started_at: Instant::now(),
         })
     }
@@ -89,6 +95,12 @@ impl Recorder {
         16_000
     }
 
+    /// Current input level (RMS scaled to 0..=1000). Cheap: one atomic load,
+    /// safe to call every frame from the UI loop.
+    pub fn level(&self) -> u32 {
+        self.level.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// Duration since recording started.
     pub fn elapsed(&self) -> Duration {
         self.started_at.elapsed()
@@ -100,9 +112,18 @@ impl Recorder {
     }
 }
 
+/// Scales an RMS value (0..1) to the 0..=1000 level reported to the UI.
+fn rms_to_level(rms: f32) -> u32 {
+    // Perceptual boost: sqrt makes quiet speech visible on the wave.
+    (rms.sqrt().clamp(0.0, 1.0) * 1000.0) as u32
+}
+
 /// Runs the capture loop on the dedicated thread. Returns `(samples, rate)`;
 /// rate 0 signals a setup failure.
-fn run_capture(stop_rx: &std_mpsc::Receiver<bool>) -> (Vec<f32>, u32) {
+fn run_capture(
+    stop_rx: &std_mpsc::Receiver<bool>,
+    level: std::sync::Arc<std::sync::atomic::AtomicU32>,
+) -> (Vec<f32>, u32) {
     let device = match cpal::default_host().default_input_device() {
         Some(d) => d,
         None => return (Vec::new(), 0),
@@ -125,6 +146,9 @@ fn run_capture(stop_rx: &std_mpsc::Receiver<bool>) -> (Vec<f32>, u32) {
                     if let Ok(mut b) = buf.lock() {
                         b.extend_from_slice(data);
                     }
+                    let rms =
+                        (data.iter().map(|s| s * s).sum::<f32>() / data.len().max(1) as f32).sqrt();
+                    level.store(rms_to_level(rms), std::sync::atomic::Ordering::Relaxed);
                 },
                 err_fn,
                 None,
@@ -135,9 +159,12 @@ fn run_capture(stop_rx: &std_mpsc::Receiver<bool>) -> (Vec<f32>, u32) {
             device.build_input_stream(
                 &config,
                 move |data: &[i16], _| {
+                    let f: Vec<f32> = data.iter().map(|s| *s as f32 / i16::MAX as f32).collect();
                     if let Ok(mut b) = buf.lock() {
-                        b.extend(data.iter().map(|s| *s as f32 / i16::MAX as f32));
+                        b.extend_from_slice(&f);
                     }
+                    let rms = (f.iter().map(|s| s * s).sum::<f32>() / f.len().max(1) as f32).sqrt();
+                    level.store(rms_to_level(rms), std::sync::atomic::Ordering::Relaxed);
                 },
                 err_fn,
                 None,
@@ -148,12 +175,15 @@ fn run_capture(stop_rx: &std_mpsc::Receiver<bool>) -> (Vec<f32>, u32) {
             device.build_input_stream(
                 &config,
                 move |data: &[u16], _| {
+                    let f: Vec<f32> = data
+                        .iter()
+                        .map(|s| (*s as f32 - u16::MAX as f32 / 2.0) / 32768.0)
+                        .collect();
                     if let Ok(mut b) = buf.lock() {
-                        b.extend(
-                            data.iter()
-                                .map(|s| (*s as f32 - u16::MAX as f32 / 2.0) / 32768.0),
-                        );
+                        b.extend_from_slice(&f);
                     }
+                    let rms = (f.iter().map(|s| s * s).sum::<f32>() / f.len().max(1) as f32).sqrt();
+                    level.store(rms_to_level(rms), std::sync::atomic::Ordering::Relaxed);
                 },
                 err_fn,
                 None,

@@ -105,7 +105,13 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect, tick: u64) {
             .map(|r| r.started_at.elapsed().as_secs())
             .unwrap_or(0);
         line_spans.push(Span::styled(
-            format!("  🎙 gravando… 0:{secs:02}"),
+            format!(
+                "  🎙 {} 0:{secs:02}",
+                crate::harness::ui::tui::anim::wave_frame(
+                    tick,
+                    app.recording.as_ref().map(|r| r.recorder.level())
+                )
+            ),
             Style::default()
                 .fg(t.error)
                 .add_modifier(ratatui::style::Modifier::BOLD),
