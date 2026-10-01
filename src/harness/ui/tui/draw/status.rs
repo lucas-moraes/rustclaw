@@ -81,7 +81,7 @@ fn usage_spans(app: &App, t: &Theme, avail: usize) -> Vec<Span<'static>> {
     spans
 }
 
-pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
+pub fn draw(frame: &mut Frame, app: &App, area: Rect, tick: u64) {
     let t = &app.theme;
 
     // Full model name, never elided: the rail is the one place that must show
@@ -96,6 +96,29 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
         Span::styled(" ─ ", Style::default().fg(t.border)),
         Span::styled(model_txt, Style::default().fg(t.accent3)),
     ];
+    // Push-to-talk indicator: 🎙 recording (with elapsed time) or transcribing.
+    #[cfg(feature = "voice")]
+    if app.recording.is_some() {
+        let secs = app
+            .recording
+            .as_ref()
+            .map(|r| r.started_at.elapsed().as_secs())
+            .unwrap_or(0);
+        line_spans.push(Span::styled(
+            format!("  🎙 gravando… 0:{secs:02}"),
+            Style::default()
+                .fg(t.error)
+                .add_modifier(ratatui::style::Modifier::BOLD),
+        ));
+    } else if app.transcribing {
+        line_spans.push(Span::styled(
+            format!(
+                "  ✎ transcrevendo {}",
+                crate::harness::ui::tui::anim::think_frame(tick)
+            ),
+            Style::default().fg(t.accent2),
+        ));
+    }
     // Usage meter on the right. It degrades (gauge shrinks, then counts drop)
     // rather than disappearing, so the percentage is always visible.
     let used: usize = line_spans.iter().map(Span::width).sum::<usize>() + 3;

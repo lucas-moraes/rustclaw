@@ -44,6 +44,21 @@ pub fn draw(
             frame.render_widget(Clear, fixed);
             draw_cursor(frame, theme, *selected, fixed, config)
         }
+        Modal::AudioSettings {
+            selected,
+            custom_input,
+        } => {
+            let fixed = centered_rect_fixed(64, 9, area);
+            frame.render_widget(Clear, fixed);
+            draw_audio_settings(
+                frame,
+                theme,
+                *selected,
+                custom_input.as_deref(),
+                fixed,
+                config,
+            )
+        }
         Modal::CursorModel {
             selected,
             models,
@@ -127,6 +142,91 @@ fn on_off(v: bool) -> String {
     } else {
         "off".into()
     }
+}
+
+/// Rows of the `/audio-settings` modal: (label, value, toggleable).
+///
+/// `voice_enabled` is a boolean toggled with Space; `stt_model` is edited on
+/// Enter (empty = default whisper model).
+pub(crate) fn audio_rows(c: &crate::config::RuntimeConfig) -> Vec<(String, String, bool)> {
+    vec![
+        ("voice_enabled".into(), on_off(c.voice_enabled), true),
+        (
+            "stt_model".into(),
+            if c.stt_model.is_empty() {
+                crate::config::DEFAULT_STT_MODEL.into()
+            } else {
+                c.stt_model.clone()
+            },
+            false,
+        ),
+    ]
+}
+
+/// The `/audio-settings` modal: push-to-talk toggle + STT model.
+fn draw_audio_settings(
+    frame: &mut Frame,
+    t: &Theme,
+    selected: usize,
+    custom_input: Option<&str>,
+    area: Rect,
+    config: &crate::config::RuntimeConfig,
+) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(t.accent2))
+        .title(Span::styled(
+            " 🎙 audio ",
+            Style::default().fg(t.accent2).add_modifier(Modifier::BOLD),
+        ))
+        .style(Style::default().bg(t.surface).fg(t.text));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let rows = audio_rows(config);
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, (label, value, toggleable)) in rows.iter().enumerate() {
+        let is_sel = i == selected;
+        let marker = if is_sel { "❯ " } else { "  " };
+        let label_style = if is_sel {
+            Style::default().fg(t.accent).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(t.text)
+        };
+        let value_style = if *toggleable {
+            Style::default().fg(if config.voice_enabled {
+                t.success
+            } else {
+                t.text_dim
+            })
+        } else {
+            Style::default().fg(t.text_dim)
+        };
+        // While typing a new model name, show the live input instead of the
+        // stored value.
+        let shown = if is_sel && label == "stt_model" && custom_input.is_some() {
+            format!("{}▏", custom_input.unwrap_or(""))
+        } else {
+            value.clone()
+        };
+        lines.push(Line::from(vec![
+            Span::styled(marker, Style::default().fg(t.accent)),
+            Span::styled(format!("{:<22}", label), label_style),
+            Span::styled(shown, value_style),
+        ]));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("  ↑/↓", Style::default().fg(t.accent2)),
+        Span::styled(" move  ", Style::default().fg(t.text_dim)),
+        Span::styled("Space", Style::default().fg(t.accent2)),
+        Span::styled(" toggle  ", Style::default().fg(t.text_dim)),
+        Span::styled("Enter", Style::default().fg(t.accent2)),
+        Span::styled(" model  ", Style::default().fg(t.text_dim)),
+        Span::styled("Esc", Style::default().fg(t.accent2)),
+        Span::styled(" close", Style::default().fg(t.text_dim)),
+    ]));
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
 
 fn draw_settings(

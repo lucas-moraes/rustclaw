@@ -11,6 +11,8 @@ use crate::harness::ui::tui::theme::Theme;
 use crate::harness::ui::tui::transcript::{preview, LineKind};
 use anyhow::Result;
 use crossterm::event::KeyEvent;
+#[cfg(feature = "voice")]
+use crossterm::event::{KeyCode, KeyModifiers};
 
 use super::pickers::{
     handle_auth_picker_key, handle_auth_prompt_key, handle_cursor_command, handle_model_picker_key,
@@ -49,6 +51,14 @@ pub(crate) async fn handle_key(
         }
         app.cancel_running_turn();
         return Ok(false);
+    }
+
+    // Push-to-talk recording mode: only Ctrl+R (stop+transcribe) and Esc
+    // (cancel) act; everything else is ignored so the user can't type while
+    // recording.
+    #[cfg(feature = "voice")]
+    if app.recording.is_some() {
+        return Ok(handle_recording_key(app, key));
     }
 
     if app.skill_picker.is_some() {
@@ -128,6 +138,7 @@ pub(crate) async fn handle_key(
                     Modal::Settings { .. } => {}
                     Modal::Cursor { .. } => {}
                     Modal::CursorModel { .. } => {}
+                    Modal::AudioSettings { .. } => {}
                 }
             }
             // Drain any queued asks too, so no oneshot is left dangling.
@@ -143,6 +154,7 @@ pub(crate) async fn handle_key(
                     Modal::Settings { .. } => {}
                     Modal::Cursor { .. } => {}
                     Modal::CursorModel { .. } => {}
+                    Modal::AudioSettings { .. } => {}
                 }
             }
             if app.running {
@@ -312,6 +324,10 @@ pub(crate) async fn handle_key(
         // building): Shift+Enter, Shift+Return, Alt+Enter and Ctrl+Enter all
         // work here. On macOS terminals without the kitty keyboard protocol
         // (default Terminal.app), Ctrl+J is the reliable fallback.
+        KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            #[cfg(feature = "voice")]
+            start_recording(app);
+        }
         KeyCode::Enter if !key.modifiers.is_empty() => {
             app.insert_char_fixed('\n');
         }
@@ -677,6 +693,12 @@ pub(crate) fn handle_modal_key(app: &mut App, key: KeyEvent) -> Result<bool> {
             let rows = crate::harness::ui::tui::draw::modal::cursor_rows(&app.runtime.config);
             handle_settings_like_key(app, key, rows, selected, Modal::Cursor { selected: 0 });
         }
+        Some(Modal::AudioSettings {
+            selected,
+            custom_input,
+        }) => {
+            handle_audio_settings_key(app, key, selected, custom_input);
+        }
         Some(Modal::CursorModel {
             selected,
             models,
@@ -885,6 +907,14 @@ fn toggle_setting(app: &mut App, field: &str) {
                 "plan mode now uses the Cursor CLI",
             )
         }
+        "voice_enabled" => {
+            let v = !app.runtime.config.voice_enabled;
+            (
+                v,
+                app.runtime.set_voice_enabled(v),
+                "push-to-talk (Ctrl+R) in the TUI",
+            )
+        }
         _ => return,
     };
     match saved {
@@ -904,6 +934,94 @@ fn cursor_model_target(label: &str) -> Option<CursorModelTarget> {
         "cursor_model" => Some(CursorModelTarget::Build),
         "cursor_plan_model" => Some(CursorModelTarget::Plan),
         _ => None,
+    }
+}
+
+/// Key handler for the `/audio-settings` modal. Space toggles the highlighted
+/// boolean row; Enter on `stt_model` opens an inline text prompt; Esc closes.
+fn handle_audio_settings_key(
+    app: &mut App,
+    key: KeyEvent,
+    selected: usize,
+    custom_input: Option<String>,
+) {
+    use crossterm::event::KeyCode;
+    let mut sel = selected;
+    // Inline text entry for the STT model name.
+    if let Some(mut inp) = custom_input {
+        match key.code {
+            KeyCode::Esc => {}
+            KeyCode::Backspace => {
+                inp.pop();
+            }
+            KeyCode::Enter => {
+                let v = inp.trim().to_string();
+                match app.runtime.set_stt_model(v.clone()) {
+                    Ok(()) => {
+                        let shown = if v.is_empty() { "default".into() } else { v };
+                        app.add_system(&format!("stt_model = {}", shown));
+                    }
+                    Err(e) => app.add_system(&format!("[error] failed to save: {}", e)),
+                }
+            }
+            KeyCode::Char(c)
+                if !key
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::CONTROL) =>
+            {
+                inp.push(c);
+            }
+            _ => {}
+        }
+        // Keep the modal open; re-open with the (possibly updated) input.
+        let keep_input = !matches!(key.code, KeyCode::Esc | KeyCode::Enter);
+        app.modal = Some(Modal::AudioSettings {
+            selected: sel,
+            custom_input: if keep_input { Some(inp) } else { None },
+        });
+        return;
+    }
+
+    let rows = crate::harness::ui::tui::draw::modal::audio_rows(&app.runtime.config);
+    let n = rows.len();
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => app.close_modal(),
+        KeyCode::Up | KeyCode::Char('k') => {
+            sel = sel.saturating_sub(1);
+            app.modal = Some(Modal::AudioSettings {
+                selected: sel,
+                custom_input: None,
+            });
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if sel + 1 < n {
+                sel += 1;
+            }
+            app.modal = Some(Modal::AudioSettings {
+                selected: sel,
+                custom_input: None,
+            });
+        }
+        KeyCode::Char(' ') => {
+            if let Some((label, _, toggleable)) = rows.get(sel) {
+                if *toggleable {
+                    toggle_setting(app, label);
+                }
+            }
+            app.modal = Some(Modal::AudioSettings {
+                selected: sel,
+                custom_input: None,
+            });
+        }
+        KeyCode::Enter => {
+            if rows.get(sel).map(|(l, _, _)| l.as_str()) == Some("stt_model") {
+                app.modal = Some(Modal::AudioSettings {
+                    selected: sel,
+                    custom_input: Some(String::new()),
+                });
+            }
+        }
+        _ => {}
     }
 }
 
@@ -1042,6 +1160,14 @@ pub(crate) async fn submit_input(
         // /cursor: Cursor CLI toggle + model (modal, or on/off/model args).
         if text == "/cursor" || text.starts_with("/cursor ") {
             handle_cursor_command(app, &text);
+            return Ok(false);
+        }
+        // /audio-settings: push-to-talk toggle + STT model (modal).
+        if text == "/audio-settings" || text.starts_with("/audio-settings ") {
+            app.modal = Some(Modal::AudioSettings {
+                selected: 0,
+                custom_input: None,
+            });
             return Ok(false);
         }
         if text == "/models" || text.starts_with("/models ") {
@@ -1234,6 +1360,106 @@ pub(crate) async fn submit_input(
     });
     *prompt_task = Some(handle);
     Ok(false)
+}
+
+/// Starts push-to-talk recording (`Ctrl+R` when idle).
+#[cfg(feature = "voice")]
+fn start_recording(app: &mut App) {
+    if app.recording.is_some() || app.transcribing {
+        return;
+    }
+    if !app.runtime.config.voice_enabled {
+        app.push_toast_kind(
+            "voice is off — enable it in /audio-settings".to_string(),
+            ToastKind::Error,
+        );
+        return;
+    }
+    match crate::harness::voice::Recorder::start() {
+        Ok(recorder) => {
+            app.recording = Some(super::state::RecordingState {
+                recorder,
+                started_at: std::time::Instant::now(),
+            });
+            app.push_toast("🎙 recording… (Ctrl+R to stop, Esc to cancel)");
+        }
+        Err(e) => {
+            app.push_toast_kind(format!("voice: {e}"), ToastKind::Error);
+        }
+    }
+}
+
+/// Key handling while a recording is active: only Ctrl+R (stop + transcribe)
+/// and Esc (cancel) act; everything else is swallowed.
+#[cfg(feature = "voice")]
+fn handle_recording_key(app: &mut App, key: KeyEvent) -> bool {
+    match (key.code, key.modifiers.contains(KeyModifiers::CONTROL)) {
+        (KeyCode::Char('r'), true) => stop_and_transcribe(app),
+        (KeyCode::Esc, _) => {
+            app.recording = None;
+            app.push_toast("recording cancelled");
+            false
+        }
+        _ => false, // swallow all other keys while recording (false = don't quit)
+    }
+}
+
+/// Stops the recorder and spawns the async transcription task.
+#[cfg(feature = "voice")]
+pub(crate) fn stop_and_transcribe_pub(app: &mut App) -> bool {
+    stop_and_transcribe(app)
+}
+
+/// Stops the recorder and spawns the async transcription task.
+#[cfg(feature = "voice")]
+fn stop_and_transcribe(app: &mut App) -> bool {
+    let Some(state) = app.recording.take() else {
+        return false;
+    };
+    let (samples, sample_rate) = state.recorder.stop();
+    app.transcribing = true;
+    app.push_toast("transcribing…");
+    let tx = app.voice_tx.clone();
+    let model = {
+        let m = app.runtime.config.stt_model.clone();
+        if m.is_empty() {
+            crate::harness::voice::DEFAULT_STT_MODEL.to_string()
+        } else {
+            m
+        }
+    };
+    tokio::spawn(async move {
+        let result = tokio::task::spawn_blocking(move || {
+            let samples = crate::harness::voice::resample(&samples, sample_rate, 16_000);
+            crate::harness::voice::encode_wav(&samples, 16_000)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("voice: encode task failed: {e}"))
+        .and_then(|wav| {
+            let store = crate::harness::auth::AuthStore::load();
+            store
+                .get_key("deepinfra")
+                .map(|k| (wav, k))
+                .ok_or_else(|| anyhow::anyhow!("voice: no deepinfra token — run /auth to set it"))
+        });
+        match result {
+            Ok((wav, key)) => {
+                let http = reqwest::Client::new();
+                match crate::harness::voice::transcribe(&http, &key, &wav, &model).await {
+                    Ok(text) => {
+                        let _ = tx.send(super::state::VoiceEvent::Transcribed(text));
+                    }
+                    Err(e) => {
+                        let _ = tx.send(super::state::VoiceEvent::Failed(format!("{e:#}")));
+                    }
+                }
+            }
+            Err(e) => {
+                let _ = tx.send(super::state::VoiceEvent::Failed(format!("{e:#}")));
+            }
+        }
+    });
+    false
 }
 
 #[cfg(test)]

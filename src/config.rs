@@ -88,7 +88,18 @@ pub struct GlobalSettings {
     /// Empty (default) = omit the field and use the provider default.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub reasoning_effort: String,
+    /// Speech-to-text model used by push-to-talk (`Ctrl+R` in the TUI).
+    /// Empty (default) = `openai/whisper-large-v3` on DeepInfra.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub stt_model: String,
+    /// When `true`, push-to-talk (`Ctrl+R` in the TUI) is enabled. Default
+    /// `false` — voice is opt-in. Only meaningful with the `voice` feature.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub voice_enabled: bool,
 }
+
+/// Default STT model on DeepInfra (configurable via the `stt_model` setting).
+pub const DEFAULT_STT_MODEL: &str = "openai/whisper-large-v3";
 
 fn is_zero_f64(v: &f64) -> bool {
     *v == 0.0
@@ -126,6 +137,8 @@ impl Default for GlobalSettings {
             fail_fast: false,
             service_tier: String::new(),
             reasoning_effort: String::new(),
+            stt_model: String::new(),
+            voice_enabled: false,
         }
     }
 }
@@ -235,6 +248,11 @@ pub struct RuntimeConfig {
     pub service_tier: String,
     /// Reasoning effort for reasoning models. Empty = provider default.
     pub reasoning_effort: String,
+    /// Speech-to-text model for push-to-talk (`Ctrl+R` in the TUI).
+    /// Empty = `openai/whisper-large-v3` on DeepInfra.
+    pub stt_model: String,
+    /// When `true`, push-to-talk (`Ctrl+R`) is enabled. Default `false`.
+    pub voice_enabled: bool,
 }
 
 impl Default for RuntimeConfig {
@@ -280,6 +298,8 @@ impl RuntimeConfig {
             fail_fast: false,
             service_tier: String::new(),
             reasoning_effort: String::new(),
+            stt_model: String::new(),
+            voice_enabled: false,
         }
     }
 
@@ -345,6 +365,9 @@ impl RuntimeConfig {
         cfg.fail_fast = settings.fail_fast;
         cfg.service_tier = settings.service_tier.clone();
         cfg.reasoning_effort = settings.reasoning_effort.clone();
+        if !settings.stt_model.is_empty() {
+            cfg.stt_model = settings.stt_model.clone();
+        }
 
         // 4. Token from the global auth store for the resolved provider.
         cfg.api_key = auth

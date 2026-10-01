@@ -90,7 +90,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     .split(content);
 
     transcript::draw(frame, app, rows[0]);
-    status::draw(frame, app, rows[1]);
+    status::draw(frame, app, rows[1], app.tick);
     let chips_row = rows[2];
     if has_chips {
         if has_skill_chips && has_image_chip {

@@ -44,9 +44,9 @@ pub async fn handle(
                 "commands: /help /new /sessions /agent <name> /skills \
                   /compact /theme [name|list] /usage /stats /memory /index /models /model <name> \
                   /provider <name> /provider add|rm|list /auth <provider> /settings /cursor \
-                  /undo /diff /restore /fork [N] /apply-plan /image [path] /copy-code /save-code \
-                  /permissions /allow-all-permissions /mcp /record on|off|status /replay <file> \
-                  /doctor /exit"
+                  /audio-settings /undo /diff /restore /fork [N] /apply-plan /image [path] \
+                  /copy-code /save-code /permissions /allow-all-permissions /mcp \
+                  /record on|off|status /replay <file> /doctor /exit"
                     .to_string(),
             );
             out.push("keys: Ctrl+P palette · Ctrl+T theme · ? help · Ctrl+L clear".to_string());
@@ -72,7 +72,7 @@ pub async fn handle(
                     }
                 ));
                 out.push(format!(
-                    "fail_fast {} · service_tier {} · reasoning_effort {}",
+                    "fail_fast {} · service_tier {} · reasoning_effort {} · stt_model {}",
                     c.fail_fast,
                     if c.service_tier.is_empty() {
                         "(provider default)"
@@ -83,10 +83,15 @@ pub async fn handle(
                         "(provider default)"
                     } else {
                         c.reasoning_effort.as_str()
+                    },
+                    if c.stt_model.is_empty() {
+                        crate::config::DEFAULT_STT_MODEL
+                    } else {
+                        c.stt_model.as_str()
                     }
                 ));
                 out.push(
-                    "usage: /settings iterations <n> · context <n> · turn_timeout <secs> · compact_ratio <0.0-1.0> · summary_model <name|off> · fail_fast <on|off> · service_tier <tier|off> · reasoning_effort <low|medium|high|off>"
+                    "usage: /settings iterations <n> · context <n> · turn_timeout <secs> · compact_ratio <0.0-1.0> · summary_model <name|off> · fail_fast <on|off> · service_tier <tier|off> · reasoning_effort <low|medium|high|off> · stt_model <model>"
                         .to_string(),
                 );
             } else {
@@ -188,8 +193,23 @@ pub async fn handle(
                             }
                         }
                     }
+                    Some("stt_model") => {
+                        let v = parts.next().unwrap_or("");
+                        let val = if v == "off" { "" } else { v };
+                        match runtime.set_stt_model(val) {
+                            Ok(()) => out.push(format!(
+                                "settings · stt_model = {}",
+                                if val.is_empty() {
+                                    crate::config::DEFAULT_STT_MODEL
+                                } else {
+                                    val
+                                }
+                            )),
+                            Err(e) => out.push(format!("[error] {}", e)),
+                        }
+                    }
                     Some(other) => out.push(format!(
-                        "unknown setting: {} (iterations · context · turn_timeout · compact_ratio · summary_model · fail_fast · service_tier · reasoning_effort)",
+                        "unknown setting: {} (iterations · context · turn_timeout · compact_ratio · summary_model · fail_fast · service_tier · reasoning_effort · stt_model)",
                         other
                     )),
                     None => {}
@@ -908,5 +928,6 @@ mod tests {
         assert!(blob.contains("/models"), "{blob}");
         assert!(blob.contains("/cursor"), "{blob}");
         assert!(blob.contains("/settings"), "{blob}");
+        assert!(blob.contains("/audio-settings"), "{blob}");
     }
 }
