@@ -365,6 +365,7 @@ impl RuntimeConfig {
         cfg.fail_fast = settings.fail_fast;
         cfg.service_tier = settings.service_tier.clone();
         cfg.reasoning_effort = settings.reasoning_effort.clone();
+        cfg.voice_enabled = settings.voice_enabled;
         if !settings.stt_model.is_empty() {
             cfg.stt_model = settings.stt_model.clone();
         }
