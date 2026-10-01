@@ -61,8 +61,22 @@ pub fn wave_column(tick: u64, i: usize) -> &'static str {
 }
 
 /// A short animated waveform (6 columns) for the recording indicator.
-pub fn wave_frame(tick: u64) -> String {
-    (0..6).map(|i| wave_column(tick, i)).collect()
+///
+/// `level` (0..=1000, from the recorder's live RMS) modulates the wave
+/// height; when it is `None` or near silence the traveling sine alone
+/// drives the animation.
+pub fn wave_frame(tick: u64, level: Option<u32>) -> String {
+    let boost = level.unwrap_or(0) as f64 / 1000.0;
+    (0..6)
+        .map(|i| {
+            let base = wave_column(tick, i);
+            let base_idx = WAVE_BARS.iter().position(|b| *b == base).unwrap_or(0);
+            // Real mic level scales the height; keep a small floor so the
+            // wave stays visible during silence.
+            let scaled = base_idx as f64 * (0.25 + 0.75 * boost);
+            WAVE_BARS[(scaled.round() as usize).min(WAVE_BARS.len() - 1)]
+        })
+        .collect()
 }
 
 /// Number of draw ticks a freshly streamed reasoning line takes to settle from
@@ -359,11 +373,11 @@ mod tests {
     fn wave_frame_animates_and_is_width_one_per_column() {
         // Consecutive ticks produce different waves; every glyph is width 1
         // (bar blocks) so the status line layout is never disturbed.
-        assert_ne!(wave_frame(0), wave_frame(1));
-        assert_eq!(wave_frame(0).chars().count(), 6);
+        assert_ne!(wave_frame(0, None), wave_frame(1, None));
+        assert_eq!(wave_frame(0, None).chars().count(), 6);
         let allowed: std::collections::HashSet<char> =
             WAVE_BARS.iter().flat_map(|b| b.chars()).collect();
-        assert!(wave_frame(7).chars().all(|c| allowed.contains(&c)));
+        assert!(wave_frame(7, None).chars().all(|c| allowed.contains(&c)));
         // The wave actually moves through the full height range over time.
         let seen: std::collections::HashSet<&str> = (0..64)
             .flat_map(|t| (0..6).map(move |i| wave_column(t, i)))
