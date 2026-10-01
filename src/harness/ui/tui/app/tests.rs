@@ -936,8 +936,10 @@ mod scroll_tests {
         match app.modal {
             Some(Modal::CursorModel {
                 selected,
+                scroll_offset: _,
                 models,
                 target,
+                ..
             }) => {
                 // "auto" is always first and pre-selected when unset.
                 assert_eq!(models.first().map(|(id, _)| id.as_str()), Some("auto"));
@@ -1028,6 +1030,269 @@ mod scroll_tests {
             }
             _ => panic!("expected the cursor plan model picker"),
         }
+    }
+
+    fn cursor_model_modal(n: usize, selected: usize) -> Modal {
+        let models = (0..n)
+            .map(|i| (format!("model-{i}"), format!("desc-{i}")))
+            .collect();
+        Modal::CursorModel {
+            selected,
+            scroll_offset: 0,
+            filter: String::new(),
+            models,
+            target: CursorModelTarget::Plan,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_cursor_model_page_down_advances_selection() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut app = App::inline_for_tests("x");
+        app.modal = Some(cursor_model_modal(42, 0));
+        let mut prompt_task = None;
+
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE),
+            &mut prompt_task,
+        )
+        .await
+        .unwrap();
+
+        match app.modal {
+            Some(Modal::CursorModel { selected, .. }) => assert_eq!(selected, 10),
+            _ => panic!("expected cursor model modal"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_cursor_model_home_end_jump() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut app = App::inline_for_tests("x");
+        app.modal = Some(cursor_model_modal(20, 10));
+        let mut prompt_task = None;
+
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::End, KeyModifiers::NONE),
+            &mut prompt_task,
+        )
+        .await
+        .unwrap();
+        match app.modal {
+            Some(Modal::CursorModel { selected, .. }) => assert_eq!(selected, 19),
+            _ => panic!("expected cursor model modal"),
+        }
+
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Home, KeyModifiers::NONE),
+            &mut prompt_task,
+        )
+        .await
+        .unwrap();
+        match app.modal {
+            Some(Modal::CursorModel { selected, .. }) => assert_eq!(selected, 0),
+            _ => panic!("expected cursor model modal"),
+        }
+    }
+
+    #[test]
+    fn test_cursor_model_mouse_wheel_moves_selection() {
+        let mut app = App::inline_for_tests("x");
+        app.modal = Some(cursor_model_modal(30, 5));
+        assert!(app.mouse_scroll(3));
+        match app.modal {
+            Some(Modal::CursorModel { selected, .. }) => assert_eq!(selected, 8),
+            _ => panic!("expected cursor model modal"),
+        }
+    }
+
+    #[test]
+    fn test_cursor_model_draw_updates_scroll_offset() {
+        let mut app = App::inline_for_tests("");
+        app.splash = None;
+        app.modal = Some(cursor_model_modal(50, 40));
+        let _ = crate::harness::ui::tui::draw::render_to_buffer(&mut app, 80, 20);
+        match app.modal {
+            Some(Modal::CursorModel {
+                selected,
+                scroll_offset,
+                models,
+                ..
+            }) => {
+                assert_eq!(selected, 40);
+                assert!(scroll_offset > 0);
+                assert!(selected < scroll_offset + 15);
+                assert!(scroll_offset + 15 <= models.len());
+            }
+            _ => panic!("expected cursor model modal"),
+        }
+    }
+
+    fn cursor_model_modal_with_models(models: Vec<(String, String)>, selected: usize) -> Modal {
+        Modal::CursorModel {
+            selected,
+            scroll_offset: 0,
+            filter: String::new(),
+            models,
+            target: CursorModelTarget::Plan,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_cursor_model_filter_narrows_list_and_resets_selection() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut app = App::inline_for_tests("x");
+        app.modal = Some(cursor_model_modal_with_models(
+            vec![
+                ("alpha".to_string(), String::new()),
+                ("beta".to_string(), String::new()),
+            ],
+            1,
+        ));
+        let mut prompt_task = None;
+
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE),
+            &mut prompt_task,
+        )
+        .await
+        .unwrap();
+
+        match app.modal {
+            Some(Modal::CursorModel {
+                filter, selected, ..
+            }) => {
+                assert_eq!(filter, "b");
+                assert_eq!(selected, 0);
+            }
+            _ => panic!("expected cursor model modal"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_cursor_model_enter_selects_filtered_model() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut app = App::inline_for_tests("x");
+        app.modal = Some(cursor_model_modal_with_models(
+            vec![
+                ("zebra-cli".to_string(), String::new()),
+                ("alpha-cli".to_string(), String::new()),
+            ],
+            1,
+        ));
+        let mut prompt_task = None;
+
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE),
+            &mut prompt_task,
+        )
+        .await
+        .unwrap();
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut prompt_task,
+        )
+        .await
+        .unwrap();
+
+        assert!(app.modal.is_none());
+        assert_eq!(app.runtime.config.cursor_plan_model, "zebra-cli");
+    }
+
+    #[tokio::test]
+    async fn test_cursor_model_esc_clears_filter_before_close() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut app = App::inline_for_tests("x");
+        app.modal = Some(cursor_model_modal_with_models(
+            vec![("only-one".to_string(), String::new())],
+            0,
+        ));
+        let mut prompt_task = None;
+
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
+            &mut prompt_task,
+        )
+        .await
+        .unwrap();
+        assert!(app.modal.is_some());
+
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            &mut prompt_task,
+        )
+        .await
+        .unwrap();
+        match app.modal {
+            Some(Modal::CursorModel { ref filter, .. }) => assert!(filter.is_empty()),
+            _ => panic!("modal should stay open with cleared filter"),
+        }
+
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            &mut prompt_task,
+        )
+        .await
+        .unwrap();
+        assert!(app.modal.is_none());
+    }
+
+    #[test]
+    fn test_cursor_model_draw_indicator_uses_filtered_count() {
+        let mut app = App::inline_for_tests("");
+        app.splash = None;
+        let models = (0..25)
+            .map(|i| (format!("pick-{i:02}"), String::new()))
+            .collect();
+        app.modal = Some(Modal::CursorModel {
+            selected: 0,
+            scroll_offset: 0,
+            filter: "pick".to_string(),
+            models,
+            target: CursorModelTarget::Plan,
+        });
+        let buf = crate::harness::ui::tui::draw::render_to_buffer(&mut app, 56, 14);
+        let text = buf
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>()
+            .replace('\u{0}', " ");
+        assert!(
+            text.contains("of 25"),
+            "indicator should use filtered total: {text}"
+        );
+
+        if let Some(Modal::CursorModel { filter, .. }) = app.modal.as_mut() {
+            filter.clear();
+            filter.push_str("pick-03");
+        }
+        let buf = crate::harness::ui::tui::draw::render_to_buffer(&mut app, 56, 14);
+        let text = buf
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>()
+            .replace('\u{0}', " ");
+        assert!(text.contains("pick-03"), "filtered row visible: {text}");
+        assert!(
+            !text.contains("of 25"),
+            "full-list total must not appear after narrowing: {text}"
+        );
     }
 
     /// `/cursor plan on` flips only the plan toggle.

@@ -107,13 +107,12 @@ impl<T: FuzzyItem> FuzzyList<T> {
         if view_h == 0 || n == 0 {
             return;
         }
-        if self.selected < self.scroll_offset {
-            self.scroll_offset = self.selected;
-        } else if self.selected >= self.scroll_offset + view_h {
-            self.scroll_offset = self.selected + 1 - view_h;
-        }
-        let max_offset = n.saturating_sub(view_h);
-        self.scroll_offset = self.scroll_offset.min(max_offset);
+        self.scroll_offset = crate::harness::ui::tui::scroll::ensure_visible(
+            self.selected,
+            self.scroll_offset,
+            view_h,
+            n,
+        );
     }
 
     pub fn scroll_by(&mut self, delta: i32) {

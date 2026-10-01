@@ -679,14 +679,32 @@ pub(crate) fn handle_modal_key(app: &mut App, key: KeyEvent) -> Result<bool> {
         }
         Some(Modal::CursorModel {
             selected,
+            scroll_offset,
+            filter,
             models,
             target,
         }) => {
-            let n = models.len();
+            use crate::harness::ui::tui::app::state::cursor_model_filtered_indices;
+            use crossterm::event::KeyModifiers;
+
+            const PAGE_STEP: usize = 10;
+            let indices = cursor_model_filtered_indices(&models, &filter);
+            let n = indices.len();
             let mut sel = selected.min(n.saturating_sub(1));
-            let mut keep = true;
+            let mut scroll = scroll_offset;
+            let mut filt = filter;
+            let mut close = false;
             match key.code {
-                KeyCode::Esc | KeyCode::Char('q') => keep = false,
+                KeyCode::Esc => {
+                    if filt.is_empty() {
+                        close = true;
+                    } else {
+                        filt.clear();
+                        sel = 0;
+                        scroll = 0;
+                    }
+                }
+                KeyCode::Char('q') if filt.is_empty() => close = true,
                 KeyCode::Up | KeyCode::Char('k') => {
                     sel = sel.saturating_sub(1);
                 }
@@ -695,45 +713,70 @@ pub(crate) fn handle_modal_key(app: &mut App, key: KeyEvent) -> Result<bool> {
                         sel += 1;
                     }
                 }
+                KeyCode::PageUp => {
+                    sel = sel.saturating_sub(PAGE_STEP);
+                }
+                KeyCode::PageDown => {
+                    sel = (sel + PAGE_STEP).min(n.saturating_sub(1));
+                }
+                KeyCode::Home => {
+                    sel = 0;
+                }
+                KeyCode::End => {
+                    sel = n.saturating_sub(1);
+                }
+                KeyCode::Backspace => {
+                    filt.pop();
+                    sel = 0;
+                    scroll = 0;
+                }
                 KeyCode::Enter => {
-                    if let Some((model, _)) = models.get(sel).cloned() {
-                        // "auto" is stored as an empty string (no --model flag).
-                        let stored = if model == "auto" {
-                            String::new()
-                        } else {
-                            model
-                        };
-                        let saved = match target {
-                            CursorModelTarget::Build => {
-                                app.runtime.set_cursor_model(stored.clone())
-                            }
-                            CursorModelTarget::Plan => {
-                                app.runtime.set_cursor_plan_model(stored.clone())
-                            }
-                        };
-                        match saved {
-                            Ok(()) => app.add_system(&format!(
-                                "{} = {} (Cursor CLI --model)",
-                                target.label(),
-                                if stored.is_empty() { "auto" } else { &stored }
-                            )),
-                            Err(e) => {
-                                app.add_system(&format!("[error] failed to save settings: {}", e))
+                    if let Some(&orig) = indices.get(sel) {
+                        if let Some((model, _)) = models.get(orig).cloned() {
+                            // "auto" is stored as an empty string (no --model flag).
+                            let stored = if model == "auto" {
+                                String::new()
+                            } else {
+                                model
+                            };
+                            let saved = match target {
+                                CursorModelTarget::Build => {
+                                    app.runtime.set_cursor_model(stored.clone())
+                                }
+                                CursorModelTarget::Plan => {
+                                    app.runtime.set_cursor_plan_model(stored.clone())
+                                }
+                            };
+                            match saved {
+                                Ok(()) => app.add_system(&format!(
+                                    "{} = {} (Cursor CLI --model)",
+                                    target.label(),
+                                    if stored.is_empty() { "auto" } else { &stored }
+                                )),
+                                Err(e) => app
+                                    .add_system(&format!("[error] failed to save settings: {}", e)),
                             }
                         }
                     }
-                    keep = false;
+                    close = true;
+                }
+                KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    filt.push(c);
+                    sel = 0;
+                    scroll = 0;
                 }
                 _ => {}
             }
-            if keep {
+            if close {
+                app.close_modal();
+            } else {
                 app.modal = Some(Modal::CursorModel {
                     selected: sel,
+                    scroll_offset: scroll,
+                    filter: filt,
                     models,
                     target,
                 });
-            } else {
-                app.close_modal();
             }
         }
         None => {}
@@ -847,6 +890,8 @@ fn handle_settings_like_key(
                         .unwrap_or(0);
                     next = Next::Replace(Modal::CursorModel {
                         selected,
+                        scroll_offset: 0,
+                        filter: String::new(),
                         models,
                         target,
                     });

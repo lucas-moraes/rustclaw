@@ -195,8 +195,12 @@ pub enum Modal {
     /// Cursor modal with Enter. The list is the output of `agent
     /// --list-models`, with "auto" first.
     CursorModel {
-        /// Index of the highlighted entry.
+        /// Index of the highlighted entry in the filtered list.
         selected: usize,
+        /// First visible row in the scrollable filtered list.
+        scroll_offset: usize,
+        /// Live filter query (subsequence match on id / description).
+        filter: String,
         /// Available models as `(id, description)` pairs ("auto" included).
         models: Vec<(String, String)>,
         /// Which knob this picker edits (build or plan model).
@@ -221,6 +225,20 @@ impl CursorModelTarget {
             CursorModelTarget::Plan => "cursor_plan_model",
         }
     }
+}
+
+/// Original indices of Cursor CLI models matching `filter` (fuzzy subsequence
+/// on id and description).
+pub fn cursor_model_filtered_indices(models: &[(String, String)], filter: &str) -> Vec<usize> {
+    use crate::harness::ui::tui::fuzzy::fuzzy_match;
+    models
+        .iter()
+        .enumerate()
+        .filter(|(_, (id, desc))| {
+            fuzzy_match(filter, id).is_some() || fuzzy_match(filter, desc).is_some()
+        })
+        .map(|(i, _)| i)
+        .collect()
 }
 
 /// Case-insensitive substring search over transcript lines.
@@ -329,13 +347,12 @@ impl SkillPickerState {
         if visible == 0 || self.ids.is_empty() {
             return;
         }
-        if self.selected < self.scroll_offset {
-            self.scroll_offset = self.selected;
-        } else if self.selected >= self.scroll_offset + visible {
-            self.scroll_offset = self.selected + 1 - visible;
-        }
-        let max_offset = self.ids.len().saturating_sub(visible);
-        self.scroll_offset = self.scroll_offset.min(max_offset);
+        self.scroll_offset = crate::harness::ui::tui::scroll::ensure_visible(
+            self.selected,
+            self.scroll_offset,
+            visible,
+            self.ids.len(),
+        );
     }
 
     /// Scrolls the list by `delta` rows (mouse wheel), keeping selection.
@@ -485,13 +502,12 @@ impl ModelPickerState {
         if visible == 0 || len == 0 {
             return;
         }
-        if self.selected < self.scroll_offset {
-            self.scroll_offset = self.selected;
-        } else if self.selected >= self.scroll_offset + visible {
-            self.scroll_offset = self.selected + 1 - visible;
-        }
-        let max_offset = len.saturating_sub(visible);
-        self.scroll_offset = self.scroll_offset.min(max_offset);
+        self.scroll_offset = crate::harness::ui::tui::scroll::ensure_visible(
+            self.selected,
+            self.scroll_offset,
+            visible,
+            len,
+        );
     }
 
     /// Scrolls the list by `delta` rows (mouse wheel), keeping selection.
@@ -636,13 +652,12 @@ impl ResumePickerState {
         if visible == 0 || self.sessions.is_empty() {
             return;
         }
-        if self.selected < self.scroll_offset {
-            self.scroll_offset = self.selected;
-        } else if self.selected >= self.scroll_offset + visible {
-            self.scroll_offset = self.selected + 1 - visible;
-        }
-        let max_offset = self.sessions.len().saturating_sub(visible);
-        self.scroll_offset = self.scroll_offset.min(max_offset);
+        self.scroll_offset = crate::harness::ui::tui::scroll::ensure_visible(
+            self.selected,
+            self.scroll_offset,
+            visible,
+            self.sessions.len(),
+        );
     }
 
     /// Scrolls the list by `delta` rows (mouse wheel), keeping selection.
@@ -752,13 +767,12 @@ impl AuthPickerState {
         if visible == 0 || self.items.is_empty() {
             return;
         }
-        if self.selected < self.scroll_offset {
-            self.scroll_offset = self.selected;
-        } else if self.selected >= self.scroll_offset + visible {
-            self.scroll_offset = self.selected + 1 - visible;
-        }
-        let max_offset = self.items.len().saturating_sub(visible);
-        self.scroll_offset = self.scroll_offset.min(max_offset);
+        self.scroll_offset = crate::harness::ui::tui::scroll::ensure_visible(
+            self.selected,
+            self.scroll_offset,
+            visible,
+            self.items.len(),
+        );
     }
 
     /// Scrolls the list by `delta` rows (mouse wheel), keeping selection.

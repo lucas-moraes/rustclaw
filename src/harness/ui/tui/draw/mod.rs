@@ -126,7 +126,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // permission prompt always wins visually.
     toast::draw(frame, app, content);
 
-    if let Some(modal) = &app.modal {
+    if let Some(modal) = app.modal.as_mut() {
         modal::draw(
             frame,
             modal,

@@ -5,7 +5,7 @@ use crate::harness::session::doom_loop::{DOOM_LOOP_STOP, DOOM_LOOP_WARN};
 use crate::harness::ui::tui::subagent::SubagentPanel;
 use crate::harness::ui::tui::transcript::{tool_arg_label, ActiveTool, LineKind, ToolBatch};
 
-use super::state::{should_flush_stream, App, DoomLevel};
+use super::state::{should_flush_stream, App, DoomLevel, Modal};
 use super::undo::mark_for;
 
 impl App {
@@ -335,6 +335,26 @@ impl App {
     /// search) with the mouse wheel. Returns `true` when an overlay consumed
     /// the scroll (so the transcript is left untouched).
     pub fn mouse_scroll(&mut self, delta: i32) -> bool {
+        if let Some(Modal::CursorModel {
+            selected,
+            filter,
+            models,
+            ..
+        }) = self.modal.as_mut()
+        {
+            if !models.is_empty() {
+                let n = crate::harness::ui::tui::app::state::cursor_model_filtered_indices(
+                    models, filter,
+                )
+                .len();
+                if n > 0 {
+                    let new = (*selected as i32 + delta).clamp(0, n as i32 - 1) as usize;
+                    *selected = new;
+                    self.mark_dirty();
+                    return true;
+                }
+            }
+        }
         if let Some(p) = self.model_picker.as_mut() {
             p.scroll_by(delta);
             self.mark_dirty();

@@ -11,8 +11,10 @@ pub mod fuzzy;
 pub mod input;
 pub mod markdown;
 pub mod palette;
+pub mod scroll;
 pub mod selection;
 pub mod subagent;
+pub mod text;
 pub mod theme;
 pub mod transcript;
 

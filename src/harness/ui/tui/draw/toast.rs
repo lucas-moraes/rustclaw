@@ -13,6 +13,7 @@ use ratatui::Frame;
 
 use crate::harness::ui::tui::anim::{blend, FADE_TICKS};
 use crate::harness::ui::tui::app::App;
+use crate::harness::ui::tui::text::truncate_to_width;
 use crate::harness::ui::tui::theme::Theme;
 
 /// Total lifetime of a toast in draw ticks: ~2.5 s at 30 fps, of which the
@@ -155,25 +156,6 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-/// Truncates `s` so its display width is at most `max`, appending "…" when cut.
-fn truncate_to_width(s: &str, max: usize) -> String {
-    if max == 0 {
-        return String::new();
-    }
-    let mut out = String::new();
-    let mut w = 0usize;
-    for ch in s.chars() {
-        let cw = Span::raw(ch.to_string()).width();
-        if w + cw > max.saturating_sub(1) {
-            out.push('…');
-            return out;
-        }
-        out.push(ch);
-        w += cw;
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -212,12 +194,5 @@ mod tests {
         let long = Toast::new("x".repeat(200), ToastKind::Info, 1);
         assert!(short.box_width(80) < long.box_width(80));
         assert_eq!(long.box_width(30), 30);
-    }
-
-    #[test]
-    fn truncate_respects_width() {
-        assert_eq!(truncate_to_width("hello", 10), "hello");
-        assert_eq!(truncate_to_width("hello world", 6), "hello…");
-        assert_eq!(truncate_to_width("hello", 0), "");
     }
 }
