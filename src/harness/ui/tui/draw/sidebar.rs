@@ -110,8 +110,11 @@ fn badge_label() -> String {
 }
 
 /// Width of the brand badge chip, including the diagonal `╱` cut.
+/// cyber_badge renders the label padded with one space on each side
+/// (`" {title} "`), plus the 1-column diagonal cut — so the text after the
+/// badge must start past all of that.
 fn badge_width() -> usize {
-    Span::width(&Span::raw(badge_label())) + 2
+    Span::width(&Span::raw(format!(" {} ", badge_label()))) + 1
 }
 
 // ---------------------------------------------------------------- row 1
