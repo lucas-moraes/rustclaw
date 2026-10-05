@@ -11,7 +11,8 @@ use anyhow::Result;
 use tokio::sync::mpsc;
 
 use super::keys::handle_key;
-use super::state::{App, AuthPromptState, Modal};
+use super::pickers_state::AuthPromptState;
+use super::state::{App, Modal};
 
 pub async fn run_tui(
     runtime: SessionRuntime,

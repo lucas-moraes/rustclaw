@@ -3,7 +3,8 @@
 use crate::harness::skill::PromptSkillToggle;
 use anyhow::Result;
 
-use super::state::{App, SkillPickerState};
+use super::pickers_state::SkillPickerState;
+use super::state::App;
 
 impl App {
     pub fn sync_prompt_toggles(&mut self) {

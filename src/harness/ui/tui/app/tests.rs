@@ -1511,7 +1511,7 @@ mod rebuild_tests {
 mod scroll_extra_tests {
     use super::*;
     use crate::harness::ui::tui::app::keys::handle_key;
-    use crate::harness::ui::tui::app::state::ThemePickerState;
+    use crate::harness::ui::tui::app::pickers_state::ThemePickerState;
     use crate::harness::ui::tui::selection::{CellPos, TextSelection};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 

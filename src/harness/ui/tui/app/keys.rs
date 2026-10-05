@@ -19,9 +19,8 @@ use super::pickers::{
     handle_resume_picker_key, handle_settings_command, handle_skill_picker_key,
     handle_theme_picker_key,
 };
-use super::state::{
-    App, AuthPickerState, AuthPromptState, CursorModelTarget, Modal, ResumePickerState,
-};
+use super::pickers_state::{AuthPickerState, AuthPromptState, ResumePickerState};
+use super::state::{App, CursorModelTarget, Modal};
 use super::undo::{copy_to_clipboard, revert_to_prompt, undo_last_turn, user_prompt_text};
 
 pub(crate) async fn handle_key(

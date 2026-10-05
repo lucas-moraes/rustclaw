@@ -4,7 +4,8 @@ use crate::harness::ui::tui::theme::Theme;
 use anyhow::Result;
 use crossterm::event::KeyEvent;
 
-use super::state::{AddProviderForm, App, AuthPromptState, ModelPickerState, ResumePickerState};
+use super::pickers_state::{AddProviderForm, AuthPromptState, ModelPickerState, ResumePickerState};
+use super::state::App;
 use super::undo::paste_clipboard;
 
 pub(crate) fn handle_skill_picker_key(app: &mut App, key: KeyEvent) -> Result<bool> {
@@ -585,9 +586,10 @@ pub(crate) fn handle_auth_prompt_key(app: &mut App, key: KeyEvent) -> Result<boo
                 store.set_key(&provider, token.clone());
                 match store.save() {
                     Ok(()) => {
-                        let is_tool_service = crate::harness::ui::tui::app::state::TOOL_SERVICES
-                            .iter()
-                            .any(|s| s.eq_ignore_ascii_case(&provider));
+                        let is_tool_service =
+                            crate::harness::ui::tui::app::pickers_state::TOOL_SERVICES
+                                .iter()
+                                .any(|s| s.eq_ignore_ascii_case(&provider));
                         if is_tool_service {
                             // Tool services (e.g. tavily) are not LLM
                             // providers: never point the model runtime at
@@ -675,7 +677,8 @@ pub(crate) fn handle_auth_picker_key(app: &mut App, key: KeyEvent) -> Result<boo
                         app.add_system(&format!("[error] failed to save auth store: {}", e));
                     }
                 }
-                app.auth_picker = Some(crate::harness::ui::tui::app::state::AuthPickerState::new());
+                app.auth_picker =
+                    Some(crate::harness::ui::tui::app::pickers_state::AuthPickerState::new());
                 if removed {
                     app.add_system(&format!("token removed for `{}`", name));
                 }

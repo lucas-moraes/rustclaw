@@ -6,6 +6,7 @@
 pub mod events;
 pub mod keys;
 pub mod pickers;
+mod pickers_state;
 pub mod runner;
 pub mod skills;
 pub mod state;
@@ -23,11 +24,15 @@ pub use crate::harness::ui::tui::transcript::{
     preview, tool_arg_label, ActiveTool, LineKind, ToolBatch, TranscriptLine,
 };
 
+#[allow(unused_imports)]
+pub use pickers_state::{
+    AddProviderForm, AuthItem, AuthPickerState, AuthPromptState, ModelPickerState,
+    ResumePickerState, SearchState, SkillPickerState, ThemePickerState,
+};
 pub use runner::run_tui;
 #[allow(unused_imports)]
 pub use state::{
-    search_lines, should_flush_stream, AddProviderForm, App, AuthPromptState, CursorModelTarget,
-    DoomLevel, Modal, ModelPickerState, ResumePickerState, SearchState, SkillPickerState,
+    search_lines, should_flush_stream, App, CursorModelTarget, DoomLevel, Modal,
     STREAM_FLUSH_CHARS, STREAM_FLUSH_MS,
 };
 pub use undo::copy_to_clipboard;
