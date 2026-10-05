@@ -20,7 +20,6 @@
 //!   and the HTML scrapers take over; the winning engine is reported in the
 //!   result footer.
 
-use scraper::{Html, Selector};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -31,16 +30,24 @@ use super::{Tool, ToolResult};
 use crate::harness::session::preview;
 use crate::harness::tool::context::ToolContext;
 
-const DDG_ENDPOINT: &str = "https://html.duckduckgo.com/html/";
-/// F4.2: alternative (less rate-limited) DDG endpoint.
-const DDG_LITE_ENDPOINT: &str = "https://lite.duckduckgo.com/lite/";
-/// F11.1: Mojeek HTML endpoint (no API key required).
-const MOJEEK_ENDPOINT: &str = "https://www.mojeek.com/search";
-/// Tavily search API endpoint (JSON, requires `TAVILY_API_KEY`).
-const TAVILY_ENDPOINT: &str = "https://api.tavily.com/search";
+mod parse;
+mod providers;
 
-const MAX_RESULTS: usize = 8;
-const TIMEOUT_SECS: u64 = 10;
+use parse::{parse_results, parse_results_lite, parse_results_mojeek, parse_tavily};
+use providers::{
+    DuckDuckGoProvider, FailureKind, MojeekProvider, ProviderId, SearchProvider, TavilyProvider,
+};
+
+pub(super) const DDG_ENDPOINT: &str = "https://html.duckduckgo.com/html/";
+/// F4.2: alternative (less rate-limited) DDG endpoint.
+pub(super) const DDG_LITE_ENDPOINT: &str = "https://lite.duckduckgo.com/lite/";
+/// F11.1: Mojeek HTML endpoint (no API key required).
+pub(super) const MOJEEK_ENDPOINT: &str = "https://www.mojeek.com/search";
+/// Tavily search API endpoint (JSON, requires `TAVILY_API_KEY`).
+pub(super) const TAVILY_ENDPOINT: &str = "https://api.tavily.com/search";
+
+pub(super) const MAX_RESULTS: usize = 8;
+pub(super) const TIMEOUT_SECS: u64 = 10;
 
 /// F1.1: minimum gap (ms) between the end of one request and the start of the next.
 const MIN_DELAY_MS: u64 = 1500;
@@ -49,7 +56,7 @@ const MIN_DELAY_MS: u64 = 1500;
 const RETRY_DELAYS: &[u64] = &[2, 4];
 
 /// F5.1: pool of modern desktop browser User-Agents (avoid curl/Python UAs).
-const USER_AGENTS: &[&str] = &[
+pub(super) const USER_AGENTS: &[&str] = &[
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
      (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Mozilla/5.0 (X11; Linux x86_64; rv:121.0) Gecko/20100101 Firefox/121.0",
@@ -72,256 +79,6 @@ const MAX_RESULTS_MAX: usize = 20;
 /// F11.4: cooldown applied to a provider after a rate-limit/block failure.
 const COOLDOWN_SECS: u64 = 120;
 
-/// F11.1: identifier of a search provider.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum ProviderId {
-    Tavily,
-    DdgHtml,
-    DdgLite,
-    Mojeek,
-}
-
-impl ProviderId {
-    fn name(self) -> &'static str {
-        match self {
-            ProviderId::Tavily => "tavily",
-            ProviderId::DdgHtml => "ddg_html",
-            ProviderId::DdgLite => "ddg_lite",
-            ProviderId::Mojeek => "mojeek",
-        }
-    }
-
-    fn endpoint(self) -> &'static str {
-        match self {
-            ProviderId::Tavily => TAVILY_ENDPOINT,
-            ProviderId::DdgHtml => DDG_ENDPOINT,
-            ProviderId::DdgLite => DDG_LITE_ENDPOINT,
-            ProviderId::Mojeek => MOJEEK_ENDPOINT,
-        }
-    }
-
-    /// F11.2: default order of preference (Tavily first when a key is set).
-    #[cfg(test)]
-    fn all() -> Vec<ProviderId> {
-        vec![
-            ProviderId::Tavily,
-            ProviderId::DdgHtml,
-            ProviderId::DdgLite,
-            ProviderId::Mojeek,
-        ]
-    }
-}
-
-/// F11.1: why a provider attempt failed (drives fallback + cooldown).
-#[derive(Debug, Clone, PartialEq)]
-enum FailureKind {
-    /// HTTP error (non-2xx) or network/timeout failure.
-    Http,
-    /// Bot detection / CAPTCHA / silent rate-limit page.
-    Blocked,
-    /// Page fetched fine but the parser extracted 0 results.
-    Empty,
-    /// F12: the provider needs an API key and none is configured. Never
-    /// triggers a cooldown (it is a configuration state, not a failure).
-    NoKey,
-    /// F13: the provider rejected the configured API key (HTTP 401/403).
-    /// Like `NoKey`, this is a configuration state rather than a transient
-    /// failure: it must not trigger a cooldown nor a retry, otherwise fixing
-    /// the key with `/auth tavily <key>` would not take effect immediately.
-    Unauthorized,
-}
-
-/// F11.1: a single search provider (HTML scraping, no API key).
-#[async_trait::async_trait]
-trait SearchProvider: Send + Sync {
-    fn id(&self) -> ProviderId;
-
-    /// Fetches and parses results for `query`. Returns the parsed results or
-    /// the failure kind (which drives fallback/cooldown in the facade).
-    ///
-    /// `api_key` is only meaningful for keyed providers (e.g. Tavily); the
-    /// HTML-scraping providers ignore it.
-    ///
-    /// `max_results` is a hint forwarded to providers that support it (Tavily
-    /// bills per result, so requesting only what the caller needs saves
-    /// quota). Scraping providers ignore it and rely on the facade's render
-    /// truncation instead.
-    async fn search(
-        &self,
-        client: &reqwest::Client,
-        query: &str,
-        ua: &str,
-        api_key: Option<&str>,
-        max_results: usize,
-    ) -> Result<Vec<SearchResult>, FailureKind>;
-}
-
-/// F11.1: DuckDuckGo provider — shared fetch logic, two parsers (HTML + Lite).
-struct DuckDuckGoProvider {
-    id: ProviderId,
-}
-
-#[async_trait::async_trait]
-impl SearchProvider for DuckDuckGoProvider {
-    fn id(&self) -> ProviderId {
-        self.id
-    }
-
-    async fn search(
-        &self,
-        client: &reqwest::Client,
-        query: &str,
-        ua: &str,
-        _api_key: Option<&str>,
-        _max_results: usize,
-    ) -> Result<Vec<SearchResult>, FailureKind> {
-        let url = reqwest::Url::parse_with_params(self.id.endpoint(), &[("q", query)])
-            .map_err(|_| FailureKind::Http)?;
-
-        let resp = client
-            .get(url)
-            .header(reqwest::header::USER_AGENT, ua)
-            .send()
-            .await
-            .map_err(|_| FailureKind::Http)?;
-
-        let status = resp.status();
-        if !status.is_success() {
-            return Err(FailureKind::Http);
-        }
-
-        let html = resp.text().await.map_err(|_| FailureKind::Http)?;
-
-        if is_blocked(&html) || looks_rate_limited(&html) {
-            return Err(FailureKind::Blocked);
-        }
-
-        let results = match self.id {
-            ProviderId::DdgHtml => parse_results(&html),
-            ProviderId::DdgLite => parse_results_lite(&html),
-            _ => return Err(FailureKind::Empty),
-        };
-
-        if results.is_empty() {
-            Err(FailureKind::Empty)
-        } else {
-            Ok(results)
-        }
-    }
-}
-
-/// F11.1: Mojeek provider (plain HTML results, no API key).
-struct MojeekProvider;
-
-#[async_trait::async_trait]
-impl SearchProvider for MojeekProvider {
-    fn id(&self) -> ProviderId {
-        ProviderId::Mojeek
-    }
-
-    async fn search(
-        &self,
-        client: &reqwest::Client,
-        query: &str,
-        ua: &str,
-        _api_key: Option<&str>,
-        _max_results: usize,
-    ) -> Result<Vec<SearchResult>, FailureKind> {
-        let url = reqwest::Url::parse_with_params(MOJEEK_ENDPOINT, &[("q", query)])
-            .map_err(|_| FailureKind::Http)?;
-
-        let resp = client
-            .get(url)
-            .header(reqwest::header::USER_AGENT, ua)
-            .send()
-            .await
-            .map_err(|_| FailureKind::Http)?;
-
-        let status = resp.status();
-        if !status.is_success() {
-            return Err(FailureKind::Http);
-        }
-
-        let html = resp.text().await.map_err(|_| FailureKind::Http)?;
-
-        if is_blocked(&html) || looks_rate_limited(&html) {
-            return Err(FailureKind::Blocked);
-        }
-
-        let results = parse_results_mojeek(&html);
-        if results.is_empty() {
-            Err(FailureKind::Empty)
-        } else {
-            Ok(results)
-        }
-    }
-}
-
-/// Tavily API provider (JSON, requires `TAVILY_API_KEY`).
-struct TavilyProvider;
-
-/// Builds the JSON body sent to the Tavily `/search` endpoint.
-///
-/// Extracted as a pure function so the request shape (notably `max_results`)
-/// can be unit-tested without hitting the network. Tavily bills per returned
-/// result, so the caller's `max_results` is forwarded instead of a fixed 10.
-fn tavily_body(query: &str, max_results: usize) -> serde_json::Value {
-    serde_json::json!({
-        "query": query,
-        "max_results": max_results,
-        "search_depth": "basic"
-    })
-}
-
-#[async_trait::async_trait]
-impl SearchProvider for TavilyProvider {
-    fn id(&self) -> ProviderId {
-        ProviderId::Tavily
-    }
-
-    async fn search(
-        &self,
-        client: &reqwest::Client,
-        query: &str,
-        _ua: &str,
-        api_key: Option<&str>,
-        max_results: usize,
-    ) -> Result<Vec<SearchResult>, FailureKind> {
-        // F12: the facade short-circuits keyless Tavily before calling here;
-        // this guard is a safety net and must not be treated as a real failure.
-        let key = api_key.ok_or(FailureKind::NoKey)?;
-        let body = tavily_body(query, max_results);
-        let resp = client
-            .post(TAVILY_ENDPOINT)
-            .header("Authorization", format!("Bearer {}", key))
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|_| FailureKind::Http)?;
-        let status = resp.status();
-        // F13: 401/403 mean the key is invalid/expired (a configuration
-        // state), while 429 is a transient rate-limit. They must not be
-        // conflated: only the latter justifies a cooldown.
-        match status.as_u16() {
-            401 | 403 => return Err(FailureKind::Unauthorized),
-            429 => return Err(FailureKind::Blocked),
-            _ => {}
-        }
-        if !status.is_success() {
-            return Err(FailureKind::Http);
-        }
-        let text = resp.text().await.map_err(|_| FailureKind::Http)?;
-        let results = parse_tavily(&text);
-        if results.is_empty() {
-            Err(FailureKind::Empty)
-        } else {
-            Ok(results)
-        }
-    }
-}
-
-/// Shared state for the web search tool, kept across calls within a runtime.
 pub struct WebSearchTool {
     /// F1.1: timestamp of the last completed request (for dynamic min-delay).
     last_request: Arc<tokio::sync::Mutex<Option<Instant>>>,
@@ -404,12 +161,8 @@ impl WebSearchTool {
         // below take over as explicit fallback.
         let providers: Vec<Box<dyn SearchProvider>> = vec![
             Box::new(TavilyProvider),
-            Box::new(DuckDuckGoProvider {
-                id: ProviderId::DdgHtml,
-            }),
-            Box::new(DuckDuckGoProvider {
-                id: ProviderId::DdgLite,
-            }),
+            Box::new(DuckDuckGoProvider::new(ProviderId::DdgHtml)),
+            Box::new(DuckDuckGoProvider::new(ProviderId::DdgLite)),
             Box::new(MojeekProvider),
         ];
 
@@ -792,196 +545,18 @@ async fn sleep_abortable(ctx: &ToolContext, dur: Duration) -> bool {
 
 #[derive(Clone)]
 pub(crate) struct SearchResult {
-    title: String,
-    url: String,
-    snippet: String,
+    pub(super) title: String,
+    pub(super) url: String,
+    pub(super) snippet: String,
     /// F6.1: host/domain extracted from the URL.
-    domain: String,
+    pub(super) domain: String,
     /// F6.1: publication date when the provider exposes one (e.g. DDG's
     /// `span.result__timestamp`). `None` when unavailable.
-    date: Option<String>,
+    pub(super) date: Option<String>,
 }
 
 /// Extracts results from the DuckDuckGo `/html/` page using CSS selectors.
-fn parse_results(html: &str) -> Vec<SearchResult> {
-    let document = Html::parse_document(html);
-    let Ok(result_selector) = Selector::parse("div.result") else {
-        return Vec::new();
-    };
-    let Ok(title_selector) = Selector::parse("a.result__a") else {
-        return Vec::new();
-    };
-    let Ok(snippet_selector) = Selector::parse("a.result__snippet") else {
-        return Vec::new();
-    };
-    // F6.1: DDG exposes a publication date in `span.result__timestamp` when
-    // the result is dated (news/blog posts); absent for most pages.
-    let Ok(date_selector) = Selector::parse("span.result__timestamp") else {
-        return Vec::new();
-    };
-
-    document
-        .select(&result_selector)
-        .filter_map(|result| {
-            let title_el = result.select(&title_selector).next()?;
-            let title = clean_text(&title_el.text().collect::<Vec<_>>().join(" "));
-            let url = title_el.value().attr("href").unwrap_or("").to_string();
-            let url = clean_url(&url);
-            if title.is_empty() || url.is_empty() {
-                return None;
-            }
-            let snippet = result
-                .select(&snippet_selector)
-                .next()
-                .map(|s| clean_text(&s.text().collect::<Vec<_>>().join(" ")))
-                .unwrap_or_default();
-            let domain = extract_domain(&url);
-            let date = result
-                .select(&date_selector)
-                .next()
-                .map(|d| clean_text(&d.text().collect::<Vec<_>>().join(" ")))
-                .filter(|d| !d.is_empty());
-            Some(SearchResult {
-                title,
-                url,
-                snippet,
-                domain,
-                date,
-            })
-        })
-        .take(MAX_RESULTS)
-        .collect()
-}
-
-/// F4.1: extracts results from the DDG Lite page. The Lite layout is
-/// table-based: each result is a `<tr>` containing `a.result-link` (title +
-/// redirect href), optionally followed by a `td.result-snippet` row.
-fn parse_results_lite(html: &str) -> Vec<SearchResult> {
-    let document = Html::parse_document(html);
-    let Ok(link_selector) = Selector::parse("a.result-link") else {
-        return Vec::new();
-    };
-    let Ok(snippet_selector) = Selector::parse("td.result-snippet") else {
-        return Vec::new();
-    };
-
-    // Collect snippets in document order; each snippet row follows its
-    // result-link row, so we pair them positionally.
-    let snippets: Vec<String> = document
-        .select(&snippet_selector)
-        .map(|s| clean_text(&s.text().collect::<Vec<_>>().join(" ")))
-        .collect();
-
-    document
-        .select(&link_selector)
-        .enumerate()
-        .filter_map(|(i, link)| {
-            let title = clean_text(&link.text().collect::<Vec<_>>().join(" "));
-            let url = clean_url(link.value().attr("href").unwrap_or(""));
-            if title.is_empty() || url.is_empty() {
-                return None;
-            }
-            let snippet = snippets.get(i).cloned().unwrap_or_default();
-            let domain = extract_domain(&url);
-            Some(SearchResult {
-                title,
-                url,
-                snippet,
-                domain,
-                date: None,
-            })
-        })
-        .take(MAX_RESULTS)
-        .collect()
-}
-
-/// F11.1: extracts results from the Mojeek HTML page. Results are
-/// `ul.results-standard > li` with `a.title` and `p.s` snippets.
-fn parse_results_mojeek(html: &str) -> Vec<SearchResult> {
-    let document = Html::parse_document(html);
-    let Ok(result_selector) = Selector::parse("ul.results-standard li") else {
-        return Vec::new();
-    };
-    let Ok(title_selector) = Selector::parse("a.title") else {
-        return Vec::new();
-    };
-    let Ok(snippet_selector) = Selector::parse("p.s") else {
-        return Vec::new();
-    };
-
-    document
-        .select(&result_selector)
-        .filter_map(|result| {
-            let title_el = result.select(&title_selector).next()?;
-            let title = clean_text(&title_el.text().collect::<Vec<_>>().join(" "));
-            let url = title_el.value().attr("href").unwrap_or("").to_string();
-            if title.is_empty() || url.is_empty() {
-                return None;
-            }
-            let snippet = result
-                .select(&snippet_selector)
-                .next()
-                .map(|s| clean_text(&s.text().collect::<Vec<_>>().join(" ")))
-                .unwrap_or_default();
-            let domain = extract_domain(&url);
-            Some(SearchResult {
-                title,
-                url,
-                snippet,
-                domain,
-                date: None,
-            })
-        })
-        .take(MAX_RESULTS)
-        .collect()
-}
-
-/// Parses the Tavily JSON response into `SearchResult`s.
-fn parse_tavily(json: &str) -> Vec<SearchResult> {
-    let v: serde_json::Value = match serde_json::from_str(json) {
-        Ok(v) => v,
-        Err(_) => return Vec::new(),
-    };
-    let mut out = Vec::new();
-    if let Some(arr) = v.get("results").and_then(|r| r.as_array()) {
-        for item in arr {
-            let title = item
-                .get("title")
-                .and_then(|s| s.as_str())
-                .unwrap_or("")
-                .to_string();
-            let url = item
-                .get("url")
-                .and_then(|s| s.as_str())
-                .unwrap_or("")
-                .to_string();
-            let snippet = item
-                .get("content")
-                .and_then(|s| s.as_str())
-                .unwrap_or("")
-                .to_string();
-            if url.is_empty() {
-                continue;
-            }
-            let domain = extract_domain(&url);
-            out.push(SearchResult {
-                title,
-                url,
-                snippet,
-                domain,
-                date: None,
-            });
-            if out.len() >= MAX_RESULTS {
-                break;
-            }
-        }
-    }
-    out
-}
-
-/// F6.1: extracts the host/domain from a URL (e.g. "https://docs.rs/tokio"
-/// → "docs.rs"). Returns empty string on parse failure.
-fn extract_domain(url: &str) -> String {
+pub(super) fn extract_domain(url: &str) -> String {
     reqwest::Url::parse(url)
         .ok()
         .and_then(|u| u.host_str().map(|h| h.to_string()))
@@ -1024,12 +599,12 @@ fn render_results(
 }
 
 /// Collapses whitespace in text extracted from the DOM.
-fn clean_text(s: &str) -> String {
+pub(super) fn clean_text(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// DuckDuckGo wraps result URLs in a redirect; unwrap the real target.
-fn clean_url(href: &str) -> String {
+pub(super) fn clean_url(href: &str) -> String {
     if let Some((_, rest)) = href.split_once("uddg=") {
         let end = rest.find("&rut=").unwrap_or(rest.len());
         let target = &rest[..end];
@@ -1043,7 +618,7 @@ fn clean_url(href: &str) -> String {
 
 /// Detects whether DuckDuckGo served a bot-detection / CAPTCHA page instead
 /// of search results.
-fn is_blocked(html: &str) -> bool {
+pub(super) fn is_blocked(html: &str) -> bool {
     let lower = html.to_lowercase();
     ["anomaly-detected", "captcha", "bot-detected"]
         .iter()
@@ -1051,7 +626,7 @@ fn is_blocked(html: &str) -> bool {
 }
 
 /// F3.1: heuristics for a silent rate-limit page (HTTP 200 with empty body).
-fn looks_rate_limited(html: &str) -> bool {
+pub(super) fn looks_rate_limited(html: &str) -> bool {
     let lower = html.to_lowercase();
     [
         "too many requests",
@@ -1187,6 +762,7 @@ mod tests {
 
     /// Real DDG /html/ sample captured from production (10 results).
     const DDG_SAMPLE: &str = include_str!("ddg_sample.html");
+    use super::providers::{tavily_body, ProviderId as Pid};
     /// Real DDG Lite sample captured from production (10 results).
     const LITE_SAMPLE: &str = include_str!("lite_sample.html");
 
@@ -1323,7 +899,7 @@ mod tests {
     fn test_provider_order_and_cooldown_constant() {
         // F11.2: preference order is Tavily → DDG HTML → DDG Lite → Mojeek.
         assert_eq!(
-            ProviderId::all(),
+            Pid::all(),
             vec![
                 ProviderId::Tavily,
                 ProviderId::DdgHtml,
