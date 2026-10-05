@@ -8,6 +8,7 @@ pub mod keys;
 pub mod pickers;
 mod pickers_state;
 pub mod runner;
+pub mod settings_keys;
 pub mod skills;
 pub mod state;
 pub mod undo;
