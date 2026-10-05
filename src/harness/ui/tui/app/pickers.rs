@@ -685,3 +685,82 @@ pub(crate) fn handle_auth_picker_key(app: &mut App, key: KeyEvent) -> Result<boo
     }
     Ok(false)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::harness::ui::tui::transcript::LineKind;
+
+    fn last_system(app: &App) -> String {
+        app.lines
+            .iter()
+            .rev()
+            .find(|l| l.kind == LineKind::System)
+            .map(|l| l.text.clone())
+            .unwrap_or_default()
+    }
+
+    /// `/settings` with no args opens the interactive settings modal.
+    #[test]
+    fn settings_command_no_args_opens_modal() {
+        let mut app = App::inline_for_tests("test");
+        app.splash = None;
+        handle_settings_command(&mut app, "/settings");
+        assert!(matches!(
+            app.modal,
+            Some(crate::harness::ui::tui::app::Modal::Settings { .. })
+        ));
+    }
+
+    /// A non-numeric argument prints the usage hint and does not change config.
+    #[test]
+    fn settings_command_invalid_iterations_prints_usage() {
+        let mut app = App::inline_for_tests("test");
+        app.splash = None;
+        handle_settings_command(&mut app, "/settings iterations abc");
+        assert!(
+            last_system(&app).contains("usage: /settings iterations"),
+            "got: {}",
+            last_system(&app)
+        );
+    }
+
+    /// A valid numeric argument is applied and confirmed.
+    #[test]
+    fn settings_command_valid_iterations_applies() {
+        let mut app = App::inline_for_tests("test");
+        app.splash = None;
+        handle_settings_command(&mut app, "/settings iterations 42");
+        assert!(
+            last_system(&app).contains("max_iterations = 42"),
+            "got: {}",
+            last_system(&app)
+        );
+    }
+
+    /// `summary_model off` maps to the empty sentinel and reports it.
+    #[test]
+    fn settings_command_summary_model_off_uses_sentinel() {
+        let mut app = App::inline_for_tests("test");
+        app.splash = None;
+        handle_settings_command(&mut app, "/settings summary_model off");
+        assert!(
+            last_system(&app).contains("(same as model)"),
+            "got: {}",
+            last_system(&app)
+        );
+    }
+
+    /// An unknown subcommand is reported as an error, not silently ignored.
+    #[test]
+    fn settings_command_unknown_subcommand_reports_error() {
+        let mut app = App::inline_for_tests("test");
+        app.splash = None;
+        handle_settings_command(&mut app, "/settings bogus");
+        let msg = last_system(&app);
+        assert!(
+            msg.contains("unknown") || msg.contains("usage") || msg.contains("[error]"),
+            "got: {msg}"
+        );
+    }
+}

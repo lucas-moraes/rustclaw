@@ -501,3 +501,92 @@ impl App {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::harness::session::{Message, Part, Role};
+
+    /// Rebuilding from a session with a user prompt and an assistant reply
+    /// yields the expected line kinds, in order, with `born_tick == 0`
+    /// (history lines render at rest, never fading in).
+    #[test]
+    fn rebuild_transcript_from_session_orders_lines_and_resets_born_tick() {
+        let mut app = App::inline_for_tests("test");
+        app.splash = None;
+        app.session.messages = vec![
+            Message::user("hello there"),
+            Message::new(Role::Assistant, vec![Part::text("hi, how can I help?")]),
+        ];
+
+        app.rebuild_transcript_from_session();
+
+        let kinds: Vec<LineKind> = app.lines.iter().map(|l| l.kind.clone()).collect();
+        assert_eq!(kinds, vec![LineKind::User, LineKind::Assistant]);
+        assert_eq!(app.lines[0].text, "hello there");
+        assert_eq!(app.lines[1].text, "hi, how can I help?");
+        assert!(
+            app.lines.iter().all(|l| l.born_tick == 0),
+            "history lines must be at rest (born_tick 0)"
+        );
+    }
+
+    /// Runtime-injected `<project-memory>` blocks are stripped from the user
+    /// line; the real prompt (a later text part) is kept.
+    #[test]
+    fn rebuild_transcript_strips_project_memory_blocks() {
+        let mut app = App::inline_for_tests("test");
+        app.splash = None;
+        let injected = "<project-memory>\n- secret fact\n</project-memory>";
+        app.session.messages = vec![Message::new(
+            Role::User,
+            vec![Part::text(injected), Part::text("real question")],
+        )];
+
+        app.rebuild_transcript_from_session();
+
+        assert_eq!(app.lines.len(), 1);
+        assert_eq!(app.lines[0].kind, LineKind::User);
+        assert_eq!(app.lines[0].text, "real question");
+        assert!(!app.lines[0].text.contains("secret fact"));
+    }
+
+    /// A user message that is *only* an injected memory block produces no
+    /// user line at all (nothing to show).
+    #[test]
+    fn rebuild_transcript_skips_memory_only_message() {
+        let mut app = App::inline_for_tests("test");
+        app.splash = None;
+        app.session.messages = vec![Message::new(
+            Role::User,
+            vec![Part::text("<project-memory>\n- fact\n</project-memory>")],
+        )];
+
+        app.rebuild_transcript_from_session();
+
+        assert!(app.lines.is_empty(), "memory-only message must not render");
+    }
+
+    /// Rebuild clears transient streaming/tool state.
+    #[test]
+    fn rebuild_transcript_clears_transient_state() {
+        let mut app = App::inline_for_tests("test");
+        app.splash = None;
+        app.streaming = Some("partial".to_string());
+        app.tool_status = Some(crate::harness::ui::tui::transcript::ToolBatch {
+            counts: vec![("bash".to_string(), 1)],
+            last_path: String::new(),
+            last_name: "bash".to_string(),
+            done: 0,
+            failed: 0,
+            pending: 1,
+        });
+        app.session.messages = vec![Message::user("q")];
+
+        app.rebuild_transcript_from_session();
+
+        assert!(app.streaming.is_none());
+        assert!(app.tool_status.is_none());
+        assert!(app.pending_stream.is_empty());
+    }
+}
