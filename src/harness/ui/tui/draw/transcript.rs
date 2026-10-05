@@ -327,16 +327,29 @@ fn render_line(
                 ),
                 Span::styled(" ─────".to_string(), Style::default().fg(t.accent3)),
             ])];
+            // Body rows are padded to the full width so the right edge of the
+            // box is continuous; the footer rule spans the same width.
+            let gutter_w = 4usize; // "  │ "
+            let body_w = width.saturating_sub(gutter_w).max(8);
             for dl in markdown::render_diff(&line.text, t).into_iter().take(40) {
+                let plain: String = dl.spans.iter().map(|s| s.content.as_ref()).collect();
+                let pad = body_w.saturating_sub(Span::width(&Span::raw(&plain)));
                 let mut spans = vec![Span::styled(
                     "  │ ".to_string(),
                     Style::default().fg(t.accent3),
                 )];
                 spans.extend(dl.spans);
+                if pad > 0 {
+                    spans.push(Span::styled(
+                        " ".repeat(pad),
+                        Style::default().bg(t.surface),
+                    ));
+                }
                 out.push(Line::from(spans));
             }
+            let rule_w = width.saturating_sub(5).max(1); // "  ╰" + rule
             out.push(Line::from(Span::styled(
-                "  ╰─────",
+                format!("  ╰{}", "─".repeat(rule_w)),
                 Style::default().fg(t.accent3),
             )));
             out
