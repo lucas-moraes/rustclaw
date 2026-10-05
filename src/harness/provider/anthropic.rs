@@ -382,12 +382,10 @@ impl Provider for AnthropicProvider {
                 .and_then(|v| v.to_str().ok())
                 .and_then(|v| v.parse::<u64>().ok());
             let text = response.text().await.unwrap_or_default();
-            let kind = super::retry::classify_status(status.as_u16());
-            return Err(super::retry::provider_error(
-                kind,
-                Some(status.as_u16()),
+            return Err(super::retry::provider_error_from_status(
+                status,
                 retry_after,
-                format!("API error ({}): {}", status, text),
+                &text,
             ));
         }
         Ok(response_to_events(response))
@@ -412,12 +410,10 @@ impl Provider for AnthropicProvider {
                 .and_then(|v| v.to_str().ok())
                 .and_then(|v| v.parse::<u64>().ok());
             let text = response.text().await.unwrap_or_default();
-            let kind = super::retry::classify_status(status.as_u16());
-            return Err(super::retry::provider_error(
-                kind,
-                Some(status.as_u16()),
+            return Err(super::retry::provider_error_from_status(
+                status,
                 retry_after,
-                format!("API error ({}): {}", status, text),
+                &text,
             ));
         }
         let json: Value = response.json().await.context("failed to parse response")?;

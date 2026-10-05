@@ -68,6 +68,26 @@ pub fn classify_status(status: u16) -> RetryKind {
     }
 }
 
+/// Builds the canonical provider error for a non-2xx HTTP response.
+///
+/// Consolidates the identical error-construction block that every adapter
+/// (OpenAI, Anthropic, …) used to duplicate: classify the status, carry the
+/// `Retry-After` header when present, and include the response body in the
+/// message. `retry_after` is the parsed `Retry-After` header value, if any.
+pub fn provider_error_from_status(
+    status: reqwest::StatusCode,
+    retry_after: Option<u64>,
+    body: &str,
+) -> Error {
+    let kind = classify_status(status.as_u16());
+    provider_error(
+        kind,
+        Some(status.as_u16()),
+        retry_after,
+        format!("API error ({}): {}", status, body),
+    )
+}
+
 /// Extracts the retry classification from an error chain.
 pub fn error_retry_kind(err: &Error) -> RetryKind {
     for cause in err.chain() {
@@ -449,5 +469,44 @@ mod tests {
         .await;
         assert_eq!(result.unwrap(), "ok");
         assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn provider_error_from_status_classifies_and_includes_body() {
+        use reqwest::StatusCode;
+
+        // Retryable statuses.
+        for code in [429u16, 500, 502, 503, 504] {
+            let status = StatusCode::from_u16(code).unwrap();
+            let err = provider_error_from_status(status, None, "boom");
+            let pe = err
+                .chain()
+                .find_map(|c| c.downcast_ref::<ProviderError>())
+                .expect("provider error in chain");
+            assert_eq!(pe.kind, RetryKind::Retryable, "status {code}");
+            assert_eq!(pe.status, Some(code));
+        }
+
+        // Permanent statuses.
+        for code in [400u16, 401, 403, 404] {
+            let status = StatusCode::from_u16(code).unwrap();
+            let err = provider_error_from_status(status, None, "nope");
+            let pe = err
+                .chain()
+                .find_map(|c| c.downcast_ref::<ProviderError>())
+                .expect("provider error in chain");
+            assert_eq!(pe.kind, RetryKind::Permanent, "status {code}");
+        }
+
+        // Body is included in the message; retry_after is carried through.
+        let status = StatusCode::from_u16(429).unwrap();
+        let err = provider_error_from_status(status, Some(7), "rate limited");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("rate limited"), "body in message: {msg}");
+        let pe = err
+            .chain()
+            .find_map(|c| c.downcast_ref::<ProviderError>())
+            .expect("provider error in chain");
+        assert_eq!(pe.retry_after, Some(7));
     }
 }
