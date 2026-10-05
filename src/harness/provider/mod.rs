@@ -60,6 +60,37 @@ impl Usage {
             .cache_write_tokens
             .saturating_add(other.cache_write_tokens);
     }
+
+    /// Parses an OpenAI `usage` object.
+    ///
+    /// OpenAI includes cached tokens in `prompt_tokens`; the details field is
+    /// the cached subset (do not add it to `input_tokens`). OpenAI does not
+    /// report cache writes, so `cache_write_tokens` is 0 unless present.
+    pub fn from_openai(u: &serde_json::Value) -> Usage {
+        Usage {
+            input_tokens: u["prompt_tokens"].as_u64().unwrap_or(0),
+            output_tokens: u["completion_tokens"].as_u64().unwrap_or(0),
+            cache_read_tokens: u["prompt_tokens_details"]["cached_tokens"]
+                .as_u64()
+                .unwrap_or(0),
+            cache_write_tokens: u["prompt_tokens_details"]["cache_write_tokens"]
+                .as_u64()
+                .unwrap_or(0),
+        }
+    }
+
+    /// Parses an Anthropic `usage` object.
+    ///
+    /// Anthropic reports cache tokens as separate fields, **excluded** from
+    /// `input_tokens` — keep that semantics (do not add them up).
+    pub fn from_anthropic(u: &serde_json::Value) -> Usage {
+        Usage {
+            input_tokens: u["input_tokens"].as_u64().unwrap_or(0),
+            output_tokens: u["output_tokens"].as_u64().unwrap_or(0),
+            cache_read_tokens: u["cache_read_input_tokens"].as_u64().unwrap_or(0),
+            cache_write_tokens: u["cache_creation_input_tokens"].as_u64().unwrap_or(0),
+        }
+    }
 }
 
 /// Compact token count for status bars (`1.2k`, `45k`, `1.1M`).
@@ -544,5 +575,50 @@ mod tests {
             parameters: serde_json::json!({"type": "object"}),
         };
         assert_eq!(spec.name, "bash");
+    }
+
+    #[test]
+    fn usage_from_openai_reads_cache_details() {
+        let u = serde_json::json!({
+            "prompt_tokens": 1000,
+            "completion_tokens": 200,
+            "prompt_tokens_details": { "cached_tokens": 800, "cache_write_tokens": 50 }
+        });
+        let usage = Usage::from_openai(&u);
+        assert_eq!(usage.input_tokens, 1000);
+        assert_eq!(usage.output_tokens, 200);
+        assert_eq!(usage.cache_read_tokens, 800);
+        assert_eq!(usage.cache_write_tokens, 50);
+    }
+
+    #[test]
+    fn usage_from_openai_missing_details_defaults_to_zero() {
+        let u = serde_json::json!({ "prompt_tokens": 10, "completion_tokens": 5 });
+        let usage = Usage::from_openai(&u);
+        assert_eq!(usage.cache_read_tokens, 0);
+        assert_eq!(usage.cache_write_tokens, 0);
+    }
+
+    #[test]
+    fn usage_from_anthropic_reads_separate_cache_fields() {
+        let u = serde_json::json!({
+            "input_tokens": 100,
+            "output_tokens": 40,
+            "cache_read_input_tokens": 900,
+            "cache_creation_input_tokens": 300
+        });
+        let usage = Usage::from_anthropic(&u);
+        assert_eq!(usage.input_tokens, 100);
+        assert_eq!(usage.output_tokens, 40);
+        assert_eq!(usage.cache_read_tokens, 900);
+        assert_eq!(usage.cache_write_tokens, 300);
+    }
+
+    #[test]
+    fn usage_from_anthropic_missing_cache_fields_default_to_zero() {
+        let u = serde_json::json!({ "input_tokens": 7, "output_tokens": 3 });
+        let usage = Usage::from_anthropic(&u);
+        assert_eq!(usage.cache_read_tokens, 0);
+        assert_eq!(usage.cache_write_tokens, 0);
     }
 }

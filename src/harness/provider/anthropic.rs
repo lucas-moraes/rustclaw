@@ -220,14 +220,7 @@ pub fn parse_response(json: &Value) -> anyhow::Result<(Vec<Part>, Option<Usage>,
         }
     }
 
-    let usage = json.get("usage").map(|u| Usage {
-        input_tokens: u["input_tokens"].as_u64().unwrap_or(0),
-        output_tokens: u["output_tokens"].as_u64().unwrap_or(0),
-        // Anthropic reports cache tokens as separate fields, EXCLUDED from
-        // `input_tokens` — keep that semantics (do not add them up).
-        cache_read_tokens: u["cache_read_input_tokens"].as_u64().unwrap_or(0),
-        cache_write_tokens: u["cache_creation_input_tokens"].as_u64().unwrap_or(0),
-    });
+    let usage = json.get("usage").map(Usage::from_anthropic);
     let stop_reason = json["stop_reason"].as_str().map(|s| s.to_string());
     Ok((parts, usage, stop_reason))
 }

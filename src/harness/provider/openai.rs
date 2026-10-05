@@ -411,16 +411,7 @@ impl super::SseHandler for OpenAiStreamState {
             return super::SseAction::Error(msg);
         }
         if let Some(usage) = json.get("usage") {
-            self.usage = Some(Usage {
-                input_tokens: usage["prompt_tokens"].as_u64().unwrap_or(0),
-                output_tokens: usage["completion_tokens"].as_u64().unwrap_or(0),
-                cache_read_tokens: usage["prompt_tokens_details"]["cached_tokens"]
-                    .as_u64()
-                    .unwrap_or(0),
-                cache_write_tokens: usage["prompt_tokens_details"]["cache_write_tokens"]
-                    .as_u64()
-                    .unwrap_or(0),
-            });
+            self.usage = Some(Usage::from_openai(usage));
         }
         if let Some(fr) = json["choices"][0]["finish_reason"]
             .as_str()
