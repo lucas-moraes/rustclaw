@@ -990,43 +990,61 @@ fn handle_audio_settings_key(
     selected: usize,
     custom_input: Option<String>,
 ) {
+    if custom_input.is_some() {
+        audio_custom_input_key(app, key, selected, custom_input);
+    } else {
+        audio_nav_key(app, key, selected);
+    }
+}
+
+/// Inline text entry for the STT model name (the `stt_model` row).
+fn audio_custom_input_key(
+    app: &mut App,
+    key: KeyEvent,
+    selected: usize,
+    custom_input: Option<String>,
+) {
+    use crossterm::event::KeyCode;
+    let sel = selected;
+    let Some(mut inp) = custom_input else {
+        return;
+    };
+    match key.code {
+        KeyCode::Esc => {}
+        KeyCode::Backspace => {
+            inp.pop();
+        }
+        KeyCode::Enter => {
+            let v = inp.trim().to_string();
+            match app.runtime.set_stt_model(v.clone()) {
+                Ok(()) => {
+                    let shown = if v.is_empty() { "default".into() } else { v };
+                    app.add_system(&format!("stt_model = {}", shown));
+                }
+                Err(e) => app.add_system(&format!("[error] failed to save: {}", e)),
+            }
+        }
+        KeyCode::Char(c)
+            if !key
+                .modifiers
+                .contains(crossterm::event::KeyModifiers::CONTROL) =>
+        {
+            inp.push(c);
+        }
+        _ => {}
+    }
+    // Keep the modal open; re-open with the (possibly updated) input.
+    let keep_input = !matches!(key.code, KeyCode::Esc | KeyCode::Enter);
+    app.modal = Some(Modal::AudioSettings {
+        selected: sel,
+        custom_input: if keep_input { Some(inp) } else { None },
+    });
+}
+
+/// Navigation/toggle phase of the `/audio-settings` modal.
+fn audio_nav_key(app: &mut App, key: KeyEvent, selected: usize) {
     use crossterm::event::KeyCode;
     let mut sel = selected;
-    // Inline text entry for the STT model name.
-    if let Some(mut inp) = custom_input {
-        match key.code {
-            KeyCode::Esc => {}
-            KeyCode::Backspace => {
-                inp.pop();
-            }
-            KeyCode::Enter => {
-                let v = inp.trim().to_string();
-                match app.runtime.set_stt_model(v.clone()) {
-                    Ok(()) => {
-                        let shown = if v.is_empty() { "default".into() } else { v };
-                        app.add_system(&format!("stt_model = {}", shown));
-                    }
-                    Err(e) => app.add_system(&format!("[error] failed to save: {}", e)),
-                }
-            }
-            KeyCode::Char(c)
-                if !key
-                    .modifiers
-                    .contains(crossterm::event::KeyModifiers::CONTROL) =>
-            {
-                inp.push(c);
-            }
-            _ => {}
-        }
-        // Keep the modal open; re-open with the (possibly updated) input.
-        let keep_input = !matches!(key.code, KeyCode::Esc | KeyCode::Enter);
-        app.modal = Some(Modal::AudioSettings {
-            selected: sel,
-            custom_input: if keep_input { Some(inp) } else { None },
-        });
-        return;
-    }
-
     let rows = crate::harness::ui::tui::draw::modal::audio_rows(&app.runtime.config);
     let n = rows.len();
     match key.code {
@@ -1555,5 +1573,137 @@ claude-opus-5-5-high - Claude Opus 5.5 1M High\n";
     fn test_parse_model_list_empty() {
         assert!(parse_model_list("").is_empty());
         assert!(parse_model_list("Available models\n").is_empty());
+    }
+}
+
+#[cfg(test)]
+mod audio_settings_tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn open_audio(app: &mut App, selected: usize) {
+        app.modal = Some(Modal::AudioSettings {
+            selected,
+            custom_input: None,
+        });
+    }
+
+    fn selected_of(app: &App) -> usize {
+        match &app.modal {
+            Some(Modal::AudioSettings { selected, .. }) => *selected,
+            other => panic!("expected AudioSettings modal, got {:?}", other.is_some()),
+        }
+    }
+
+    /// Down moves the highlight forward; Up moves it back (clamped at 0).
+    #[test]
+    fn audio_nav_moves_selection() {
+        let mut app = App::inline_for_tests("test");
+        app.splash = None;
+        open_audio(&mut app, 0);
+
+        handle_audio_settings_key(&mut app, key(KeyCode::Down), 0, None);
+        assert_eq!(selected_of(&app), 1);
+
+        handle_audio_settings_key(&mut app, key(KeyCode::Up), 1, None);
+        assert_eq!(selected_of(&app), 0);
+
+        // Up at the top stays at 0.
+        handle_audio_settings_key(&mut app, key(KeyCode::Up), 0, None);
+        assert_eq!(selected_of(&app), 0);
+    }
+
+    /// Down is clamped at the last row (2 rows: voice_enabled, stt_model).
+    #[test]
+    fn audio_nav_clamps_at_last_row() {
+        let mut app = App::inline_for_tests("test");
+        app.splash = None;
+        open_audio(&mut app, 1);
+        handle_audio_settings_key(&mut app, key(KeyCode::Down), 1, None);
+        assert_eq!(selected_of(&app), 1);
+    }
+
+    /// Esc closes the modal.
+    #[test]
+    fn audio_esc_closes_modal() {
+        let mut app = App::inline_for_tests("test");
+        app.splash = None;
+        open_audio(&mut app, 0);
+        handle_audio_settings_key(&mut app, key(KeyCode::Esc), 0, None);
+        assert!(app.modal.is_none());
+    }
+
+    /// Enter on the `stt_model` row (index 1) opens the inline text prompt.
+    #[test]
+    fn audio_enter_on_stt_model_opens_input() {
+        let mut app = App::inline_for_tests("test");
+        app.splash = None;
+        open_audio(&mut app, 1);
+        handle_audio_settings_key(&mut app, key(KeyCode::Enter), 1, None);
+        match &app.modal {
+            Some(Modal::AudioSettings { custom_input, .. }) => {
+                assert_eq!(custom_input.as_deref(), Some(""));
+            }
+            other => panic!("expected inline input, got {:?}", other.is_some()),
+        }
+    }
+
+    /// Enter on the `voice_enabled` row (index 0) does not open the prompt.
+    #[test]
+    fn audio_enter_on_toggle_row_does_not_open_input() {
+        let mut app = App::inline_for_tests("test");
+        app.splash = None;
+        open_audio(&mut app, 0);
+        handle_audio_settings_key(&mut app, key(KeyCode::Enter), 0, None);
+        match &app.modal {
+            Some(Modal::AudioSettings { custom_input, .. }) => {
+                assert!(custom_input.is_none());
+            }
+            other => panic!("expected AudioSettings modal, got {:?}", other.is_some()),
+        }
+    }
+
+    /// Typing appends to the inline buffer; Backspace removes the last char.
+    #[test]
+    fn audio_input_edits_buffer() {
+        let mut app = App::inline_for_tests("test");
+        app.splash = None;
+        open_audio(&mut app, 1);
+
+        handle_audio_settings_key(&mut app, key(KeyCode::Char('a')), 1, Some("".into()));
+        handle_audio_settings_key(&mut app, key(KeyCode::Char('b')), 1, Some("a".into()));
+        match &app.modal {
+            Some(Modal::AudioSettings { custom_input, .. }) => {
+                assert_eq!(custom_input.as_deref(), Some("ab"));
+            }
+            other => panic!("expected inline input, got {:?}", other.is_some()),
+        }
+
+        handle_audio_settings_key(&mut app, key(KeyCode::Backspace), 1, Some("ab".into()));
+        match &app.modal {
+            Some(Modal::AudioSettings { custom_input, .. }) => {
+                assert_eq!(custom_input.as_deref(), Some("a"));
+            }
+            other => panic!("expected inline input, got {:?}", other.is_some()),
+        }
+    }
+
+    /// Esc while typing closes the prompt (and the modal).
+    #[test]
+    fn audio_input_esc_closes_prompt() {
+        let mut app = App::inline_for_tests("test");
+        app.splash = None;
+        open_audio(&mut app, 1);
+        handle_audio_settings_key(&mut app, key(KeyCode::Esc), 1, Some("abc".into()));
+        match &app.modal {
+            Some(Modal::AudioSettings { custom_input, .. }) => {
+                assert!(custom_input.is_none(), "prompt must close on Esc");
+            }
+            other => panic!("expected AudioSettings modal, got {:?}", other.is_some()),
+        }
     }
 }
