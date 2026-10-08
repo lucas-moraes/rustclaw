@@ -179,7 +179,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
         Span::styled("Esc", Style::default().fg(t.accent3)),
         Span::styled(" back", Style::default().fg(t.text_dim)),
     ]);
-    frame.render_widget(Paragraph::new(line).style(Style::default().bg(t.bg)), area);
+    frame.render_widget(Paragraph::new(line), area);
 }
 
 /// Extra text rows needed beyond the first for `n` wrapped visual rows

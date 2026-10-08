@@ -12,13 +12,15 @@ use ratatui::Frame;
 pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     let t = &app.theme;
     let focused = !app.running && app.modal.is_none() && app.palette.is_none();
+    // Same fg as the blinking `anim::cursor_glyph` bar in the editor (below).
+    let cursor_bar = Style::default().fg(t.accent);
 
     // Rounded frame around the prompt. The border costs 2 rows and 2 columns;
     // the layout in `draw::draw` reserves them (see `input_h`/`est_inner`).
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(t.border))
+        .border_style(Style::default().fg(t.accent2))
         .style(Style::default().bg(t.surface));
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -98,7 +100,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
             let b: String = row_chars(&input_chars, idxs, 0, ccol);
             let a: String = row_chars(&input_chars, idxs, ccol, idxs.len());
             spans.push(Span::styled(b, Style::default().fg(t.text_bright)));
-            spans.push(Span::styled(cur.clone(), Style::default().fg(t.accent)));
+            spans.push(Span::styled(cur.clone(), cursor_bar));
             spans.push(Span::styled(a, Style::default().fg(t.text)));
         } else if r < crow {
             spans.push(Span::styled(row_text, Style::default().fg(t.text_bright)));

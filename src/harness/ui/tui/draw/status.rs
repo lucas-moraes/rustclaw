@@ -138,7 +138,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect, tick: u64) {
     }
 
     frame.render_widget(
-        Paragraph::new(Line::from(line_spans)).style(Style::default().bg(t.status_bg).fg(t.text)),
+        Paragraph::new(Line::from(line_spans)).style(Style::default().fg(t.text)),
         area,
     );
 }

@@ -274,13 +274,11 @@ pub(super) fn audio_nav_key(app: &mut App, key: KeyEvent, selected: usize) {
                 custom_input: None,
             });
         }
-        KeyCode::Enter => {
-            if rows.get(sel).map(|(l, _, _)| l.as_str()) == Some("stt_model") {
-                app.modal = Some(Modal::AudioSettings {
-                    selected: sel,
-                    custom_input: Some(String::new()),
-                });
-            }
+        KeyCode::Enter if rows.get(sel).map(|(l, _, _)| l.as_str()) == Some("stt_model") => {
+            app.modal = Some(Modal::AudioSettings {
+                selected: sel,
+                custom_input: Some(String::new()),
+            });
         }
         _ => {}
     }
