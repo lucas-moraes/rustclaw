@@ -776,7 +776,11 @@ impl SessionRuntime {
             Some(ids) => ids.to_vec(),
             None => inject::enabled_for_turn(&session.skills, None),
         };
-        let skills_block = inject::render_enabled(&self.skills, &session.skills, &enabled);
+        let skills_block = if inject::context_modes_active(&session.agent) {
+            inject::render_enabled(&self.skills, &session.skills, &enabled)
+        } else {
+            String::new()
+        };
         let project_context = self.frozen_summary_for(&session.id, &session.cwd).await?;
         let available_tools = turn_registry.specs(&agent.tools);
         let system_prompt = build_system_prompt(
@@ -837,7 +841,12 @@ impl SessionRuntime {
                 fail_fast: self.config.fail_fast,
                 service_tier: self.config.service_tier.clone(),
                 reasoning_effort: self.config.reasoning_effort.clone(),
-                compress_threshold_bytes: self.config.compress_threshold_bytes,
+                // Headroom (C2/C3) only in build/reason; 0 = disabled sentinel.
+                compress_threshold_bytes: if inject::context_modes_active(&session.agent) {
+                    self.config.compress_threshold_bytes
+                } else {
+                    0
+                },
             },
         };
 

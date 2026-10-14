@@ -7,6 +7,16 @@ pub const MAX_SKILL_CHARS: usize = 12_000;
 /// Soft cap on number of enabled skills per turn.
 pub const MAX_SKILLS_PER_TURN: usize = 5;
 
+/// Agents where context-reduction features (terse skill, tool-output
+/// compression/aging) are active. Outside these modes the session runs
+/// verbatim: no style rewriting, no output rewriting.
+pub const CONTEXT_MODES: &[&str] = &["build", "reason"];
+
+/// Whether context-reduction features apply to `agent`.
+pub fn context_modes_active(agent: &str) -> bool {
+    CONTEXT_MODES.contains(&agent)
+}
+
 /// Renders the `# Session skills` block for a set of enabled skill ids.
 /// Returns empty string when nothing is enabled or found.
 pub fn render_enabled(
@@ -140,5 +150,15 @@ mod tests {
             enabled_for_turn(&sess, Some(&toggles)),
             vec!["b".to_string()]
         );
+    }
+
+    #[test]
+    fn test_context_modes_active() {
+        assert!(context_modes_active("build"));
+        assert!(context_modes_active("reason"));
+        assert!(!context_modes_active("chat-free"));
+        assert!(!context_modes_active("explore"));
+        assert!(!context_modes_active("general"));
+        assert!(!context_modes_active(""));
     }
 }
