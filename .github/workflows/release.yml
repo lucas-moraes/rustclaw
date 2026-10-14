@@ -25,6 +25,10 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      - name: Install system deps (ALSA for the `voice` feature)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
+
       - name: Cache cargo
         uses: actions/cache@v4
         with:

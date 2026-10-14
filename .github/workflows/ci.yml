@@ -19,6 +19,9 @@ jobs:
         with:
           components: clippy, rustfmt
 
+      - name: Install system deps (ALSA for the `voice` feature)
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
+
       - name: Cache cargo
         uses: actions/cache@v4
         with:
