@@ -11,6 +11,7 @@ use crate::harness::provider::{LlmRequest, Provider};
 use crate::harness::session::store::SessionStore;
 use crate::harness::session::{Message, Part, Role, Session};
 use anyhow::{Context, Result};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -59,6 +60,10 @@ pub const DEFAULT_TRIGGER_RATIO: f64 = 0.7;
 /// context size. Avoids an O(n) `approx_tokens` scan on every single loop
 /// iteration (the processor used to call `compact_if_needed` per iteration).
 const COMPACT_CHECK_EVERY: usize = 4;
+
+/// C3 aging: tool outputs older than this many messages are eligible for
+/// in-place replacement by a disk pointer.
+pub const AGE_MIN_MESSAGES: usize = 20;
 /// Token growth (since the last check) that forces a re-check even when fewer
 /// than `COMPACT_CHECK_EVERY` messages were added — e.g. one huge tool output.
 const COMPACT_TOKEN_DELTA: usize = 8_000;
@@ -433,6 +438,78 @@ pub fn render_message(m: &Message) -> String {
         }
     }
     out
+}
+
+/// C3: in-place aging of old, large tool outputs.
+///
+/// Tool results older than `min_age_messages` messages that exceed
+/// `min_size` bytes are replaced (in the persisted session) by a short
+/// summary + pointer to the original saved on disk. This runs *before*
+/// overflow compaction, so the LLM summary never has to absorb huge raw
+/// outputs. Idempotent: outputs already carrying a `[compressed:`
+/// pointer are left untouched.
+///
+/// Returns the number of outputs aged.
+pub fn age_old_tool_outputs(
+    session: &mut Session,
+    base_dir: &Path,
+    min_age_messages: usize,
+    min_size: usize,
+) -> usize {
+    use crate::harness::tool::output_store;
+
+    if min_age_messages == 0 || min_size == 0 {
+        return 0;
+    }
+    let total = session.messages.len();
+    let mut aged = 0usize;
+
+    // Iterate oldest → newest; only messages at least `min_age_messages`
+    // slots from the end are candidates.
+    for i in 0..total.saturating_sub(min_age_messages) {
+        let Some(msg) = session.messages.get_mut(i) else {
+            continue;
+        };
+        for part in msg.parts.iter_mut() {
+            let Part::Tool(t) = part else { continue };
+            // Skip already-aged outputs (idempotency) and errors.
+            if t.output.contains("[aged:")
+                || t.output.contains("[compressed:")
+                || t.status == crate::harness::session::ToolStatus::Error
+            {
+                continue;
+            }
+            if t.output.len() < min_size {
+                continue;
+            }
+            let original = t.output.clone();
+            match output_store::save(base_dir, &original) {
+                Ok(path) => {
+                    let hash = output_store::hash_text(&original);
+                    let replacement = format!(
+                        "[aged: original {} bytes saved to {} (sha256 {}…); \
+                         use `read` on that path to recover it]",
+                        original.len(),
+                        path.display(),
+                        &hash[..16]
+                    );
+                    // C4: account the bytes kept out of the context.
+                    let saved_bytes = original.len().saturating_sub(replacement.len());
+                    session.metrics.record_tokens_saved(saved_bytes);
+                    t.output = replacement;
+                    aged += 1;
+                }
+                Err(e) => {
+                    // Never lose data: if saving fails, keep the original.
+                    tracing::warn!("aging failed to save tool output: {e}");
+                }
+            }
+        }
+    }
+    if aged > 0 {
+        tracing::info!("aged {aged} old tool output(s) in session {}", session.id);
+    }
+    aged
 }
 
 #[cfg(test)]
@@ -1032,5 +1109,144 @@ mod tests {
             rx.try_recv().is_err(),
             "no events should be emitted when nothing was compacted"
         );
+    }
+
+    fn tool_msg(id: &str, output: &str) -> Message {
+        Message::new(
+            Role::Assistant,
+            vec![Part::Tool(crate::harness::session::ToolPart {
+                id: id.into(),
+                name: "bash".into(),
+                input: serde_json::json!({"command": "true"}),
+                status: crate::harness::session::ToolStatus::Completed,
+                output: output.into(),
+                title: String::new(),
+                error: None,
+                exit_code: Some(0),
+            })],
+        )
+    }
+
+    #[test]
+    fn test_age_old_tool_outputs_ages_only_old_large() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path();
+
+        let big = "x".repeat(crate::harness::tool::compress::DEFAULT_COMPRESS_THRESHOLD + 100);
+        let mut session = Session::new("s", std::path::PathBuf::from("/tmp"));
+        // 3 old messages: big tool output (candidate), small one (too small),
+        // error one (skipped).
+        session.push_message(tool_msg("t1", &big));
+        session.push_message(tool_msg("t2", "small"));
+        session.push_message(tool_msg(
+            "t3",
+            &("y".repeat(crate::harness::tool::compress::DEFAULT_COMPRESS_THRESHOLD + 10)),
+        ));
+        if let Some(t) = session.messages.last_mut().and_then(|m| {
+            m.parts.iter_mut().find_map(|p| match p {
+                Part::Tool(t) => Some(t),
+                _ => None,
+            })
+        }) {
+            t.status = crate::harness::session::ToolStatus::Error;
+        }
+        // Recent messages that must stay untouched.
+        for i in 0..AGE_MIN_MESSAGES {
+            session.push_message(Message::user(format!("recent {i}")));
+        }
+
+        let aged = age_old_tool_outputs(
+            &mut session,
+            base,
+            AGE_MIN_MESSAGES,
+            crate::harness::tool::compress::DEFAULT_COMPRESS_THRESHOLD,
+        );
+        assert_eq!(aged, 1, "only the old, large, completed output ages");
+
+        let t1 = session.messages[0]
+            .parts
+            .iter()
+            .find_map(|p| match p {
+                Part::Tool(t) => Some(t),
+                _ => None,
+            })
+            .unwrap();
+        assert!(t1.output.starts_with("[aged:"), "t1 output replaced");
+        assert!(t1.output.contains("use `read`"), "recovery hint present");
+        // The original content must be recoverable from the store.
+        let saved = t1
+            .output
+            .split("saved to ")
+            .nth(1)
+            .unwrap()
+            .split(" (sha256")
+            .next()
+            .unwrap();
+        let path = std::path::PathBuf::from(saved);
+        assert!(path.exists(), "aged output saved to disk");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), big);
+
+        let t2 = session.messages[1]
+            .parts
+            .iter()
+            .find_map(|p| match p {
+                Part::Tool(t) => Some(t),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(t2.output, "small", "small output untouched");
+
+        let t3 = session.messages[2]
+            .parts
+            .iter()
+            .find_map(|p| match p {
+                Part::Tool(t) => Some(t),
+                _ => None,
+            })
+            .unwrap();
+        assert!(t3.output.starts_with("y"), "error output untouched");
+    }
+
+    #[test]
+    fn test_age_old_tool_outputs_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path();
+
+        let big = "z".repeat(crate::harness::tool::compress::DEFAULT_COMPRESS_THRESHOLD + 50);
+        let mut session = Session::new("s", std::path::PathBuf::from("/tmp"));
+        session.push_message(tool_msg("t1", &big));
+        for i in 0..AGE_MIN_MESSAGES {
+            session.push_message(Message::user(format!("recent {i}")));
+        }
+
+        let first = age_old_tool_outputs(
+            &mut session,
+            base,
+            AGE_MIN_MESSAGES,
+            crate::harness::tool::compress::DEFAULT_COMPRESS_THRESHOLD,
+        );
+        assert_eq!(first, 1);
+        // Second pass: the aged marker makes it a no-op.
+        let second = age_old_tool_outputs(
+            &mut session,
+            base,
+            AGE_MIN_MESSAGES,
+            crate::harness::tool::compress::DEFAULT_COMPRESS_THRESHOLD,
+        );
+        assert_eq!(second, 0, "aging is idempotent");
+    }
+
+    #[test]
+    fn test_age_old_tool_outputs_disabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut session = Session::new("s", std::path::PathBuf::from("/tmp"));
+        session.push_message(tool_msg("t1", &"q".repeat(5000)));
+        for i in 0..10 {
+            session.push_message(Message::user(format!("recent {i}")));
+        }
+        // min_size 0 disables aging entirely.
+        assert_eq!(age_old_tool_outputs(&mut session, dir.path(), 20, 0), 0);
+        // min_age 0 disables aging entirely.
+        assert_eq!(age_old_tool_outputs(&mut session, dir.path(), 0, 100), 0);
     }
 }

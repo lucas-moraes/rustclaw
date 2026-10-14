@@ -243,10 +243,54 @@ pub async fn execute_tool_calls(
             Ok(r) => {
                 tracing::debug!("tool call completed: {} (session={})", name, session.id);
                 session.metrics.record_tool_call(&name, false);
+                // C2: compress large structured outputs before they enter the
+                // context. The original is saved to disk (content-addressed)
+                // and the summary carries a pointer the model can `read`.
+                // Only the *content* is replaced — the tool part (and thus
+                // the tool_use/tool_result pairing) is never restructured.
+                let threshold = if processor.config.compress_threshold_bytes == 0 {
+                    crate::harness::tool::compress::DEFAULT_COMPRESS_THRESHOLD
+                } else {
+                    processor.config.compress_threshold_bytes
+                };
+                let output = match crate::harness::tool::compress::compress(&r.output, threshold) {
+                    Some(c) => {
+                        let original = r.output.clone();
+                        let base = crate::harness::paths::base_dir();
+                        let saved = tokio::task::spawn_blocking(move || {
+                            crate::harness::tool::output_store::save(&base, &original)
+                        })
+                        .await
+                        .unwrap_or_else(|e| Err(anyhow::anyhow!("join error: {}", e)));
+                        match saved {
+                            Ok(path) => {
+                                let hash = crate::harness::tool::output_store::hash_text(&r.output);
+                                // C4: account the bytes kept out of the context.
+                                let saved_bytes = r.output.len().saturating_sub(c.summary.len());
+                                session.metrics.record_tokens_saved(saved_bytes);
+                                format!(
+                                    "{}\n[compressed: original {} bytes saved to {} (sha256 {}…); \
+                                     use `read` on that path to recover it]",
+                                    c.summary,
+                                    r.output.len(),
+                                    path.display(),
+                                    &hash[..16]
+                                )
+                            }
+                            Err(err) => {
+                                // Never lose data: if the original cannot be
+                                // saved, keep it uncompressed.
+                                tracing::warn!("failed to save tool output: {}", err);
+                                r.output.clone()
+                            }
+                        }
+                    }
+                    None => r.output,
+                };
                 if let Some(msg) = session.messages.iter_mut().find(|m| m.id == *assistant_id) {
                     if let Some(t) = found_tool(msg, &tool_id) {
                         t.status = ToolStatus::Completed;
-                        t.output = r.output;
+                        t.output = output;
                         t.title = if r.title.is_empty() {
                             name.clone()
                         } else {

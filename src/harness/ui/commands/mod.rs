@@ -72,7 +72,7 @@ pub async fn handle(
                     }
                 ));
                 out.push(format!(
-                    "fail_fast {} · service_tier {} · reasoning_effort {} · stt_model {}",
+                    "fail_fast {} · service_tier {} · reasoning_effort {} · stt_model {} · compress_threshold {}",
                     c.fail_fast,
                     if c.service_tier.is_empty() {
                         "(provider default)"
@@ -88,10 +88,15 @@ pub async fn handle(
                         crate::config::DEFAULT_STT_MODEL
                     } else {
                         c.stt_model.as_str()
+                    },
+                    if c.compress_threshold_bytes == 0 {
+                        crate::harness::tool::compress::DEFAULT_COMPRESS_THRESHOLD
+                    } else {
+                        c.compress_threshold_bytes
                     }
                 ));
                 out.push(
-                    "usage: /settings iterations <n> · context <n> · turn_timeout <secs> · compact_ratio <0.0-1.0> · summary_model <name|off> · fail_fast <on|off> · service_tier <tier|off> · reasoning_effort <low|medium|high|off> · stt_model <model>"
+                    "usage: /settings iterations <n> · context <n> · turn_timeout <secs> · compact_ratio <0.0-1.0> · summary_model <name|off> · fail_fast <on|off> · service_tier <tier|off> · reasoning_effort <low|medium|high|off> · stt_model <model> · compress_threshold <bytes|off>"
                         .to_string(),
                 );
             } else {
@@ -208,8 +213,32 @@ pub async fn handle(
                             Err(e) => out.push(format!("[error] {}", e)),
                         }
                     }
+                    Some("compress_threshold") => {
+                        let v = parts.next().unwrap_or("");
+                        let bytes = if v == "off" {
+                            Some(0)
+                        } else {
+                            v.parse::<usize>().ok()
+                        };
+                        match bytes {
+                            Some(n) => match runtime.set_compress_threshold(n) {
+                                Ok(()) => out.push(format!(
+                                    "settings · compress_threshold = {}",
+                                    if n == 0 {
+                                        format!("{} (default)", crate::harness::tool::compress::DEFAULT_COMPRESS_THRESHOLD)
+                                    } else {
+                                        n.to_string()
+                                    }
+                                )),
+                                Err(e) => out.push(format!("[error] {}", e)),
+                            },
+                            None => out.push(
+                                "usage: /settings compress_threshold <bytes|off>".to_string(),
+                            ),
+                        }
+                    }
                     Some(other) => out.push(format!(
-                        "unknown setting: {} (iterations · context · turn_timeout · compact_ratio · summary_model · fail_fast · service_tier · reasoning_effort · stt_model)",
+                        "unknown setting: {} (iterations · context · turn_timeout · compact_ratio · summary_model · fail_fast · service_tier · reasoning_effort · stt_model · compress_threshold)",
                         other
                     )),
                     None => {}
@@ -248,6 +277,12 @@ pub async fn handle(
             let max = runtime.config.max_context_tokens;
             let pct = (ctx * 100).checked_div(max).unwrap_or(0);
             out.push(format!("context · ~{} / {} tokens ({}%)", ctx, max, pct));
+            if session.metrics.tokens_saved > 0 {
+                out.push(format!(
+                    "saved    · ~{} input tokens avoided by compression/aging",
+                    session.metrics.tokens_saved
+                ));
+            }
             out.push("full usage breakdown is shown in the TUI status bar".to_string());
         }
         "/stats" => {

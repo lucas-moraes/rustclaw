@@ -88,6 +88,11 @@ pub struct GlobalSettings {
     /// Empty (default) = omit the field and use the provider default.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub reasoning_effort: String,
+    /// Tool outputs larger than this (bytes) are compressed before entering
+    /// the context; the original is saved to disk and recoverable via
+    /// `read`. `0` (default) = built-in default (4 KiB).
+    #[serde(default, skip_serializing_if = "usize_is_zero")]
+    pub compress_threshold_bytes: usize,
     /// Speech-to-text model used by push-to-talk (`Ctrl+R` in the TUI).
     /// Empty (default) = `openai/whisper-large-v3` on DeepInfra.
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -137,6 +142,7 @@ impl Default for GlobalSettings {
             fail_fast: false,
             service_tier: String::new(),
             reasoning_effort: String::new(),
+            compress_threshold_bytes: 0,
             stt_model: String::new(),
             voice_enabled: false,
         }
@@ -248,6 +254,10 @@ pub struct RuntimeConfig {
     pub service_tier: String,
     /// Reasoning effort for reasoning models. Empty = provider default.
     pub reasoning_effort: String,
+    /// Tool outputs larger than this (bytes) are compressed before entering
+    /// the context; the original is saved to disk and recoverable via
+    /// `read`. `0` = default (4 KiB). See `harness::tool::compress`.
+    pub compress_threshold_bytes: usize,
     /// Speech-to-text model for push-to-talk (`Ctrl+R` in the TUI).
     /// Empty = `openai/whisper-large-v3` on DeepInfra.
     pub stt_model: String,
@@ -298,6 +308,7 @@ impl RuntimeConfig {
             fail_fast: false,
             service_tier: String::new(),
             reasoning_effort: String::new(),
+            compress_threshold_bytes: 0,
             stt_model: String::new(),
             voice_enabled: false,
         }
@@ -365,6 +376,9 @@ impl RuntimeConfig {
         cfg.fail_fast = settings.fail_fast;
         cfg.service_tier = settings.service_tier.clone();
         cfg.reasoning_effort = settings.reasoning_effort.clone();
+        if settings.compress_threshold_bytes != 0 {
+            cfg.compress_threshold_bytes = settings.compress_threshold_bytes;
+        }
         cfg.voice_enabled = settings.voice_enabled;
         if !settings.stt_model.is_empty() {
             cfg.stt_model = settings.stt_model.clone();

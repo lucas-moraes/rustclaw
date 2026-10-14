@@ -21,8 +21,21 @@ pub fn skill_roots(cwd: &Path) -> Vec<PathBuf> {
 }
 
 /// Discovers and parses all skills available for the given working directory.
+/// Builtin skills are merged in; a user skill with the same id wins.
 pub fn load_catalog(cwd: &Path) -> SkillCatalog {
-    load_from_roots(&skill_roots(cwd))
+    let mut catalog = load_from_roots(&skill_roots(cwd));
+    merge_builtins(&mut catalog);
+    catalog
+}
+
+/// Merges builtin skills into `catalog` without overriding user skills.
+pub fn merge_builtins(catalog: &mut SkillCatalog) {
+    for spec in super::builtin::builtin_skills() {
+        if catalog.get(&spec.id).is_none() {
+            catalog.skills.push(spec);
+        }
+    }
+    catalog.skills.sort_by(|a, b| a.id.cmp(&b.id));
 }
 
 /// Loads skills from an explicit set of root directories (dedup by id, first wins).
@@ -183,5 +196,33 @@ mod tests {
         let cat = load_from_roots(&[project, home]);
         assert_eq!(cat.skills.len(), 1);
         assert!(cat.skills[0].body.contains("A"));
+    }
+
+    #[test]
+    fn test_builtin_merged_into_catalog() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut cat = load_from_roots(&[tmp.path().to_path_buf()]);
+        assert!(cat.get("terse").is_none(), "no builtin before merge");
+        merge_builtins(&mut cat);
+        let terse = cat.get("terse").expect("terse builtin merged");
+        assert_eq!(terse.source, "builtin");
+        // Catalog stays sorted by id.
+        let ids: Vec<&str> = cat.skills.iter().map(|s| s.id.as_str()).collect();
+        let mut sorted = ids.clone();
+        sorted.sort_unstable();
+        assert_eq!(ids, sorted);
+    }
+
+    #[test]
+    fn test_user_skill_overrides_builtin() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join(".agents").join("skills");
+        write_skill(&project, "terse", "user override", "custom body");
+        let cat = load_catalog(tmp.path());
+        let terse = cat.get("terse").expect("terse present");
+        assert_eq!(terse.description, "user override");
+        assert!(terse.body.contains("custom body"));
+        assert_ne!(terse.source, "builtin");
+        assert_eq!(cat.skills.iter().filter(|s| s.id == "terse").count(), 1);
     }
 }

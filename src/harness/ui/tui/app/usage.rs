@@ -84,6 +84,14 @@ impl App {
             format_tokens(max as u64),
             pct
         ));
+        // C4: compression savings (only when something was actually saved).
+        let saved = self.session.metrics.tokens_saved;
+        if saved > 0 {
+            lines.push(format!(
+                "saved    · ~{} input tokens avoided by compression/aging",
+                format_tokens(saved)
+            ));
+        }
         lines
     }
 }

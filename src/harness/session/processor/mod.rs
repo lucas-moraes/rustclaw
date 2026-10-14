@@ -39,6 +39,10 @@ pub struct ProcessorConfig {
     pub service_tier: String,
     /// Reasoning effort for reasoning models. Empty = provider default.
     pub reasoning_effort: String,
+    /// Tool outputs larger than this (bytes) are compressed before entering
+    /// the context; the original is saved to disk and recoverable via
+    /// `read`. `0` = default (4 KiB). See `tool::compress`.
+    pub compress_threshold_bytes: usize,
     // Temperature is agent-calibrated: see AgentSpec::turn_temperature.
 }
 
@@ -55,6 +59,7 @@ impl Default for ProcessorConfig {
             fail_fast: false,
             service_tier: String::new(),
             reasoning_effort: String::new(),
+            compress_threshold_bytes: 0,
         }
     }
 }
@@ -1082,6 +1087,15 @@ impl SessionProcessor {
         if !tracker.should_check(&session.messages) {
             return Ok(());
         }
+        // C3: age old, large tool outputs in place *before* overflow
+        // compaction — the summary never has to absorb huge raw outputs.
+        // Runs on the same cadence as the compaction check.
+        crate::harness::session::compaction::age_old_tool_outputs(
+            session,
+            &crate::harness::paths::base_dir(),
+            crate::harness::session::compaction::AGE_MIN_MESSAGES,
+            crate::harness::tool::compress::DEFAULT_COMPRESS_THRESHOLD,
+        );
         crate::harness::session::compaction::compact_if_needed(
             session,
             self.provider.clone(),

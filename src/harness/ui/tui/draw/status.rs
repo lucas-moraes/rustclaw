@@ -60,8 +60,18 @@ fn usage_spans(app: &App, t: &Theme, avail: usize) -> Vec<Span<'static>> {
     };
     let cost = Span::styled(cost_text, Style::default().fg(t.accent3));
 
+    // C4: compression savings chip — only when something was actually saved.
+    let saved = app.session.metrics.tokens_saved;
+    let saved_span = (saved > 0).then(|| {
+        Span::styled(
+            format!(" ⚡{}", format_tokens(saved)),
+            Style::default().fg(t.accent2),
+        )
+    });
+
     // Fixed parts: percentage + cost are mandatory; counts and gauge are not.
-    let fixed = pct_span.width() + cost.width();
+    let fixed =
+        pct_span.width() + cost.width() + saved_span.as_ref().map(|s| s.width()).unwrap_or(0);
     let counts_w = counts.width();
     let mut spans = Vec::new();
     let mut budget = avail;
@@ -76,6 +86,9 @@ fn usage_spans(app: &App, t: &Theme, avail: usize) -> Vec<Span<'static>> {
     spans.push(pct_span);
     if counts_w <= budget.saturating_sub(fixed) {
         spans.push(counts);
+    }
+    if let Some(s) = saved_span {
+        spans.push(s);
     }
     spans.push(cost);
     spans

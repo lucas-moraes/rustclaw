@@ -169,6 +169,19 @@ impl SessionRuntime {
             }
         };
         let embedder = Some(crate::harness::index::build_embedder(&cwd));
+        // GC of saved (compressed) tool outputs: best-effort, off the hot
+        // path. Files older than 7 days that no live session references are
+        // removed. Failures are logged, never fatal.
+        {
+            let base = crate::harness::paths::base_dir();
+            std::thread::spawn(move || {
+                match crate::harness::tool::output_store::gc(&base, &[], 7 * 24 * 3600) {
+                    Ok(n) if n > 0 => tracing::info!("tool-outputs GC removed {n} file(s)"),
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!("tool-outputs GC failed: {e}"),
+                }
+            });
+        }
         let persist_root = cwd.clone();
         // Serialize load+save of rustclaw.json so concurrent "always allow"
         // decisions don't lose updates (read-modify-write race).
@@ -483,6 +496,16 @@ impl SessionRuntime {
         self.config.reasoning_effort = effort.clone();
         let mut s = crate::config::GlobalSettings::load();
         s.reasoning_effort = effort;
+        s.save().context("failed to persist config.json")?;
+        Ok(())
+    }
+
+    /// Sets the tool-output compression threshold in bytes. `0` resets to
+    /// the built-in default (4 KiB). Persists to `config.json`.
+    pub fn set_compress_threshold(&mut self, bytes: usize) -> Result<()> {
+        self.config.compress_threshold_bytes = bytes;
+        let mut s = crate::config::GlobalSettings::load();
+        s.compress_threshold_bytes = bytes;
         s.save().context("failed to persist config.json")?;
         Ok(())
     }
@@ -814,6 +837,7 @@ impl SessionRuntime {
                 fail_fast: self.config.fail_fast,
                 service_tier: self.config.service_tier.clone(),
                 reasoning_effort: self.config.reasoning_effort.clone(),
+                compress_threshold_bytes: self.config.compress_threshold_bytes,
             },
         };
 

@@ -226,6 +226,7 @@ mod tests {
                 fail_fast: false,
                 service_tier: String::new(),
                 reasoning_effort: String::new(),
+                compress_threshold_bytes: 0,
             },
         }
     }

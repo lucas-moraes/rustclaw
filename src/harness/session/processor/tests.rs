@@ -88,6 +88,7 @@ async fn test_turn_timeout_stops_run() {
             fail_fast: false,
             service_tier: String::new(),
             reasoning_effort: String::new(),
+            compress_threshold_bytes: 0,
         },
     };
     let mut session = store.create_session("build", dir.path()).unwrap();
@@ -180,6 +181,7 @@ async fn test_auto_continuation_resumes_after_max_iterations() {
             fail_fast: false,
             service_tier: String::new(),
             reasoning_effort: String::new(),
+            compress_threshold_bytes: 0,
         },
     };
     let mut session = store.create_session("build", dir.path()).unwrap();
@@ -379,6 +381,7 @@ fn test_processor_with_budget(
             fail_fast: false,
             service_tier: String::new(),
             reasoning_effort: String::new(),
+            compress_threshold_bytes: 0,
         },
     };
     (processor, dir)
@@ -982,6 +985,7 @@ fn processor_with(provider: StdArc<dyn Provider>, max_iterations: usize) -> Sess
             fail_fast: false,
             service_tier: String::new(),
             reasoning_effort: String::new(),
+            compress_threshold_bytes: 0,
         },
     }
 }

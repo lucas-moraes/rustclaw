@@ -59,6 +59,9 @@ pub struct SessionMetrics {
     /// Number of subagents spawned via `task`.
     #[serde(default)]
     pub subagents: usize,
+    /// Estimated input tokens avoided by tool-output compression/aging.
+    #[serde(default)]
+    pub tokens_saved: u64,
 }
 
 /// Token usage for a single turn, grouped to keep `record_turn` readable.
@@ -117,6 +120,14 @@ impl SessionMetrics {
     /// Records a subagent spawn.
     pub fn record_subagent(&mut self) {
         self.subagents += 1;
+    }
+
+    /// Records input tokens avoided by compression/aging of tool outputs.
+    /// `chars` is the byte length removed from the context; converted to an
+    /// approximate token count (4 chars/token heuristic, same as
+    /// `approx_tokens`).
+    pub fn record_tokens_saved(&mut self, chars: usize) {
+        self.tokens_saved += (chars / 4) as u64;
     }
 
     /// Total tokens billed (input + output + cache read + cache write).
@@ -345,6 +356,20 @@ mod tests {
         assert!(r.contains("2.5s"));
         assert!(r.contains("compactions:  1"));
         assert!(r.contains("subagents:    1"));
+    }
+
+    #[test]
+    fn test_record_tokens_saved() {
+        let mut m = SessionMetrics::new();
+        assert_eq!(m.tokens_saved, 0);
+        // 4000 chars removed → ~1000 tokens (4 chars/token heuristic).
+        m.record_tokens_saved(4000);
+        m.record_tokens_saved(150);
+        assert_eq!(m.tokens_saved, 1037);
+        // Serde roundtrip keeps the counter.
+        let json = serde_json::to_string(&m).unwrap();
+        let back: SessionMetrics = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.tokens_saved, 1037);
     }
 
     #[test]

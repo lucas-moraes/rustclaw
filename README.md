@@ -48,7 +48,7 @@ O instalador baixa a última release, valida o SHA-256, copia para `~/.local/bin
 e ajusta o PATH se necessário. Versão específica:
 
 ```bash
-RUSTCLAW_VERSION=v0.2.0 curl -fsSL .../install.sh | bash
+RUSTCLAW_VERSION=v1.2.0 curl -fsSL .../install.sh | bash
 ```
 
 Instalação a partir do código-fonte (desenvolvimento):

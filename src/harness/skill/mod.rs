@@ -7,6 +7,7 @@
 //! - **session**: the record of what was asked/planned/implemented.
 //! - **memory**: the list of skills chosen for that session (0..N, editable).
 
+pub mod builtin;
 pub mod inject;
 pub mod loader;
 
