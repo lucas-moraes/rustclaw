@@ -154,11 +154,12 @@ mod tests {
 
     #[test]
     fn test_context_modes_active() {
-        assert!(context_modes_active("build"));
-        assert!(context_modes_active("reason"));
-        assert!(!context_modes_active("chat-free"));
-        assert!(!context_modes_active("explore"));
-        assert!(!context_modes_active("general"));
+        assert!(context_modes_active(crate::harness::agent::builtin::BUILD));
+        assert!(context_modes_active(crate::harness::agent::builtin::REASON));
+        assert!(!context_modes_active(
+            crate::harness::agent::builtin::CHAT_FREE
+        ));
+        assert!(!context_modes_active("cursor"));
         assert!(!context_modes_active(""));
     }
 }
