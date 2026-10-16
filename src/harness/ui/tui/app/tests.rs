@@ -1773,3 +1773,115 @@ mod snapshot_and_picker_tests {
         assert!(readme.contains("RUSTCLAWUI"));
     }
 }
+
+#[cfg(test)]
+mod session_switch_guard_tests {
+    use super::keys::is_session_switching;
+
+    #[test]
+    fn test_session_switching_commands_detected() {
+        assert!(is_session_switching("/new"));
+        assert!(is_session_switching("/new "));
+        assert!(is_session_switching("/new anything"));
+        assert!(is_session_switching("/fork"));
+        assert!(is_session_switching("/sessions select 3"));
+    }
+
+    #[test]
+    fn test_non_switching_commands_not_blocked() {
+        assert!(!is_session_switching("/sessions"));
+        assert!(!is_session_switching("/sessions list"));
+        assert!(!is_session_switching("/undo"));
+        assert!(!is_session_switching("/help"));
+        assert!(!is_session_switching("plain prompt"));
+        assert!(!is_session_switching(""));
+    }
+}
+
+#[cfg(test)]
+mod switch_side_effect_tests {
+    use super::keys::{switch_side_effect, SwitchSideEffect};
+
+    #[test]
+    fn test_new_fires_side_effect_with_args() {
+        assert!(matches!(
+            switch_side_effect("/new"),
+            Some(SwitchSideEffect::NewSession)
+        ));
+        // Trailing/extra args must not skip the side effects.
+        assert!(matches!(
+            switch_side_effect("/new "),
+            Some(SwitchSideEffect::NewSession)
+        ));
+        assert!(matches!(
+            switch_side_effect("/new foo"),
+            Some(SwitchSideEffect::NewSession)
+        ));
+    }
+
+    #[test]
+    fn test_sessions_select_fires_side_effect() {
+        assert!(matches!(
+            switch_side_effect("/sessions select 3"),
+            Some(SwitchSideEffect::SelectSession)
+        ));
+        assert!(matches!(
+            switch_side_effect("/sessions select"),
+            Some(SwitchSideEffect::SelectSession)
+        ));
+    }
+
+    #[test]
+    fn test_other_commands_fire_nothing() {
+        assert!(switch_side_effect("/sessions").is_none());
+        assert!(switch_side_effect("/sessions list").is_none());
+        assert!(switch_side_effect("/undo").is_none());
+        assert!(switch_side_effect("plain prompt").is_none());
+        assert!(switch_side_effect("").is_none());
+    }
+}
+
+#[cfg(test)]
+mod submit_input_busy_guard_tests {
+    use super::keys::submit_input;
+    use super::state::App;
+
+    #[tokio::test]
+    async fn test_session_switch_blocked_while_running() {
+        let mut app = App::inline_for_tests("/new");
+        app.running = true;
+        let session_before = app.session.id.clone();
+        let mut prompt_task = None;
+
+        let exit = submit_input(&mut app, &mut prompt_task).await.unwrap();
+
+        assert!(!exit, "/new must not exit while running");
+        assert_eq!(
+            app.session.id, session_before,
+            "session must not be swapped mid-turn"
+        );
+        assert!(
+            app.lines
+                .iter()
+                .any(|l| l.text.contains("[busy] cannot switch session")),
+            "busy notice must be shown"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_session_switch_allowed_when_idle() {
+        let mut app = App::inline_for_tests("/sessions");
+        app.running = false;
+        let mut prompt_task = None;
+
+        let exit = submit_input(&mut app, &mut prompt_task).await.unwrap();
+
+        assert!(!exit, "/sessions picker must not exit the app");
+        assert!(
+            !app.lines
+                .iter()
+                .any(|l| l.text.contains("[busy] cannot switch session")),
+            "no busy notice when idle"
+        );
+    }
+}

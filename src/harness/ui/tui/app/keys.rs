@@ -868,6 +868,34 @@ pub(crate) fn handle_search_key(app: &mut App, key: KeyEvent) -> Result<bool> {
     Ok(false)
 }
 
+/// True when `text` is a command that swaps the active session (`/new`,
+/// `/fork`, `/sessions select …`). These must be rejected mid-turn.
+pub(crate) fn is_session_switching(text: &str) -> bool {
+    let cmd = text.split_whitespace().next().unwrap_or("");
+    cmd == "/new" || cmd == "/fork" || (cmd == "/sessions" && text.starts_with("/sessions select"))
+}
+
+/// Which post-command side effects a session-switching command must fire.
+/// Matched on the command token (not the raw string) so `/new <arg>` and
+/// `/sessions select N` still fire them.
+pub(crate) enum SwitchSideEffect {
+    /// `/new`: reset usage counters + open the skill picker.
+    NewSession,
+    /// `/sessions select …`: reset usage + resync prompt toggles.
+    SelectSession,
+}
+
+pub(crate) fn switch_side_effect(text: &str) -> Option<SwitchSideEffect> {
+    let cmd = text.split_whitespace().next().unwrap_or("");
+    if cmd == "/new" {
+        Some(SwitchSideEffect::NewSession)
+    } else if cmd == "/sessions" && text.starts_with("/sessions select") {
+        Some(SwitchSideEffect::SelectSession)
+    } else {
+        None
+    }
+}
+
 pub(crate) async fn submit_input(
     app: &mut App,
     prompt_task: &mut Option<tokio::task::JoinHandle<Result<(PromptResult, Session)>>>,
@@ -1060,6 +1088,13 @@ pub(crate) async fn submit_input(
             return Ok(false);
         }
 
+        // Session-switching commands must not run mid-turn: they would swap
+        // app.session while a stream is in flight (transcript/usage would land
+        // on the wrong session).
+        if app.running && is_session_switching(&text) {
+            app.add_system("[busy] cannot switch session while a turn is running");
+            return Ok(false);
+        }
         match crate::harness::ui::commands::handle(&mut app.runtime, &mut app.session, &text)
             .await?
         {
@@ -1071,12 +1106,16 @@ pub(crate) async fn submit_input(
             }
         }
         // Fresh session counters + skill picker when switching sessions.
-        if text == "/new" {
-            app.reset_usage();
-            app.open_skill_picker();
-        } else if text == "/sessions" || text.starts_with("/sessions select ") {
-            app.reset_usage();
-            app.sync_prompt_toggles();
+        match switch_side_effect(&text) {
+            Some(SwitchSideEffect::NewSession) => {
+                app.reset_usage();
+                app.open_skill_picker();
+            }
+            Some(SwitchSideEffect::SelectSession) => {
+                app.reset_usage();
+                app.sync_prompt_toggles();
+            }
+            None => {}
         }
         return Ok(false);
     }
