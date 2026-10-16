@@ -226,7 +226,7 @@ impl PermissionEngine {
         let mut v: Vec<(String, Rule)> = self
             .rules
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .iter()
             .map(|(k, r)| (k.clone(), *r))
             .collect();
@@ -266,7 +266,7 @@ impl PermissionEngine {
         let rule = self
             .rules
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .get(tool)
             .or(self
                 .default
@@ -313,24 +313,44 @@ fn canonicalize_best_effort(p: &Path) -> PathBuf {
     if let Ok(c) = std::fs::canonicalize(p) {
         return c;
     }
-    let mut tail: Vec<std::ffi::OsString> = Vec::new();
-    let mut cur = p.to_path_buf();
-    loop {
-        let parent = match cur.parent() {
-            Some(par) if par != cur => par.to_path_buf(),
-            _ => break,
-        };
-        tail.push(cur.file_name().unwrap_or_default().to_os_string());
-        if let Ok(c) = std::fs::canonicalize(&parent) {
+    // Path does not fully exist: find the longest existing prefix,
+    // canonicalize it, then re-append the remaining components resolving
+    // `..` lexically (a literal `..` push would fake a path inside root).
+    let comps: Vec<std::path::Component> = p.components().collect();
+    for split in (0..comps.len()).rev() {
+        let prefix: PathBuf = comps[..split].iter().collect();
+        if let Ok(c) = std::fs::canonicalize(&prefix) {
             let mut abs = c;
-            for part in tail.iter().rev() {
-                abs.push(part);
+            for comp in &comps[split..] {
+                match comp {
+                    std::path::Component::CurDir => {}
+                    std::path::Component::ParentDir => {
+                        abs.pop();
+                    }
+                    other => abs.push(other.as_os_str()),
+                }
             }
             return abs;
         }
-        cur = parent;
     }
-    p.to_path_buf()
+    // Fail-closed: nothing could be canonicalized. Normalize lexically so
+    // `..`/`.` segments cannot fake a path inside the workspace.
+    normalize_lexical(p)
+}
+
+/// Resolves `.` and `..` segments lexically (no filesystem access).
+fn normalize_lexical(p: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for comp in p.components() {
+        match comp {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -396,6 +416,26 @@ mod tests {
         assert_eq!(
             engine.check("read", Some(root.join("f.txt").to_str().unwrap()), &root),
             PermissionDecision::Allow
+        );
+    }
+
+    #[test]
+    fn test_nonexistent_escape_fails_closed() {
+        // Path does not exist (canonicalize fails) and escapes via `..`:
+        // the lexical fallback must still normalize it outside the workspace.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("proj");
+        std::fs::create_dir_all(&root).unwrap();
+        let engine = PermissionEngine::default();
+        let escape = root
+            .join("ghost")
+            .join("..")
+            .join("..")
+            .join("etc")
+            .join("passwd");
+        assert_eq!(
+            engine.check("read", Some(escape.to_str().unwrap()), &root),
+            PermissionDecision::Ask
         );
     }
 
