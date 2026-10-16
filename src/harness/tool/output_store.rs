@@ -60,11 +60,27 @@ pub fn save(base_dir: &Path, text: &str) -> Result<PathBuf> {
     Ok(path)
 }
 
+/// Returns true if `hash` is a well-formed SHA-256 hex digest
+/// (exactly 64 lowercase hex chars). Rejects anything else so a
+/// model/user-supplied hash can never traverse outside the store.
+fn is_valid_hash(hash: &str) -> bool {
+    hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 /// Loads a previously saved output by its hash.
+///
+/// The hash is validated first: malformed input (path separators, `..`,
+/// wrong length) is rejected instead of being joined into the path.
 pub fn load(base_dir: &Path, hash: &str) -> io::Result<String> {
+    if !is_valid_hash(hash) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid tool output hash",
+        ));
+    }
     let path = base_dir
         .join(OUTPUTS_DIR)
-        .join(&hash[..2.min(hash.len())])
+        .join(&hash[..2])
         .join(format!("{}.txt", hash));
     fs::read_to_string(&path)
 }
@@ -136,6 +152,25 @@ mod tests {
         // Dedupe: second save of same content is a no-op returning same path.
         let path2 = save(base, text).expect("save again");
         assert_eq!(path, path2);
+    }
+
+    #[test]
+    fn test_load_rejects_malformed_hash() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let base = dir.path();
+        // Path traversal / wrong length / non-hex must be rejected before
+        // being joined into a filesystem path.
+        for bad in [
+            "../../etc/passwd",
+            "..",
+            "",
+            "ab",
+            "zz".repeat(32).as_str(), // 64 chars but non-hex
+            "a".repeat(63).as_str(),  // 63 chars
+        ] {
+            let err = load(base, bad).expect_err("must reject");
+            assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "hash: {bad:?}");
+        }
     }
 
     #[test]
