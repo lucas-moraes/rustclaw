@@ -33,13 +33,16 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-ci-
 
       - name: Test
-        run: cargo test --all-targets
+        run: cargo test --all-targets --locked
+
+      - name: Test (voice feature)
+        run: cargo test --all-targets --locked --features voice
 
       - name: Evals (offline regression gate)
-        run: cargo run --quiet -- evals
+        run: cargo run --quiet --locked -- evals
 
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --all-targets --locked -- -D warnings
 
       - name: Format
         run: cargo fmt --check
