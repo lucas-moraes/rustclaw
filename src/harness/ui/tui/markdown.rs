@@ -521,19 +521,32 @@ fn inline_spans(s: &str, theme: &Theme, base: Style) -> Vec<Span<'static>> {
         }
         // **bold**
         if chars[i] == '*' && i + 1 < chars.len() && chars[i + 1] == '*' {
-            flush(&mut buf, &mut spans, base);
-            i += 2;
-            let start = i;
-            while i + 1 < chars.len() && !(chars[i] == '*' && chars[i + 1] == '*') {
-                i += 1;
+            // Find a closing `**` after the opener.
+            let mut j = i + 2;
+            let mut close = None;
+            while j + 1 < chars.len() {
+                if chars[j] == '*' && chars[j + 1] == '*' {
+                    close = Some(j);
+                    break;
+                }
+                j += 1;
             }
-            let bold: String = chars[start..i.min(chars.len())].iter().collect();
-            spans.push(Span::styled(
-                bold,
-                base.add_modifier(Modifier::BOLD).fg(theme.text_bright),
-            ));
-            if i + 1 < chars.len() {
-                i += 2;
+            match close {
+                Some(end) => {
+                    flush(&mut buf, &mut spans, base);
+                    let bold: String = chars[i + 2..end].iter().collect();
+                    spans.push(Span::styled(
+                        bold,
+                        base.add_modifier(Modifier::BOLD).fg(theme.text_bright),
+                    ));
+                    i = end + 2;
+                }
+                None => {
+                    // Unclosed `**`: emit it literally and keep the rest
+                    // intact (no char is swallowed).
+                    buf.push_str("**");
+                    i += 2;
+                }
             }
             continue;
         }
@@ -702,6 +715,21 @@ mod tests {
         let out = render_text("hello **world** end", &t, Style::default(), 80);
         let p = plain(&out);
         assert_eq!(p[0], "hello world end");
+    }
+
+    /// F4.1: an unclosed `**` must not swallow the last char — the marker
+    /// and the full remaining text are emitted literally.
+    #[test]
+    fn test_unclosed_bold_keeps_text_intact() {
+        let t = Theme::cyberclaw();
+        let out = render_text("texto **aberto", &t, Style::default(), 80);
+        let p = plain(&out);
+        assert_eq!(p[0], "texto **aberto", "got {:?}", p);
+
+        // Trailing `**` with nothing after it is also preserved.
+        let out = render_text("fim **", &t, Style::default(), 80);
+        let p = plain(&out);
+        assert_eq!(p[0], "fim **", "got {:?}", p);
     }
 
     #[test]

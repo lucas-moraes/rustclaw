@@ -932,13 +932,19 @@ impl SessionRuntime {
             // the async executor isn't stalled, and treat a poisoned lock by
             // recovering its inner value rather than silently disabling tracking.
             let budget = self.budget.clone();
-            let (warn, spent) = tokio::task::spawn_blocking(move || {
+            let joined = tokio::task::spawn_blocking(move || {
                 let mut t = budget.blocking_lock();
                 let w = t.record(turn_cost_usd, limit);
                 (w, t.spent_today())
             })
-            .await
-            .unwrap_or((None, 0.0));
+            .await;
+            let (warn, spent) = match joined {
+                Ok(v) => v,
+                Err(join_err) => {
+                    tracing::warn!("budget record task failed; cost tracking skipped: {join_err}");
+                    (None, 0.0)
+                }
+            };
             if let Some(w) = warn {
                 let _ = events.send(HarnessEvent::BudgetWarn {
                     session_id: session.id.clone(),

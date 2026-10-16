@@ -302,12 +302,18 @@ pub async fn run_pre_tool(
         let out = tokio::task::spawn_blocking(move || {
             run_hook_with_timeout(&cmd, &cwd, std::time::Duration::from_secs(30))
         })
-        .await
-        .unwrap_or(HookOutput {
-            exit_code: -1,
-            stdout: String::new(),
-            stderr: "hook task panicked".to_string(),
-        });
+        .await;
+        let out = match out {
+            Ok(o) => o,
+            Err(join_err) => {
+                tracing::warn!("pre-tool hook task failed for `{}`: {join_err}", rule.run);
+                HookOutput {
+                    exit_code: -1,
+                    stdout: String::new(),
+                    stderr: "hook task panicked".to_string(),
+                }
+            }
+        };
         if rule.block && out.exit_code != 0 {
             let stderr = out.stderr.trim();
             return Err(format!(
