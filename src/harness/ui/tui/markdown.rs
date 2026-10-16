@@ -2,8 +2,25 @@
 
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
+use unicode_width::UnicodeWidthStr;
 
 use super::theme::Theme;
+
+/// Display width of a string (emoji/CJK count as 2 columns).
+fn dw(s: &str) -> usize {
+    UnicodeWidthStr::width(s)
+}
+
+/// Longest unbreakable token display width in a cell (a token is a
+/// whitespace-delimited word; wrap_plain can split it only by hard-break,
+/// which still needs at least this many columns to not overflow).
+fn min_token_width(cell: &[String]) -> usize {
+    cell.iter()
+        .flat_map(|l| l.split_whitespace())
+        .map(dw)
+        .max()
+        .unwrap_or(1)
+}
 
 /// Render a plain text block into styled lines (headers, code fences, inline code, lists).
 pub fn render_text(text: &str, theme: &Theme, base: Style, width: usize) -> Vec<Line<'static>> {
@@ -221,17 +238,17 @@ fn table_lines(buf: &[String], theme: &Theme, width: usize) -> Vec<Line<'static>
         None => return Vec::new(),
     };
 
-    // Column widths = max wrapped-cell line length, then shrink to fit the
-    // known display width.
+    // Column widths = max wrapped-cell line display width, then shrink to fit
+    // the known display width.
     let ncols = header.len();
     let mut widths: Vec<usize> = header
         .iter()
-        .map(|c| c.iter().map(|l| l.chars().count()).max().unwrap_or(0))
+        .map(|c| c.iter().map(|l| dw(l)).max().unwrap_or(0))
         .collect();
     for row in &rows {
         for (i, cell) in row.iter().enumerate() {
             if i < ncols {
-                let w = cell.iter().map(|l| l.chars().count()).max().unwrap_or(0);
+                let w = cell.iter().map(|l| dw(l)).max().unwrap_or(0);
                 widths[i] = widths[i].max(w);
             }
         }
@@ -263,6 +280,20 @@ fn table_lines(buf: &[String], theme: &Theme, width: usize) -> Vec<Line<'static>
             }
         }
     }
+    // Never shrink a column below its longest unbreakable token: a cell
+    // wider than its column breaks the box alignment (wrap_cell can't
+    // split mid-token).
+    for (i, w) in widths.iter_mut().enumerate() {
+        let min_token = header.get(i).map(|c| min_token_width(c)).unwrap_or(1);
+        let min_token = rows
+            .iter()
+            .filter_map(|r| r.get(i))
+            .map(|c| min_token_width(c))
+            .fold(min_token, usize::max);
+        if *w < min_token {
+            *w = min_token;
+        }
+    }
 
     // Wrap each cell to its column width; keep a line even when empty so the
     // rows stay aligned across the grid.
@@ -284,10 +315,20 @@ fn table_lines(buf: &[String], theme: &Theme, width: usize) -> Vec<Line<'static>
         .add_modifier(Modifier::BOLD);
     let body_fg = Style::default().fg(theme.text);
 
+    // Pad a cell line to `width` display columns (chars().count() would
+    // misalign for emoji/CJK).
+    let pad_cell = |line: &str, width: usize| -> String {
+        let w = dw(line);
+        if w >= width {
+            line.to_string()
+        } else {
+            format!("{}{}", line, " ".repeat(width - w))
+        }
+    };
     let mut out = Vec::new();
 
     // Top border.
-    out.push(hrule("┌─", "─┬─", "─┐", &widths, rail));
+    out.push(hrule("┌", "┬", "┐", &widths, rail));
 
     // Header block.
     {
@@ -300,10 +341,7 @@ fn table_lines(buf: &[String], theme: &Theme, width: usize) -> Vec<Line<'static>
             for (i, cell) in wrapped.iter().enumerate() {
                 spans.push(Span::styled("│ ".to_string(), rail));
                 let line = cell.get(py).cloned().unwrap_or_default();
-                spans.push(Span::styled(
-                    format!("{:<width$} ", line, width = widths[i]),
-                    header_fg,
-                ));
+                spans.push(Span::styled(pad_cell(&line, widths[i]) + " ", header_fg));
             }
             spans.push(Span::styled("│".to_string(), rail));
             out.push(Line::from(spans));
@@ -311,7 +349,7 @@ fn table_lines(buf: &[String], theme: &Theme, width: usize) -> Vec<Line<'static>
     }
 
     // Separator under header.
-    out.push(hrule("├─", "─┼─", "─┤", &widths, rail));
+    out.push(hrule("├", "┼", "┤", &widths, rail));
 
     // Body rows.
     for row in &rows {
@@ -328,10 +366,7 @@ fn table_lines(buf: &[String], theme: &Theme, width: usize) -> Vec<Line<'static>
             for (i, cell) in wrapped.iter().enumerate() {
                 spans.push(Span::styled("│ ".to_string(), rail));
                 let line = cell.get(py).cloned().unwrap_or_default();
-                spans.push(Span::styled(
-                    format!("{:<width$} ", line, width = widths[i]),
-                    body_fg,
-                ));
+                spans.push(Span::styled(pad_cell(&line, widths[i]) + " ", body_fg));
             }
             spans.push(Span::styled("│".to_string(), rail));
             out.push(Line::from(spans));
@@ -339,7 +374,7 @@ fn table_lines(buf: &[String], theme: &Theme, width: usize) -> Vec<Line<'static>
     }
 
     // Bottom border.
-    out.push(hrule("└─", "─┴─", "─┘", &widths, rail));
+    out.push(hrule("└", "┴", "┘", &widths, rail));
 
     out
 }
@@ -525,17 +560,28 @@ pub fn wrap_plain(text: &str, width: usize) -> Vec<String> {
         }
         let mut current = String::new();
         for word in paragraph.split_inclusive(char::is_whitespace) {
-            if current.chars().count() + word.chars().count() > width && !current.is_empty() {
+            if dw(&current) + dw(word) > width && !current.is_empty() {
                 lines.push(std::mem::take(&mut current));
             }
-            // Hard-break very long tokens.
-            if word.chars().count() > width {
+            // Hard-break very long tokens (by display width, so emoji/CJK
+            // don't overflow the column).
+            if dw(word) > width {
                 if !current.is_empty() {
                     lines.push(std::mem::take(&mut current));
                 }
-                let chars: Vec<char> = word.chars().collect();
-                for chunk in chars.chunks(width) {
-                    lines.push(chunk.iter().collect());
+                let mut chunk = String::new();
+                let mut chunk_w = 0;
+                for ch in word.chars() {
+                    let ch_w = dw(&ch.to_string());
+                    if chunk_w + ch_w > width && chunk_w > 0 {
+                        lines.push(std::mem::take(&mut chunk));
+                        chunk_w = 0;
+                    }
+                    chunk.push(ch);
+                    chunk_w += ch_w;
+                }
+                if !chunk.is_empty() {
+                    current = chunk;
                 }
             } else {
                 current.push_str(word);
@@ -704,6 +750,50 @@ mod tests {
         let joined = p.join("\n");
         assert!(p[0].contains("Tabela:"), "intro text:\n{}", joined);
         assert!(joined.contains("┌"), "table rendered:\n{}", joined);
+    }
+
+    #[test]
+    fn test_table_aligned_with_wide_chars() {
+        let t = Theme::cyberclaw();
+        // Emoji in header: chars().count() = 5, display width = 6.
+        let text = "| Icon | Nome |\n|---|---|\n| 🤖 | bot |";
+        let out = render_text(text, &t, Style::default(), 80);
+        let p = plain(&out);
+        // All box lines must have identical display width (alignment).
+        let box_lines: Vec<&String> = p
+            .iter()
+            .filter(|l| l.contains('│') || l.contains('┌') || l.contains('├') || l.contains('└'))
+            .collect();
+        assert!(box_lines.len() >= 4, "box lines:\n{:?}", p);
+        let w0 = dw(box_lines[0]);
+        for l in &box_lines {
+            assert_eq!(dw(l), w0, "misaligned line: {:?} (want {})", l, w0);
+        }
+    }
+
+    #[test]
+    fn test_table_narrow_terminal_stays_aligned() {
+        let t = Theme::cyberclaw();
+        // Column shrunk below content width must still align (min token
+        // width respected; long words hard-broken).
+        let text = "| Dominio | Peso | Tempo de estudo sugerido |\n\
+                    |---|---|---|\n\
+                    | Arquiteturas Seguras | 30% | Mais tempo! |";
+        let out = render_text(text, &t, Style::default(), 40);
+        let p = plain(&out);
+        let box_lines: Vec<&String> = p
+            .iter()
+            .filter(|l| l.contains('│') || l.contains('┌') || l.contains('├') || l.contains('└'))
+            .collect();
+        assert!(box_lines.len() >= 4, "box lines:\n{:?}", p);
+        let w0 = dw(box_lines[0]);
+        for l in &box_lines {
+            assert_eq!(dw(l), w0, "misaligned line: {:?} (want {})", l, w0);
+        }
+        // Content must survive (possibly wrapped).
+        let joined = p.join("\n");
+        assert!(joined.contains("Dominio"), "content lost:\n{}", joined);
+        assert!(joined.contains("30%"), "content lost:\n{}", joined);
     }
 
     #[test]

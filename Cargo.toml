@@ -27,6 +27,7 @@ clap = { version = "4", features = ["derive"] }
 rustyline = "17"
 dirs = "6"
 ratatui = "0.30"
+unicode-width = "0.2"
 crossterm = "0.29"
 sha2 = "0.10"
 arboard = "3"
