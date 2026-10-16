@@ -336,9 +336,13 @@ fn render_line(
                 let pad = body_w.saturating_sub(Span::width(&Span::raw(&plain)));
                 let mut spans = vec![Span::styled(
                     "  │ ".to_string(),
-                    Style::default().fg(t.accent3),
+                    Style::default().fg(t.accent3).bg(t.surface),
                 )];
-                spans.extend(dl.spans);
+                spans.extend(
+                    dl.spans
+                        .into_iter()
+                        .map(|s| Span::styled(s.content.clone(), s.style.bg(t.surface))),
+                );
                 if pad > 0 {
                     spans.push(Span::styled(
                         " ".repeat(pad),
