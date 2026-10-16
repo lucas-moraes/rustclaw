@@ -362,6 +362,29 @@ Then use the read tool to read src/main.rs. Report what tools you used.";
         assert_eq!(rt.resolve_agent("reason").name, "reason");
     }
 
+    /// F3.4: an unknown/stale agent name falls back to the *configured*
+    /// default (not hardcoded `build`) and the fallback is logged.
+    #[tokio::test]
+    async fn test_unknown_agent_falls_back_to_configured_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut rt = test_runtime(dir.path()).unwrap();
+        assert_eq!(rt.config.default_agent, "build");
+
+        // Default config: unknown name resolves to the default agent.
+        let spec = rt.resolve_agent("deleted-agent");
+        assert_eq!(spec.name, "build");
+
+        // Configured default wins over the hardcoded `build`.
+        rt.config.default_agent = "reason".to_string();
+        let spec = rt.resolve_agent("deleted-agent");
+        assert_eq!(spec.name, "reason");
+
+        // A stale default (also unknown) degrades to `build`, not a panic.
+        rt.config.default_agent = "also-gone".to_string();
+        let spec = rt.resolve_agent("deleted-agent");
+        assert_eq!(spec.name, "build");
+    }
+
     /// The `cursor_plan` toggle diverts `reason` to the Cursor plan agent and
     /// registers the `cursor_plan` tool, independently of `cursor_agent`.
     #[tokio::test]

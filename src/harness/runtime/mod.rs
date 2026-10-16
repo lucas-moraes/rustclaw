@@ -411,7 +411,15 @@ impl SessionRuntime {
         if self.config.cursor_plan && name == crate::harness::agent::builtin::REASON {
             return crate::harness::agent::builtin::cursor_plan();
         }
-        crate::harness::agent::find_builtin(name)
+        // F3.4: unknown/stale agent names fall back to the configured
+        // default (not hardcoded `build`), loudly.
+        if let Some(spec) = crate::harness::agent::find_builtin(name) {
+            return spec;
+        }
+        let default = &self.config.default_agent;
+        tracing::warn!("unknown agent `{name}` (not builtin/custom); falling back to `{default}`");
+        crate::harness::agent::find_builtin(default)
+            .or_else(|| crate::harness::agent::find_builtin("build"))
             .unwrap_or_else(crate::harness::agent::builtin::build)
     }
 
