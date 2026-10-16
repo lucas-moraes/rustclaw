@@ -396,7 +396,8 @@ pub async fn handle(
         "/mcp" => {
             let mut parts = arg.split_whitespace();
             let sub = parts.next().unwrap_or("");
-            match runtime.mcp.as_ref() {
+            let mcp = runtime.mcp.clone();
+            match mcp {
                 None => {
                     out.push(
                         "no MCP servers configured (add <base_dir>/mcp.json \
@@ -444,8 +445,56 @@ pub async fn handle(
                                 crate::harness::mcp::McpServerStatus::Disabled => {
                                     "disabled".to_string()
                                 }
+                                crate::harness::mcp::McpServerStatus::PendingTrust => {
+                                    let fp = mgr
+                                        .server_config(name.as_str())
+                                        .await
+                                        .map(|cfg| {
+                                            crate::harness::mcp::short(
+                                                &crate::harness::mcp::fingerprint(
+                                                    name.as_str(),
+                                                    &cfg,
+                                                ),
+                                            )
+                                        })
+                                        .unwrap_or_else(|| "?".to_string());
+                                    format!("pending trust (fp {fp}; /mcp trust {name})")
+                                }
                             };
                             out.push(format!("  {name}: {label}"));
+                        }
+                        let store = mgr.trust_store();
+                        out.push(format!(
+                            "  trust store: {} ({} trusted)",
+                            store.path().display(),
+                            store.trusted().len()
+                        ));
+                    }
+                    "trust" => {
+                        let name = parts.next().unwrap_or("");
+                        if name.is_empty() {
+                            out.push("usage: /mcp trust <name>".to_string());
+                        } else {
+                            match mgr.connect_one(name).await {
+                                Ok(()) => {
+                                    runtime.register_mcp_tools(&mgr).await;
+                                    out.push(format!("mcp server `{name}` trusted and connected"));
+                                }
+                                Err(e) => out.push(format!("[error] {e:#}")),
+                            }
+                        }
+                    }
+                    "untrust" => {
+                        let name = parts.next().unwrap_or("");
+                        if name.is_empty() {
+                            out.push("usage: /mcp untrust <name>".to_string());
+                        } else {
+                            match mgr.untrust_one(name).await {
+                                Ok(()) => out.push(format!(
+                                    "mcp server `{name}` untrusted and disconnected"
+                                )),
+                                Err(e) => out.push(format!("[error] {e:#}")),
+                            }
                         }
                     }
                     "restart" => {
@@ -459,7 +508,9 @@ pub async fn handle(
                             }
                         }
                     }
-                    other => out.push(format!("usage: /mcp list|status|restart (got `{other}`)")),
+                    other => out.push(format!(
+                        "usage: /mcp list|status|trust|untrust|restart (got `{other}`)"
+                    )),
                 },
             }
         }

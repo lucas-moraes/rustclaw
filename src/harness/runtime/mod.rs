@@ -964,14 +964,20 @@ impl SessionRuntime {
                 return;
             }
         };
-        let manager = crate::harness::mcp::McpManager::connect_all(cfg).await;
+        let trust = crate::harness::mcp::McpTrustStore::global();
+        let manager = crate::harness::mcp::McpManager::connect_all(cfg, trust).await;
         manager.start_health_checks();
+        self.register_mcp_tools(&manager).await;
+        self.mcp = Some(manager);
+    }
+
+    /// Adds the connected servers' tools to the runtime registry.
+    pub async fn register_mcp_tools(&mut self, manager: &Arc<crate::harness::mcp::McpManager>) {
         let mut registry = self.registry.clone();
         for tool in manager.tools().await {
             registry = registry.with_tool(tool);
         }
         self.registry = registry;
-        self.mcp = Some(manager);
     }
 
     /// Returns an Arc to this runtime (for subagent spawning). Clones shared fields.

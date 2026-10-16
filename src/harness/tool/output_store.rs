@@ -71,6 +71,7 @@ fn is_valid_hash(hash: &str) -> bool {
 ///
 /// The hash is validated first: malformed input (path separators, `..`,
 /// wrong length) is rejected instead of being joined into the path.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn load(base_dir: &Path, hash: &str) -> io::Result<String> {
     if !is_valid_hash(hash) {
         return Err(io::Error::new(

@@ -7,6 +7,9 @@
 pub mod client;
 pub mod config;
 pub mod tool;
+pub mod trust;
+
+pub use trust::{fingerprint, short, McpTrustStore};
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -25,34 +28,46 @@ pub enum McpServerStatus {
     Connected,
     Failed(String),
     Disabled,
+    /// Enabled but its config fingerprint is not in the trust store; the
+    /// server was not started (fail-closed). Approve with `/mcp trust <name>`.
+    PendingTrust,
 }
 
 /// Maximum tools exposed per server (protects the system prompt).
 const MAX_TOOLS_PER_SERVER: usize = 50;
 
 /// Manages the lifecycle of all configured MCP servers.
-#[derive(Default)]
 pub struct McpManager {
     /// name → client (None until connected / after failure).
     clients: RwLock<HashMap<String, Arc<McpClient>>>,
     status: RwLock<HashMap<String, McpServerStatus>>,
     config: RwLock<McpConfig>,
+    /// Trust store gating which servers may be started (fail-closed).
+    trust: McpTrustStore,
 }
 
 impl McpManager {
     /// Connects to all enabled servers in parallel. A failing server is
     /// logged and marked `Failed`, but never blocks the others or startup.
-    pub async fn connect_all(config: McpConfig) -> Arc<Self> {
+    ///
+    /// Servers whose config fingerprint is not in `trust` are **not**
+    /// started: they are marked `PendingTrust` (fail-closed, protects
+    /// against a malicious project `rustclaw.json`). Approve with
+    /// `/mcp trust <name>`.
+    pub async fn connect_all(config: McpConfig, trust: McpTrustStore) -> Arc<Self> {
         let manager = Arc::new(Self {
             clients: RwLock::new(HashMap::new()),
             status: RwLock::new(HashMap::new()),
             config: RwLock::new(config),
+            trust,
         });
         manager.reconnect_all().await;
         manager
     }
 
     /// (Re)connects every enabled server in parallel.
+    ///
+    /// Untrusted servers are skipped and marked `PendingTrust`.
     pub async fn reconnect_all(&self) {
         let cfg = self.config.read().await.clone();
         let mut set = tokio::task::JoinSet::new();
@@ -62,6 +77,13 @@ impl McpManager {
                     .write()
                     .await
                     .insert(name.clone(), McpServerStatus::Disabled);
+                continue;
+            }
+            if !self.trust.is_config_trusted(name, server) {
+                self.status
+                    .write()
+                    .await
+                    .insert(name.clone(), McpServerStatus::PendingTrust);
                 continue;
             }
             let name = name.clone();
@@ -94,6 +116,76 @@ impl McpManager {
                 }
             }
         }
+    }
+
+    /// Trusts `name`'s current config fingerprint and connects it now
+    /// (late approval from `/mcp trust`). Returns `Ok(())` on success.
+    pub async fn connect_one(&self, name: &str) -> anyhow::Result<()> {
+        let server = {
+            let cfg = self.config.read().await;
+            cfg.servers
+                .get(name)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("unknown mcp server `{name}`"))?
+        };
+        if !server.enabled {
+            anyhow::bail!("mcp server `{name}` is disabled");
+        }
+        self.trust
+            .trust(&crate::harness::mcp::fingerprint(name, &server))?;
+        let res = McpClient::connect(name, &server).await;
+        match res {
+            Ok(client) => {
+                self.clients
+                    .write()
+                    .await
+                    .insert(name.to_string(), Arc::new(client));
+                self.status
+                    .write()
+                    .await
+                    .insert(name.to_string(), McpServerStatus::Connected);
+                Ok(())
+            }
+            Err(e) => {
+                self.status
+                    .write()
+                    .await
+                    .insert(name.to_string(), McpServerStatus::Failed(e.to_string()));
+                Err(e)
+            }
+        }
+    }
+
+    /// Revokes trust in `name`'s config and disconnects it.
+    pub async fn untrust_one(&self, name: &str) -> anyhow::Result<()> {
+        let fp = {
+            let cfg = self.config.read().await;
+            let server = cfg
+                .servers
+                .get(name)
+                .ok_or_else(|| anyhow::anyhow!("unknown mcp server `{name}`"))?;
+            crate::harness::mcp::fingerprint(name, server)
+        };
+        self.trust.untrust(&fp)?;
+        self.clients.write().await.remove(name);
+        self.status
+            .write()
+            .await
+            .insert(name.to_string(), McpServerStatus::PendingTrust);
+        Ok(())
+    }
+
+    /// The trust store backing this manager (for `/mcp trust`).
+    pub fn trust_store(&self) -> &McpTrustStore {
+        &self.trust
+    }
+
+    /// The config of `name`, if configured.
+    pub async fn server_config(
+        &self,
+        name: &str,
+    ) -> Option<crate::harness::mcp::config::McpServerConfig> {
+        self.config.read().await.servers.get(name).cloned()
     }
 
     /// Starts a background health-check task: probes each connected server
@@ -268,17 +360,28 @@ mod tests {
     use super::*;
     use crate::harness::mcp::config::McpServerConfig;
 
+    /// Temp-dir trust store with the given servers pre-trusted.
+    fn trusted_store(servers: &[(&str, &McpServerConfig)]) -> (tempfile::TempDir, McpTrustStore) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = McpTrustStore::at(dir.path());
+        for (name, cfg) in servers {
+            store
+                .trust(&crate::harness::mcp::fingerprint(name, cfg))
+                .expect("trust");
+        }
+        (dir, store)
+    }
+
     #[tokio::test]
     async fn test_connect_all_marks_failed_server_without_blocking() {
         let mut cfg = McpConfig::default();
-        cfg.servers.insert(
-            "bad".to_string(),
-            McpServerConfig {
-                command: "definitely-not-a-real-command-xyz".to_string(),
-                ..Default::default()
-            },
-        );
-        let mgr = McpManager::connect_all(cfg).await;
+        let bad = McpServerConfig {
+            command: "definitely-not-a-real-command-xyz".to_string(),
+            ..Default::default()
+        };
+        cfg.servers.insert("bad".to_string(), bad.clone());
+        let (_dir, store) = trusted_store(&[("bad", &bad)]);
+        let mgr = McpManager::connect_all(cfg, store).await;
         let status = mgr.status_snapshot().await;
         assert!(matches!(status[0].1, McpServerStatus::Failed(_)));
         assert!(mgr.tools().await.is_empty());
@@ -295,30 +398,107 @@ mod tests {
                 ..Default::default()
             },
         );
-        let mgr = McpManager::connect_all(cfg).await;
+        let (_dir, store) = trusted_store(&[]);
+        let mgr = McpManager::connect_all(cfg, store).await;
         assert_eq!(mgr.status_snapshot().await[0].1, McpServerStatus::Disabled);
     }
 
     #[tokio::test]
     async fn test_restart_unknown_server_errors() {
-        let mgr = McpManager::connect_all(McpConfig::default()).await;
+        let (_dir, store) = trusted_store(&[]);
+        let mgr = McpManager::connect_all(McpConfig::default(), store).await;
         assert!(mgr.restart("nope").await.is_err());
     }
 
     #[tokio::test]
     async fn test_configured_lists_servers() {
         let mut cfg = McpConfig::default();
-        cfg.servers.insert(
-            "fs".to_string(),
-            McpServerConfig {
-                command: "node".to_string(),
-                ..Default::default()
-            },
-        );
-        let mgr = McpManager::connect_all(cfg).await;
+        let fs = McpServerConfig {
+            command: "node".to_string(),
+            ..Default::default()
+        };
+        cfg.servers.insert("fs".to_string(), fs.clone());
+        let (_dir, store) = trusted_store(&[("fs", &fs)]);
+        let mgr = McpManager::connect_all(cfg, store).await;
         let configured = mgr.configured().await;
         assert_eq!(configured[0].0, "fs");
         assert_eq!(configured[0].1, "node");
         assert!(configured[0].2);
+    }
+
+    /// F2.1: an untrusted server must never spawn — it is marked
+    /// `PendingTrust` and no client is created.
+    #[tokio::test]
+    async fn test_untrusted_server_is_pending_not_spawned() {
+        let mut cfg = McpConfig::default();
+        cfg.servers.insert(
+            "evil".to_string(),
+            McpServerConfig {
+                command: "definitely-not-a-real-command-xyz".to_string(),
+                ..Default::default()
+            },
+        );
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = McpTrustStore::at(dir.path());
+        let mgr = McpManager::connect_all(cfg, store).await;
+        let status = mgr.status_snapshot().await;
+        assert_eq!(status[0].1, McpServerStatus::PendingTrust);
+        assert!(mgr.tools().await.is_empty());
+        assert!(mgr.clients.read().await.is_empty());
+    }
+
+    /// F2.1: `connect_one` (late approval) trusts the fingerprint and
+    /// spawns the server.
+    #[tokio::test]
+    async fn test_connect_one_after_trust() {
+        let mut cfg = McpConfig::default();
+        cfg.servers.insert(
+            "late".to_string(),
+            McpServerConfig {
+                command: "definitely-not-a-real-command-xyz".to_string(),
+                ..Default::default()
+            },
+        );
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = McpTrustStore::at(dir.path());
+        let mgr = McpManager::connect_all(cfg, store.clone()).await;
+        assert_eq!(
+            mgr.status_snapshot().await[0].1,
+            McpServerStatus::PendingTrust
+        );
+        // Approval trusts the fingerprint; the spawn itself fails (bad
+        // command) but the status must move off PendingTrust.
+        let res = mgr.connect_one("late").await;
+        assert!(res.is_err());
+        assert!(store.is_config_trusted(
+            "late",
+            &McpServerConfig {
+                command: "definitely-not-a-real-command-xyz".to_string(),
+                ..Default::default()
+            }
+        ));
+        assert!(!matches!(
+            mgr.status_snapshot().await[0].1,
+            McpServerStatus::PendingTrust
+        ));
+    }
+
+    /// F2.1: changing the config invalidates the trust (new fingerprint).
+    #[tokio::test]
+    async fn test_config_change_invalidates_trust() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = McpTrustStore::at(dir.path());
+        let v1 = McpServerConfig {
+            command: "node".to_string(),
+            ..Default::default()
+        };
+        store.trust(&fingerprint("srv", &v1)).expect("trust v1");
+        assert!(store.is_config_trusted("srv", &v1));
+        let v2 = McpServerConfig {
+            command: "node".to_string(),
+            args: vec!["-e".into(), "evil()".into()],
+            ..Default::default()
+        };
+        assert!(!store.is_config_trusted("srv", &v2));
     }
 }
