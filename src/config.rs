@@ -43,7 +43,8 @@ pub struct GlobalSettings {
     pub theme: String,
     /// Kill-switch for Anthropic-style prompt caching (`cache_control`
     /// breakpoints). Default `true`; set to `false` to disable everywhere.
-    #[serde(default = "default_true", skip_serializing_if = "is_false")]
+    /// Always serialized: `false` must survive a save/load round-trip.
+    #[serde(default = "default_true")]
     pub prompt_caching: bool,
     /// Daily spend limit in USD (estimated cost). `0.0` = no limit.
     #[serde(default, skip_serializing_if = "is_zero_f64")]
@@ -475,6 +476,24 @@ mod tests {
         s.save_to(&p).unwrap();
         let back = GlobalSettings::load_from(&p).unwrap();
         assert_eq!(back, s);
+    }
+
+    #[test]
+    fn test_prompt_caching_false_persists() {
+        let d = dir();
+        let p = d.path().join("config.json");
+        let s = GlobalSettings {
+            prompt_caching: false,
+            ..Default::default()
+        };
+        s.save_to(&p).unwrap();
+        let raw = std::fs::read_to_string(&p).unwrap();
+        assert!(raw.contains("prompt_caching"), "must be serialized: {raw}");
+        let back = GlobalSettings::load_from(&p).unwrap();
+        assert!(
+            !back.prompt_caching,
+            "false must survive save/load round-trip"
+        );
     }
 
     #[test]
