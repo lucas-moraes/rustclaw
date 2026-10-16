@@ -14,6 +14,8 @@ pub mod provider;
 pub mod runtime;
 pub mod session;
 pub mod skill;
+#[cfg(test)]
+pub(crate) mod testenv;
 pub mod tool;
 pub mod ui;
 #[cfg(feature = "voice")]

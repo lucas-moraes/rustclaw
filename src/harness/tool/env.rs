@@ -254,7 +254,7 @@ PATH=/usr/bin
 
     #[test]
     fn test_mask_known_env_values() {
-        // Unique name/value to avoid interference with parallel tests.
+        let _env = crate::harness::testenv::lock();
         std::env::set_var("RUSTCLAW_TEST_SECRET_TOKEN", "hunter2hunter2");
         let text = "leaked: hunter2hunter2\nother line";
         let out = mask_secrets(text);
@@ -271,6 +271,7 @@ PATH=/usr/bin
 
     #[test]
     fn test_mask_short_values_ignored() {
+        let _env = crate::harness::testenv::lock();
         // Values < 8 chars are not masked by pass 2 (verbatim env replace).
         std::env::set_var("RUSTCLAW_TEST_SHORT_KEY", "abc");
         let text = "value abc here";

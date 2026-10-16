@@ -239,7 +239,6 @@ fn truncate(s: &str, max: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::harness::ui::tui::palette::{AutoComplete, PaletteItem, PaletteKind};
 
     fn item(id: &str) -> PaletteItem {

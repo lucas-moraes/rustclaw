@@ -521,7 +521,7 @@ mod tests {
 
         app.rebuild_transcript_from_session();
 
-        let kinds: Vec<LineKind> = app.lines.iter().map(|l| l.kind.clone()).collect();
+        let kinds: Vec<LineKind> = app.lines.iter().map(|l| l.kind).collect();
         assert_eq!(kinds, vec![LineKind::User, LineKind::Assistant]);
         assert_eq!(app.lines[0].text, "hello there");
         assert_eq!(app.lines[1].text, "hi, how can I help?");

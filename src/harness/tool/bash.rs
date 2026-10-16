@@ -830,6 +830,9 @@ mod tests {
     }
 
     #[tokio::test]
+    // The env lock must span the await (set → execute → remove is one
+    // critical section); the runtime is current-thread, so no deadlock.
+    #[allow(clippy::await_holding_lock)]
     async fn test_bash_strips_secret_env() {
         use crate::harness::permission::PermissionEngine;
         use crate::harness::tool::context::{
@@ -877,6 +880,9 @@ mod tests {
         };
 
         // Set a secret in the parent env; the bash tool must not see it.
+        // Lock held across the await (current-thread runtime) so the
+        // set/remove pair is atomic w.r.t. other env-mutating tests.
+        let _env = crate::harness::testenv::lock();
         std::env::set_var("RUSTCLAW_TEST_SECRET_KEY", "super-secret-value");
         let result = BashTool
             .execute(

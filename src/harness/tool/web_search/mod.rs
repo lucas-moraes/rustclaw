@@ -648,12 +648,13 @@ mod tests {
     use crate::harness::tool::context::{AbortSignal, PathBufGuard};
     use std::sync::Arc;
 
-    /// Serializes tests that mutate process-global env vars.
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    /// Serializes tests that mutate process-global env vars (global lock,
+    /// shared with paths/index/mcp tests).
+    use crate::harness::testenv::lock as env_lock;
 
     #[test]
     fn resolve_tavily_key_env_var_wins() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = env_lock();
         let prev = std::env::var("TAVILY_API_KEY").ok();
         std::env::set_var("TAVILY_API_KEY", "  env-key-123  ");
         // Env var wins, so the real auth.json is never consulted.
@@ -666,7 +667,7 @@ mod tests {
 
     #[test]
     fn resolve_tavily_key_blank_env_falls_through() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = env_lock();
         let prev = std::env::var("TAVILY_API_KEY").ok();
         std::env::set_var("TAVILY_API_KEY", "   ");
         // Blank env var must not be returned; result comes from auth.json
@@ -682,7 +683,7 @@ mod tests {
 
     #[test]
     fn tavily_configured_true_with_env_key() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = env_lock();
         let prev = std::env::var("TAVILY_API_KEY").ok();
         // Use the path-injectable helper so the test never reads the
         // process-wide RUSTCLAW_HOME (which other modules' tests mutate).
@@ -701,7 +702,7 @@ mod tests {
 
     #[test]
     fn tavily_configured_false_without_env_or_auth() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = env_lock();
         let prev_key = std::env::var("TAVILY_API_KEY").ok();
         // Isolate the auth store in an empty temp dir so the real machine's
         // auth.json (which may hold a tavily key) is never consulted. We pass
@@ -914,7 +915,7 @@ mod tests {
     fn test_tavily_always_registered_first() {
         // F12: registration must not depend on the key — the tool is built
         // once at startup, so a key added later via `/auth` must still work.
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = env_lock();
         let prev = std::env::var("TAVILY_API_KEY").ok();
         std::env::remove_var("TAVILY_API_KEY");
 
@@ -944,7 +945,7 @@ mod tests {
         // The env lock is a std Mutex, so it must not be held across an
         // await: do the env manipulation + construction, then drop it.
         let (tool, keyless) = {
-            let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let _guard = env_lock();
             let prev = std::env::var("TAVILY_API_KEY").ok();
             std::env::remove_var("TAVILY_API_KEY");
             let tool = WebSearchTool::new();
@@ -1263,7 +1264,7 @@ mod tests {
 
     #[test]
     fn tavily_status_hint_none_when_key_present() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = env_lock();
         let prev = std::env::var("TAVILY_API_KEY").ok();
         std::env::set_var("TAVILY_API_KEY", "some-key");
         assert!(tavily_status_hint().is_none());

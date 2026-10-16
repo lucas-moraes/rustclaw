@@ -254,6 +254,7 @@ mod tests {
 
     #[test]
     fn test_expand_env_ok() {
+        let _env = crate::harness::testenv::lock();
         std::env::set_var("RUSTCLAW_TEST_VAR_XYZ", "hello");
         let mut cfg = McpServerConfig {
             command: "echo".to_string(),

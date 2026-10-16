@@ -956,12 +956,10 @@ mod cursor_model_draw_tests {
             text.contains("of 30"),
             "filtered set is all models here: {text}"
         );
-        app.modal.as_mut().map(|m| {
-            if let Modal::CursorModel { filter, .. } = m {
-                filter.clear();
-                filter.push_str("number-29");
-            }
-        });
+        if let Some(Modal::CursorModel { filter, .. }) = app.modal.as_mut() {
+            filter.clear();
+            filter.push_str("number-29");
+        }
         let narrowed = buffer_text(&mut app, 56, 14);
         assert!(
             narrowed.contains("number-29"),

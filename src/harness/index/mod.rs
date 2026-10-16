@@ -63,6 +63,7 @@ mod tests {
 
     #[test]
     fn test_no_config_yields_null_embedder() {
+        let _env = crate::harness::testenv::lock();
         let dir = tempfile::tempdir().unwrap();
         // Ensure env vars don't leak into the test.
         std::env::remove_var("RUSTCLAW_EMBED_BASE_URL");

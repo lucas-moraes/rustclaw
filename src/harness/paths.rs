@@ -99,8 +99,8 @@ mod tests {
 
     #[test]
     fn test_rustclaw_home_env_overrides_base() {
-        // SAFETY: single-threaded test body; guard against concurrent test
-        // runners by restoring the previous value afterwards.
+        // Global env lock: other tests read base_dir() concurrently.
+        let _env = crate::harness::testenv::lock();
         let key = "RUSTCLAW_HOME";
         let prev = std::env::var_os(key);
         std::env::set_var(key, "/tmp/rustclaw-paths-test");
