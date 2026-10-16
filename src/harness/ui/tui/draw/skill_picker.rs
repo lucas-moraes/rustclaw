@@ -5,7 +5,7 @@ use crate::harness::ui::tui::draw::centered_rect_fixed;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
 pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -15,8 +15,11 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     };
 
     let n = picker.ids.len() as u16;
+    // Wide enough for a full skill id plus a readable description; clamped to
+    // the terminal so narrow layouts still fit.
+    let w = 96u16.min(area.width.saturating_sub(4)).max(40);
     let h = (10 + n).min(area.height.saturating_sub(2)).min(40);
-    let parea = centered_rect_fixed(70, h, area);
+    let parea = centered_rect_fixed(w, h, area);
     frame.render_widget(Clear, parea);
 
     let block = Block::default()
@@ -32,18 +35,24 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
 
     let mut lines: Vec<Line> = vec![
         Line::from(Span::styled(
-            "  Skills are this session's memory. They are injected into the prompt when checked.",
+            " Skills are this session's memory: checked skills are injected into the prompt.",
             Style::default().fg(t.text_dim),
         )),
         Line::from(Span::styled(
-            "  You can pick none, or change them later with /skills.",
+            " Pick none, or change them later with /skills.",
             Style::default().fg(t.text_dim),
         )),
         Line::from(""),
     ];
 
+    // Row layout: " arrow box id  desc ". Everything is pre-truncated so no
+    // line ever wraps (Wrap is disabled below).
+    let id_col = 22usize;
+    let desc_col = (inner.width as usize).saturating_sub(id_col + 7).max(10);
+
     let catalog = &app.runtime.skills;
-    let visible = inner.height.saturating_sub(4) as usize;
+    // 3 header lines + 1 blank + 1 footer.
+    let visible = inner.height.saturating_sub(5) as usize;
     picker.ensure_selected_visible(visible);
     let start = picker.scroll_offset.min(picker.ids.len());
     for i in start..picker.ids.len().min(start + visible) {
@@ -60,7 +69,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
             Span::styled(format!(" {} ", arrow), Style::default().fg(t.accent).bg(bg)),
             Span::styled(box_marker.to_string(), Style::default().fg(box_fg).bg(bg)),
             Span::styled(
-                format!(" {:<16}", truncate(id, 16)),
+                format!(" {:<width$}", truncate(id, id_col), width = id_col),
                 Style::default()
                     .fg(if sel { t.text_bright } else { t.text })
                     .bg(bg)
@@ -70,7 +79,11 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
                         Modifier::empty()
                     }),
             ),
-            Span::styled(truncate(desc, 30), Style::default().fg(t.text_dim).bg(bg)),
+            Span::styled("  ", Style::default().bg(bg)),
+            Span::styled(
+                truncate(desc, desc_col),
+                Style::default().fg(t.text_dim).bg(bg),
+            ),
         ]));
     }
 
@@ -88,7 +101,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
         Span::styled("no skills", Style::default().fg(t.text_dim)),
     ]));
 
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 /// Draws the skill chips row above the prompt input.

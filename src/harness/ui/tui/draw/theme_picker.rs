@@ -17,7 +17,8 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     let items = picker.items();
     let n = items.len() as u16;
     let h = (6 + n).min(area.height.saturating_sub(2)).min(40);
-    let parea = centered_rect_fixed(64, h.max(10), area);
+    let w = 64u16.min(area.width.saturating_sub(4)).max(40);
+    let parea = centered_rect_fixed(w, h.max(10), area);
     frame.render_widget(Clear, parea);
 
     let block = Block::default()

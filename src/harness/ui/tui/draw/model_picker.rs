@@ -15,20 +15,20 @@ pub fn draw_picker(frame: &mut Frame, app: &mut App, area: Rect) {
     let t = &app.theme;
     let items = picker.items();
     let n = items.len() as u16;
-    let stage = if picker.stage_models {
-        format!(" models · {}", picker.provider)
-    } else {
-        " select provider ".to_string()
-    };
     let h = (6 + n).min(area.height.saturating_sub(2)).min(40);
-    let parea = centered_rect_fixed(64, h.max(10), area);
+    let w = 72u16.min(area.width.saturating_sub(4)).max(40);
+    let parea = centered_rect_fixed(w, h.max(10), area);
     frame.render_widget(Clear, parea);
 
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(t.accent2))
         .title(Span::styled(
-            format!(" models · {} ", stage.trim()),
+            if picker.stage_models {
+                format!(" models · {} ", picker.provider)
+            } else {
+                " models · select provider ".to_string()
+            },
             Style::default().fg(t.accent2).add_modifier(Modifier::BOLD),
         ))
         .style(Style::default().bg(t.surface));
@@ -145,7 +145,8 @@ pub fn draw_picker(frame: &mut Frame, app: &mut App, area: Rect) {
 
 pub fn draw_auth(frame: &mut Frame, app: &App, prompt: &AuthPromptState, area: Rect) {
     let t = &app.theme;
-    let parea = centered_rect_fixed(60, 7, area);
+    let w = 64u16.min(area.width.saturating_sub(4)).max(40);
+    let parea = centered_rect_fixed(w, 7, area);
     frame.render_widget(Clear, parea);
 
     let block = Block::default()
