@@ -192,10 +192,92 @@ fn needs_privilege(tokens: &[String]) -> bool {
     tokens.iter().any(|t| t == "sudo" || t == "su")
 }
 
-/// Token-based security check for a bash command.
-pub fn check_denylist(command: &str) -> BashCheck {
-    let tokens = tokenize(command);
+/// Shell wrappers whose `-c <payload>` argument is checked recursively
+/// (e.g. `bash -c 'rm -rf /'` must not bypass the denylist).
+const SHELL_WRAPPERS: &[&str] = &["bash", "sh", "zsh", "dash", "ksh", "fish"];
+
+/// Splits a command into segments at shell separators (`;`, `&&`, `||`,
+/// `|`, `&`, newline), respecting quotes so `echo "a;b"` stays one segment.
+fn split_segments(command: &str) -> Vec<String> {
+    let mut segments = Vec::new();
+    let mut current = String::new();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escaped = false;
+    let mut chars = command.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if escaped {
+            current.push(c);
+            escaped = false;
+            continue;
+        }
+        match c {
+            '\\' => {
+                escaped = true;
+                current.push(c);
+            }
+            '\'' if !in_double => {
+                in_single = !in_single;
+                current.push(c);
+            }
+            '"' if !in_single => {
+                in_double = !in_double;
+                current.push(c);
+            }
+            c if !in_single && !in_double => {
+                // Two-char operators first.
+                if (c == '&' || c == '|') && chars.peek() == Some(&c) {
+                    chars.next();
+                    if !current.trim().is_empty() {
+                        segments.push(std::mem::take(&mut current));
+                    }
+                    continue;
+                }
+                match c {
+                    ';' | '\n' | '&' | '|' => {
+                        if !current.trim().is_empty() {
+                            segments.push(std::mem::take(&mut current));
+                        }
+                    }
+                    _ => current.push(c),
+                }
+            }
+            _ => current.push(c),
+        }
+    }
+    if !current.trim().is_empty() {
+        segments.push(current);
+    }
+    segments
+}
+
+/// Finds the payload of a shell wrapper invocation: the token after
+/// `<shell> -c`. Returns the remaining tokens joined back into a command.
+fn wrapper_payload(tokens: &[String]) -> Option<String> {
+    for (i, t) in tokens.iter().enumerate() {
+        if t == "-c"
+            && i > 0
+            && SHELL_WRAPPERS.contains(&tokens[i - 1].as_str())
+            && i + 1 < tokens.len()
+        {
+            return Some(tokens[i + 1..].join(" "));
+        }
+    }
+    None
+}
+
+/// Token-based security check for a single command segment (no separators).
+fn check_segment(segment: &str) -> BashCheck {
+    let tokens = tokenize(segment);
     let lower_tokens: Vec<String> = tokens.iter().map(|t| t.to_lowercase()).collect();
+
+    // Shell wrappers hide the real payload: check it recursively.
+    if let Some(payload) = wrapper_payload(&lower_tokens) {
+        if check_denylist(&payload) == BashCheck::Blocked {
+            return BashCheck::Blocked;
+        }
+    }
 
     // Block system commands.
     for t in &lower_tokens {
@@ -244,7 +326,7 @@ pub fn check_denylist(command: &str) -> BashCheck {
     }
 
     // Block fork bomb.
-    if command.contains(":(){") || command.contains(":(){:|:&};:") {
+    if segment.contains(":(){") || segment.contains(":(){:|:&};:") {
         return BashCheck::Blocked;
     }
 
@@ -263,6 +345,22 @@ pub fn check_denylist(command: &str) -> BashCheck {
     }
 
     BashCheck::Ok
+}
+
+/// Token-based security check for a bash command. Splits the command into
+/// segments at shell separators and checks each one, so `true; reboot` or
+/// `echo x && shutdown now` cannot bypass the denylist.
+pub fn check_denylist(command: &str) -> BashCheck {
+    let mut overall = BashCheck::Ok;
+    for segment in split_segments(command) {
+        match check_segment(&segment) {
+            BashCheck::Blocked => return BashCheck::Blocked,
+            // Privilege escalation in any segment escalates the whole command.
+            BashCheck::NeedsPrivilege => overall = BashCheck::NeedsPrivilege,
+            BashCheck::Ok => {}
+        }
+    }
+    overall
 }
 
 fn timeout_secs(args: &Value) -> u64 {
@@ -546,6 +644,41 @@ mod tests {
         assert_eq!(tokenize("ls -la"), vec!["ls", "-la"]);
         assert_eq!(tokenize("rm -rf /"), vec!["rm", "-rf", "/"]);
         assert_eq!(tokenize("echo 'hello world'"), vec!["echo", "hello world"]);
+    }
+
+    #[test]
+    fn test_denylist_blocks_after_separators() {
+        // Each segment must be checked, not just the first token.
+        assert_eq!(check_denylist("true; reboot"), BashCheck::Blocked);
+        assert_eq!(check_denylist("echo x && shutdown now"), BashCheck::Blocked);
+        assert_eq!(check_denylist("ls | poweroff"), BashCheck::Blocked);
+        assert_eq!(check_denylist("echo a || halt"), BashCheck::Blocked);
+        assert_eq!(check_denylist("echo a & reboot"), BashCheck::Blocked);
+        // Benign multi-segment commands stay allowed.
+        assert_eq!(check_denylist("cd /tmp && ls"), BashCheck::Ok);
+        assert_eq!(check_denylist("echo a; echo b"), BashCheck::Ok);
+        // Separators inside quotes are not separators.
+        assert_eq!(check_denylist("echo \"a; reboot\""), BashCheck::Ok);
+    }
+
+    #[test]
+    fn test_denylist_blocks_shell_wrapper_payload() {
+        // `bash -c <payload>` must not bypass the denylist.
+        assert_eq!(check_denylist("bash -c 'rm -rf /'"), BashCheck::Blocked);
+        assert_eq!(check_denylist("sh -c \"reboot\""), BashCheck::Blocked);
+        assert_eq!(
+            check_denylist("zsh -c 'echo x && shutdown now'"),
+            BashCheck::Blocked
+        );
+        assert_eq!(check_denylist("bash -c 'ls -la'"), BashCheck::Ok);
+        // Non-shell wrappers with -c are not recursed (e.g. grep -c).
+        assert_eq!(check_denylist("grep -c foo bar"), BashCheck::Ok);
+    }
+
+    #[test]
+    fn test_denylist_privilege_escalation_in_any_segment() {
+        assert_eq!(check_denylist("ls && sudo rm -rf /"), BashCheck::Blocked);
+        assert_eq!(check_denylist("echo x; sudo ls"), BashCheck::NeedsPrivilege);
     }
 
     #[test]
