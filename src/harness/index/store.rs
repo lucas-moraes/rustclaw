@@ -62,6 +62,10 @@ impl SemanticIndex {
             .with_context(|| format!("failed to open semantic index db {}", db_path.display()))?;
         conn.execute_batch("PRAGMA journal_mode=WAL;")
             .context("failed to set journal mode")?;
+        // Wait instead of failing with SQLITE_BUSY when another process
+        // (e.g. a second rustclaw instance) holds the write lock.
+        conn.execute_batch("PRAGMA busy_timeout=5000;")
+            .context("failed to set busy timeout")?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
