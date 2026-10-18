@@ -15,6 +15,14 @@ use ratatui::Frame;
 const ASSISTANT_LABEL: &str = "RustClaw";
 const ASSISTANT_ICON: &str = "🤖";
 
+/// Inner padding: 7 columns on the left of the text, applied per line
+/// (not by shrinking the area) so hit-testing still maps to the full width.
+const INNER_PAD: usize = 7;
+/// Right padding: INNER_PAD + 2 so the text keeps two extra columns of
+/// breathing room on the scrollbar side (the scrollbar owns the last column
+/// of the frame, so content there reads as flush against it).
+const RIGHT_PAD: usize = INNER_PAD + 2;
+
 pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     let theme = app.theme.clone();
     let tick = app.tick;
@@ -24,10 +32,6 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     // is applied per line inside `bubble` (BODY_PAD), so the scrollbar and the
     // hit-testing still see the whole area.
     const H_PAD: u16 = 0;
-    // Inner padding: one column on each side of the text, applied per line
-    // (not by shrinking the area) so the scrollbar keeps the last column and
-    // hit-testing still maps to the full width.
-    const INNER_PAD: usize = 1;
     // Vertical padding: one blank row at the top and one at the bottom so the
     // first/last visible line never sits flush against the frame. This is
     // internal padding (it does not steal a row from the layout), so the
@@ -40,10 +44,11 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
         height: area.height.saturating_sub(V_PAD * 2).max(1),
     };
     let width = content.width as usize;
-    // Markdown is rendered to this width; the INNER_PAD pass below adds one
-    // column on each side afterwards, so the render width must be reduced by
-    // 2*INNER_PAD or full-width lines (code fences, rules) overflow the frame.
-    let render_width = width.saturating_sub(INNER_PAD * 2).max(1);
+    // Markdown is rendered to this width; the padding pass below adds
+    // INNER_PAD columns on the left and RIGHT_PAD on the right afterwards, so
+    // the render width must be reduced by both or full-width lines (code
+    // fences, rules) overflow.
+    let render_width = width.saturating_sub(INNER_PAD + RIGHT_PAD).max(1);
 
     let mut rows: Vec<Line<'static>> = Vec::new();
     let mut row_map: Vec<usize> = Vec::new();
@@ -59,17 +64,18 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
             row_map.push(li);
         }
     }
-    // Inner side padding: indent every row by INNER_PAD columns on the left and
-    // pad the right edge so text never touches the terminal border. Applied
-    // here (after rendering) so the markdown wrap width already accounts for
-    // the left gutter.
-    if INNER_PAD > 0 {
-        let pad = " ".repeat(INNER_PAD);
+    // Inner side padding: indent every row by INNER_PAD columns on the left
+    // and RIGHT_PAD on the right so text never touches the terminal border or
+    // the scrollbar. Applied here (after rendering) so the markdown wrap
+    // width already accounts for the gutters.
+    if INNER_PAD > 0 || RIGHT_PAD > 0 {
+        let left = " ".repeat(INNER_PAD);
+        let right = " ".repeat(RIGHT_PAD);
         for row in rows.iter_mut() {
             let mut spans = Vec::with_capacity(row.spans.len() + 2);
-            spans.push(Span::raw(pad.clone()));
+            spans.push(Span::raw(left.clone()));
             spans.append(&mut row.spans);
-            spans.push(Span::raw(pad.clone()));
+            spans.push(Span::raw(right.clone()));
             row.spans = spans;
         }
     }
@@ -813,8 +819,8 @@ mod tests {
 mod diff_render_tests {
     use super::*;
 
-    /// Renders a Diff line and asserts the box is closed: body rows padded to
-    /// the full width and the footer rule reaching the right edge.
+    /// Renders a Diff line and asserts the box is closed on the left and keeps
+    /// clear of the scrollbar column on the right (RIGHT_PAD = INNER_PAD + 2).
     #[test]
     fn diff_box_fills_full_width() {
         let mut app = App::inline_for_tests("test");
@@ -830,39 +836,102 @@ mod diff_render_tests {
         let width = 60u16;
         let buf = crate::harness::ui::tui::draw::render_to_buffer(&mut app, width, 20);
 
-        // Footer rule must reach the right edge: last row of the box has `─`
-        // at the rightmost column.
+        // Footer rule of the diff card: the first `╰` row (the card sits at
+        // the top; the unconfigured-hint box at the bottom has its own corners).
         let mut footer_row = None;
         for y in 0..20u16 {
-            let mut has_footer = false;
-            for x in 0..width {
-                if buf[(x, y)].symbol() == "╰" {
-                    has_footer = true;
-                }
-            }
-            if has_footer {
+            if (0..width).any(|x| buf[(x, y)].symbol() == "╰") {
                 footer_row = Some(y);
+                break;
             }
         }
         let fy = footer_row.expect("diff footer rendered");
-        assert_eq!(
-            buf[(width - 1, fy)].symbol(),
-            "╯",
-            "footer must reach right edge"
-        );
 
-        // A body row (the `+fn new` line) must be padded: no empty gap before
-        // the right edge on the row containing `new()`.
+        // The footer must NOT reach the last column: the scrollbar owns it and
+        // the right pad (INNER_PAD + 2) keeps the card clear of the track.
+        let last = buf[(width - 1, fy)].symbol();
+        assert_ne!(last, "╯", "footer must not touch the scrollbar column");
+        assert_ne!(last, "─", "footer must not touch the scrollbar column");
+
+        // No diff content may spill into the right pad zone (only the
+        // scrollbar glyphs are allowed there).
+        for y in 0..20u16 {
+            let row: String = (0..width)
+                .map(|x| buf[(x, y)].symbol().to_string())
+                .collect();
+            let is_diff_row = ["--- a/", "+++ b/", "@@", "fn old", "fn new"]
+                .iter()
+                .any(|m| row.contains(m));
+            if !is_diff_row {
+                continue;
+            }
+            for x in (width - RIGHT_PAD as u16)..width {
+                let sym = buf[(x, y)].symbol();
+                assert!(
+                    sym == " " || sym == "│" || sym == "▐",
+                    "content spills into right pad at ({x},{y}): {sym:?}"
+                );
+            }
+        }
+
+        // A body row (the `+fn new` line) must be padded: its last non-space
+        // glyph ends at or before the render width, i.e. inside the right pad.
         for y in 0..20u16 {
             let row: String = (0..width)
                 .map(|x| buf[(x, y)].symbol().to_string())
                 .collect();
             if row.contains("fn new") {
-                // rightmost cell must be a space (padding) not empty/blank
-                // symbol default is " " anyway; assert the row is full-width
-                // by checking the last cell exists (buffer always does) and
-                // that padding was applied: the row length equals width.
-                assert_eq!(row.chars().count(), width as usize);
+                let last_content = (0..width)
+                    .rfind(|&x| {
+                        let s = buf[(x, y)].symbol();
+                        s != " " && s != "│" && s != "▐"
+                    })
+                    .expect("content row has glyphs");
+                assert!(
+                    last_content < width - RIGHT_PAD as u16,
+                    "body content reaches right pad: x={last_content}"
+                );
+            }
+        }
+    }
+
+    /// The right pad is two columns wider than the left pad: on a System line
+    /// the text starts at INNER_PAD + 4 (gutter "  · ") and the right pad zone
+    /// (last RIGHT_PAD columns) stays empty.
+    #[test]
+    fn right_pad_is_two_wider_than_left() {
+        let mut app = App::inline_for_tests("test");
+        app.splash = None;
+        app.push(LineKind::System, "hello".to_string());
+        let width = 60u16;
+        let buf = crate::harness::ui::tui::draw::render_to_buffer(&mut app, width, 20);
+
+        let mut first = None;
+        for y in 0..20u16 {
+            let row: String = (0..width)
+                .map(|x| buf[(x, y)].symbol().to_string())
+                .collect();
+            if row.contains("hello") {
+                first = (0..width).find(|&x| buf[(x, y)].symbol() == "h");
+                break;
+            }
+        }
+        let first = first.expect("text rendered");
+        assert_eq!(first as usize, INNER_PAD + 4, "left pad + gutter");
+
+        // Right pad zone must be empty for the text row.
+        for y in 0..20u16 {
+            let row: String = (0..width)
+                .map(|x| buf[(x, y)].symbol().to_string())
+                .collect();
+            if row.contains("hello") {
+                for x in (width - RIGHT_PAD as u16)..width {
+                    assert_eq!(
+                        buf[(x, y)].symbol(),
+                        " ",
+                        "right pad zone not empty at ({x},{y})"
+                    );
+                }
             }
         }
     }

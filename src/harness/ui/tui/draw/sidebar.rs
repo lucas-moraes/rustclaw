@@ -1,5 +1,5 @@
-//! Top navbar: row 1 is app/system status (brand, ready state, git branch,
-//! status chip); row 2 is session info (messages, skills, model) and the mode
+//! Top navbar: row 1 is app/system status (brand, git branch, session title
+//! snippet, status chip); row 2 is session info (messages, skills, model) and the mode
 //! selector; row 3 is the Cursor CLI feedback rail, shown only when a Cursor
 //! mode is on. Each row is left/right aligned; on narrow terminals the right
 //! side sheds optional pieces instead of squeezing. Width is measured with
@@ -121,15 +121,22 @@ fn badge_width() -> usize {
 
 struct SystemOpts {
     branch: bool,
+    title: bool,
 }
+
+/// Max display columns for the session-title snippet on row 1.
+const TITLE_MAX: usize = 24;
 
 fn system_line(app: &App, t: &Theme, width: usize) -> Line<'static> {
     if width == 0 {
         return Line::from("");
     }
-    let mut opts = SystemOpts { branch: true };
+    let mut opts = SystemOpts {
+        branch: true,
+        title: true,
+    };
     loop {
-        let left = system_left(app, t);
+        let left = system_left(app, t, &opts);
         let right = mode_spans(app, t);
         let left_w = spans_width(&left);
         let right_w = spans_width(&right);
@@ -142,7 +149,9 @@ fn system_line(app: &App, t: &Theme, width: usize) -> Line<'static> {
             spans.extend(right);
             return Line::from(spans);
         }
-        if opts.branch {
+        if opts.title {
+            opts.title = false;
+        } else if opts.branch {
             opts.branch = false;
         } else {
             let fallback = clip_spans(left, width);
@@ -151,7 +160,7 @@ fn system_line(app: &App, t: &Theme, width: usize) -> Line<'static> {
     }
 }
 
-fn system_left(app: &App, t: &Theme) -> Vec<Span<'static>> {
+fn system_left(app: &App, t: &Theme, opts: &SystemOpts) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     // The badge is painted over the first columns of this row, so pad past it
     // before drawing the branch.
@@ -168,7 +177,29 @@ fn system_left(app: &App, t: &Theme) -> Vec<Span<'static>> {
             Style::default().fg(t.text_dim),
         ));
     }
+    if opts.title {
+        if let Some(snippet) = session_title_snippet(app, t) {
+            spans.push(snippet);
+        }
+    }
     spans
+}
+
+/// Truncated session title shown after the branch: ` · <snippet> `.
+/// `None` when the session has no title yet (before the first turn).
+fn session_title_snippet(app: &App, t: &Theme) -> Option<Span<'static>> {
+    let title = app.session.title.as_deref().unwrap_or("").trim();
+    if title.is_empty() {
+        return None;
+    }
+    let snippet = fit_width(title, TITLE_MAX);
+    if snippet.is_empty() {
+        return None;
+    }
+    Some(Span::styled(
+        format!(" · {snippet} "),
+        Style::default().fg(t.text_dim),
+    ))
 }
 
 // ---------------------------------------------------------------- row 2
