@@ -505,13 +505,13 @@ fn inline_spans(s: &str, theme: &Theme, base: Style) -> Vec<Span<'static>> {
                 i += 1;
             }
             let code: String = chars[start..i].iter().collect();
-            // Render inline code without the backtick markers; use a subtle
-            // surface background + accent2 foreground to read as code.
+            // Render inline code without the backtick markers; accent2
+            // foreground + DIM to read as code (no background, so it blends
+            // with the transcript).
             spans.push(Span::styled(
                 code,
                 Style::default()
                     .fg(theme.accent2)
-                    .bg(theme.surface)
                     .add_modifier(Modifier::DIM),
             ));
             if i < chars.len() {
