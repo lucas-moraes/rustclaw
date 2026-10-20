@@ -64,21 +64,6 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
             row_map.push(li);
         }
     }
-    // Inner side padding: indent every row by INNER_PAD columns on the left
-    // and RIGHT_PAD on the right so text never touches the terminal border or
-    // the scrollbar. Applied here (after rendering) so the markdown wrap
-    // width already accounts for the gutters.
-    if INNER_PAD > 0 || RIGHT_PAD > 0 {
-        let left = " ".repeat(INNER_PAD);
-        let right = " ".repeat(RIGHT_PAD);
-        for row in rows.iter_mut() {
-            let mut spans = Vec::with_capacity(row.spans.len() + 2);
-            spans.push(Span::raw(left.clone()));
-            spans.append(&mut row.spans);
-            spans.push(Span::raw(right.clone()));
-            row.spans = spans;
-        }
-    }
     if let Some(s) = &app.streaming {
         let stream_line = TranscriptLine::static_line(LineKind::Assistant, s.clone());
         let base = rows.len();
@@ -139,6 +124,24 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
         ]));
         for _ in base..rows.len() {
             row_map.push(app.lines.len());
+        }
+    }
+    // Inner side padding: indent every row by INNER_PAD columns on the left
+    // and RIGHT_PAD on the right so text never touches the terminal border or
+    // the scrollbar. Applied *after* every row is built — including the live
+    // streaming text, tool status, subagent panels and activity line — so the
+    // padding is present while a response is still being generated, not only
+    // once the message is committed to `app.lines`. The markdown wrap width
+    // already accounts for the gutters (see `render_width` above).
+    if INNER_PAD > 0 || RIGHT_PAD > 0 {
+        let left = " ".repeat(INNER_PAD);
+        let right = " ".repeat(RIGHT_PAD);
+        for row in rows.iter_mut() {
+            let mut spans = Vec::with_capacity(row.spans.len() + 2);
+            spans.push(Span::raw(left.clone()));
+            spans.append(&mut row.spans);
+            spans.push(Span::raw(right.clone()));
+            row.spans = spans;
         }
     }
     // Bottom breathing room: reserve blank rows after the last content line so
@@ -927,5 +930,48 @@ mod diff_render_tests {
                 }
             }
         }
+    }
+
+    /// Regression: the side padding must be applied to the *live* streaming
+    /// text too, not only to committed lines. Before the fix the padding loop
+    /// ran before the streaming rows were appended, so text jumped left while
+    /// being generated and snapped into place once the turn ended.
+    #[test]
+    fn streaming_text_is_side_padded() {
+        let mut app = App::inline_for_tests("test");
+        app.splash = None;
+        app.streaming = Some("streaming hello world".to_string());
+
+        let width = 60u16;
+        let buf = crate::harness::ui::tui::draw::render_to_buffer(&mut app, width, 20);
+
+        let mut found = false;
+        for y in 0..20u16 {
+            let row: String = (0..width)
+                .map(|x| buf[(x, y)].symbol().to_string())
+                .collect();
+            if !row.contains("streaming hello") {
+                continue;
+            }
+            found = true;
+            // Left pad: the first glyph of the streaming text must sit at or
+            // after INNER_PAD (the bubble gutter adds a few more columns).
+            let first = (0..width)
+                .find(|&x| buf[(x, y)].symbol() != " ")
+                .expect("streaming row has glyphs");
+            assert!(
+                first as usize >= INNER_PAD,
+                "streaming text starts before left pad: x={first}"
+            );
+            // Right pad zone must stay clear of content.
+            for x in (width - RIGHT_PAD as u16)..width {
+                let sym = buf[(x, y)].symbol();
+                assert!(
+                    sym == " " || sym == "│" || sym == "▐",
+                    "streaming content spills into right pad at ({x},{y}): {sym:?}"
+                );
+            }
+        }
+        assert!(found, "streaming text was not rendered");
     }
 }
