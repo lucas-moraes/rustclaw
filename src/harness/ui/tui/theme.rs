@@ -119,7 +119,7 @@ impl Theme {
             border: Color::Rgb(200, 205, 215),
             border_focus: Color::Rgb(0, 110, 200),
             text: Color::Rgb(35, 40, 50),
-            text_dim: Color::Rgb(130, 138, 150),
+            text_dim: Color::Rgb(0, 0, 0),
             text_bright: Color::Rgb(10, 12, 18),
             accent: Color::Rgb(0, 110, 200),
             accent2: Color::Rgb(200, 40, 140),
