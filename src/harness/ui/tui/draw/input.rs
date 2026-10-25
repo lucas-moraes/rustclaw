@@ -17,11 +17,12 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
 
     // Rounded frame around the prompt. The border costs 2 rows and 2 columns;
     // the layout in `draw::draw` reserves them (see `input_h`/`est_inner`).
+    // No bg style: the frame is pre-filled with the theme background
+    // (draw::draw), so the prompt field inherits it in every theme.
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(t.accent2))
-        .style(Style::default().bg(t.surface));
+        .border_style(Style::default().fg(t.accent2));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -40,10 +41,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
             Span::styled(prefix, Style::default().fg(t.accent2)),
             Span::styled(ph, Style::default().fg(t.text_dim)),
         ])];
-        frame.render_widget(
-            Paragraph::new(lines).style(Style::default().bg(t.surface)),
-            inner,
-        );
+        frame.render_widget(Paragraph::new(lines), inner);
         if inner.width > 0 {
             frame.set_cursor_position((
                 (inner.x + prefix_len).min(inner.right().saturating_sub(1)),
@@ -120,10 +118,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
         }
     }
 
-    frame.render_widget(
-        Paragraph::new(lines).style(Style::default().bg(t.surface)),
-        inner,
-    );
+    frame.render_widget(Paragraph::new(lines), inner);
 
     // No `set_cursor_position` here on purpose: the terminal cursor is hidden
     // for the whole TUI session (see `runner::run_tui`) and the blinking
