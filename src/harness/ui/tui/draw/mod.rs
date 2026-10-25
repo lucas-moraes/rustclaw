@@ -20,24 +20,28 @@ pub(crate) mod transcript;
 use crate::harness::ui::tui::app::App;
 use crate::harness::ui::tui::theme::Theme;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::widgets::Clear;
 use ratatui::Frame;
 
 /// Draws the full TUI.
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
 
-    // Full-screen background clear with theme bg via empty block feel.
-    frame.render_widget(Clear, area);
+    // Re-derive the theme from the base palette each frame, tinted by the
+    // active agent mode (build=blue, plan=yellow, explore=orange, purple=general).
+    app.theme = Theme::from_index(app.theme_id).with_mode(&app.session.agent);
+
+    // Full-screen background fill with the theme bg. Without this the buffer
+    // keeps Color::Reset cells and the terminal's own background shows
+    // through — dark by default, which made light themes (daylight) render
+    // with a dark background.
+    frame
+        .buffer_mut()
+        .set_style(area, ratatui::style::Style::default().bg(app.theme.bg));
 
     if let Some(splash) = app.splash.as_mut() {
         splash::draw(frame, splash, &app.theme, area);
         return;
     }
-
-    // Re-derive the theme from the base palette each frame, tinted by the
-    // active agent mode (build=blue, plan=yellow, explore=orange, purple=general).
-    app.theme = Theme::from_index(app.theme_id).with_mode(&app.session.agent);
 
     let has_skill_chips = app
         .prompt_toggles
@@ -300,5 +304,34 @@ mod toast_tests {
         assert!(app.toast.is_none(), "toast should be dropped once expired");
         let text = buffer_text(&mut app);
         assert!(!text.contains("hello toast"), "expired toast must not draw");
+    }
+}
+
+#[cfg(test)]
+mod background_tests {
+    use super::*;
+    use crate::harness::ui::tui::app::App;
+    use crate::harness::ui::tui::theme::Theme;
+
+    /// Regression: the full-screen fill must paint the theme bg on every cell,
+    /// otherwise the terminal's own (dark) background shows through light
+    /// themes like daylight.
+    #[test]
+    fn frame_is_filled_with_theme_background() {
+        let mut app = App::inline_for_tests("");
+        app.splash = None;
+        app.theme_id = Theme::index_of("daylight");
+        let expected = Theme::daylight().bg;
+
+        let buf = render_to_buffer(&mut app, 80, 24);
+        let cell = &buf.content()[0];
+        assert_eq!(
+            cell.bg, expected,
+            "top-left cell must carry the daylight bg (got {:?})",
+            cell.bg
+        );
+        // A cell far from any widget (bottom-right corner) must also be filled.
+        let last = &buf.content()[buf.content().len() - 1];
+        assert_eq!(last.bg, expected, "corner cell must carry the theme bg");
     }
 }
