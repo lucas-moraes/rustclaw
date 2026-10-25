@@ -621,11 +621,12 @@ pub fn cyber_badge(frame: &mut Frame, area: Rect, accent: Color, title: &str) {
             .set_symbol(&ch.to_string())
             .set_style(Style::default().fg(accent).add_modifier(Modifier::BOLD));
     }
-    // diagonal cut right after the chip
+    // diagonal cut right after the chip (no bg override: the cell keeps the
+    // full-screen theme background fill, otherwise it flashes terminal black)
     if chip.x + label_w < area.x + area.width - 1 {
         buf[(chip.x + label_w, chip.y)]
             .set_symbol("╱")
-            .set_style(Style::default().fg(accent).bg(Color::Reset));
+            .set_style(Style::default().fg(accent));
     }
 }
 
