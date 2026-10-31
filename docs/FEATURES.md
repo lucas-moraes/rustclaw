@@ -88,6 +88,15 @@ temperature calibrada por modo (`turn_temperature`) e overrides de permissão.
   (coluna `harness_sessions.parent_id`); aparecem com `↳` em `/sessions` e são
   garbage-collected quando a sessão pai é deletada.
 
+### O que NÃO é
+
+- ✦ ❌ Não é **peer-to-peer** — agentes não conversam entre si, só pai↔filho
+  (orquestração hub-and-spawn; irmãos não se veem).
+- ✦ ❌ Não é **autônomo** — sem scheduler/planejador de longo prazo; não existe
+  camada de runtime/orquestração independente do turno do usuário.
+- ✦ ❌ Não há **memória compartilhada entre irmãos** — cada subagente tem sua
+  sessão isolada; o pai agrega via resumo (budget 4000/8000 chars).
+
 ## 5. Permissões (permission/)
 
 - **`PermissionEngine`**: decide `Allow`/`Ask`/`Deny` por tool + path.
