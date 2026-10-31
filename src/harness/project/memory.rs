@@ -76,6 +76,16 @@ fn stack_name(s: StackKind) -> &'static str {
         StackKind::Node => "node",
         StackKind::Python => "python",
         StackKind::Go => "go",
+        StackKind::Cpp => "cpp",
+        StackKind::Ruby => "ruby",
+        StackKind::Java => "java",
+        StackKind::Php => "php",
+        StackKind::Elixir => "elixir",
+        StackKind::Swift => "swift",
+        StackKind::Zig => "zig",
+        StackKind::Deno => "deno",
+        StackKind::Bun => "bun",
+        StackKind::Dotnet => "dotnet",
         StackKind::Unknown => "unknown",
     }
 }
