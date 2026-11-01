@@ -2,6 +2,8 @@
 
 A coding agent harness in Rust, in the style of OpenCode / Claude Code. Agent loop with **native tool calling**, sessions persisted in SQLite, **skills** (session memory), an animated TUI, human-in-the-loop permissions, builtin agents and subagents.
 
+[![XERJ Corpus Hub contributor](https://hub.xerj.org/contributors/lucas-moraes/badge.svg)](https://hub.xerj.org/contributors/lucas-moraes)
+
 ## ✨ Features
 
 - 🤖 **Native tool calling** — tools described via JSON Schema; no free-text ReAct parsing
@@ -25,14 +27,14 @@ A coding agent harness in Rust, in the style of OpenCode / Claude Code. Agent lo
 
 ## Supported Providers
 
-| Provider | Base URL (default) |
-|----------|--------------------|
-| **DeepInfra** | `https://api.deepinfra.com/v1/openai` |
-| **opencode-go** | `https://opencode.ai/zen/go/v1` |
-| OpenRouter | `https://openrouter.ai/api/v1` |
-| Moonshot | `https://api.moonshot.ai/v1` |
-| VillaMarket | `https://api.minimax.villamarket.ai/v1` |
-| HuggingFace | `https://router.huggingface.co/v1` |
+| Provider        | Base URL (default)                      |
+| --------------- | --------------------------------------- |
+| **DeepInfra**   | `https://api.deepinfra.com/v1/openai`   |
+| **opencode-go** | `https://opencode.ai/zen/go/v1`         |
+| OpenRouter      | `https://openrouter.ai/api/v1`          |
+| Moonshot        | `https://api.moonshot.ai/v1`            |
+| VillaMarket     | `https://api.minimax.villamarket.ai/v1` |
+| HuggingFace     | `https://router.huggingface.co/v1`      |
 
 Any OpenAI-compatible provider works via `BASE_URL` + `Authorization: Bearer`.
 
@@ -63,23 +65,23 @@ git clone git@github.com:lucas-moraes/rustclaw.git && cd rustclaw
 
 All configuration lives in files — no mandatory environment variables:
 
-| File | Scope | Contents |
-|------|-------|----------|
-| `~/.local/share/rustclaw/auth.json` | global | API key per provider (chmod 600) |
-| `~/.local/share/rustclaw/config.json` | global | provider/model, `max_iterations`, `max_context_tokens`, theme |
-| `~/.local/share/rustclaw/mcp.json` | global | MCP servers (`mcpServers`) |
-| `rustclaw.json` (project root) | per project | provider/model/base_url (written by `/models`), `mcp` section |
+| File                                  | Scope       | Contents                                                      |
+| ------------------------------------- | ----------- | ------------------------------------------------------------- |
+| `~/.local/share/rustclaw/auth.json`   | global      | API key per provider (chmod 600)                              |
+| `~/.local/share/rustclaw/config.json` | global      | provider/model, `max_iterations`, `max_context_tokens`, theme |
+| `~/.local/share/rustclaw/mcp.json`    | global      | MCP servers (`mcpServers`)                                    |
+| `rustclaw.json` (project root)        | per project | provider/model/base_url (written by `/models`), `mcp` section |
 
 On **first run**, the TUI opens a wizard: pick **provider → model** (`/models`)
 and paste the **token** (`/auth <provider>`) — nothing is edited by hand. Config commands:
 
-| Command | What it does |
-|---------|--------------|
-| `/models` | provider/model picker (writes the project's `rustclaw.json`) |
-| `/auth <provider>` | saves the token to `auth.json` (masked input) |
-| `/settings` | view/edit `max_iterations`, `max_context_tokens`, theme |
-| `/provider <name>` | switch provider (catalog default model) |
-| `/model <name>` | switch model |
+| Command            | What it does                                                 |
+| ------------------ | ------------------------------------------------------------ |
+| `/models`          | provider/model picker (writes the project's `rustclaw.json`) |
+| `/auth <provider>` | saves the token to `auth.json` (masked input)                |
+| `/settings`        | view/edit `max_iterations`, `max_context_tokens`, theme      |
+| `/provider <name>` | switch provider (catalog default model)                      |
+| `/model <name>`    | switch model                                                 |
 
 Precedence: **builtin catalog → `config.json` → `rustclaw.json` → token from `auth.json`**.
 
@@ -97,13 +99,13 @@ cargo run                # in the project directory (dev)
 The default interface is the **TUI** when stdin and stdout are a TTY. Use the CLI when you
 need a screen reader, CI, a pipe, or a session without an alternate screen.
 
-| Variable / command | Effect |
-|--------------------|--------|
-| `RUSTCLAW_UI=cli` / `RUSTCLAWUI=cli` | forces the streaming REPL (no ratatui) |
-| `NO_COLOR` | `mono` theme (terminal colors) and **locks** `/theme` and Ctrl+T |
-| `RUSTCLAW_THEME` | initial preset (`cyberclaw`, `aurora`, `ember`, `mono`, `daylight`, `high-contrast`; `dark` = cyberclaw, `light` = daylight) |
-| `/theme` · `/theme list` · `/theme <name>` · Ctrl+T | picker (TUI) or list/apply (CLI); persists to `config.json` |
-| `?` / F1 | in-app help (keys, commands, agents, tips) |
+| Variable / command                                  | Effect                                                                                                                       |
+| --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `RUSTCLAW_UI=cli` / `RUSTCLAWUI=cli`                | forces the streaming REPL (no ratatui)                                                                                       |
+| `NO_COLOR`                                          | `mono` theme (terminal colors) and **locks** `/theme` and Ctrl+T                                                             |
+| `RUSTCLAW_THEME`                                    | initial preset (`cyberclaw`, `aurora`, `ember`, `mono`, `daylight`, `high-contrast`; `dark` = cyberclaw, `light` = daylight) |
+| `/theme` · `/theme list` · `/theme <name>` · Ctrl+T | picker (TUI) or list/apply (CLI); persists to `config.json`                                                                  |
+| `?` / F1                                            | in-app help (keys, commands, agents, tips)                                                                                   |
 
 TUI actions have an equivalent slash command (`/models`, `/skills`, `/sessions`, `/cursor`, `/settings`, `/theme`, …). TUI-only exceptions: animated splash, mouse selection, kill-ring yank (Ctrl+Y). Copy/save the last code block: **Ctrl+Y** (empty ring) / **Ctrl+S**, or `/copy-code` / `/save-code` in the TUI; in the CLI use `/export`.
 
@@ -117,56 +119,59 @@ only the checked ones enter that turn's prompt.
 
 ### TUI shortcuts
 
-| Key | Action |
-|-----|--------|
-| `Ctrl+C` | cancels the active run / exits when idle |
-| `Enter` | sends the prompt |
-| `Ctrl+P` | command palette (commands/agents/themes/actions) |
-| `Ctrl+T` | theme picker (`NO_COLOR` locks it to mono) |
-| `Ctrl+L` | clears the local transcript |
-| `Ctrl+Y` | yank from the kill-ring, or the last code block if the ring is empty (`/copy-code`) |
-| `Ctrl+S` | saves the last code block (`/save-code`) |
-| `Ctrl+←/→` | previous/next word |
-| `Ctrl+Home/End` | top / bottom of the transcript |
-| `?` / `F1` | help overlay (sections with `Tab`) |
-| `Esc` | clears input / closes overlay |
-| `↑/↓` | history (or navigate focused chips) |
-| `PgUp/PgDn` or mouse wheel | scroll the transcript |
-| `y`/`n`/`a` | permission modal (allow/deny/always) |
-| `1..n` | question modal (pick an option) |
-| `Space` | toggles a skill in the picker and in the chips |
-| `Tab` | `/` autocomplete / next help section |
+| Key                        | Action                                                                              |
+| -------------------------- | ----------------------------------------------------------------------------------- |
+| `Ctrl+C`                   | cancels the active run / exits when idle                                            |
+| `Enter`                    | sends the prompt                                                                    |
+| `Ctrl+P`                   | command palette (commands/agents/themes/actions)                                    |
+| `Ctrl+T`                   | theme picker (`NO_COLOR` locks it to mono)                                          |
+| `Ctrl+L`                   | clears the local transcript                                                         |
+| `Ctrl+Y`                   | yank from the kill-ring, or the last code block if the ring is empty (`/copy-code`) |
+| `Ctrl+S`                   | saves the last code block (`/save-code`)                                            |
+| `Ctrl+←/→`                 | previous/next word                                                                  |
+| `Ctrl+Home/End`            | top / bottom of the transcript                                                      |
+| `?` / `F1`                 | help overlay (sections with `Tab`)                                                  |
+| `Esc`                      | clears input / closes overlay                                                       |
+| `↑/↓`                      | history (or navigate focused chips)                                                 |
+| `PgUp/PgDn` or mouse wheel | scroll the transcript                                                               |
+| `y`/`n`/`a`                | permission modal (allow/deny/always)                                                |
+| `1..n`                     | question modal (pick an option)                                                     |
+| `Space`                    | toggles a skill in the picker and in the chips                                      |
+| `Tab`                      | `/` autocomplete / next help section                                                |
 
 Simple prompt:
+
 ```
 › List the .rs files in src/ using glob and read src/main.rs
 ```
 
 ### Slash commands
 
-| Command | Description |
-|---------|-------------|
-| `/new` | New session (opens the skills picker) |
-| `/sessions` | Manage sessions (picker: list/select/delete/rename) |
-| `/sessions select <id>` | Select a session by id |
-| `/agent <name>` | Switch agent (build/plan/explore/general/chat-free) |
-| `/compact` | Compact the context manually |
-| `/skills` | Manage skills (`list`·`add <id>`·`rm <id>`·`default <id> on\|off`·`picker`) |
-| `/theme [name]` | List or apply a theme |
-| `/mcp list\|status\|restart` | MCP servers (list/status/reconnect) |
-| `/usage` | In/out tokens + session context window |
-| `/memory list\|rm\|clear\|promote\|gc` | Project memory (facts ranked by recency/usage) |
-| `/permissions set\|rm <tool> <rule>` | Per-tool permission rules (allow/ask/deny) |
-| `/allow-all-permissions` | Grants the harness full freedom to modify any project file (persisted in `rustclaw.json`) |
-| `/help` / `/exit` | Help / quit |
+| Command                                | Description                                                                               |
+| -------------------------------------- | ----------------------------------------------------------------------------------------- |
+| `/new`                                 | New session (opens the skills picker)                                                     |
+| `/sessions`                            | Manage sessions (picker: list/select/delete/rename)                                       |
+| `/sessions select <id>`                | Select a session by id                                                                    |
+| `/agent <name>`                        | Switch agent (build/plan/explore/general/chat-free)                                       |
+| `/compact`                             | Compact the context manually                                                              |
+| `/skills`                              | Manage skills (`list`·`add <id>`·`rm <id>`·`default <id> on\|off`·`picker`)               |
+| `/theme [name]`                        | List or apply a theme                                                                     |
+| `/mcp list\|status\|restart`           | MCP servers (list/status/reconnect)                                                       |
+| `/usage`                               | In/out tokens + session context window                                                    |
+| `/memory list\|rm\|clear\|promote\|gc` | Project memory (facts ranked by recency/usage)                                            |
+| `/permissions set\|rm <tool> <rule>`   | Per-tool permission rules (allow/ask/deny)                                                |
+| `/allow-all-permissions`               | Grants the harness full freedom to modify any project file (persisted in `rustclaw.json`) |
+| `/help` / `/exit`                      | Help / quit                                                                               |
 
 ### Permissions
 
 Destructive tools (`bash`, `write`, `edit`, `task`) ask for confirmation:
+
 ```
 [permission] write (path: /proj/x.rs) {...}
   allow? [y]es/[n]o/[a]lways:
 ```
+
 `a`/`always` approves the tool for the rest of the session. Paths outside the working directory are always escalated to `ask`.
 
 To give the harness full freedom to modify **any project file** (without asking for
@@ -203,11 +208,11 @@ or the `mcp` section of the project's `rustclaw.json` — standard `mcpServers` 
 
 Commands:
 
-| Command | Description |
-|---------|-------------|
-| `/mcp list` | configured servers + tool count |
-| `/mcp status` | connection state (connected/failed/disabled) |
-| `/mcp restart <name>` | reconnects a server |
+| Command               | Description                                  |
+| --------------------- | -------------------------------------------- |
+| `/mcp list`           | configured servers + tool count              |
+| `/mcp status`         | connection state (connected/failed/disabled) |
+| `/mcp restart <name>` | reconnects a server                          |
 
 If a server's subprocess dies, the next call reconnects automatically (1 retry);
 a health check every 60s flags dead servers in `/mcp status`.
