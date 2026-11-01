@@ -31,20 +31,24 @@ jobs:
           key: ${{ runner.os }}-cargo-ci-${{ hashFiles('Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-ci-
 
+      # Cheap checks first: they fail in seconds, so a formatting slip does
+      # not burn minutes of macOS runner time on the full test suite.
+      - name: Format
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+
       - name: Test
         run: cargo test --all-targets --locked
 
+      # `voice` is a default feature, so this is a no-op today; kept as a
+      # guard in case it ever becomes opt-in.
       - name: Test (voice feature)
         run: cargo test --all-targets --locked --features voice
 
       - name: Evals (offline regression gate)
         run: cargo run --quiet --locked -- evals
-
-      - name: Clippy
-        run: cargo clippy --all-targets --locked -- -D warnings
-
-      - name: Format
-        run: cargo fmt --check
 
   msrv:
     name: MSRV (1.90)

@@ -226,8 +226,20 @@ Then use the read tool to read src/main.rs. Report what tools you used.";
         );
     }
 
+    /// `switch_model*` persists into the GLOBAL `config.json`, so these tests
+    /// must not share the real one: they hold the process-wide env lock and
+    /// point `RUSTCLAW_HOME` at a temp dir for the whole body. Without this,
+    /// parallel tests race on the same file and fail intermittently.
+    fn isolated_home() -> (std::sync::MutexGuard<'static, ()>, tempfile::TempDir) {
+        let guard = crate::harness::testenv::lock();
+        let home = tempfile::tempdir().unwrap();
+        std::env::set_var("RUSTCLAW_HOME", home.path());
+        (guard, home)
+    }
+
     #[tokio::test]
     async fn test_switch_model_updates_config_and_global_settings() {
+        let (_env, _home) = isolated_home();
         let dir = tempfile::tempdir().unwrap();
         let mut rt = test_runtime(dir.path()).unwrap();
 
@@ -259,6 +271,7 @@ Then use the read tool to read src/main.rs. Report what tools you used.";
     async fn test_switch_model_clears_key_when_auth_store_empty() {
         // Switching to a provider with no stored token must NOT reuse the
         // previous provider's key (would leak the old credential to a new API).
+        let (_env, _home) = isolated_home();
         let dir = tempfile::tempdir().unwrap();
         let mut rt = test_runtime(dir.path()).unwrap();
         rt.switch_model_at(dir.path(), "openrouter", "z-ai/glm-4.6")
@@ -272,6 +285,7 @@ Then use the read tool to read src/main.rs. Report what tools you used.";
     #[tokio::test]
     async fn test_switch_model_uses_token_from_auth_store() {
         // Switching to a provider that HAS a stored token must use that token.
+        let (_env, _home) = isolated_home();
         let dir = tempfile::tempdir().unwrap();
         let mut rt = test_runtime(dir.path()).unwrap();
         let mut auth = crate::harness::auth::AuthStore::default();
@@ -285,6 +299,7 @@ Then use the read tool to read src/main.rs. Report what tools you used.";
 
     #[tokio::test]
     async fn test_switch_model_unknown_provider_keeps_base_url() {
+        let (_env, _home) = isolated_home();
         let dir = tempfile::tempdir().unwrap();
         let mut rt = test_runtime(dir.path()).unwrap();
         rt.switch_model_at(dir.path(), "my-custom-relay", "model-x")
