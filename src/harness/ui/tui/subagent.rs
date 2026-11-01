@@ -32,6 +32,23 @@ pub struct SubagentPanel {
     pub finished_at: Option<u64>,
     /// Final summary preview (set when the `task` tool completes).
     pub summary: Option<String>,
+    /// Messages exchanged with this subagent (`message_send`/`message_ask`/
+    /// `message_reply`), newest last. Shown in the panel so a conversation is
+    /// visible instead of only the tool call names.
+    pub messages: Vec<String>,
+}
+
+/// Cap on retained conversation lines per panel; the band only draws two.
+const MAX_PANEL_MESSAGES: usize = 6;
+
+impl SubagentPanel {
+    /// Appends a conversation line, keeping only the most recent ones.
+    pub fn push_message(&mut self, line: String) {
+        self.messages.push(line);
+        if self.messages.len() > MAX_PANEL_MESSAGES {
+            self.messages.remove(0);
+        }
+    }
 }
 
 impl App {
@@ -71,6 +88,7 @@ impl App {
                         finished: false,
                         finished_at: None,
                         summary: None,
+                        messages: Vec::new(),
                     },
                 ));
                 return;
@@ -125,6 +143,31 @@ impl App {
         };
         let panel = &mut self.subagent_panels[idx].1;
         match ev {
+            // Swarm traffic is the interesting part of a subagent's life: a
+            // question it asked (blocked) or a note it sent. Record it so the
+            // panel shows a conversation, not just tool names.
+            HarnessEvent::ToolStart { name, input, .. }
+                if matches!(
+                    name.as_str(),
+                    "message_send" | "message_ask" | "message_reply"
+                ) =>
+            {
+                let body = input["body"]
+                    .as_str()
+                    .or_else(|| input["question"].as_str())
+                    .or_else(|| input["answer"].as_str())
+                    .unwrap_or("");
+                let arrow = match name.as_str() {
+                    "message_send" => "→",
+                    "message_ask" => "?",
+                    _ => "↩",
+                };
+                panel.push_message(format!(
+                    "{} {}",
+                    arrow,
+                    crate::harness::session::preview(body, 60)
+                ));
+            }
             HarnessEvent::ToolStart { name, .. } => {
                 panel.lines.push(format!("· {}", name));
             }
@@ -221,6 +264,7 @@ mod tests {
             finished: finished_at.is_some(),
             finished_at,
             summary: None,
+            messages: Vec::new(),
         }
     }
 

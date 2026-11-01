@@ -1702,3 +1702,85 @@ async fn verification_gate_clean_check_ends_on_first_stop() {
         "no verification note when the check passed"
     );
 }
+
+/// Subagent messages must reach a running turn: the parent drains the bus at
+/// the top of every iteration, so a note sent mid-run becomes a user message.
+#[tokio::test]
+async fn swarm_messages_are_injected_into_the_session() {
+    use crate::harness::swarm::bus::MessageKind;
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = StdArc::new(
+        crate::harness::session::store::SessionStore::open(&dir.path().join("test.db")).unwrap(),
+    );
+    let (tx, _rx) = crate::harness::event::event_channel();
+    let processor = SessionProcessor {
+        provider: StdArc::new(StalledProvider),
+        registry: crate::harness::tool::registry::ToolRegistry::builder().build(),
+        events: tx,
+        config: ProcessorConfig::default(),
+        store: store.clone(),
+    };
+
+    let mut ctx = test_ctx();
+    let mut session = store.create_session("build", dir.path()).unwrap();
+    // The bus is keyed by session id, so the context must speak as this one.
+    ctx.session_id = session.id.clone();
+
+    let db = dir.path().join("swarm.db");
+    let bus = StdArc::new(crate::harness::swarm::MessageBus::open(&db, dir.path()).unwrap());
+    bus.send_kind(
+        "child",
+        &session.id,
+        "found the bug",
+        MessageKind::Note,
+        None,
+    )
+    .unwrap();
+    ctx.message_bus = Some(bus.clone());
+    let before = session.messages.len();
+    processor.ingest_swarm_messages(&mut session, &ctx).await;
+
+    assert_eq!(session.messages.len(), before + 1, "one note injected");
+    let injected = &session.messages.last().unwrap();
+    let text = injected.text_content();
+    assert!(text.contains("[swarm]"), "got: {text}");
+    assert!(text.contains("found the bug"));
+    assert!(text.contains("child"), "the sender must be identifiable");
+
+    // The bus is drained: a second pass injects nothing.
+    let before = session.messages.len();
+    processor.ingest_swarm_messages(&mut session, &ctx).await;
+    assert_eq!(session.messages.len(), before);
+
+    // And it was persisted, so a resumed session replays the same context.
+    let stored = store
+        .load_session(&session.id, dir.path())
+        .unwrap()
+        .unwrap();
+    assert!(stored
+        .messages
+        .iter()
+        .any(|m: &Message| m.text_content().contains("found the bug")));
+}
+
+#[tokio::test]
+async fn swarm_injection_is_a_no_op_without_a_bus() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = StdArc::new(
+        crate::harness::session::store::SessionStore::open(&dir.path().join("test.db")).unwrap(),
+    );
+    let (tx, _rx) = crate::harness::event::event_channel();
+    let processor = SessionProcessor {
+        provider: StdArc::new(StalledProvider),
+        registry: crate::harness::tool::registry::ToolRegistry::builder().build(),
+        events: tx,
+        config: ProcessorConfig::default(),
+        store: store.clone(),
+    };
+    let ctx = test_ctx();
+    let mut session = store.create_session("build", dir.path()).unwrap();
+    let before = session.messages.len();
+    processor.ingest_swarm_messages(&mut session, &ctx).await;
+    assert_eq!(session.messages.len(), before);
+}

@@ -137,6 +137,7 @@ impl App {
                     self.subagent_panels.push((
                         String::new(), // tool_id unknown here; matched on ToolEnd
                         SubagentPanel {
+                            messages: Vec::new(),
                             child_session_id: String::new(),
                             agent,
                             depth: depth + 1,

@@ -566,6 +566,11 @@ impl SessionProcessor {
                     break;
                 }
 
+                // Messages from other agents (subagents reporting back, parents
+                // answering) arrive between iterations. Ingesting them here
+                // means the running agent sees them without ending its turn.
+                self.ingest_swarm_messages(session, ctx).await;
+
                 let req = LlmRequest {
                     model: agent
                         .model
@@ -1075,6 +1080,80 @@ impl SessionProcessor {
                 }
             }
         }
+    }
+
+    /// Drains the message bus for this session and injects anything unread as
+    /// a user message, so a parent can receive a subagent's findings (or an
+    /// answer to a question) mid-turn instead of only after it finishes.
+    ///
+    /// Best-effort: the bus is optional and a failure must never break the
+    /// turn, so errors are logged and swallowed.
+    async fn ingest_swarm_messages(
+        &self,
+        session: &mut Session,
+        ctx: &crate::harness::tool::context::ToolContext,
+    ) {
+        let Some(bus) = ctx.message_bus.as_ref() else {
+            return;
+        };
+        let messages = match bus.inbox(&session.id) {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!("swarm inbox drain failed: {e}");
+                return;
+            }
+        };
+        // Questions that were already drained from the inbox but not answered
+        // still block a subagent. Re-surface them every iteration so the parent
+        // cannot forget one just because it read the inbox once.
+        let pending = bus.pending_asks(&session.id).unwrap_or_default();
+        let unread_ids: Vec<i64> = messages.iter().map(|m| m.id).collect();
+        let unanswered: Vec<_> = pending
+            .into_iter()
+            .filter(|a| !unread_ids.contains(&a.id))
+            .collect();
+
+        if messages.is_empty() && unanswered.is_empty() {
+            return;
+        }
+        let mut body = String::new();
+        if !unanswered.is_empty() {
+            body.push_str("[swarm] Perguntas ainda sem resposta (use `message_reply`):\n");
+            for a in &unanswered {
+                body.push_str(&format!(
+                    "\n[#{} de {}]\n{}\n",
+                    a.id,
+                    a.from,
+                    crate::harness::session::preview(&a.body, 200)
+                ));
+            }
+            body.push('\n');
+        }
+        if messages.is_empty() {
+            let note = Message::user(body);
+            session.push_message(note.clone());
+            self.persist(&session.id, &session.cwd, &note).await;
+            return;
+        }
+        body.push_str("[swarm] Mensagens recebidas de outros agentes enquanto você trabalhava:\n");
+        for m in &messages {
+            let tag = match m.kind {
+                crate::harness::swarm::bus::MessageKind::Ask => {
+                    format!(
+                        " — PERGUNTA, responda com `message_reply` (ask_id={})",
+                        m.id
+                    )
+                }
+                crate::harness::swarm::bus::MessageKind::Reply => " — resposta".to_string(),
+                crate::harness::swarm::bus::MessageKind::Note => String::new(),
+            };
+            body.push_str(&format!("\n[#{} de {}{}]\n{}\n", m.id, m.from, tag, m.body));
+        }
+        // Persist exactly what the model sees, so a resumed session replays the
+        // same context instead of silently losing the messages.
+        let note = Message::user(body);
+        session.push_message(note.clone());
+        self.persist(&session.id, &session.cwd, &note).await;
     }
 
     async fn maybe_compact(

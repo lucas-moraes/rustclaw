@@ -261,6 +261,7 @@ mod input_tests {
             finished: false,
             finished_at: None,
             summary: None,
+            messages: Vec::new(),
         };
         let label = App::subagent_panel_label(&panel);
         assert_eq!(label, "⏳ explore — 1 tools");
@@ -278,6 +279,7 @@ mod input_tests {
             finished: false,
             finished_at: None,
             summary: None,
+            messages: Vec::new(),
         };
         let label = App::subagent_panel_label(&panel);
         // Depth 2 → one `│  ` segment then `└─ `, plus the `L2` level tag.

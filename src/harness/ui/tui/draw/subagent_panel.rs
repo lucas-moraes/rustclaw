@@ -95,12 +95,28 @@ fn draw_panel(frame: &mut Frame, app: &App, panel: &SubagentPanel, area: Rect) {
 
     let mut lines: Vec<Line> = Vec::with_capacity(ACTIVITY_LINES + 1);
     lines.push(status_line(theme, panel, mark, border));
-    let start = panel.lines.len().saturating_sub(ACTIVITY_LINES);
-    for line in &panel.lines[start..] {
+
+    // Conversation beats noise: when the subagent has exchanged messages,
+    // the newest ones take the activity slots (they are what the user is
+    // waiting to see), and tool lines fill whatever is left.
+    let msgs = &panel.messages;
+    let shown_msgs = msgs.len().min(ACTIVITY_LINES);
+    let start_msg = msgs.len() - shown_msgs;
+    for line in &msgs[start_msg..] {
         lines.push(Line::from(Span::styled(
             truncate_to_width(line, inner.width as usize),
-            Style::default().fg(theme.text_dim),
+            Style::default().fg(theme.accent2),
         )));
+    }
+    let tool_slots = ACTIVITY_LINES - shown_msgs;
+    if tool_slots > 0 {
+        let start = panel.lines.len().saturating_sub(tool_slots);
+        for line in &panel.lines[start..] {
+            lines.push(Line::from(Span::styled(
+                truncate_to_width(line, inner.width as usize),
+                Style::default().fg(theme.text_dim),
+            )));
+        }
     }
     frame.render_widget(Paragraph::new(lines), inner);
 }
@@ -143,6 +159,13 @@ fn status_line<'a>(
             Style::default().fg(theme.error),
         ));
     }
+    // A subagent blocked on a question looks frozen otherwise; say why.
+    if !panel.finished && panel.messages.last().is_some_and(|m| m.starts_with('?')) {
+        spans.push(Span::styled(
+            " · aguardando resposta",
+            Style::default().fg(theme.accent2),
+        ));
+    }
     Line::from(spans)
 }
 
@@ -163,6 +186,7 @@ mod tests {
             finished,
             finished_at: if finished { Some(0) } else { None },
             summary: None,
+            messages: Vec::new(),
         }
     }
 
@@ -255,6 +279,20 @@ mod tests {
         for row in rows.iter().filter(|r| r.contains('╭') || r.contains('╰')) {
             assert_eq!(row.chars().count(), 100, "ragged row: {row}");
         }
+    }
+
+    #[test]
+    fn conversation_lines_take_the_activity_slots() {
+        let mut app = App::inline_for_tests("");
+        app.splash = None;
+        let mut p = panel("build", false);
+        p.push_message("? pai: qual schema usar?".into());
+        app.subagent_panels = vec![("a".into(), p)];
+        let text = buffer_text(&mut app);
+        assert!(
+            text.contains("qual schema usar?"),
+            "panel should show the question:\n{text}"
+        );
     }
 
     #[test]

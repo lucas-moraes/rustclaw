@@ -108,6 +108,28 @@ with its JSON Schema in the request; use them to accomplish the task.\n",
         }
     }
 
+    // Only agents that can actually spawn or talk to other agents get the
+    // coordination rules; for everyone else it is dead weight.
+    let can_swarm = available_tools.iter().any(|t| {
+        matches!(
+            t.name.as_str(),
+            "task" | "message_send" | "message_ask" | "message_reply"
+        )
+    });
+    if can_swarm {
+        prompt.push_str(
+            "\n# Talking to other agents\n\
+Sessions coordinate through a message bus. Rules:\n\
+- A subagent's messages only reach you between your tool calls, so check \
+`message_inbox` before concluding a subagent is silent.\n\
+- If a subagent asks you a question (`message_ask`), answer it with \
+`message_reply` — the subagent is blocked waiting. Do this before anything \
+else; an unanswered question stalls real work.\n\
+- Prefer `message_send` for findings you want recorded without an answer, and \
+`shared_memory` for data several agents need.\n",
+        );
+    }
+
     prompt.push_str(
         "\n# Operating rules\n\
 1. Reply in the user's language: detect the language of the user's message \

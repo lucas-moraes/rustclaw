@@ -96,8 +96,15 @@ impl SubagentRunner for TaskRunner {
         // `message_send` / `shared_memory` without guessing session ids.
         let prompt = format!(
             "{prompt}\n\n---\n[swarm] You are session `{}` (agent `{agent}`, depth {depth}). \
-Your parent session is `{}`. Use `message_send` to report findings to it and \
-`shared_memory` to publish data other agents can read.",
+Your parent session is `{}`.\n\
+- `message_send` → the parent: fire-and-forget progress notes or findings. Use \
+it when you discover something the parent should know *before* you finish.\n\
+- `message_ask` → the parent: block and wait for a decision when you are stuck \
+on a requirement that is not yours to invent (ambiguous spec, approach choice). \
+Do not guess when the answer changes the design.\n\
+- `message_inbox`: check for messages the parent sent you mid-run. Call it \
+before assuming you are alone.\n\
+- `shared_memory`: publish data other agents can read.",
             child.id, self.parent_session_id
         );
 

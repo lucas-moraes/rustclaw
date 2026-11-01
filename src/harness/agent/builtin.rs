@@ -31,6 +31,8 @@ const BUILD_TOOLS_NO_WRITE: &[&str] = &[
     "remember",
     "message_send",
     "message_inbox",
+    "message_ask",
+    "message_reply",
     "shared_memory",
     "fetch_webpage",
     "web_search",

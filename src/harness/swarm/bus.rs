@@ -14,6 +14,36 @@ use std::sync::Mutex;
 /// Default lifetime of a message: 1 hour.
 pub const DEFAULT_MESSAGE_TTL_SECS: i64 = 3600;
 
+/// What a message is for. `Ask` blocks the sender until a `Reply` arrives;
+/// `Note` is fire-and-forget and never needs an answer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MessageKind {
+    /// Status update / finding. No reply expected.
+    Note,
+    /// A question that the recipient must answer with `message_reply`.
+    Ask,
+    /// The answer to an `Ask`, carrying `reply_to`.
+    Reply,
+}
+
+impl MessageKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MessageKind::Note => "note",
+            MessageKind::Ask => "ask",
+            MessageKind::Reply => "reply",
+        }
+    }
+
+    fn parse(s: &str) -> MessageKind {
+        match s {
+            "ask" => MessageKind::Ask,
+            "reply" => MessageKind::Reply,
+            _ => MessageKind::Note,
+        }
+    }
+}
+
 /// A single message on the bus.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Message {
@@ -22,6 +52,9 @@ pub struct Message {
     pub to: String,
     pub body: String,
     pub created_at: String,
+    pub kind: MessageKind,
+    /// For `Reply`: the id of the `Ask` being answered.
+    pub reply_to: Option<i64>,
 }
 
 /// SQLite-backed message bus, partitioned per project root.
@@ -70,27 +103,186 @@ impl MessageBus {
                 recipient TEXT NOT NULL,
                 body TEXT NOT NULL,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                read_at TEXT
+                read_at TEXT,
+                kind TEXT NOT NULL DEFAULT 'note',
+                reply_to INTEGER
             );
             CREATE INDEX IF NOT EXISTS {}_inbox ON {} (recipient, read_at);",
             self.table, self.table, self.table
         ))
         .with_context(|| format!("failed to create table {}", self.table))?;
+        // Databases created before the conversation protocol lack these
+        // columns; `CREATE TABLE IF NOT EXISTS` leaves them as they are.
+        for sql in [
+            format!(
+                "ALTER TABLE {} ADD COLUMN kind TEXT NOT NULL DEFAULT 'note'",
+                self.table
+            ),
+            format!("ALTER TABLE {} ADD COLUMN reply_to INTEGER", self.table),
+        ] {
+            // "duplicate column name" is the expected error on a fresh table.
+            let _ = conn.execute_batch(&sql);
+        }
         Ok(())
     }
 
-    /// Appends a message. Returns its id.
+    /// Appends a note. Returns its id.
     pub fn send(&self, from: &str, to: &str, body: &str) -> Result<i64> {
+        self.send_kind(from, to, body, MessageKind::Note, None)
+    }
+
+    /// Appends a message of any kind. Returns its id.
+    pub fn send_kind(
+        &self,
+        from: &str,
+        to: &str,
+        body: &str,
+        kind: MessageKind,
+        reply_to: Option<i64>,
+    ) -> Result<i64> {
         let conn = self.conn.lock().expect("message db mutex poisoned");
         conn.execute(
             &format!(
-                "INSERT INTO {} (sender, recipient, body) VALUES (?1, ?2, ?3)",
+                "INSERT INTO {} (sender, recipient, body, kind, reply_to)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
                 self.table
             ),
-            params![from, to, body],
+            params![from, to, body, kind.as_str(), reply_to],
         )
         .context("failed to insert message")?;
         Ok(conn.last_insert_rowid())
+    }
+
+    /// Sends a question and waits (with `timeout`) for a reply.
+    ///
+    /// This is the blocking half of the conversation protocol: the requester
+    /// parks until the recipient calls `message_reply`. Polling keeps the
+    /// implementation simple and the reply durable in SQLite, so a crash of
+    /// either side leaves a readable record instead of a dangling wait.
+    pub async fn ask(
+        &self,
+        from: &str,
+        to: &str,
+        body: &str,
+        timeout: std::time::Duration,
+    ) -> Result<Option<String>> {
+        let ask_id = self.send_kind(from, to, body, MessageKind::Ask, None)?;
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            if let Some(reply) = self.take_reply(from, ask_id)? {
+                return Ok(Some(reply));
+            }
+            if std::time::Instant::now() >= deadline {
+                return Ok(None);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        }
+    }
+
+    /// Returns the (first) unread reply to `ask_id` addressed to `session`,
+    /// marking it read. Used by `ask`; also handy for tests.
+    pub fn take_reply(&self, session: &str, ask_id: i64) -> Result<Option<String>> {
+        let conn = self.conn.lock().expect("message db mutex poisoned");
+        let row: Option<(i64, String)> = conn
+            .query_row(
+                &format!(
+                    "SELECT id, body FROM {}
+                     WHERE recipient = ?1 AND reply_to = ?2 AND read_at IS NULL
+                     ORDER BY id ASC LIMIT 1",
+                    self.table
+                ),
+                params![session, ask_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()
+            .context("failed to look up reply")?;
+        let Some((id, body)) = row else {
+            return Ok(None);
+        };
+        conn.execute(
+            &format!(
+                "UPDATE {} SET read_at = datetime('now') WHERE id = ?1",
+                self.table
+            ),
+            params![id],
+        )
+        .context("failed to mark reply read")?;
+        Ok(Some(body))
+    }
+
+    /// Loads a single message by id.
+    pub fn get(&self, id: i64) -> Result<Option<Message>> {
+        let conn = self.conn.lock().expect("message db mutex poisoned");
+        let msg = conn
+            .query_row(
+                &format!(
+                    "SELECT id, sender, recipient, body, created_at, kind, reply_to
+                     FROM {} WHERE id = ?1",
+                    self.table
+                ),
+                params![id],
+                |row| {
+                    Ok(Message {
+                        id: row.get(0)?,
+                        from: row.get(1)?,
+                        to: row.get(2)?,
+                        body: row.get(3)?,
+                        created_at: row.get(4)?,
+                        kind: MessageKind::parse(&row.get::<_, String>(5)?),
+                        reply_to: row.get(6)?,
+                    })
+                },
+            )
+            .optional()
+            .context("failed to load message")?;
+        Ok(msg)
+    }
+
+    /// Marks a message as read without returning its body.
+    pub fn mark_read(&self, id: i64) -> Result<()> {
+        let conn = self.conn.lock().expect("message db mutex poisoned");
+        conn.execute(
+            &format!(
+                "UPDATE {} SET read_at = datetime('now') WHERE id = ?1 AND read_at IS NULL",
+                self.table
+            ),
+            params![id],
+        )
+        .context("failed to mark message read")?;
+        Ok(())
+    }
+
+    /// Unread `Ask` messages waiting for `session` to answer.
+    pub fn pending_asks(&self, session: &str) -> Result<Vec<Message>> {
+        let conn = self.conn.lock().expect("message db mutex poisoned");
+        let cutoff = format!("-{} seconds", self.ttl_secs);
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT id, sender, recipient, body, created_at, kind, reply_to FROM {}
+                 WHERE recipient = ?1 AND read_at IS NULL AND kind = 'ask'
+                   AND created_at >= datetime('now', ?2)
+                 ORDER BY id ASC",
+                self.table
+            ))
+            .context("failed to prepare pending_asks query")?;
+        let rows = stmt
+            .query_map(params![session, cutoff], |row| {
+                Ok(Message {
+                    id: row.get(0)?,
+                    from: row.get(1)?,
+                    to: row.get(2)?,
+                    body: row.get(3)?,
+                    created_at: row.get(4)?,
+                    kind: MessageKind::parse(&row.get::<_, String>(5)?),
+                    reply_to: row.get(6)?,
+                })
+            })
+            .context("failed to read pending asks")?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.context("failed to decode ask row")?);
+        }
+        Ok(out)
     }
 
     /// Drains the unread messages addressed to `session_id`, marking them read.
@@ -104,7 +296,7 @@ impl MessageBus {
         {
             let mut stmt = tx
                 .prepare(&format!(
-                    "SELECT id, sender, recipient, body, created_at FROM {}
+                    "SELECT id, sender, recipient, body, created_at, kind, reply_to FROM {}
                      WHERE recipient = ?1 AND read_at IS NULL
                        AND created_at >= datetime('now', ?2)
                      ORDER BY id ASC",
@@ -120,6 +312,8 @@ impl MessageBus {
                         to: row.get(2)?,
                         body: row.get(3)?,
                         created_at: row.get(4)?,
+                        kind: MessageKind::parse(&row.get::<_, String>(5)?),
+                        reply_to: row.get(6)?,
                     })
                 })
                 .context("failed to read inbox")?;
@@ -263,5 +457,96 @@ mod tests {
         let got = receiver.inbox("child").unwrap();
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].body, "cross-instance");
+    }
+
+    #[test]
+    fn ask_and_reply_complete_a_round_trip() {
+        let d = tempfile::tempdir().unwrap();
+        let bus = bus(d.path());
+
+        // The asker parks on `ask` while the responder answers from another
+        // task, mimicking a subagent blocked on its parent.
+        // The bus holds a Mutex<Connection>, so a second handle shares it.
+        let responder = MessageBus::open(&d.path().join("test.db"), d.path()).unwrap();
+        let handle = std::thread::spawn(move || {
+            // Wait for the question to land, then answer it.
+            for _ in 0..100 {
+                let asks = responder.pending_asks("parent").unwrap();
+                if let Some(ask) = asks.first() {
+                    responder
+                        .send_kind(
+                            "parent",
+                            &ask.from,
+                            "use the JSON schema",
+                            MessageKind::Reply,
+                            Some(ask.id),
+                        )
+                        .unwrap();
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            panic!("question never arrived");
+        });
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let answer = rt.block_on(bus.ask(
+            "child",
+            "parent",
+            "which schema?",
+            std::time::Duration::from_secs(5),
+        ));
+        handle.join().unwrap();
+        assert_eq!(answer.unwrap().as_deref(), Some("use the JSON schema"));
+    }
+
+    #[test]
+    fn ask_times_out_without_a_reply() {
+        let d = tempfile::tempdir().unwrap();
+        let bus = bus(d.path());
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let answer = rt.block_on(bus.ask(
+            "child",
+            "parent",
+            "anyone?",
+            std::time::Duration::from_millis(50),
+        ));
+        assert_eq!(answer.unwrap(), None);
+        // The question survives the timeout so a late answer is still useful.
+        assert_eq!(bus.pending_asks("parent").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn pending_asks_ignores_notes_and_read_questions() {
+        let d = tempfile::tempdir().unwrap();
+        let bus = bus(d.path());
+        let ask = bus
+            .send_kind("child", "parent", "q?", MessageKind::Ask, None)
+            .unwrap();
+        bus.send("child", "parent", "just a note").unwrap();
+        assert_eq!(bus.pending_asks("parent").unwrap().len(), 1);
+
+        bus.mark_read(ask).unwrap();
+        assert!(bus.pending_asks("parent").unwrap().is_empty());
+    }
+
+    #[test]
+    fn inbox_reports_the_message_kind() {
+        let d = tempfile::tempdir().unwrap();
+        let bus = bus(d.path());
+        bus.send_kind("c", "p", "q?", MessageKind::Ask, None)
+            .unwrap();
+        bus.send_kind("c", "p", "a!", MessageKind::Reply, Some(1))
+            .unwrap();
+        let got = bus.inbox("p").unwrap();
+        assert_eq!(got[0].kind, MessageKind::Ask);
+        assert_eq!(got[1].kind, MessageKind::Reply);
+        assert_eq!(got[1].reply_to, Some(1));
     }
 }
