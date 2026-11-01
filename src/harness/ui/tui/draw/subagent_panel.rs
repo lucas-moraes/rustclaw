@@ -70,7 +70,17 @@ fn draw_panel(frame: &mut Frame, app: &App, panel: &SubagentPanel, area: Rect) {
         (theme.accent, spinner_frame(app.tick))
     };
 
-    let title = format!(" {} ", App::subagent_panel_label(panel));
+    // The label already carries the agent name, the depth badge and the tool
+    // counters; the live mark (spinner / ✓ / ✗) is rendered on the status line
+    // below, so strip the label's own static mark to avoid showing it twice.
+    let label = App::subagent_panel_label(panel);
+    let label = strip_label_mark(&label);
+    // Title must fit between the two corners, otherwise ratatui clips it
+    // mid-glyph and the right border drifts.
+    let title = format!(
+        " {} ",
+        truncate_to_width(&label, area.width.saturating_sub(4) as usize)
+    );
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -93,6 +103,18 @@ fn draw_panel(frame: &mut Frame, app: &App, panel: &SubagentPanel, area: Rect) {
         )));
     }
     frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// Removes the static status mark (`⏳` / `✓` / `✗`) that
+/// `subagent_panel_label` prefixes, since the live mark is drawn separately.
+fn strip_label_mark(label: &str) -> String {
+    let trimmed = label.trim_start();
+    for mark in ["⏳", "✓", "✗"] {
+        if let Some(rest) = trimmed.strip_prefix(mark) {
+            return rest.trim_start().to_string();
+        }
+    }
+    trimmed.to_string()
 }
 
 /// Status line: spinner/check mark, agent name and tool counters.
@@ -213,6 +235,25 @@ mod tests {
         let done = buffer_text(&mut app);
         assert!(done.contains('✓'));
         assert!(!done.contains(spinner_frame(0)));
+    }
+
+    #[test]
+    fn long_title_does_not_break_the_border() {
+        let mut app = App::inline_for_tests("");
+        app.splash = None;
+        app.subagent_panels = (0..3)
+            .map(|i| {
+                let mut p = panel("a-very-long-agent-name-that-would-overflow", false);
+                p.summary = Some("x".repeat(80));
+                (format!("c{i}"), p)
+            })
+            .collect();
+        let rows = buffer_rows(&mut app);
+        // Every box row must keep the same width: a clipped title would push
+        // the right corner out of the column.
+        for row in rows.iter().filter(|r| r.contains('╭') || r.contains('╰')) {
+            assert_eq!(row.chars().count(), 100, "ragged row: {row}");
+        }
     }
 
     #[test]
