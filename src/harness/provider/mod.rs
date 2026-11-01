@@ -251,6 +251,10 @@ pub struct LlmResponse {
     pub stop_reason: Option<String>,
 }
 
+// `async_trait` expands to a `#[must_use]` future; newer clippy flags that
+// as a double `must_use` on the generated signature. The attribute is the
+// macro's, not ours, so silence the lint here instead of dropping `-D warnings`.
+#[allow(clippy::double_must_use)]
 #[async_trait::async_trait]
 pub trait Provider: Send + Sync {
     fn name(&self) -> &str;

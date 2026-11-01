@@ -14,6 +14,10 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 /// A backend that turns text into embedding vectors.
+// `async_trait` expands to a `#[must_use]` future; newer clippy flags that
+// as a double `must_use` on the generated signature. The attribute is the
+// macro's, not ours, so silence the lint here instead of dropping `-D warnings`.
+#[allow(clippy::double_must_use)]
 #[async_trait::async_trait]
 pub trait Embedder: Send + Sync {
     /// Human-readable backend name (for `/index` status).

@@ -63,6 +63,10 @@ pub(super) enum FailureKind {
 }
 
 /// F11.1: a single search provider (HTML scraping, no API key).
+// `async_trait` expands to a `#[must_use]` future; newer clippy flags that
+// as a double `must_use` on the generated signature. The attribute is the
+// macro's, not ours, so silence the lint here instead of dropping `-D warnings`.
+#[allow(clippy::double_must_use)]
 #[async_trait::async_trait]
 pub(super) trait SearchProvider: Send + Sync {
     fn id(&self) -> ProviderId;

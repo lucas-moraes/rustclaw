@@ -58,6 +58,10 @@ impl ToolResult {
 /// A harness tool with JSON Schema parameters.
 /// Unlike the legacy text-ReAct `Tool`, these are advertised to the model
 /// via native `tools` in the LLM request.
+// `async_trait` expands to a `#[must_use]` future; newer clippy flags that
+// as a double `must_use` on the generated signature. The attribute is the
+// macro's, not ours, so silence the lint here instead of dropping `-D warnings`.
+#[allow(clippy::double_must_use)]
 #[async_trait::async_trait]
 pub trait Tool: Send + Sync {
     fn name(&self) -> &str;

@@ -58,6 +58,10 @@ pub struct PermissionAskInput {
 }
 
 /// Decides whether a tool call may proceed.
+// `async_trait` expands to a `#[must_use]` future; newer clippy flags that
+// as a double `must_use` on the generated signature. The attribute is the
+// macro's, not ours, so silence the lint here instead of dropping `-D warnings`.
+#[allow(clippy::double_must_use)]
 #[async_trait::async_trait]
 pub trait PermissionAsker: Send + Sync {
     /// Returns true if the user allowed the operation (for this run or "always").
@@ -65,6 +69,10 @@ pub trait PermissionAsker: Send + Sync {
 }
 
 /// Free-form question to the end user (used by the `question` tool).
+// `async_trait` expands to a `#[must_use]` future; newer clippy flags that
+// as a double `must_use` on the generated signature. The attribute is the
+// macro's, not ours, so silence the lint here instead of dropping `-D warnings`.
+#[allow(clippy::double_must_use)]
 #[async_trait::async_trait]
 pub trait UserAsker: Send + Sync {
     /// Presents the question + options; returns the chosen answer (free text allowed).
@@ -72,6 +80,10 @@ pub trait UserAsker: Send + Sync {
 }
 
 /// Runs a subagent task (implemented by the runtime; injected to avoid cycles).
+// `async_trait` expands to a `#[must_use]` future; newer clippy flags that
+// as a double `must_use` on the generated signature. The attribute is the
+// macro's, not ours, so silence the lint here instead of dropping `-D warnings`.
+#[allow(clippy::double_must_use)]
 #[async_trait::async_trait]
 pub trait SubagentRunner: Send + Sync {
     /// Runs the task in a child session, forwarding its events to `events`
