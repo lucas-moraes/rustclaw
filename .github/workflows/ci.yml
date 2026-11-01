@@ -11,16 +11,15 @@ env:
 jobs:
   test:
     name: test + clippy + fmt
-    runs-on: ubuntu-24.04
+    # macOS is the only supported platform (see release.yml), so the gate
+    # runs where the product actually ships. Linux is best-effort below.
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
-
-      - name: Install system deps (ALSA for the `voice` feature)
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -49,18 +48,13 @@ jobs:
 
   msrv:
     name: MSRV (1.90)
-    runs-on: ubuntu-24.04
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.90"
-
-      # `voice` is a default feature (cpal -> alsa-sys), so even a plain
-      # `cargo check` needs the ALSA headers on Linux.
-      - name: Install system deps (ALSA for the `voice` feature)
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -74,6 +68,35 @@ jobs:
 
       - name: Check (MSRV)
         run: cargo check --locked
+
+  linux:
+    name: linux (best-effort, not supported yet)
+    # Linux is not an officially supported platform: this job only surfaces
+    # breakage early. It must never block a merge, so failures are ignored.
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # `voice` is a default feature (cpal -> alsa-sys), so even a plain
+      # `cargo check` needs the ALSA headers on Linux.
+      - name: Install system deps (ALSA for the `voice` feature)
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-linux-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-linux-
+
+      - name: Check
+        run: cargo check --all-targets --locked
 
   deny:
     name: cargo-deny (licenses + advisories)

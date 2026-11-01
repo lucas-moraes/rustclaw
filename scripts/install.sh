@@ -27,13 +27,12 @@ detect_target() {
   arch="$(uname -m)"
   case "$os" in
     Darwin) os="darwin" ;;
-    Linux)  os="linux" ;;
-    *) die "unsupported OS: $os (supported: macOS, Linux)" ;;
+    Linux)  die "Linux is not supported yet (only macOS arm64 is). Build from source: cargo install --path ." ;;
+    *) die "unsupported OS: $os (supported: macOS arm64)" ;;
   esac
   case "$arch" in
-    arm64|aarch64) [[ "$os" == "darwin" ]] && arch="arm64" || die "unsupported arch: $arch for $os" ;;
-    x86_64|amd64)  arch="x64" ;;
-    *) die "unsupported architecture: $arch (supported: macOS arm64, Linux x64)" ;;
+    arm64|aarch64) arch="arm64" ;;
+    *) die "unsupported architecture: $arch (supported: macOS arm64)" ;;
   esac
   printf '%s-%s' "$os" "$arch"
 }

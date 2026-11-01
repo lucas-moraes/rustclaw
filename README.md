@@ -38,7 +38,7 @@ Any OpenAI-compatible provider works via `BASE_URL` + `Authorization: Bearer`.
 
 ## 🚀 Installation
 
-macOS (Apple Silicon) and Linux x64, via prebuilt release:
+macOS (Apple Silicon), via prebuilt release:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/lucas-moraes/rustclaw/main/scripts/install.sh | bash

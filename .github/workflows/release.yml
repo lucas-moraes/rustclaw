@@ -17,17 +17,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # macOS arm64 is the only supported platform. Linux is not
+          # officially supported yet, so no linux-x64 artifact is published.
           - { os: macos-14, target: darwin-arm64 }
-          - { os: ubuntu-24.04, target: linux-x64 }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
-
-      - name: Install system deps (ALSA for the `voice` feature)
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
 
       - name: Cache cargo
         uses: actions/cache@v4
