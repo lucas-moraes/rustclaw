@@ -7,7 +7,7 @@ use clap::{Parser, Subcommand};
 #[command(
     name = "rustclaw",
     about = "RustClaw - Coding agent harness (OpenCode/Claude Code style)",
-    version = "1.2.0"
+    version = "1.3.0"
 )]
 struct Args {
     #[command(subcommand)]

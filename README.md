@@ -55,7 +55,7 @@ The installer downloads the latest release, validates the SHA-256, copies it to 
 and adjusts PATH if needed. Specific version:
 
 ```bash
-RUSTCLAW_VERSION=v1.2.0 curl -fsSL .../install.sh | bash
+RUSTCLAW_VERSION=v1.3.0 curl -fsSL .../install.sh | bash
 ```
 
 Install from source (development):
