@@ -294,6 +294,8 @@ mod tests {
             embedder: None,
             sandbox_policy: None,
             depth: 0,
+            message_bus: None,
+            shared_memory: None,
         };
         (ctx, tx, rx)
     }

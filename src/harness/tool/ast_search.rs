@@ -278,6 +278,8 @@ pub fn execute(cmd: &str) -> i32 {
             semantic_index: None,
             embedder: None,
             sandbox_policy: None,
+            message_bus: None,
+            shared_memory: None,
         }
     }
 

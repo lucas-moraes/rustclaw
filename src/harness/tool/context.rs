@@ -140,6 +140,11 @@ pub struct ToolContext {
     /// Sandbox policy for the `bash` tool, from `rustclaw.json` (`"off" |
     /// "landlock"`). `None` = off.
     pub sandbox_policy: Option<String>,
+    /// Message bus shared by every agent of the project (`message_send` /
+    /// `message_inbox`). `None` disables the tools.
+    pub message_bus: Option<Arc<crate::harness::swarm::MessageBus>>,
+    /// Shared key/value memory of the project (`shared_memory` tool).
+    pub shared_memory: Option<Arc<crate::harness::swarm::SharedMemory>>,
 }
 
 /// Working directory guard: all path resolution goes through this.

@@ -121,6 +121,8 @@ mod tests {
             embedder: None,
             sandbox_policy: None,
             hooks: Default::default(),
+            message_bus: None,
+            shared_memory: None,
         }
     }
 

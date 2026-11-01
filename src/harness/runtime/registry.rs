@@ -19,10 +19,12 @@ pub fn build_default_registry() -> ToolRegistry {
         git::{GitDiffTool, GitLogTool, GitStatusTool},
         glob::GlobTool,
         grep::GrepTool,
+        message::{MessageInboxTool, MessageSendTool},
         question::QuestionTool,
         read::ReadTool,
         remember::RememberTool,
         semantic_search::SemanticSearchTool,
+        shared_memory::SharedMemoryTool,
         task::TaskTool,
         todo::{TodoReadTool, TodoWriteTool},
         web_search::WebSearchTool,
@@ -42,6 +44,9 @@ pub fn build_default_registry() -> ToolRegistry {
         .register(Arc::new(QuestionTool))
         .register(Arc::new(TaskTool))
         .register(Arc::new(RememberTool))
+        .register(Arc::new(MessageSendTool))
+        .register(Arc::new(MessageInboxTool))
+        .register(Arc::new(SharedMemoryTool))
         .register(Arc::new(SemanticSearchTool))
         .register(Arc::new(FetchWebpageTool))
         .register(Arc::new(WebSearchTool::new()))

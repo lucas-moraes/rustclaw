@@ -269,6 +269,8 @@ mod tests {
             semantic_index: None,
             embedder: None,
             sandbox_policy: None,
+            message_bus: None,
+            shared_memory: None,
         }
     }
 

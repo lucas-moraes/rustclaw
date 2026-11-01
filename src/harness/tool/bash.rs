@@ -807,6 +807,8 @@ mod tests {
             semantic_index: None,
             embedder: None,
             sandbox_policy: None,
+            message_bus: None,
+            shared_memory: None,
         };
 
         // Abort after a short delay while a long sleep is running.
@@ -877,6 +879,8 @@ mod tests {
             semantic_index: None,
             embedder: None,
             sandbox_policy: None,
+            message_bus: None,
+            shared_memory: None,
         };
 
         // Set a secret in the parent env; the bash tool must not see it.

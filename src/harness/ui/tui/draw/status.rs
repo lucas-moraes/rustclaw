@@ -138,6 +138,19 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect, tick: u64) {
             Style::default().fg(t.accent2),
         ));
     }
+    // Subagent scheduler chip: how many are running and how many are queued
+    // behind the global cap. Only shown when the scheduler is actually busy.
+    let sched = &app.runtime.subagent_scheduler;
+    let running = sched.running();
+    let queued = sched.queued();
+    if running > 0 || queued > 0 {
+        let txt = if queued > 0 {
+            format!("  ⚙ {running}/{} +{queued}", sched.limit())
+        } else {
+            format!("  ⚙ {running}/{}", sched.limit())
+        };
+        line_spans.push(Span::styled(txt, Style::default().fg(t.accent2)));
+    }
     // Usage meter on the right. It degrades (gauge shrinks, then counts drop)
     // rather than disappearing, so the percentage is always visible.
     let used: usize = line_spans.iter().map(Span::width).sum::<usize>() + 3;

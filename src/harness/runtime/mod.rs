@@ -21,6 +21,7 @@ use std::sync::Arc;
 
 mod context;
 mod registry;
+pub mod scheduler;
 mod task_runner;
 
 #[cfg(test)]
@@ -98,6 +99,14 @@ pub struct SessionRuntime {
     pub budget: Arc<tokio::sync::Mutex<crate::harness::budget::BudgetTracker>>,
     /// Event recording (`/record`): shared tee target for the UI event loops.
     pub event_recorder: Arc<crate::harness::ui::commands::replay::EventRecorder>,
+    /// Message bus shared by every agent of the project (`message_send` /
+    /// `message_inbox`). `None` when the DB could not be opened.
+    pub message_bus: Option<Arc<crate::harness::swarm::MessageBus>>,
+    /// Shared key/value memory of the project (`shared_memory` tool).
+    pub shared_memory: Option<Arc<crate::harness::swarm::SharedMemory>>,
+    /// Process-wide subagent concurrency limiter, shared by every `TaskRunner`
+    /// so parallel batches and nested spawns queue behind the same cap.
+    pub subagent_scheduler: crate::harness::runtime::scheduler::SubagentScheduler,
 }
 
 impl SessionRuntime {
@@ -195,6 +204,31 @@ impl SessionRuntime {
             p.save(&persist_root).map_err(|e| e.to_string())
         })));
 
+        // Swarm coordination (message bus + shared memory). Best-effort: a
+        // failure to open them disables the tools instead of the runtime.
+        let message_bus = match crate::harness::swarm::MessageBus::open(db_path, &cwd) {
+            Ok(bus) => {
+                // Drop traffic older than the TTL so the table does not grow
+                // across sessions. Best-effort: a failure only means stale
+                // rows survive one more run.
+                if let Err(e) = bus.gc() {
+                    tracing::warn!("message bus gc failed: {e}");
+                }
+                Some(Arc::new(bus))
+            }
+            Err(e) => {
+                tracing::warn!("message bus unavailable: {e}");
+                None
+            }
+        };
+        let shared_memory = match crate::harness::swarm::SharedMemory::open(db_path, &cwd) {
+            Ok(mem) => Some(Arc::new(mem)),
+            Err(e) => {
+                tracing::warn!("shared memory unavailable: {e}");
+                None
+            }
+        };
+
         Ok(Self {
             store,
             provider,
@@ -219,6 +253,9 @@ impl SessionRuntime {
             budget: Arc::new(tokio::sync::Mutex::new(
                 crate::harness::budget::BudgetTracker::default(),
             )),
+            message_bus,
+            shared_memory,
+            subagent_scheduler: crate::harness::runtime::scheduler::SubagentScheduler::default(),
         })
     }
 
@@ -812,6 +849,7 @@ impl SessionRuntime {
             user_asker: self.user_asker.clone(),
             todos: Arc::new(tokio::sync::RwLock::new(session.todos.clone())),
             task_runner: Some(Arc::new(TaskRunner {
+                scheduler: self.subagent_scheduler.clone(),
                 runtime: Arc::new(self.clone_shareable()),
                 parent_session_id: session.id.clone(),
                 allow_write: session.agent == crate::harness::agent::builtin::BUILD,
@@ -825,6 +863,8 @@ impl SessionRuntime {
             semantic_index: self.semantic_index.clone(),
             embedder: self.embedder.clone(),
             sandbox_policy: self.sandbox_policy.clone(),
+            message_bus: self.message_bus.clone(),
+            shared_memory: self.shared_memory.clone(),
         };
 
         // 4. Run the processor turn.
@@ -1018,6 +1058,9 @@ impl SessionRuntime {
             sandbox_policy: self.sandbox_policy.clone(),
             budget: self.budget.clone(),
             event_recorder: self.event_recorder.clone(),
+            message_bus: self.message_bus.clone(),
+            shared_memory: self.shared_memory.clone(),
+            subagent_scheduler: self.subagent_scheduler.clone(),
         }
     }
 

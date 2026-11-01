@@ -533,4 +533,31 @@ Then use the read tool to read src/main.rs. Report what tools you used.";
             assert_eq!(resolve_subagent_agent(false, legacy), "reason");
         }
     }
+
+    /// The scheduler is shared by every `TaskRunner` of a runtime, so two
+    /// parallel batches (or a nested spawn) queue behind the same cap instead
+    /// of each getting its own limit.
+    #[tokio::test]
+    async fn subagent_scheduler_is_shared_across_runtimes() {
+        use crate::harness::runtime::scheduler::SubagentScheduler;
+
+        let sched = SubagentScheduler::new(1);
+        let a = sched.clone();
+        let b = sched.clone();
+
+        let held = a.acquire().await;
+        assert_eq!(b.running(), 1, "both handles see the same semaphore");
+
+        let waiter = tokio::spawn(async move {
+            let _p = b.acquire().await;
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert!(!waiter.is_finished(), "second runner must queue");
+
+        drop(held);
+        tokio::time::timeout(std::time::Duration::from_millis(200), waiter)
+            .await
+            .expect("queued runner should proceed after release")
+            .unwrap();
+    }
 }

@@ -14,6 +14,7 @@ pub mod provider;
 pub mod runtime;
 pub mod session;
 pub mod skill;
+pub mod swarm;
 #[cfg(test)]
 pub(crate) mod testenv;
 pub mod tool;

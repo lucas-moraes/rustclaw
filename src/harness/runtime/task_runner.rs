@@ -1,5 +1,6 @@
 //! Subagent task runner: spawns child sessions through the runtime.
 
+use super::scheduler::SubagentScheduler;
 use super::SessionRuntime;
 use crate::harness::tool::context::{SubagentRunner, TaskOutcome};
 use anyhow::Result;
@@ -16,6 +17,9 @@ pub struct TaskRunner {
     /// Whether the root agent may write files. When false, subagents are
     /// demoted to a non-writing agent so they can never edit files.
     pub allow_write: bool,
+    /// Process-wide concurrency limiter shared by every subagent, so parallel
+    /// batches and nested spawns queue behind the same cap.
+    pub scheduler: SubagentScheduler,
 }
 
 /// Resolves the effective subagent agent given whether the parent allows file
@@ -47,6 +51,10 @@ impl SubagentRunner for TaskRunner {
         events: crate::harness::event::EventSender,
         depth: usize,
     ) -> Result<TaskOutcome, String> {
+        // Wait for a global slot before touching the provider. The permit is
+        // held for the whole run and released on drop (including on error).
+        let _slot = self.scheduler.acquire().await;
+
         // Resolve agent to allow "reason" by default.
         let agent = if agent.is_empty() {
             crate::harness::agent::builtin::REASON
@@ -83,6 +91,15 @@ impl SubagentRunner for TaskRunner {
                 }
             }
         });
+
+        // Tell the child who it is and who its parent is, so it can use
+        // `message_send` / `shared_memory` without guessing session ids.
+        let prompt = format!(
+            "{prompt}\n\n---\n[swarm] You are session `{}` (agent `{agent}`, depth {depth}). \
+Your parent session is `{}`. Use `message_send` to report findings to it and \
+`shared_memory` to publish data other agents can read.",
+            child.id, self.parent_session_id
+        );
 
         let result = self
             .runtime
