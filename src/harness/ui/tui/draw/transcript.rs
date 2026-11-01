@@ -82,35 +82,6 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
             }
         }
     }
-    // Live subagent panels: one compact block per running/finished `task` call.
-    // Nested subagents are indented by depth so the composition reads as a tree.
-    for (_, panel) in app.subagent_panels.iter().rev().take(3) {
-        let base = rows.len();
-        let indent = "  ".repeat(panel.depth);
-        rows.push(Line::from(vec![
-            Span::styled(format!("{indent}  ┊ "), Style::default().fg(theme.border)),
-            Span::styled(
-                App::subagent_panel_label(panel),
-                Style::default().fg(if panel.finished {
-                    theme.success
-                } else {
-                    theme.warn
-                }),
-            ),
-        ]));
-        // Show the last few activity lines while running.
-        if !panel.finished {
-            for l in panel.lines.iter().rev().take(3).rev() {
-                rows.push(Line::from(vec![
-                    Span::styled(format!("{indent}  ┊   "), Style::default().fg(theme.border)),
-                    Span::styled(l.clone(), Style::default().fg(theme.text_dim)),
-                ]));
-            }
-        }
-        for _ in base..rows.len() {
-            row_map.push(app.lines.len());
-        }
-    }
     // Live activity status: a single ephemeral line at the very tail of the
     // transcript (never part of the history). It replaces the old navbar chip
     // so "working / streaming / tools / waiting" read in the chat itself.

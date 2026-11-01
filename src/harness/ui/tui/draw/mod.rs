@@ -13,6 +13,7 @@ mod sidebar;
 mod skill_picker;
 mod splash;
 mod status;
+mod subagent_panel;
 mod theme_picker;
 pub(crate) mod toast;
 pub(crate) mod transcript;
@@ -84,8 +85,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let vis_rows = crate::harness::ui::tui::input::wrap_input_rows(&app.input, est_inner).len();
     let input_h: u16 = 3 + (vis_rows_extra(vis_rows)).min(9);
 
+    // Subagent band: only takes rows while at least one panel is live.
+    let subagent_h = subagent_panel::band_height(app);
+
     let rows = Layout::vertical([
         Constraint::Min(3),
+        Constraint::Length(subagent_h),
         Constraint::Length(status_h),
         Constraint::Length(chips_h),
         Constraint::Length(input_h),
@@ -94,8 +99,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     .split(content);
 
     transcript::draw(frame, app, rows[0]);
-    status::draw(frame, app, rows[1], app.tick);
-    let chips_row = rows[2];
+    if subagent_h > 0 {
+        subagent_panel::draw(frame, app, rows[1]);
+    }
+    status::draw(frame, app, rows[2], app.tick);
+    let chips_row = rows[3];
     if has_chips {
         if has_skill_chips && has_image_chip {
             let chip_rows =
@@ -109,11 +117,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         }
     }
     if app.runtime.config.is_configured() {
-        input::draw(frame, app, rows[3]);
+        input::draw(frame, app, rows[4]);
     } else {
-        draw_unconfigured_hint(frame, app, rows[3]);
+        draw_unconfigured_hint(frame, app, rows[4]);
     }
-    draw_footer(frame, app, rows[4]);
+    draw_footer(frame, app, rows[5]);
 
     // Autocomplete dropdown above input.
     if app.runtime.config.is_configured()
@@ -122,7 +130,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         && !app.show_help
     {
         if let Some(ac) = &app.autocomplete {
-            palette_view::draw_autocomplete(frame, ac, &app.theme, rows[3], area);
+            palette_view::draw_autocomplete(frame, ac, &app.theme, rows[4], area);
         }
     }
 
