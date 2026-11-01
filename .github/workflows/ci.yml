@@ -57,6 +57,11 @@ jobs:
         with:
           toolchain: "1.90"
 
+      # `voice` is a default feature (cpal -> alsa-sys), so even a plain
+      # `cargo check` needs the ALSA headers on Linux.
+      - name: Install system deps (ALSA for the `voice` feature)
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
+
       - name: Cache cargo
         uses: actions/cache@v4
         with:
