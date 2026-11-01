@@ -19,15 +19,15 @@ jobs:
         include:
           # macOS arm64 is the only supported platform. Linux is not
           # officially supported yet, so no linux-x64 artifact is published.
-          - { os: macos-14, target: darwin-arm64 }
+          - { os: macos-15, target: darwin-arm64 }
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -45,7 +45,7 @@ jobs:
           tar -czf "upload/rustclaw-${{ matrix.target }}.tar.gz" -C dist rustclaw
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: rustclaw-${{ matrix.target }}
           path: upload/
@@ -54,10 +54,10 @@ jobs:
     needs: build
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Download artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           merge-multiple: true
           path: upload

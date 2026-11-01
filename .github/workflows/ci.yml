@@ -13,16 +13,16 @@ jobs:
     name: test + clippy + fmt
     # macOS is the only supported platform (see release.yml), so the gate
     # runs where the product actually ships. Linux is best-effort below.
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -52,16 +52,16 @@ jobs:
 
   msrv:
     name: MSRV (1.90)
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.90"
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -80,7 +80,7 @@ jobs:
     runs-on: ubuntu-24.04
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -90,7 +90,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -106,7 +106,7 @@ jobs:
     name: cargo-deny (licenses + advisories)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Run cargo-deny
         uses: EmbarkStudios/cargo-deny-action@v2
