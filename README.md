@@ -2,6 +2,11 @@
 
 A coding agent harness in Rust, in the style of OpenCode / Claude Code. Agent loop with **native tool calling**, sessions persisted in SQLite, **skills** (session memory), an animated TUI, human-in-the-loop permissions, builtin agents and subagents.
 
+[![CI](https://github.com/lucas-moraes/rustclaw/actions/workflows/ci.yml/badge.svg)](https://github.com/lucas-moraes/rustclaw/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/lucas-moraes/rustclaw)](https://github.com/lucas-moraes/rustclaw/releases)
+[![MSRV](https://img.shields.io/badge/MSRV-1.90-blue)](https://github.com/lucas-moraes/rustclaw/blob/main/Cargo.toml)
+[![License](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
+[![Platform](https://img.shields.io/badge/platform-macOS%20arm64-lightgrey)](https://github.com/lucas-moraes/rustclaw/releases)
 [![XERJ Corpus Hub contributor](https://hub.xerj.org/contributors/lucas-moraes/badge.svg)](https://hub.xerj.org/contributors/lucas-moraes)
 
 ## ✨ Features
