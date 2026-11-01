@@ -162,6 +162,12 @@ pub struct App {
     pub subagent_panels: Vec<(String, SubagentPanel)>,
     pub permission_rx: mpsc::UnboundedReceiver<PermissionRequest>,
     pub question_rx: mpsc::UnboundedReceiver<QuestionRequest>,
+    /// Questions asked by subagents while the TUI was idle; answered by the
+    /// user and posted back to the bus (see `swarm_asks`).
+    pub swarm_ask_rx: mpsc::UnboundedReceiver<crate::harness::ui::tui::swarm_asks::SwarmAsk>,
+    /// The subagent question currently shown in the modal, if any. When set,
+    /// the answer is posted to the message bus instead of a oneshot.
+    pub pending_swarm_ask: Option<crate::harness::ui::tui::swarm_asks::SwarmAsk>,
     /// Open Ctrl+F transcript search modal.
     pub search: Option<SearchState>,
     /// Whether collapsible thinking (reasoning) blocks are expanded.
@@ -344,7 +350,16 @@ impl App {
         let session = crate::harness::session::Session::new("build", "/tmp/proj".into());
         let (_perm_tx, perm_rx) = mpsc::unbounded_channel::<PermissionRequest>();
         let (_quest_tx, quest_rx) = mpsc::unbounded_channel::<QuestionRequest>();
-        let mut app = Self::new(runtime, session, "/tmp/proj".into(), perm_rx, quest_rx);
+        let (_swarm_tx, swarm_rx) =
+            mpsc::unbounded_channel::<crate::harness::ui::tui::swarm_asks::SwarmAsk>();
+        let mut app = Self::new(
+            runtime,
+            session,
+            "/tmp/proj".into(),
+            perm_rx,
+            quest_rx,
+            swarm_rx,
+        );
         app.input = input.to_string();
         app.input_cursor = input.chars().count();
         app
@@ -356,6 +371,7 @@ impl App {
         cwd: std::path::PathBuf,
         permission_rx: mpsc::UnboundedReceiver<PermissionRequest>,
         question_rx: mpsc::UnboundedReceiver<QuestionRequest>,
+        swarm_ask_rx: mpsc::UnboundedReceiver<crate::harness::ui::tui::swarm_asks::SwarmAsk>,
     ) -> Self {
         let (events_tx, events_rx) = crate::harness::event::event_channel();
         #[cfg(feature = "voice")]
@@ -437,6 +453,8 @@ impl App {
             subagent_panels: Vec::new(),
             permission_rx,
             question_rx,
+            swarm_ask_rx,
+            pending_swarm_ask: None,
             search: None,
             thinking_expanded: false,
             pending_images: Vec::new(),

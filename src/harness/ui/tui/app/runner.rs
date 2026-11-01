@@ -20,6 +20,7 @@ pub async fn run_tui(
     cwd: std::path::PathBuf,
     permission_rx: mpsc::UnboundedReceiver<PermissionRequest>,
     question_rx: mpsc::UnboundedReceiver<QuestionRequest>,
+    swarm_ask_rx: mpsc::UnboundedReceiver<crate::harness::ui::tui::swarm_asks::SwarmAsk>,
 ) -> Result<()> {
     use crossterm::event::{self, Event};
     use crossterm::execute;
@@ -66,7 +67,14 @@ pub async fn run_tui(
         }));
     }
 
-    let mut app = App::new(runtime, session, cwd, permission_rx, question_rx);
+    let mut app = App::new(
+        runtime,
+        session,
+        cwd,
+        permission_rx,
+        question_rx,
+        swarm_ask_rx,
+    );
 
     // Warn (non-fatally) about missing system dependencies, e.g. a Chrome
     // binary for `fetch_webpage`'s browser render mode. The harness still runs;
@@ -220,6 +228,35 @@ pub async fn run_tui(
                 ),
             );
             app.enqueue_modal(Modal::Permission(req));
+        }
+        // A subagent asked something while we were idle: show it as a normal
+        // question modal, but route the answer back over the message bus.
+        while let Ok(ask) = app.swarm_ask_rx.try_recv() {
+            app.flush_stream_now();
+            app.push(
+                LineKind::System,
+                format!(
+                    "[swarm] {} pergunta: {}",
+                    ask.from,
+                    preview(&ask.question, 120)
+                ),
+            );
+            // During a turn the parent agent answers from its own loop, so
+            // opening a modal would let the user answer twice. Just show it.
+            if app.running {
+                continue;
+            }
+            let (reply, _rx) = tokio::sync::oneshot::channel();
+            app.enqueue_modal(Modal::Question {
+                req: QuestionRequest {
+                    question: format!("[{}] {}", ask.from, ask.question),
+                    options: Vec::new(),
+                    reply,
+                },
+                draft: String::new(),
+                cursor: 0,
+            });
+            app.pending_swarm_ask = Some(ask);
         }
         while let Ok(req) = app.question_rx.try_recv() {
             app.flush_stream_now();

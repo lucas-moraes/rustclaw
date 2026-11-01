@@ -543,6 +543,43 @@ pub(crate) fn handle_modal_key(app: &mut App, key: KeyEvent) -> Result<bool> {
                 app.modal = Some(Modal::Question { req, draft, cursor });
             };
             let finish = |app: &mut App, req: QuestionRequest, answer: Option<String>| {
+                // A subagent's question goes back over the bus, not through
+                // the oneshot: the asker is polling SQLite, not this channel.
+                if let Some(ask) = app.pending_swarm_ask.take() {
+                    match answer {
+                        Some(a) => {
+                            let sent = match app.runtime.message_bus.as_ref() {
+                                Some(bus) => crate::harness::ui::tui::swarm_asks::answer(
+                                    bus,
+                                    &app.session.id,
+                                    &ask,
+                                    &a,
+                                ),
+                                None => Err(anyhow::anyhow!("message bus unavailable")),
+                            };
+                            match sent {
+                                Ok(()) => app.push(
+                                    LineKind::System,
+                                    format!(
+                                        "[swarm] resposta enviada a {}: {}",
+                                        ask.from,
+                                        preview(&a, 80)
+                                    ),
+                                ),
+                                Err(e) => app.push(
+                                    LineKind::System,
+                                    format!("[swarm] failed to reply to {}: {e}", ask.from),
+                                ),
+                            }
+                        }
+                        None => app.push(
+                            LineKind::System,
+                            format!("[swarm] pergunta de {} ignorada", ask.from),
+                        ),
+                    }
+                    app.close_modal();
+                    return;
+                }
                 let _ = req.reply.send(answer.clone());
                 match answer {
                     Some(a) => app.push(

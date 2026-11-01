@@ -14,6 +14,7 @@ pub mod palette;
 pub mod scroll;
 pub mod selection;
 pub mod subagent;
+pub mod swarm_asks;
 pub mod text;
 pub mod theme;
 pub mod transcript;
@@ -75,7 +76,28 @@ pub async fn run(config: crate::config::RuntimeConfig, cwd: std::path::PathBuf) 
         }
     };
 
-    app::run_tui(runtime, session, cwd, permission_rx, question_rx).await
+    // Subagents can ask questions between turns, when nobody is draining the
+    // bus. Watch for those while the TUI is up so a blocked subagent is never
+    // left hanging on a question the user could answer.
+    let (swarm_ask_tx, swarm_ask_rx) = tokio::sync::mpsc::unbounded_channel();
+    let watcher = runtime
+        .message_bus
+        .clone()
+        .map(|bus| swarm_asks::spawn_watcher(bus, session.id.clone(), swarm_ask_tx));
+
+    let result = app::run_tui(
+        runtime,
+        session,
+        cwd,
+        permission_rx,
+        question_rx,
+        swarm_ask_rx,
+    )
+    .await;
+    if let Some(w) = watcher {
+        w.abort();
+    }
+    result
 }
 
 fn data_db_path() -> std::path::PathBuf {
