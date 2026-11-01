@@ -108,4 +108,7 @@ jobs:
         uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check all
-          arguments: --workspace
+          # `--workspace` is not a valid `cargo deny check` flag (it exits 2
+          # with "unexpected argument"). The crate is a single package, so
+          # the default scope is already the whole workspace.
+          arguments: ""
