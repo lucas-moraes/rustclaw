@@ -591,6 +591,9 @@ impl App {
             || self.search.is_some()
             || self.selection.as_ref().map(|s| s.dragging).unwrap_or(false)
             || self.toast.is_some()
+            // Live subagent band: the spinner needs frames, and finished
+            // panels need frames to hit their linger timeout and disappear.
+            || !self.subagent_panels.is_empty()
     }
 
     /// Drops the toast once it has outlived its lifetime. Called once per

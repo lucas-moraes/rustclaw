@@ -8,6 +8,11 @@
 use crate::harness::event::{HarnessEvent, ToolStatus};
 use crate::harness::ui::tui::app::App;
 
+/// How long a finished panel lingers (in frame ticks) before it is dropped
+/// from the band. The runner draws at ~30 fps (`MIN_FRAME_DT` = 33 ms), so
+/// 90 ticks ≈ 3 s — enough to read the final `✓`/`✗` and the tool count.
+pub const FINISHED_LINGER_TICKS: u64 = 90;
+
 /// A live subagent panel (one per `task` tool call).
 pub struct SubagentPanel {
     /// Child session id (events are routed by `parent_session_id`).
@@ -22,11 +27,27 @@ pub struct SubagentPanel {
     pub done: usize,
     pub failed: usize,
     pub finished: bool,
+    /// Frame tick at which the panel finished; drives the linger timeout so
+    /// the final `✓`/`✗` stays readable before the panel disappears.
+    pub finished_at: Option<u64>,
     /// Final summary preview (set when the `task` tool completes).
     pub summary: Option<String>,
 }
 
 impl App {
+    /// Drops finished panels whose `✓`/`✗` has been visible long enough.
+    ///
+    /// Called once per frame from the runner loop: without it the band never
+    /// empties and permanently eats `BAND_HEIGHT` rows of the transcript.
+    pub(crate) fn expire_finished_subagent_panels(&mut self) {
+        let now = self.tick;
+        self.subagent_panels.retain(|(_, p)| match p.finished_at {
+            Some(at) => now.saturating_sub(at) < FINISHED_LINGER_TICKS,
+            // Still running (or finished before the timestamp existed).
+            None => true,
+        });
+    }
+
     /// Routes a child-session event into its subagent panel (never the transcript).
     pub(crate) fn apply_subagent_event(&mut self, ev: &HarnessEvent) {
         // A `task` call issued *by* a subagent opens a nested panel. The child
@@ -48,6 +69,7 @@ impl App {
                         done: 0,
                         failed: 0,
                         finished: false,
+                        finished_at: None,
                         summary: None,
                     },
                 ));
@@ -72,6 +94,7 @@ impl App {
                     .find(|(_, p)| !p.finished && p.child_session_id.is_empty())
                 {
                     nested.finished = true;
+                    nested.finished_at = Some(self.tick);
                     nested.summary = Some(output_preview.clone());
                 }
             }
@@ -179,5 +202,71 @@ impl App {
         }
         s.push_str("└─ ");
         s
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::harness::ui::tui::app::App;
+
+    fn panel(finished_at: Option<u64>) -> SubagentPanel {
+        SubagentPanel {
+            child_session_id: "c".into(),
+            agent: "explore".into(),
+            depth: 0,
+            lines: Vec::new(),
+            done: 1,
+            failed: 0,
+            finished: finished_at.is_some(),
+            finished_at,
+            summary: None,
+        }
+    }
+
+    #[test]
+    fn running_panel_is_never_expired() {
+        let mut app = App::inline_for_tests("");
+        app.tick = 10_000;
+        app.subagent_panels = vec![("a".into(), panel(None))];
+        app.expire_finished_subagent_panels();
+        assert_eq!(app.subagent_panels.len(), 1);
+    }
+
+    #[test]
+    fn finished_panel_lingers_then_is_dropped() {
+        let mut app = App::inline_for_tests("");
+        app.tick = 100;
+        app.subagent_panels = vec![("a".into(), panel(Some(100)))];
+
+        app.tick = 100 + FINISHED_LINGER_TICKS - 1;
+        app.expire_finished_subagent_panels();
+        assert_eq!(app.subagent_panels.len(), 1, "must still be visible");
+
+        app.tick = 100 + FINISHED_LINGER_TICKS;
+        app.expire_finished_subagent_panels();
+        assert!(app.subagent_panels.is_empty(), "must be gone after linger");
+    }
+
+    #[test]
+    fn expiry_keeps_running_panels_alongside_finished_ones() {
+        let mut app = App::inline_for_tests("");
+        app.tick = 1_000;
+        app.subagent_panels = vec![
+            ("done".into(), panel(Some(1_000 - FINISHED_LINGER_TICKS))),
+            ("live".into(), panel(None)),
+        ];
+        app.expire_finished_subagent_panels();
+        assert_eq!(app.subagent_panels.len(), 1);
+        assert_eq!(app.subagent_panels[0].0, "live");
+    }
+
+    #[test]
+    fn band_forces_frames_so_the_linger_can_elapse() {
+        let mut app = App::inline_for_tests("");
+        app.splash = None;
+        app.tick = 0;
+        app.subagent_panels = vec![("a".into(), panel(Some(0)))];
+        assert!(app.needs_anim());
     }
 }

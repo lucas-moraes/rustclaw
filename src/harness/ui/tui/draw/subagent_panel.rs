@@ -161,6 +161,7 @@ mod tests {
             done: 1,
             failed: 0,
             finished,
+            finished_at: if finished { Some(0) } else { None },
             summary: None,
         }
     }

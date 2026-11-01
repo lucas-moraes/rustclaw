@@ -303,6 +303,7 @@ pub async fn run_tui(
         }
 
         app.tick_toast();
+        app.expire_finished_subagent_panels();
         let now = std::time::Instant::now();
         let anim = app.needs_anim();
         if should_draw(app.needs_redraw, anim, last_draw, now) {

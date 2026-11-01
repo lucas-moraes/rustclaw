@@ -144,6 +144,7 @@ impl App {
                             done: 0,
                             failed: 0,
                             finished: false,
+                            finished_at: None,
                             summary: None,
                         },
                     ));
@@ -179,6 +180,7 @@ impl App {
                         .find(|(_, p)| !p.finished)
                     {
                         panel.finished = true;
+                        panel.finished_at = Some(self.tick);
                         panel.summary = Some(if output_preview.is_empty() {
                             String::new()
                         } else {

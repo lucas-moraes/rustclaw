@@ -259,6 +259,7 @@ mod input_tests {
             done: 1,
             failed: 0,
             finished: false,
+            finished_at: None,
             summary: None,
         };
         let label = App::subagent_panel_label(&panel);
@@ -275,6 +276,7 @@ mod input_tests {
             done: 0,
             failed: 0,
             finished: false,
+            finished_at: None,
             summary: None,
         };
         let label = App::subagent_panel_label(&panel);
