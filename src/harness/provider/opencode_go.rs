@@ -35,6 +35,7 @@ impl OpenCodeGoProvider {
             auth: AuthStyle::ApiKey,
             prompt_cache: self.prompt_cache,
             cache_ttl: self.cache_ttl.clone(),
+            native: false,
         }
     }
 }
@@ -86,6 +87,7 @@ pub fn build_provider(
             auth: AuthStyle::ApiKey,
             prompt_cache,
             cache_ttl: cache_ttl.to_string(),
+            native: true,
         })),
         // openrouter, moonshot, villamarket, huggingface, custom => OpenAI-compatible
         _ => Ok(std::sync::Arc::new(OpenAiProvider {

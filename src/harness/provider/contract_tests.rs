@@ -82,6 +82,7 @@ fn anthropic_provider(base_url: &str) -> AnthropicProvider {
         auth: AuthStyle::ApiKey,
         prompt_cache: false,
         cache_ttl: String::new(),
+        native: true,
     }
 }
 

@@ -20,6 +20,10 @@ pub struct AnthropicProvider {
     /// (write costs 2× instead of 1.25×, but survives gaps > 5 min).
     /// Empty = `"5m"`.
     pub cache_ttl: String,
+    /// `true` only for the native Anthropic API. Gateways that speak
+    /// `/messages` (e.g. MiniMax via opencode-go) keep the legacy body:
+    /// `temperature` is sent and `ttl` is omitted unless set to `"1h"`.
+    pub native: bool,
 }
 
 /// Converts harness messages to Anthropic `/messages` format.
@@ -129,14 +133,17 @@ fn build_request_body(
     stream: bool,
     prompt_cache: bool,
     cache_ttl: &str,
+    native: bool,
+    temperature: f32,
 ) -> Value {
     // Anthropic cache TTL: "5m" (default, write 1.25×) or "1h" (write 2×).
-
-    let ttl = match cache_ttl {
-        "1h" => "1h",
-        _ => "5m",
+    // The `ttl` field is only sent when explicitly set, so gateways that do
+    // not know it keep working.
+    let cache_control = if cache_ttl == "1h" {
+        json!({"type": "ephemeral", "ttl": "1h"})
+    } else {
+        json!({"type": "ephemeral"})
     };
-    let cache_control = json!({"type": "ephemeral", "ttl": ttl});
     // The Anthropic Messages API requires max_tokens; we cannot omit it, so
     // fall back to a conservative default when the request doesn't set one.
     const DEFAULT_MAX_TOKENS: usize = 4096;
@@ -146,9 +153,12 @@ fn build_request_body(
         "stream": stream,
         "messages": to_anthropic_messages(&req.messages[..]),
     });
-    // `temperature` is intentionally never sent: current Claude models reject
-    // it with 400 ("deprecated for this model"). Agent modes may still set
-    // `LlmRequest::temperature`; the Anthropic adapter simply ignores it.
+    // Native Anthropic: `temperature` is never sent, because current Claude
+    // models reject it with 400 ("deprecated for this model"). Gateways keep
+    // the legacy behaviour (sent when the request sets a non-zero value).
+    if !native && temperature != 0.0 {
+        body["temperature"] = json!(temperature);
+    }
     if !req.system.trim().is_empty() {
         if prompt_cache {
             // Breakpoint 1: system prompt (stable prefix).
@@ -375,7 +385,14 @@ impl Provider for AnthropicProvider {
 
     async fn stream(&self, req: &LlmRequest) -> anyhow::Result<ProviderStream> {
         let url = format!("{}/messages", self.http.base_url);
-        let body = build_request_body(req, true, self.prompt_cache, &self.cache_ttl);
+        let body = build_request_body(
+            req,
+            true,
+            self.prompt_cache,
+            &self.cache_ttl,
+            self.native,
+            req.temperature,
+        );
 
         let response = self
             .http
@@ -405,7 +422,14 @@ impl Provider for AnthropicProvider {
 
     async fn complete(&self, req: &LlmRequest) -> anyhow::Result<LlmResponse> {
         let url = format!("{}/messages", self.http.base_url);
-        let body = build_request_body(req, false, self.prompt_cache, &self.cache_ttl);
+        let body = build_request_body(
+            req,
+            false,
+            self.prompt_cache,
+            &self.cache_ttl,
+            self.native,
+            req.temperature,
+        );
 
         let response = self
             .http
@@ -613,6 +637,45 @@ mod tests {
         assert_eq!(st.cache_read_tokens, 200);
     }
 
+    fn req_with(messages: Vec<Message>, system: &str, temperature: f32) -> LlmRequest {
+        LlmRequest {
+            model: "claude-sonnet-5-5".into(),
+            system: system.into(),
+            messages: std::sync::Arc::new(messages),
+            tools: vec![],
+            max_tokens: None,
+            temperature,
+            prompt_cache_key: None,
+            fail_fast: None,
+            service_tier: None,
+            reasoning_effort: None,
+            response_format: None,
+            top_p: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            stop: Vec::new(),
+            seed: None,
+        }
+    }
+
+    #[test]
+    fn test_native_omits_temperature_gateway_keeps_it() {
+        let req = req_with(vec![], "", 0.3);
+        let native = build_request_body(&req, false, false, "", true, 0.3);
+        assert!(native.get("temperature").is_none());
+        let gateway = build_request_body(&req, false, false, "", false, 0.3);
+        assert!((gateway["temperature"].as_f64().unwrap() - 0.3).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_ttl_only_sent_when_explicit() {
+        let req = req_with(vec![], "sys", 0.0);
+        let default = build_request_body(&req, false, true, "", false, 0.0);
+        assert!(default["system"][0]["cache_control"].get("ttl").is_none());
+        let explicit = build_request_body(&req, false, true, "1h", false, 0.0);
+        assert_eq!(explicit["system"][0]["cache_control"]["ttl"], "1h");
+    }
+
     #[test]
     fn test_build_request_body_includes_tools_and_system() {
         let req = LlmRequest {
@@ -637,12 +700,13 @@ mod tests {
             stop: Vec::new(),
             seed: None,
         };
-        let body = build_request_body(&req, true, false, "");
+        let body = build_request_body(&req, true, false, "", false, 0.5);
         assert_eq!(body["system"], "sys");
         assert_eq!(body["tools"][0]["name"], "bash");
         assert_eq!(body["messages"][0]["role"], "user");
-        // Regression: `temperature` is rejected by current Claude models.
-        assert!(body.get("temperature").is_none());
+        // Regression: `temperature` is rejected by current Claude models
+        // (native route) — checked in `test_native_omits_temperature_gateway_keeps_it`.
+        assert!(body.get("temperature").is_some());
     }
 
     fn cache_control_count(v: &Value) -> usize {
@@ -686,7 +750,7 @@ mod tests {
             stop: Vec::new(),
             seed: None,
         };
-        let body = build_request_body(&req, true, false, "");
+        let body = build_request_body(&req, true, false, "", false, 0.5);
         assert_eq!(body["system"], "sys");
         assert!(body["system"].is_string());
         assert!(cache_control_count(&body) == 0);
@@ -731,7 +795,7 @@ mod tests {
             stop: Vec::new(),
             seed: None,
         };
-        let body = build_request_body(&req, true, true, "");
+        let body = build_request_body(&req, true, true, "", false, 0.5);
         // Breakpoint 1: system is an array with cache_control.
         assert!(body["system"].is_array());
         assert_eq!(body["system"][0]["cache_control"]["type"], "ephemeral");
@@ -766,7 +830,7 @@ mod tests {
             stop: Vec::new(),
             seed: None,
         };
-        let body = build_request_body(&req, false, true, "");
+        let body = build_request_body(&req, false, true, "", false, 0.5);
         let last_msg = body["messages"].as_array().unwrap().last().unwrap();
         assert!(last_msg["content"].is_array());
         assert_eq!(last_msg["content"][0]["type"], "text");
