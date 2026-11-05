@@ -449,7 +449,11 @@ impl SessionRuntime {
         }
         // Same for the `reason` mode: served by `cursor_plan` (read-only) when
         // `cursor_plan` is on. Native reason stays reachable by name.
-        if self.config.cursor_plan && name == crate::harness::agent::builtin::REASON {
+        // `chat-free` is also served by `cursor_plan` under the same toggle.
+        if self.config.cursor_plan
+            && (name == crate::harness::agent::builtin::REASON
+                || name == crate::harness::agent::builtin::CHAT_FREE)
+        {
             return crate::harness::agent::builtin::cursor_plan();
         }
         // F3.4: unknown/stale agent names fall back to the configured

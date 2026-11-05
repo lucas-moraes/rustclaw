@@ -437,6 +437,9 @@ Then use the read tool to read src/main.rs. Report what tools you used.";
         let reason = rt.resolve_agent("reason");
         assert_eq!(reason.name, "cursor_plan");
         assert_eq!(reason.tools, vec!["cursor_plan"]);
+        // chat-free shares the cursor_plan toggle.
+        let chat_free = rt.resolve_agent("chat-free");
+        assert_eq!(chat_free.name, "cursor_plan");
         // build stays native (its toggle is off).
         assert_eq!(rt.resolve_agent("build").name, "build");
     }
