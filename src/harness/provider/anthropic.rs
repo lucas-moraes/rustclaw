@@ -146,11 +146,9 @@ fn build_request_body(
         "stream": stream,
         "messages": to_anthropic_messages(&req.messages[..]),
     });
-    // Newer Claude models reject `temperature` outright ("deprecated for
-    // this model"); only send it when the request actually sets one.
-    if req.temperature != 0.0 {
-        body["temperature"] = json!(req.temperature);
-    }
+    // `temperature` is intentionally never sent: current Claude models reject
+    // it with 400 ("deprecated for this model"). Agent modes may still set
+    // `LlmRequest::temperature`; the Anthropic adapter simply ignores it.
     if !req.system.trim().is_empty() {
         if prompt_cache {
             // Breakpoint 1: system prompt (stable prefix).
@@ -643,6 +641,8 @@ mod tests {
         assert_eq!(body["system"], "sys");
         assert_eq!(body["tools"][0]["name"], "bash");
         assert_eq!(body["messages"][0]["role"], "user");
+        // Regression: `temperature` is rejected by current Claude models.
+        assert!(body.get("temperature").is_none());
     }
 
     fn cache_control_count(v: &Value) -> usize {
