@@ -20,8 +20,12 @@ use crate::harness::ui::tui::theme::Theme;
 /// Maximum number of panels shown side by side; extra ones are dropped.
 pub const MAX_PANELS: usize = 3;
 
-/// Height of the band: rounded border (2) + status line + 2 activity lines.
-pub const BAND_HEIGHT: u16 = 5;
+/// Height of the band: rounded border (2) + status line + 2 activity lines,
+/// plus one spare row so the boxes breathe instead of sitting flush.
+pub const BAND_HEIGHT: u16 = 6;
+
+/// Columns of gap between neighbouring subagent boxes.
+const BOX_GAP: u16 = 2;
 
 /// Number of activity lines rendered inside each box.
 const ACTIVITY_LINES: usize = 2;
@@ -53,7 +57,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
     }
     let n = panels.len() as u32;
     let constraints: Vec<Constraint> = (0..n).map(|_| Constraint::Ratio(1, n)).collect();
-    let cols = Layout::horizontal(constraints).split(area);
+    let cols = Layout::horizontal(constraints).spacing(BOX_GAP).split(area);
     for (panel, col) in panels.iter().zip(cols.iter()) {
         draw_panel(frame, app, panel, *col);
     }
@@ -228,6 +232,27 @@ mod tests {
         );
         assert!(text.contains("explore"));
         assert!(text.contains("build"));
+    }
+
+    #[test]
+    fn boxes_are_separated_by_a_gap() {
+        let mut app = App::inline_for_tests("");
+        app.splash = None;
+        app.subagent_panels = vec![
+            ("a".into(), panel("explore", false)),
+            ("b".into(), panel("build", false)),
+        ];
+        let rows = buffer_rows(&mut app);
+        // The top border row shows the end of box 1 and the start of box 2:
+        // the gap must be blank space between `╮` and the next `╭`.
+        let top = rows
+            .iter()
+            .find(|r| r.matches('╭').count() >= 2)
+            .expect("two boxes on one row");
+        assert!(
+            top.contains("╮  ╭") || top.contains("╮ ╭"),
+            "expected a blank gap between boxes:\n{top}"
+        );
     }
 
     #[test]
