@@ -97,6 +97,24 @@ pub(super) fn handle_settings_like_key(
                     // The row label *is* the setting key (cursor_agent /
                     // cursor_plan), so no per-row mapping is needed.
                     toggle_setting(app, label);
+                } else if label == "cache_ttl" {
+                    // Cycle 5m → 1h → 5m (default).
+                    let next = if app.runtime.config.cache_ttl == "1h" {
+                        ""
+                    } else {
+                        "1h"
+                    };
+                    match app.runtime.set_cache_ttl(next) {
+                        Ok(()) => app.add_system(&format!(
+                            "cache_ttl = {}",
+                            if next.is_empty() {
+                                "5m (default)"
+                            } else {
+                                next
+                            }
+                        )),
+                        Err(e) => app.add_system(&format!("[error] failed to save: {}", e)),
+                    }
                 } else if let Some(target) = cursor_model_target(label) {
                     let mut models = vec![("auto".to_string(), "CLI default".to_string())];
                     models.extend(list_cursor_models());

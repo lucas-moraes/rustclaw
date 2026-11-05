@@ -195,6 +195,7 @@ mod tests {
                     api_key: "x".to_string(),
                 },
                 false,
+                "",
             )
             .unwrap(),
             crate::harness::tool::registry::ToolRegistry::builder().build(),

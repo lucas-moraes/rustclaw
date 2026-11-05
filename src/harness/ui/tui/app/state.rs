@@ -334,7 +334,7 @@ impl App {
             api_key: String::new(),
         };
         let provider =
-            crate::harness::provider::opencode_go::build_provider("deepinfra", http, false)
+            crate::harness::provider::opencode_go::build_provider("deepinfra", http, false, "")
                 .unwrap();
         let runtime = SessionRuntime::new_in(
             _keep_dir.path(),

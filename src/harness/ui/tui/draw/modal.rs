@@ -121,6 +121,15 @@ pub(crate) fn settings_rows(c: &crate::config::RuntimeConfig) -> Vec<(String, St
             },
             false,
         ),
+        (
+            "cache_ttl".into(),
+            if c.cache_ttl.is_empty() {
+                "5m (default)".into()
+            } else {
+                c.cache_ttl.clone()
+            },
+            false,
+        ),
     ]
 }
 

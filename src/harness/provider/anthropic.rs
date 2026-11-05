@@ -16,6 +16,10 @@ pub struct AnthropicProvider {
     /// breakpoints (Anthropic prompt caching). MiniMax rejects them, so the
     /// opencode-go router keeps this off by default.
     pub prompt_cache: bool,
+    /// Cache TTL for `cache_control` breakpoints: `"5m"` (default) or `"1h"`
+    /// (write costs 2× instead of 1.25×, but survives gaps > 5 min).
+    /// Empty = `"5m"`.
+    pub cache_ttl: String,
 }
 
 /// Converts harness messages to Anthropic `/messages` format.
@@ -120,24 +124,40 @@ fn image_block_or_fallback(path: &str) -> Value {
     }
 }
 
-fn build_request_body(req: &LlmRequest, stream: bool, prompt_cache: bool) -> Value {
+fn build_request_body(
+    req: &LlmRequest,
+    stream: bool,
+    prompt_cache: bool,
+    cache_ttl: &str,
+) -> Value {
+    // Anthropic cache TTL: "5m" (default, write 1.25×) or "1h" (write 2×).
+
+    let ttl = match cache_ttl {
+        "1h" => "1h",
+        _ => "5m",
+    };
+    let cache_control = json!({"type": "ephemeral", "ttl": ttl});
     // The Anthropic Messages API requires max_tokens; we cannot omit it, so
     // fall back to a conservative default when the request doesn't set one.
     const DEFAULT_MAX_TOKENS: usize = 4096;
     let mut body = json!({
         "model": req.model,
         "max_tokens": req.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS),
-        "temperature": req.temperature,
         "stream": stream,
         "messages": to_anthropic_messages(&req.messages[..]),
     });
+    // Newer Claude models reject `temperature` outright ("deprecated for
+    // this model"); only send it when the request actually sets one.
+    if req.temperature != 0.0 {
+        body["temperature"] = json!(req.temperature);
+    }
     if !req.system.trim().is_empty() {
         if prompt_cache {
             // Breakpoint 1: system prompt (stable prefix).
             body["system"] = json!([{
                 "type": "text",
                 "text": req.system,
-                "cache_control": {"type": "ephemeral"},
+                "cache_control": cache_control.clone(),
             }]);
         } else {
             body["system"] = json!(req.system);
@@ -157,7 +177,7 @@ fn build_request_body(req: &LlmRequest, stream: bool, prompt_cache: bool) -> Val
             .collect();
         if prompt_cache {
             // Breakpoint 2: last tool definition (tool list is stable).
-            tools.last_mut().unwrap()["cache_control"] = json!({"type": "ephemeral"});
+            tools.last_mut().unwrap()["cache_control"] = cache_control.clone();
         }
         body["tools"] = json!(tools);
     }
@@ -168,7 +188,7 @@ fn build_request_body(req: &LlmRequest, stream: bool, prompt_cache: bool) -> Val
             if last["content"].is_array() {
                 if let Some(blocks) = last["content"].as_array_mut() {
                     if let Some(block) = blocks.last_mut() {
-                        block["cache_control"] = json!({"type": "ephemeral"});
+                        block["cache_control"] = cache_control.clone();
                     }
                 }
             } else {
@@ -177,7 +197,7 @@ fn build_request_body(req: &LlmRequest, stream: bool, prompt_cache: bool) -> Val
                 last["content"] = json!([{
                     "type": "text",
                     "text": text,
-                    "cache_control": {"type": "ephemeral"},
+                    "cache_control": cache_control.clone(),
                 }]);
             }
         }
@@ -357,11 +377,12 @@ impl Provider for AnthropicProvider {
 
     async fn stream(&self, req: &LlmRequest) -> anyhow::Result<ProviderStream> {
         let url = format!("{}/messages", self.http.base_url);
-        let body = build_request_body(req, true, self.prompt_cache);
+        let body = build_request_body(req, true, self.prompt_cache, &self.cache_ttl);
 
         let response = self
             .http
             .post(&url, self.auth)
+            .header("anthropic-version", "2023-06-01")
             .json(&body)
             .send()
             .await
@@ -386,11 +407,12 @@ impl Provider for AnthropicProvider {
 
     async fn complete(&self, req: &LlmRequest) -> anyhow::Result<LlmResponse> {
         let url = format!("{}/messages", self.http.base_url);
-        let body = build_request_body(req, false, self.prompt_cache);
+        let body = build_request_body(req, false, self.prompt_cache, &self.cache_ttl);
 
         let response = self
             .http
             .post(&url, self.auth)
+            .header("anthropic-version", "2023-06-01")
             .json(&body)
             .send()
             .await
@@ -617,7 +639,7 @@ mod tests {
             stop: Vec::new(),
             seed: None,
         };
-        let body = build_request_body(&req, true, false);
+        let body = build_request_body(&req, true, false, "");
         assert_eq!(body["system"], "sys");
         assert_eq!(body["tools"][0]["name"], "bash");
         assert_eq!(body["messages"][0]["role"], "user");
@@ -664,7 +686,7 @@ mod tests {
             stop: Vec::new(),
             seed: None,
         };
-        let body = build_request_body(&req, true, false);
+        let body = build_request_body(&req, true, false, "");
         assert_eq!(body["system"], "sys");
         assert!(body["system"].is_string());
         assert!(cache_control_count(&body) == 0);
@@ -709,7 +731,7 @@ mod tests {
             stop: Vec::new(),
             seed: None,
         };
-        let body = build_request_body(&req, true, true);
+        let body = build_request_body(&req, true, true, "");
         // Breakpoint 1: system is an array with cache_control.
         assert!(body["system"].is_array());
         assert_eq!(body["system"][0]["cache_control"]["type"], "ephemeral");
@@ -744,7 +766,7 @@ mod tests {
             stop: Vec::new(),
             seed: None,
         };
-        let body = build_request_body(&req, false, true);
+        let body = build_request_body(&req, false, true, "");
         let last_msg = body["messages"].as_array().unwrap().last().unwrap();
         assert!(last_msg["content"].is_array());
         assert_eq!(last_msg["content"][0]["type"], "text");

@@ -13,6 +13,8 @@ pub struct OpenCodeGoProvider {
     pub http: HttpConfig,
     /// Passed through to the Anthropic-style route (MiniMax). Default false.
     pub prompt_cache: bool,
+    /// Anthropic cache TTL passed through to the /messages route. Empty = "5m".
+    pub cache_ttl: String,
 }
 
 impl OpenCodeGoProvider {
@@ -32,6 +34,7 @@ impl OpenCodeGoProvider {
             http: self.http.clone(),
             auth: AuthStyle::ApiKey,
             prompt_cache: self.prompt_cache,
+            cache_ttl: self.cache_ttl.clone(),
         }
     }
 }
@@ -68,6 +71,7 @@ pub fn build_provider(
     provider: &str,
     http: HttpConfig,
     prompt_cache: bool,
+    cache_ttl: &str,
 ) -> anyhow::Result<std::sync::Arc<dyn Provider>> {
     let provider = provider.to_lowercase();
     let provider = provider.as_str();
@@ -75,11 +79,13 @@ pub fn build_provider(
         "opencode-go" | "opencode" => Ok(std::sync::Arc::new(OpenCodeGoProvider {
             http,
             prompt_cache,
+            cache_ttl: cache_ttl.to_string(),
         })),
         "anthropic" => Ok(std::sync::Arc::new(AnthropicProvider {
             http,
-            auth: AuthStyle::Bearer,
+            auth: AuthStyle::ApiKey,
             prompt_cache,
+            cache_ttl: cache_ttl.to_string(),
         })),
         // openrouter, moonshot, villamarket, huggingface, custom => OpenAI-compatible
         _ => Ok(std::sync::Arc::new(OpenAiProvider {
@@ -112,11 +118,11 @@ mod tests {
             base_url: "https://example.com/v1".into(),
             api_key: "key".into(),
         };
-        let p = build_provider("opencode-go", http.clone(), false).unwrap();
+        let p = build_provider("opencode-go", http.clone(), false, "").unwrap();
         assert_eq!(p.name(), "opencode-go");
-        let p = build_provider("openrouter", http.clone(), false).unwrap();
+        let p = build_provider("openrouter", http.clone(), false, "").unwrap();
         assert_eq!(p.name(), "openai-compatible");
-        let p = build_provider("anthropic", http, true).unwrap();
+        let p = build_provider("anthropic", http, true, "").unwrap();
         assert_eq!(p.name(), "anthropic-compatible");
     }
 

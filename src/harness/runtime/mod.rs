@@ -292,8 +292,12 @@ impl SessionRuntime {
             base_url: cfg.base_url.clone(),
             api_key: cfg.api_key.clone(),
         };
-        let provider =
-            build_provider_from(&cfg.provider, http, effective_prompt_cache(&cfg.provider))?;
+        let provider = build_provider_from(
+            &cfg.provider,
+            http,
+            effective_prompt_cache(&cfg.provider),
+            &cfg.cache_ttl,
+        )?;
         Self::new_in(
             project_root,
             provider,
@@ -359,7 +363,7 @@ impl SessionRuntime {
             api_key: api_key.clone(),
         };
         self.config.api_key = api_key;
-        self.provider = build_provider_from(provider, http, effective_prompt_cache(provider))?;
+        self.provider = build_provider_from(provider, http, effective_prompt_cache(provider), "")?;
         self.config.provider = provider.to_string();
         self.config.model = model.to_string();
         self.config.base_url = base_url.clone();
@@ -508,6 +512,21 @@ impl SessionRuntime {
         s.model = self.config.model.clone();
         s.compact_trigger_ratio = self.config.compact_trigger_ratio;
         s.summary_model = self.config.summary_model.clone();
+        s.save().context("failed to persist config.json")?;
+        Ok(())
+    }
+
+    /// Sets the Anthropic prompt-cache TTL (`"5m"` default / `"1h"`). An
+    /// empty string resets to the default. Persists to `config.json`.
+    pub fn set_cache_ttl(&mut self, ttl: impl Into<String>) -> Result<()> {
+        let ttl = ttl.into();
+        anyhow::ensure!(
+            ttl.is_empty() || ttl == "5m" || ttl == "1h",
+            "cache_ttl must be \"5m\", \"1h\" or empty (default)"
+        );
+        self.config.cache_ttl = ttl.clone();
+        let mut s = crate::config::GlobalSettings::load();
+        s.cache_ttl = ttl;
         s.save().context("failed to persist config.json")?;
         Ok(())
     }

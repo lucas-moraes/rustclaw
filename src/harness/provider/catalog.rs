@@ -92,11 +92,12 @@ pub const BUILTINS: &[(&str, &str, &str, &[&str])] = &[
     (
         "anthropic",
         "https://api.anthropic.com/v1",
-        "claude-sonnet-4-20250514",
+        "claude-opus-5-5",
         &[
-            "claude-sonnet-4-20250514",
-            "claude-opus-4-20250514",
-            "claude-3-7-sonnet-latest",
+            "claude-opus-5-5",
+            "claude-sonnet-5-5",
+            "claude-haiku-5-5",
+            "claude-fable-5-1",
         ],
     ),
 ];
@@ -230,9 +231,10 @@ pub fn price_per_million(provider: &str, model: &str) -> (f64, f64) {
         ("huggingface", "deepseek-v4", 1.25, 2.50),
         ("huggingface", "llama-4", 0.25, 0.75),
         ("villamarket", "minimax-m2", 2.00, 8.00),
-        ("anthropic", "claude-opus-4", 15.00, 75.00),
-        ("anthropic", "claude-sonnet", 3.00, 15.00),
-        ("anthropic", "claude-3-7", 3.00, 15.00),
+        ("anthropic", "claude-fable", 10.00, 50.00),
+        ("anthropic", "claude-opus-5-5", 4.00, 20.00),
+        ("anthropic", "claude-sonnet-5-5", 2.00, 10.00),
+        ("anthropic", "claude-haiku", 0.10, 0.50),
     ];
 
     for &(p, sub, i, o) in OVERRIDES {
@@ -249,7 +251,7 @@ pub fn price_per_million(provider: &str, model: &str) -> (f64, f64) {
         "moonshot" => (1.00, 8.00),
         "huggingface" => (1.00, 3.00),
         "villamarket" => (2.00, 8.00),
-        "anthropic" => (3.00, 15.00),
+        "anthropic" => (2.00, 10.00),
         _ => GENERIC,
     };
     pdef
@@ -430,8 +432,8 @@ mod tests {
         assert_eq!(o, 1.00);
         // provider default when model unknown
         let (i, o) = price_per_million("anthropic", "some-future-model");
-        assert_eq!(i, 3.00);
-        assert_eq!(o, 15.00);
+        assert_eq!(i, 2.00);
+        assert_eq!(o, 10.00);
         // case-insensitive
         let (i, _o) = price_per_million("XAI", "GROK-4.5");
         assert_eq!(i, 3.00);
@@ -455,16 +457,16 @@ mod tests {
     #[test]
     fn test_estimate_cost_cached_anthropic() {
         use crate::harness::provider::Usage;
-        // Anthropic: input excludes cache. 1M input ($3) + 1M write (1.25×$3)
-        // + 1M read (0.1×$3) + 1M output ($15).
+        // Anthropic: input excludes cache. 1M input ($2) + 1M write (1.25×$2)
+        // + 1M read (0.1×$2) + 1M output ($10).
         let usage = Usage {
             input_tokens: 1_000_000,
             output_tokens: 1_000_000,
             cache_read_tokens: 1_000_000,
             cache_write_tokens: 1_000_000,
         };
-        let c = estimate_cost_cached("anthropic", "claude-sonnet-4-20250514", &usage);
-        let expected = (1.0 + 1.25 + 0.1) * 3.0 + 15.0;
+        let c = estimate_cost_cached("anthropic", "claude-sonnet-5-5", &usage);
+        let expected = (1.0 + 1.25 + 0.1) * 2.0 + 10.0;
         assert!((c - expected).abs() < 1e-9);
     }
 
@@ -504,8 +506,8 @@ mod tests {
     #[test]
     fn test_supports_image() {
         // Vision-capable models → true.
-        assert!(supports_image("anthropic", "claude-sonnet-4-20250514"));
-        assert!(supports_image("anthropic", "claude-opus-4-20250514"));
+        assert!(supports_image("anthropic", "claude-sonnet-5-5"));
+        assert!(supports_image("anthropic", "claude-opus-5-5"));
         assert!(supports_image("xai", "grok-4.5"));
         assert!(supports_image("openrouter", "google/gemini-3-pro"));
         assert!(supports_image(

@@ -179,7 +179,7 @@ Then use the read tool to read src/main.rs. Report what tools you used.";
             base_url: "https://api.deepinfra.com/v1/openai".to_string(),
             api_key: "sk-initial-test-key-123456".to_string(),
         };
-        let provider = build_provider_from("deepinfra", http, false)?;
+        let provider = build_provider_from("deepinfra", http, false, "")?;
         let db = dir.join("test.db");
         SessionRuntime::new_in(
             dir,
@@ -410,7 +410,7 @@ Then use the read tool to read src/main.rs. Report what tools you used.";
             base_url: "https://api.deepinfra.com/v1/openai".to_string(),
             api_key: "sk-initial-test-key-123456".to_string(),
         };
-        let provider = build_provider_from("deepinfra", http, false).unwrap();
+        let provider = build_provider_from("deepinfra", http, false, "").unwrap();
         let db = dir.path().join("test.db");
         let config = crate::config::RuntimeConfig {
             model: "deepseek-ai/DeepSeek-V4-Flash-0731".to_string(),
@@ -485,7 +485,7 @@ Then use the read tool to read src/main.rs. Report what tools you used.";
             base_url: "https://api.deepinfra.com/v1/openai".to_string(),
             api_key: String::new(),
         };
-        let provider = build_provider_from("deepinfra", http, false).unwrap();
+        let provider = build_provider_from("deepinfra", http, false, "").unwrap();
         let db = dir.path().join("test.db");
         let mut rt = SessionRuntime::new_in(
             dir.path(),

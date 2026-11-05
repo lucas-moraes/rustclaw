@@ -35,11 +35,15 @@ pub struct ProviderError {
     pub status: Option<u16>,
     /// Value of the `Retry-After` header, in seconds, when present.
     pub retry_after: Option<u64>,
+    /// The underlying error message (e.g. the API response body), so the
+    /// root cause shown to the user includes the real reason, not just
+    /// the retry classification.
+    pub message: String,
 }
 
 impl std::fmt::Display for ProviderError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "provider error (kind={:?})", self.kind)
+        write!(f, "provider error (kind={:?}): {}", self.kind, self.message)
     }
 }
 
@@ -52,12 +56,14 @@ pub fn provider_error(
     retry_after: Option<u64>,
     msg: impl Into<String>,
 ) -> Error {
+    let msg = msg.into();
     anyhow::Error::new(ProviderError {
         kind,
         status,
         retry_after,
+        message: msg.clone(),
     })
-    .context(msg.into())
+    .context(msg)
 }
 
 /// Classifies an HTTP status code.

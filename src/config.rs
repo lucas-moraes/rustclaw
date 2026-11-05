@@ -43,9 +43,10 @@ pub struct GlobalSettings {
     pub theme: String,
     /// Kill-switch for Anthropic-style prompt caching (`cache_control`
     /// breakpoints). Default `true`; set to `false` to disable everywhere.
-    /// Always serialized: `false` must survive a save/load round-trip.
-    #[serde(default = "default_true")]
     pub prompt_caching: bool,
+    /// Anthropic prompt-cache TTL: `"5m"` (default) or `"1h"`. Empty = `"5m"`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub cache_ttl: String,
     /// Daily spend limit in USD (estimated cost). `0.0` = no limit.
     #[serde(default, skip_serializing_if = "is_zero_f64")]
     pub daily_budget_usd: f64,
@@ -134,6 +135,7 @@ impl Default for GlobalSettings {
             theme: String::new(),
             daily_budget_usd: 0.0,
             prompt_caching: true,
+            cache_ttl: String::new(),
             summary_model: String::new(),
             compact_trigger_ratio: 0.0,
             cursor_agent: false,
@@ -262,6 +264,8 @@ pub struct RuntimeConfig {
     /// Speech-to-text model for push-to-talk (`Ctrl+R` in the TUI).
     /// Empty = `openai/whisper-large-v3` on DeepInfra.
     pub stt_model: String,
+    /// Anthropic prompt-cache TTL: `"5m"` (default) or `"1h"`. Empty = `"5m"`.
+    pub cache_ttl: String,
     /// When `true`, push-to-talk (`Ctrl+R`) is enabled. Default `false`.
     pub voice_enabled: bool,
 }
@@ -312,6 +316,7 @@ impl RuntimeConfig {
             compress_threshold_bytes: 0,
             stt_model: String::new(),
             voice_enabled: false,
+            cache_ttl: String::new(),
         }
     }
 
@@ -383,6 +388,9 @@ impl RuntimeConfig {
         cfg.voice_enabled = settings.voice_enabled;
         if !settings.stt_model.is_empty() {
             cfg.stt_model = settings.stt_model.clone();
+        }
+        if !settings.cache_ttl.is_empty() {
+            cfg.cache_ttl = settings.cache_ttl.clone();
         }
 
         // 4. Token from the global auth store for the resolved provider.

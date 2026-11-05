@@ -81,6 +81,7 @@ fn anthropic_provider(base_url: &str) -> AnthropicProvider {
         http: http_config(base_url),
         auth: AuthStyle::ApiKey,
         prompt_cache: false,
+        cache_ttl: String::new(),
     }
 }
 
@@ -469,6 +470,7 @@ async fn contract_opencode_go_routes_by_model() {
     let p = OpenCodeGoProvider {
         http: http_config(&server.uri()),
         prompt_cache: false,
+        cache_ttl: String::new(),
     };
     let mut req = test_request();
     req.model = "minimax-m2.7".into();
@@ -491,6 +493,7 @@ async fn contract_opencode_go_routes_by_model() {
     let p = OpenCodeGoProvider {
         http: http_config(&server.uri()),
         prompt_cache: false,
+        cache_ttl: String::new(),
     };
     let mut req = test_request();
     req.model = "qwen3-coder".into();

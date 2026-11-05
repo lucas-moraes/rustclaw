@@ -72,7 +72,7 @@ pub async fn handle(
                     }
                 ));
                 out.push(format!(
-                    "fail_fast {} · service_tier {} · reasoning_effort {} · stt_model {} · compress_threshold {}",
+                    "fail_fast {} · service_tier {} · reasoning_effort {} · stt_model {} · compress_threshold {} · cache_ttl {}",
                     c.fail_fast,
                     if c.service_tier.is_empty() {
                         "(provider default)"
@@ -93,6 +93,11 @@ pub async fn handle(
                         crate::harness::tool::compress::DEFAULT_COMPRESS_THRESHOLD
                     } else {
                         c.compress_threshold_bytes
+                    },
+                    if c.cache_ttl.is_empty() {
+                        "5m (default)"
+                    } else {
+                        c.cache_ttl.as_str()
                     }
                 ));
                 out.push(
@@ -237,8 +242,23 @@ pub async fn handle(
                             ),
                         }
                     }
+                    Some("cache_ttl") => {
+                        let v = parts.next().unwrap_or("");
+                        if v.is_empty() {
+                            out.push("usage: /settings cache_ttl <5m|1h|off>".to_string());
+                        } else {
+                            let val = if v == "off" { "" } else { v };
+                            match runtime.set_cache_ttl(val) {
+                                Ok(()) => out.push(format!(
+                                    "settings · cache_ttl = {}",
+                                    if val.is_empty() { "5m (default)" } else { val }
+                                )),
+                                Err(e) => out.push(format!("[error] {}", e)),
+                            }
+                        }
+                    }
                     Some(other) => out.push(format!(
-                        "unknown setting: {} (iterations · context · turn_timeout · compact_ratio · summary_model · fail_fast · service_tier · reasoning_effort · stt_model · compress_threshold)",
+                        "unknown setting: {} (iterations · context · turn_timeout · compact_ratio · summary_model · fail_fast · service_tier · reasoning_effort · stt_model · compress_threshold · cache_ttl)",
                         other
                     )),
                     None => {}
@@ -715,7 +735,7 @@ mod tests {
             api_key: "sk-initial-test-key-123456".to_string(),
         };
         let provider =
-            crate::harness::provider::opencode_go::build_provider("deepinfra", http, false)?;
+            crate::harness::provider::opencode_go::build_provider("deepinfra", http, false, "")?;
         let db = dir.join("test.db");
         SessionRuntime::new_in(
             dir,

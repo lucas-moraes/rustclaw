@@ -183,7 +183,7 @@ mod tests {
             api_key: "sk-initial-test-key-123456".to_string(),
         };
         let provider =
-            crate::harness::provider::opencode_go::build_provider("deepinfra", http, false)?;
+            crate::harness::provider::opencode_go::build_provider("deepinfra", http, false, "")?;
         let db = dir.join("test.db");
         SessionRuntime::new_in(
             dir,
