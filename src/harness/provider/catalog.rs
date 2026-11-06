@@ -90,6 +90,24 @@ pub const BUILTINS: &[(&str, &str, &str, &[&str])] = &[
         &["minimax-m2.7", "minimax-m2.5"],
     ),
     (
+        "venice",
+        "https://api.venice.ai/api/v1",
+        "deepseek-v4-1-flash-1017-uncensored",
+        &[
+            "deepseek-v4-1-flash-1017-uncensored",
+            "deepseek-v4-1-flash-uncensored",
+            "venice-uncensored-1-2",
+            "venice-uncensored-role-play",
+            "olafangensan-glm-4.7-flash-heretic",
+            "gemma-4-uncensored",
+            "qwen-3-6-plus",
+            "abliteration-abliterated-model-large-flash",
+            "abliteration-abliterated-model-large-v2",
+            "e2ee-deepseek-v4-1-flash-1017-abliterated",
+            "e2ee-gemma-4-26b-a4b-uncensored-p",
+        ],
+    ),
+    (
         "anthropic",
         "https://api.anthropic.com/v1",
         "claude-opus-5-5",
@@ -231,6 +249,36 @@ pub fn price_per_million(provider: &str, model: &str) -> (f64, f64) {
         ("huggingface", "deepseek-v4", 1.25, 2.50),
         ("huggingface", "llama-4", 0.25, 0.75),
         ("villamarket", "minimax-m2", 2.00, 8.00),
+        // Venice (values confirmed against GET /api/v1/models pricing.input/output).
+        // ORDER IS SIGNIFICANT: matching is `contains`, so a short substring
+        // placed first shadows every longer id containing it. The e2ee /
+        // abliterated variants therefore come before their plain counterparts,
+        // and `deepseek-v4-1-flash` (the catch-all) comes last.
+        (
+            "venice",
+            "e2ee-deepseek-v4-1-flash-1017-abliterated",
+            0.375,
+            1.50,
+        ),
+        ("venice", "e2ee-gemma-4-26b-a4b-uncensored", 0.19, 0.88),
+        ("venice", "venice-uncensored-role-play", 0.50, 2.00),
+        ("venice", "venice-uncensored", 0.20, 0.90),
+        ("venice", "olafangensan-glm-4.7-flash-heretic", 0.07, 0.40),
+        ("venice", "gemma-4-uncensored", 0.16, 0.50),
+        ("venice", "qwen-3-6-plus", 0.625, 3.75),
+        (
+            "venice",
+            "abliteration-abliterated-model-large-v2",
+            3.00,
+            5.00,
+        ),
+        (
+            "venice",
+            "abliteration-abliterated-model-large-flash",
+            1.25,
+            2.50,
+        ),
+        ("venice", "deepseek-v4-1-flash", 0.33, 1.32),
         ("anthropic", "claude-fable", 10.00, 50.00),
         ("anthropic", "claude-opus-5-5", 4.00, 20.00),
         ("anthropic", "claude-sonnet-5-5", 2.00, 10.00),
@@ -252,6 +300,7 @@ pub fn price_per_million(provider: &str, model: &str) -> (f64, f64) {
         "huggingface" => (1.00, 3.00),
         "villamarket" => (2.00, 8.00),
         "anthropic" => (2.00, 10.00),
+        "venice" => (0.33, 1.32),
         _ => GENERIC,
     };
     pdef
@@ -280,6 +329,7 @@ pub fn supports_image(provider: &str, model: &str) -> bool {
         ("huggingface", "deepseek"),
         ("moonshot", "moonshot-v1"),
         ("xai", "grok-build"),
+        ("venice", "e2ee-gemma-4-26b-a4b-uncensored"),
     ];
 
     for &(p, sub) in TEXT_ONLY {
@@ -372,6 +422,64 @@ mod tests {
                 name
             );
         }
+    }
+
+    #[test]
+    fn test_venice_is_a_builtin() {
+        let p = find_provider("venice").expect("venice must be a builtin");
+        assert_eq!(p.base_url, "https://api.venice.ai/api/v1");
+        assert_eq!(p.default_model, "deepseek-v4-1-flash-1017-uncensored");
+        assert!(p.models.contains(&p.default_model));
+        assert!(!p.user_defined);
+        // Case-insensitive lookup, like every other provider.
+        assert!(find_provider("VENICE").is_some());
+    }
+
+    /// The prices below are the ones published by `GET /api/v1/models`
+    /// (pricing.input.usd / pricing.output.usd). The table is hand-written, so
+    /// a model rename upstream would silently fall back to the provider
+    /// default — this test pins the values we actually verified.
+    #[test]
+    fn test_venice_pricing_matches_published_values() {
+        const EXPECTED: &[(&str, f64, f64)] = &[
+            ("olafangensan-glm-4.7-flash-heretic", 0.07, 0.40),
+            ("gemma-4-uncensored", 0.16, 0.50),
+            ("venice-uncensored-1-2", 0.20, 0.90),
+            ("deepseek-v4-1-flash-uncensored", 0.33, 1.32),
+            ("deepseek-v4-1-flash-1017-uncensored", 0.33, 1.32),
+            ("e2ee-deepseek-v4-1-flash-1017-abliterated", 0.375, 1.50),
+            ("venice-uncensored-role-play", 0.50, 2.00),
+            ("qwen-3-6-plus", 0.625, 3.75),
+            ("e2ee-gemma-4-26b-a4b-uncensored-p", 0.19, 0.88),
+            ("abliteration-abliterated-model-large-flash", 1.25, 2.50),
+            ("abliteration-abliterated-model-large-v2", 3.00, 5.00),
+        ];
+        for &(model, input, output) in EXPECTED {
+            assert_eq!(
+                price_per_million("venice", model),
+                (input, output),
+                "price mismatch for {model}"
+            );
+        }
+    }
+
+    /// `venice-uncensored-role-play` must not be shadowed by the shorter
+    /// `venice-uncensored` substring: the override order decides.
+    #[test]
+    fn test_venice_specific_substrings_win_over_shorter_ones() {
+        assert_eq!(
+            price_per_million("venice", "venice-uncensored-role-play"),
+            (0.50, 2.00)
+        );
+        assert_eq!(
+            price_per_million("venice", "venice-uncensored-1-2"),
+            (0.20, 0.90)
+        );
+        // Unknown model still falls back to the provider default.
+        assert_eq!(
+            price_per_million("venice", "some-future-model"),
+            (0.33, 1.32)
+        );
     }
 
     #[test]
