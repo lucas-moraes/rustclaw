@@ -228,6 +228,7 @@ mod input_tests {
         app.apply_event(HarnessEvent::RunStarted {
             session_id: "parent".into(),
             parent_session_id: None,
+            subagent: None,
         });
         assert!(app.running);
 
@@ -610,6 +611,7 @@ mod modal_queue_tests {
         app.enqueue_modal(Modal::Permission(p));
         app.enqueue_modal(Modal::Question {
             req: q,
+            swarm_ask: None,
             draft: String::new(),
             cursor: 0,
         });
@@ -618,6 +620,82 @@ mod modal_queue_tests {
         app.close_modal();
         assert!(matches!(app.modal, Some(Modal::Question { .. })));
         assert!(app.modal_queue.is_empty());
+    }
+
+    fn swarm_ask(
+        id: i64,
+        from: &str,
+        question: &str,
+    ) -> crate::harness::ui::tui::swarm_asks::SwarmAsk {
+        crate::harness::ui::tui::swarm_asks::SwarmAsk {
+            id,
+            from: from.to_string(),
+            question: question.to_string(),
+        }
+    }
+
+    #[test]
+    fn test_two_swarm_asks_route_to_their_own_recipients() {
+        let mut app = App::inline_for_tests("");
+        let (qa, mut qarx) = question_req();
+        let (qb, mut qbrx) = question_req();
+        let ask_a = swarm_ask(1, "agent-a", "A?");
+        let ask_b = swarm_ask(2, "agent-b", "B?");
+
+        // Two simultaneous asks: each modal carries its own routing metadata.
+        app.enqueue_modal(Modal::Question {
+            req: qa,
+            swarm_ask: Some(ask_a.clone()),
+            draft: String::new(),
+            cursor: 0,
+        });
+        app.enqueue_modal(Modal::Question {
+            req: qb,
+            swarm_ask: Some(ask_b.clone()),
+            draft: String::new(),
+            cursor: 0,
+        });
+
+        // Answer the first (A): metadata must point at agent-a.
+        let Some(Modal::Question { req, swarm_ask, .. }) = app.modal.take() else {
+            panic!("first modal should be a Question");
+        };
+        req.reply.send(Some("answer-a".to_string())).unwrap();
+        assert_eq!(swarm_ask.as_ref().unwrap().from, "agent-a");
+        assert_eq!(swarm_ask.as_ref().unwrap().id, 1);
+        assert_eq!(qarx.try_recv().unwrap(), Some("answer-a".to_string()));
+
+        // Closing opens the queued ask (B), still with its own metadata.
+        app.close_modal();
+        let Some(Modal::Question { req, swarm_ask, .. }) = app.modal.take() else {
+            panic!("second modal should be a Question");
+        };
+        req.reply.send(Some("answer-b".to_string())).unwrap();
+        assert_eq!(swarm_ask.as_ref().unwrap().from, "agent-b");
+        assert_eq!(swarm_ask.as_ref().unwrap().id, 2);
+        assert_eq!(qbrx.try_recv().unwrap(), Some("answer-b".to_string()));
+    }
+
+    #[test]
+    fn test_plain_question_modal_has_no_swarm_metadata() {
+        let mut app = App::inline_for_tests("");
+        let (q, mut qrx) = question_req();
+
+        app.enqueue_modal(Modal::Question {
+            req: q,
+            swarm_ask: None,
+            draft: String::new(),
+            cursor: 0,
+        });
+        let Some(Modal::Question { req, swarm_ask, .. }) = app.modal.take() else {
+            panic!("modal should be a Question");
+        };
+        assert!(
+            swarm_ask.is_none(),
+            "question tool must not be hijacked by swarm routing"
+        );
+        req.reply.send(Some("plain".to_string())).unwrap();
+        assert_eq!(qrx.try_recv().unwrap(), Some("plain".to_string()));
     }
 
     #[test]

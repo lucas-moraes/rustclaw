@@ -8,6 +8,13 @@ use serde_json::Value;
 /// Tool execution status, mirrors `ToolPart::status`.
 pub use crate::harness::session::ToolStatus;
 
+/// Identity and nesting information for a child agent run.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SubagentInfo {
+    pub agent: String,
+    pub depth: usize,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[cfg_attr(test, derive(PartialEq))]
 pub enum HarnessEvent {
@@ -15,6 +22,8 @@ pub enum HarnessEvent {
         session_id: String,
         /// Set when the event comes from a subagent (child session).
         parent_session_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        subagent: Option<SubagentInfo>,
     },
     RunFinished {
         session_id: String,
@@ -193,9 +202,8 @@ impl HarnessEvent {
         }
     }
 
-    /// Tags an event as coming from a subagent: sets `parent_session_id` on the
-    /// variants that carry it, and bumps `depth` on tool events so the UI can
-    /// render the subagent tree.
+    /// Tags a subagent event without replacing its immediate parent or reducing
+    /// a nested run's existing depth.
     ///
     /// Used by the subagent runner to wrap the child's event stream. Events
     /// without a `parent_session_id` field (e.g. `PermissionAsk`) are returned
@@ -244,10 +252,14 @@ impl HarnessEvent {
             }
             _ => {}
         }
-        // Tool events carry the nesting depth of the agent that ran the call.
+        // Outer relays must not flatten depths already tagged by inner runs.
         match &mut self {
+            HarnessEvent::RunStarted {
+                subagent: Some(info),
+                ..
+            } => info.depth = info.depth.max(depth),
             HarnessEvent::ToolStart { depth: d, .. } | HarnessEvent::ToolEnd { depth: d, .. } => {
-                *d = depth;
+                *d = (*d).max(depth);
             }
             _ => {}
         }
@@ -274,6 +286,7 @@ mod tests {
         let event = HarnessEvent::RunStarted {
             session_id: "s1".to_string(),
             parent_session_id: None,
+            subagent: None,
         };
         tx.send(event).unwrap();
         let received = rx.recv().await.unwrap();
@@ -286,6 +299,7 @@ mod tests {
         tx.send(HarnessEvent::RunStarted {
             session_id: "a".into(),
             parent_session_id: None,
+            subagent: None,
         })
         .unwrap();
         tx.send(HarnessEvent::RunFinished {

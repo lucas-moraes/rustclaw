@@ -57,6 +57,23 @@ impl App {
         self.flush_streaming();
     }
 
+    /// Finalizes every still-open subagent panel (spinner off, finished_at
+    /// stamped) so the existing linger/expire path removes them. Used on
+    /// turn-level error/cancel and as a RunFinished safety net.
+    pub fn finalize_open_subagent_panels(&mut self) {
+        let mut changed = false;
+        for (_, panel) in self.subagent_panels.iter_mut() {
+            if !panel.finished {
+                panel.finished = true;
+                panel.finished_at = Some(self.tick);
+                changed = true;
+            }
+        }
+        if changed {
+            self.mark_dirty();
+        }
+    }
+
     fn note_tool_signature(&mut self, name: &str, input: &serde_json::Value) {
         let sig = format!("{name}:{input}");
         if self.doom_sig.as_ref() == Some(&sig) {
@@ -118,7 +135,11 @@ impl App {
                 }
             }
             HarnessEvent::ToolStart {
-                name, input, depth, ..
+                name,
+                input,
+                depth,
+                tool_id,
+                ..
             } => {
                 self.flush_stream_now();
                 let new_batch = self.tool_status.is_none();
@@ -135,7 +156,7 @@ impl App {
                 if name == "task" {
                     let agent = input["agent"].as_str().unwrap_or("reason").to_string();
                     self.subagent_panels.push((
-                        String::new(), // tool_id unknown here; matched on ToolEnd
+                        tool_id.clone(), // matched on ToolEnd by tool_call_id
                         SubagentPanel {
                             messages: Vec::new(),
                             child_session_id: String::new(),
@@ -156,6 +177,7 @@ impl App {
                 status,
                 diff,
                 output_preview,
+                tool_id,
                 ..
             } => {
                 self.flush_stream_now();
@@ -172,21 +194,34 @@ impl App {
                         self.finish_tool_batch();
                     }
                 }
-                // A finished `task` call finalizes the newest open panel.
+                // A finished `task` call finalizes its panel. Match by
+                // tool_call_id first (robust to nested/out-of-order task
+                // calls); fall back to the newest open panel only when the
+                // id is unknown (legacy events).
                 if name == "task" {
-                    if let Some((_, panel)) = self
-                        .subagent_panels
-                        .iter_mut()
-                        .rev()
-                        .find(|(_, p)| !p.finished)
-                    {
-                        panel.finished = true;
-                        panel.finished_at = Some(self.tick);
-                        panel.summary = Some(if output_preview.is_empty() {
-                            String::new()
-                        } else {
-                            output_preview.clone()
-                        });
+                    let target = if tool_id.is_empty() {
+                        self.subagent_panels
+                            .iter()
+                            .rposition(|(_, p)| !p.finished)
+                            .map(|i| self.subagent_panels[i].0.clone())
+                    } else {
+                        self.subagent_panels
+                            .iter()
+                            .find(|(id, _)| *id == tool_id.as_str())
+                            .map(|(id, _)| id.clone())
+                    };
+                    if let Some(key) = target {
+                        if let Some((_, panel)) =
+                            self.subagent_panels.iter_mut().find(|(id, _)| *id == key)
+                        {
+                            panel.finished = true;
+                            panel.finished_at = Some(self.tick);
+                            panel.summary = Some(if output_preview.is_empty() {
+                                String::new()
+                            } else {
+                                output_preview.clone()
+                            });
+                        }
                     }
                 }
                 if let Some(d) = diff {
@@ -233,6 +268,10 @@ impl App {
                     self.doom_level = DoomLevel::Stop;
                 }
                 self.push(LineKind::Error, format!("[error] {}", message));
+                // A turn-level error (including abort/cancel) must not leave
+                // subagent panels spinning: finalize every open panel so the
+                // linger/expire path can clean them up.
+                self.finalize_open_subagent_panels();
             }
             HarnessEvent::RunStarted { .. } => {
                 self.running = true;
@@ -253,6 +292,10 @@ impl App {
                 self.status_msg = None;
                 self.active_tools.clear();
                 self.flush_stream_now();
+                // Safety net: any panel still open when the run ends is
+                // finalized (covers cancelled/aborted subagents whose ToolEnd
+                // never arrived).
+                self.finalize_open_subagent_panels();
                 self.mark_dirty();
             }
             HarnessEvent::UserMessage { .. } => {}
@@ -509,6 +552,108 @@ impl App {
 mod tests {
     use super::*;
     use crate::harness::session::{Message, Part, Role};
+    use serde_json::json;
+
+    fn task_start(tool_id: &str, depth: usize) -> HarnessEvent {
+        HarnessEvent::ToolStart {
+            session_id: "root".into(),
+            message_id: "m".into(),
+            tool_id: tool_id.into(),
+            name: "task".into(),
+            input: json!({"agent": "explore", "prompt": "p"}),
+            parent_session_id: None,
+            depth,
+        }
+    }
+
+    fn task_end(tool_id: &str, depth: usize) -> HarnessEvent {
+        HarnessEvent::ToolEnd {
+            session_id: "root".into(),
+            message_id: "m".into(),
+            tool_id: tool_id.into(),
+            name: "task".into(),
+            status: ToolStatus::Completed,
+            title: "task".into(),
+            output_preview: "done".into(),
+            diff: None,
+            parent_session_id: None,
+            depth,
+        }
+    }
+
+    /// Out-of-order completion: the first-started task finishes last; each
+    /// ToolEnd finalizes exactly its own panel (matched by tool_call_id).
+    #[test]
+    fn task_end_finalizes_panel_by_tool_id_out_of_order() {
+        let mut app = App::inline_for_tests("test");
+        app.apply_event(task_start("t1", 0));
+        app.apply_event(task_start("t2", 0));
+        app.apply_event(task_end("t2", 0));
+
+        let finished: Vec<bool> = app
+            .subagent_panels
+            .iter()
+            .map(|(_, p)| p.finished)
+            .collect();
+        assert_eq!(finished, vec![false, true], "only t2 finished");
+
+        app.apply_event(task_end("t1", 0));
+        assert!(
+            app.subagent_panels.iter().all(|(_, p)| p.finished),
+            "both panels finished"
+        );
+    }
+
+    /// Nested task calls (depth 1 inside depth 0) each finalize their own
+    /// panel; the parent panel is not touched by the child's ToolEnd.
+    #[test]
+    fn nested_task_end_matches_own_panel() {
+        let mut app = App::inline_for_tests("test");
+        app.apply_event(task_start("parent", 0));
+        app.apply_event(task_start("child", 1));
+        app.apply_event(task_end("child", 1));
+
+        let finished: Vec<bool> = app
+            .subagent_panels
+            .iter()
+            .map(|(_, p)| p.finished)
+            .collect();
+        assert_eq!(finished, vec![false, true]);
+
+        app.apply_event(task_end("parent", 0));
+        assert!(app.subagent_panels.iter().all(|(_, p)| p.finished));
+    }
+
+    /// Turn-level error (e.g. cancel/abort) finalizes every open panel so
+    /// none is left spinning.
+    #[test]
+    fn error_event_finalizes_open_panels() {
+        let mut app = App::inline_for_tests("test");
+        app.apply_event(task_start("t1", 0));
+        app.apply_event(task_start("t2", 0));
+        app.apply_event(HarnessEvent::Error {
+            session_id: "root".into(),
+            message: "aborted".into(),
+            parent_session_id: None,
+        });
+        assert!(
+            app.subagent_panels.iter().all(|(_, p)| p.finished),
+            "error must finalize all open panels"
+        );
+    }
+
+    /// RunFinished is a safety net: any panel still open when the run ends
+    /// is finalized (covers a subagent whose ToolEnd never arrived).
+    #[test]
+    fn run_finished_finalizes_open_panels() {
+        let mut app = App::inline_for_tests("test");
+        app.apply_event(task_start("t1", 0));
+        app.apply_event(HarnessEvent::RunFinished {
+            session_id: "root".into(),
+            parent_session_id: None,
+        });
+        assert!(app.subagent_panels.iter().all(|(_, p)| p.finished));
+    }
 
     /// Rebuilding from a session with a user prompt and an assistant reply
     /// yields the expected line kinds, in order, with `born_tick == 0`

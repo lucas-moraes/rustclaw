@@ -23,7 +23,9 @@ pub fn draw(
             frame.render_widget(Clear, modal_area);
             draw_permission(frame, req, theme, tick, modal_area)
         }
-        Modal::Question { req, draft, cursor } => {
+        Modal::Question {
+            req, draft, cursor, ..
+        } => {
             // The question modal sizes itself against the full screen so it can
             // grow to use the available space for long questions/options.
             draw_question(frame, req, draft, *cursor, theme, tick, area)

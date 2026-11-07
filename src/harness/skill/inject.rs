@@ -6,6 +6,10 @@ use super::{SessionSkill, SkillCatalog};
 pub const MAX_SKILL_CHARS: usize = 12_000;
 /// Soft cap on number of enabled skills per turn.
 pub const MAX_SKILLS_PER_TURN: usize = 5;
+/// Aggregate cap on total skill chars injected per turn. Prevents the worst
+/// case of MAX_SKILLS_PER_TURN x MAX_SKILL_CHARS (60 KB) from reaching the
+/// system prompt. Skills are filled in session order; later ones are skipped.
+pub const MAX_TOTAL_SKILL_CHARS: usize = 24_000;
 
 /// Agents where context-reduction features (terse skill, tool-output
 /// compression/aging) are active. Outside these modes the session runs
@@ -49,9 +53,19 @@ pub fn render_enabled(
     }
 
     let mut out = String::from("\n# Session skills\n");
+    let mut budget = MAX_TOTAL_SKILL_CHARS;
     for id in ordered {
         if let Some(spec) = catalog.get(&id) {
-            let body = truncate_utf8(&spec.body, MAX_SKILL_CHARS);
+            if budget == 0 {
+                out.push_str(&format!(
+                    "\n## {}\n[skipped: aggregate skill budget \
+({MAX_TOTAL_SKILL_CHARS} bytes) exhausted for this turn]\n",
+                    spec.name
+                ));
+                continue;
+            }
+            let body = truncate_utf8(&spec.body, MAX_SKILL_CHARS.min(budget));
+            budget = budget.saturating_sub(body.len());
             out.push_str(&format!("\n## {}\n", spec.name));
             if !spec.description.is_empty() {
                 out.push_str(&format!("*{}*\n", spec.description));
@@ -92,7 +106,12 @@ fn truncate_utf8(s: &str, max_bytes: usize) -> String {
     while !s.is_char_boundary(idx) {
         idx -= 1;
     }
-    format!("{}…\n[skill truncated]", &s[..idx])
+    format!(
+        "{}…\n[skill truncated at the {}-byte limit; content beyond this point \
+was dropped. If you need the rest, read the skill file directly.]",
+        &s[..idx],
+        max_bytes
+    )
 }
 
 #[cfg(test)]

@@ -45,6 +45,8 @@ tree-sitter-rust = "0.24"
 # binary on the host — see `harness::deps` and `rustclaw doctor`.
 chromiumoxide = "0.9"
 rmcp = { version = "3.2.0", features = ["client", "transport-child-process", "transport-streamable-http-client", "transport-streamable-http-client-reqwest"] }
+# Already used by rmcp; isolate foreground shell descendants on Unix and Windows.
+process-wrap = { version = "9.1", default-features = false, features = ["tokio1", "process-group", "job-object", "kill-on-drop"] }
 cpal = { version = "0.15", optional = true }
 tempfile = "3"
 

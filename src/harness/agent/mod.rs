@@ -50,14 +50,14 @@ impl AgentSpec {
 /// skills block (empty when the user opted out for this turn).
 ///
 /// `project_context` is the auto-discovered + curated project memory
-/// (`# Project context`). Precedence: the manual `AGENTS.md` is the primary
-/// source of project instructions; the auto summary complements it in a
-/// separate section.
+/// (`# Project context`). The manual `AGENTS.md` is NOT inlined here: the
+/// agent is instructed to read it on demand with the `read` tool. This keeps
+/// the system prompt small and cache-stable even for projects with large
+/// instruction files.
 pub fn build_system_prompt(
     agent: &AgentSpec,
     cwd: &std::path::Path,
     injected_context: &str,
-    extra_instructions: Option<&str>,
     project_context: &str,
     available_tools: &[ToolSpec],
 ) -> String {
@@ -69,10 +69,26 @@ pub fn build_system_prompt(
         "- Today: you are operating inside this project directory. \
 Paths in tool calls are resolved relative to it.\n",
     );
+    // The current date is injected per-turn (see `runtime::mod`), not here:
+    // a date that changes daily would invalidate the prompt cache prefix.
 
-    if let Some(agents_md) = load_agents_md(cwd) {
-        prompt.push_str("\n# Project instructions (AGENTS.md)\n");
-        prompt.push_str(&agents_md);
+    prompt.push_str(
+        "\n# Discovery Protocol\n\
+- On initial startup or when tackling a task in an unfamiliar module, use \
+`glob` or `grep` to map the relevant project subdirectories before modifying \
+code.\n",
+    );
+
+    // AGENTS.md is not inlined: instruct the agent to read it on demand.
+    // This keeps the system prompt small and cache-stable regardless of the
+    // project's instruction-file size.
+    if load_agents_md(cwd).is_some() {
+        prompt.push_str(
+            "\n# Project instructions\n\
+This project has an `AGENTS.md` file with build commands, code style and \
+project conventions. Read it with the `read` tool before making changes \
+(it is the primary source of project instructions).\n",
+        );
     }
 
     if !project_context.trim().is_empty() {
@@ -86,25 +102,17 @@ Paths in tool calls are resolved relative to it.\n",
         prompt.push('\n');
     }
 
-    if let Some(extra) = extra_instructions {
-        if !extra.trim().is_empty() {
-            prompt.push_str("\n# Additional context\n");
-            prompt.push_str(extra);
-            prompt.push('\n');
-        }
-    }
-
-    // List the tools the agent can actually invoke, so the model knows what
-    // it may trigger. This is derived from the registry filtered by the
-    // agent's allowlist (empty = all registered tools).
+    // List the tool names the agent can invoke. Full descriptions + JSON
+    // schemas already travel in the request's `tools:` field, so repeating
+    // them here would be redundant context.
     if !available_tools.is_empty() {
         prompt.push_str("\n# Available tools\n");
         prompt.push_str(
-            "You can invoke any of the following tools natively. Each is described \
-with its JSON Schema in the request; use them to accomplish the task.\n",
+            "You can invoke any of the following tools natively (full JSON Schema \
+is provided with each request):\n",
         );
         for spec in available_tools {
-            prompt.push_str(&format!("- `{}`: {}\n", spec.name, spec.description));
+            prompt.push_str(&format!("- `{}`\n", spec.name));
         }
     }
 
@@ -152,8 +160,10 @@ fn load_agents_md(cwd: &std::path::Path) -> Option<String> {
     const MAX: usize = 12_000;
     if content.len() > MAX {
         Some(format!(
-            "{}\n[AGENTS.md truncated]",
-            crate::harness::tool::truncate::truncate_output(&content, MAX)
+            "{}\n[AGENTS.md was truncated at the {}-byte limit; content beyond \
+this point was dropped. If you need the rest, read the file directly.]",
+            crate::harness::tool::truncate::truncate_output(&content, MAX),
+            MAX
         ))
     } else {
         Some(content)
@@ -305,7 +315,7 @@ mod tests {
         let chat = builtin::chat_free();
         assert_eq!(chat.name, "chat-free");
         // Conversational: higher temperature.
-        assert_eq!(chat.turn_temperature(), 0.8);
+        assert_eq!(chat.turn_temperature(), 0.5);
         // Full build toolset except file writing.
         assert!(chat.allows_tool("web_search"));
         assert!(chat.allows_tool("fetch_webpage"));
@@ -328,7 +338,6 @@ mod tests {
             &build,
             &PathBuf::from("/proj"),
             "injected ctx",
-            None,
             "# Project context\n- Stack: rust",
             &[],
         );
@@ -355,16 +364,16 @@ mod tests {
                 parameters: serde_json::json!({"type": "object"}),
             },
         ];
-        let prompt = build_system_prompt(&build, &PathBuf::from("/proj"), "", None, "", &tools);
+        let prompt = build_system_prompt(&build, &PathBuf::from("/proj"), "", "", &tools);
         assert!(prompt.contains("# Available tools"));
-        assert!(prompt.contains("`read`: Reads a file"));
-        assert!(prompt.contains("`ast_search`: Syntactic search over .rs files"));
+        assert!(prompt.contains("`read`"));
+        assert!(!prompt.contains("Reads a file"));
     }
 
     #[test]
     fn test_system_prompt_omits_tools_section_when_empty() {
         let build = builtin::build();
-        let prompt = build_system_prompt(&build, &PathBuf::from("/proj"), "", None, "", &[]);
+        let prompt = build_system_prompt(&build, &PathBuf::from("/proj"), "", "", &[]);
         assert!(!prompt.contains("# Available tools"));
     }
 
@@ -381,27 +390,35 @@ mod tests {
             &build,
             d.path(),
             "",
-            None,
             "# Project context\n- Stack: rust\n- Build: cargo build",
             &[],
         );
-        // Manual AGENTS.md is the primary source of project instructions...
-        assert!(prompt.contains("# Project instructions (AGENTS.md)"));
-        assert!(prompt.contains("always use tabs"));
+        // AGENTS.md is not inlined; the agent is told to read it on demand.
+        assert!(prompt.contains("# Project instructions"));
+        assert!(prompt.contains("Read it with the `read` tool"));
+        assert!(!prompt.contains("always use tabs"));
         // ...and the auto summary is a separate, complementary section.
         assert!(prompt.contains("# Project context"));
         assert!(prompt.contains("Build: cargo build"));
-        // Manual section appears before the auto summary.
+        // Instructions pointer appears before the auto summary.
         let manual_pos = prompt.find("Project instructions").unwrap();
         let auto_pos = prompt.find("Project context").unwrap();
         assert!(manual_pos < auto_pos);
     }
 
     #[test]
+    fn test_no_agents_md_pointer_when_file_absent() {
+        let d = tempfile::tempdir().unwrap();
+        let build = builtin::build();
+        let prompt = build_system_prompt(&build, d.path(), "", "", &[]);
+        assert!(!prompt.contains("# Project instructions"));
+    }
+
+    #[test]
     fn test_default_temperature_per_mode() {
         // Builtins carry an explicit temperature override; `turn_temperature`
         // is the effective value used at runtime.
-        let cases = [("build", 0.0), ("reason", 0.3), ("chat-free", 0.8)];
+        let cases = [("build", 0.0), ("reason", 0.3), ("chat-free", 0.5)];
         for (name, expected) in cases {
             let spec = find_builtin(name).unwrap();
             assert!(

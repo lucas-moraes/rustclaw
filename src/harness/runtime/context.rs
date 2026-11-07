@@ -132,8 +132,11 @@ pub(super) fn memory_block_for<'a>(
         if rendered.trim().is_empty() {
             return Ok(String::new());
         }
+        // Current date, formatted once per day. Injected per-turn (not in the
+        // system prompt) so the cacheable prefix stays byte-stable.
+        let today = chrono::Local::now().format("%Y-%m-%d (%A)");
         Ok(format!(
-            "{}\n{}\n{}",
+            "{}\nCurrent date: {today}\n{}\n{}",
             crate::harness::project::memory::MEMORY_BLOCK_START,
             rendered.trim_end(),
             crate::harness::project::memory::MEMORY_BLOCK_END

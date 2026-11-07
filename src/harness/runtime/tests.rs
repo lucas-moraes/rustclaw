@@ -151,6 +151,7 @@ Then use the read tool to read src/main.rs. Report what tools you used.";
         let ev = HarnessEvent::RunStarted {
             session_id: "s".into(),
             parent_session_id: None,
+            subagent: None,
         };
         assert_eq!(ev.parent_session_id(), None);
     }

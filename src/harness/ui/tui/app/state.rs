@@ -165,9 +165,6 @@ pub struct App {
     /// Questions asked by subagents while the TUI was idle; answered by the
     /// user and posted back to the bus (see `swarm_asks`).
     pub swarm_ask_rx: mpsc::UnboundedReceiver<crate::harness::ui::tui::swarm_asks::SwarmAsk>,
-    /// The subagent question currently shown in the modal, if any. When set,
-    /// the answer is posted to the message bus instead of a oneshot.
-    pub pending_swarm_ask: Option<crate::harness::ui::tui::swarm_asks::SwarmAsk>,
     /// Open Ctrl+F transcript search modal.
     pub search: Option<SearchState>,
     /// Whether collapsible thinking (reasoning) blocks are expanded.
@@ -208,6 +205,8 @@ pub enum Modal {
     /// `options` is non-empty the user can also pick with `1..n`.
     Question {
         req: QuestionRequest,
+        /// Routing metadata belongs to this question, including while queued.
+        swarm_ask: Option<crate::harness::ui::tui::swarm_asks::SwarmAsk>,
         /// Draft free-text answer being typed in the modal.
         draft: String,
         /// Cursor position (char index) inside `draft`.
@@ -454,7 +453,6 @@ impl App {
             permission_rx,
             question_rx,
             swarm_ask_rx,
-            pending_swarm_ask: None,
             search: None,
             thinking_expanded: false,
             pending_images: Vec::new(),

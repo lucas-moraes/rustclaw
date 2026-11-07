@@ -534,25 +534,31 @@ pub(crate) fn handle_modal_key(app: &mut App, key: KeyEvent) -> Result<bool> {
         }
         Some(Modal::Question {
             req,
+            swarm_ask,
             mut draft,
             mut cursor,
         }) => {
             use crossterm::event::KeyModifiers;
 
             let put_back = |app: &mut App, req: QuestionRequest, draft: String, cursor: usize| {
-                app.modal = Some(Modal::Question { req, draft, cursor });
+                app.modal = Some(Modal::Question {
+                    req,
+                    swarm_ask: swarm_ask.clone(),
+                    draft,
+                    cursor,
+                });
             };
             let finish = |app: &mut App, req: QuestionRequest, answer: Option<String>| {
-                // A subagent's question goes back over the bus, not through
-                // the oneshot: the asker is polling SQLite, not this channel.
-                if let Some(ask) = app.pending_swarm_ask.take() {
+                // Preserve the request's channel even when also replying on the bus.
+                let _ = req.reply.send(answer.clone());
+                if let Some(ask) = swarm_ask.as_ref() {
                     match answer {
                         Some(a) => {
                             let sent = match app.runtime.message_bus.as_ref() {
                                 Some(bus) => crate::harness::ui::tui::swarm_asks::answer(
                                     bus,
                                     &app.session.id,
-                                    &ask,
+                                    ask,
                                     &a,
                                 ),
                                 None => Err(anyhow::anyhow!("message bus unavailable")),
@@ -580,7 +586,6 @@ pub(crate) fn handle_modal_key(app: &mut App, key: KeyEvent) -> Result<bool> {
                     app.close_modal();
                     return;
                 }
-                let _ = req.reply.send(answer.clone());
                 match answer {
                     Some(a) => app.push(
                         LineKind::System,

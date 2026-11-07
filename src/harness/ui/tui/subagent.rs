@@ -100,20 +100,44 @@ impl App {
         // claim the still-empty nested panel for the subagent's own session.
         if let HarnessEvent::ToolEnd {
             name,
+            tool_id,
             output_preview,
             ..
         } = ev
         {
             if name == "task" {
-                if let Some((_, nested)) = self
-                    .subagent_panels
-                    .iter_mut()
-                    .rev()
-                    .find(|(_, p)| !p.finished && p.child_session_id.is_empty())
-                {
-                    nested.finished = true;
-                    nested.finished_at = Some(self.tick);
-                    nested.summary = Some(output_preview.clone());
+                // Match by tool_call_id when known (robust to nested and
+                // out-of-order task calls); fall back to the newest open
+                // empty-child panel for legacy events without an id.
+                let target = if tool_id.is_empty() {
+                    self.subagent_panels
+                        .iter()
+                        .rposition(|(_, p)| !p.finished && p.child_session_id.is_empty())
+                        .map(|i| self.subagent_panels[i].0.clone())
+                } else {
+                    self.subagent_panels
+                        .iter()
+                        .find(|(id, _)| *id == tool_id.as_str())
+                        .map(|(id, _)| id.clone())
+                        .or_else(|| {
+                            // Panels are keyed by the child session id, which
+                            // is unknown at ToolStart time (key stays empty
+                            // until the grandchild's first event). Fall back
+                            // to the newest open empty-child panel.
+                            self.subagent_panels
+                                .iter()
+                                .rposition(|(_, p)| !p.finished && p.child_session_id.is_empty())
+                                .map(|i| self.subagent_panels[i].0.clone())
+                        })
+                };
+                if let Some(key) = target {
+                    if let Some((_, nested)) =
+                        self.subagent_panels.iter_mut().find(|(id, _)| *id == key)
+                    {
+                        nested.finished = true;
+                        nested.finished_at = Some(self.tick);
+                        nested.summary = Some(output_preview.clone());
+                    }
                 }
             }
         }

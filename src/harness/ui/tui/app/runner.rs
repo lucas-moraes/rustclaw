@@ -159,36 +159,15 @@ pub async fn run_tui(
 
         // Drain events, coalescing consecutive TextDelta events to reduce
         // the number of apply_event calls (and thus frame work) under burst.
-        let mut coalesced_delta = String::new();
+        // Coalescing is keyed by (session_id, message_id, parent_session_id)
+        // so subagent text keeps its routing and reaches the right panel.
+        let mut raw = Vec::new();
         while let Ok(ev) = app.events_rx.try_recv() {
             app.runtime.event_recorder.record(&ev);
-            match ev {
-                HarnessEvent::TextDelta { delta, .. } => {
-                    coalesced_delta.push_str(&delta);
-                }
-                other => {
-                    // Flush any coalesced delta before the non-delta event.
-                    if !coalesced_delta.is_empty() {
-                        let combined = std::mem::take(&mut coalesced_delta);
-                        app.apply_event(HarnessEvent::TextDelta {
-                            delta: combined,
-                            session_id: String::new(),
-                            message_id: String::new(),
-                            parent_session_id: None,
-                        });
-                    }
-                    app.apply_event(other);
-                }
-            }
+            raw.push(ev);
         }
-        // Flush any remaining coalesced delta.
-        if !coalesced_delta.is_empty() {
-            app.apply_event(HarnessEvent::TextDelta {
-                delta: std::mem::take(&mut coalesced_delta),
-                session_id: String::new(),
-                message_id: String::new(),
-                parent_session_id: None,
-            });
+        for ev in coalesce_text_deltas(raw.into_iter()) {
+            app.apply_event(ev);
         }
         app.flush_pending_stream_if_due();
         // Drain voice transcription results (push-to-talk).
@@ -253,16 +232,17 @@ pub async fn run_tui(
                     options: Vec::new(),
                     reply,
                 },
+                swarm_ask: Some(ask),
                 draft: String::new(),
                 cursor: 0,
             });
-            app.pending_swarm_ask = Some(ask);
         }
         while let Ok(req) = app.question_rx.try_recv() {
             app.flush_stream_now();
             app.push(LineKind::System, format!("[question] {}", req.question));
             app.enqueue_modal(Modal::Question {
                 req,
+                swarm_ask: None,
                 draft: String::new(),
                 cursor: 0,
             });
@@ -547,6 +527,74 @@ pub async fn run_tui(
 /// Minimum time between draws (~30 fps). Animation still polls at 50 ms.
 pub(crate) const MIN_FRAME_DT: std::time::Duration = std::time::Duration::from_millis(33);
 
+/// Coalesces consecutive `TextDelta` events, preserving the routing key
+/// `(session_id, message_id, parent_session_id)` so subagent text still
+/// reaches the correct panel. A run of deltas with the same key becomes one
+/// event; a key change flushes the previous run first.
+pub(crate) fn coalesce_text_deltas(
+    events: impl Iterator<Item = HarnessEvent>,
+) -> impl Iterator<Item = HarnessEvent> {
+    #[derive(PartialEq, Eq, Clone)]
+    struct Key {
+        session_id: String,
+        message_id: String,
+        parent_session_id: Option<String>,
+    }
+
+    let mut pending: Option<(Key, String)> = None;
+    let mut out: Vec<HarnessEvent> = Vec::new();
+    for ev in events {
+        match ev {
+            HarnessEvent::TextDelta {
+                delta,
+                session_id,
+                message_id,
+                parent_session_id,
+            } => {
+                let key = Key {
+                    session_id: session_id.clone(),
+                    message_id: message_id.clone(),
+                    parent_session_id: parent_session_id.clone(),
+                };
+                match &mut pending {
+                    Some((k, buf)) if *k == key => buf.push_str(&delta),
+                    Some(_) => {
+                        let (k, buf) = pending.take().expect("checked");
+                        out.push(HarnessEvent::TextDelta {
+                            delta: buf,
+                            session_id: k.session_id,
+                            message_id: k.message_id,
+                            parent_session_id: k.parent_session_id,
+                        });
+                        pending = Some((key, delta));
+                    }
+                    None => pending = Some((key, delta)),
+                }
+            }
+            other => {
+                if let Some((k, buf)) = pending.take() {
+                    out.push(HarnessEvent::TextDelta {
+                        delta: buf,
+                        session_id: k.session_id,
+                        message_id: k.message_id,
+                        parent_session_id: k.parent_session_id,
+                    });
+                }
+                out.push(other);
+            }
+        }
+    }
+    if let Some((k, buf)) = pending.take() {
+        out.push(HarnessEvent::TextDelta {
+            delta: buf,
+            session_id: k.session_id,
+            message_id: k.message_id,
+            parent_session_id: k.parent_session_id,
+        });
+    }
+    out.into_iter()
+}
+
 pub(crate) fn should_draw(
     needs_redraw: bool,
     needs_anim: bool,
@@ -630,5 +678,91 @@ mod tests {
         let mut app = App::inline_for_tests("");
         app.paste_text("a\r\nb\rc");
         assert_eq!(app.input, "a\nb\nc");
+    }
+
+    fn delta(session: &str, msg: &str, parent: Option<&str>, text: &str) -> HarnessEvent {
+        HarnessEvent::TextDelta {
+            delta: text.to_string(),
+            session_id: session.to_string(),
+            message_id: msg.to_string(),
+            parent_session_id: parent.map(|p| p.to_string()),
+        }
+    }
+
+    /// Consecutive deltas with the same routing key merge into one event
+    /// carrying the full text.
+    #[test]
+    fn coalescing_merges_same_key_deltas() {
+        let events = vec![
+            delta("s", "m", None, "hel"),
+            delta("s", "m", None, "lo "),
+            delta("s", "m", None, "world"),
+        ];
+        let out: Vec<HarnessEvent> = coalesce_text_deltas(events.into_iter()).collect();
+        assert_eq!(out.len(), 1);
+        match &out[0] {
+            HarnessEvent::TextDelta {
+                delta,
+                session_id,
+                message_id,
+                parent_session_id,
+            } => {
+                assert_eq!(delta, "hello world");
+                assert_eq!(session_id, "s");
+                assert_eq!(message_id, "m");
+                assert!(parent_session_id.is_none());
+            }
+            other => panic!("expected TextDelta, got {other:?}"),
+        }
+    }
+
+    /// Deltas from different (session, message, parent) keys are never
+    /// merged across keys — subagent text keeps its routing.
+    #[test]
+    fn coalescing_preserves_routing_keys() {
+        let events = vec![
+            delta("root", "m1", None, "root "),
+            delta("root", "m1", None, "more"),
+            delta("child", "m2", Some("root"), "child "),
+            delta("child", "m2", Some("root"), "text"),
+        ];
+        let out: Vec<HarnessEvent> = coalesce_text_deltas(events.into_iter()).collect();
+        let texts: Vec<(String, Option<String>)> = out
+            .iter()
+            .filter_map(|ev| match ev {
+                HarnessEvent::TextDelta {
+                    delta,
+                    parent_session_id,
+                    ..
+                } => Some((delta.clone(), parent_session_id.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            texts,
+            vec![
+                ("root more".to_string(), None),
+                ("child text".to_string(), Some("root".to_string())),
+            ]
+        );
+    }
+
+    /// A non-delta event flushes the pending run before itself, preserving
+    /// order.
+    #[test]
+    fn coalescing_flushes_on_non_delta_event() {
+        let events = vec![
+            delta("s", "m", None, "part"),
+            HarnessEvent::RunFinished {
+                session_id: "s".into(),
+                parent_session_id: None,
+            },
+            delta("s", "m", None, "next"),
+        ];
+        let out: Vec<HarnessEvent> = coalesce_text_deltas(events.into_iter()).collect();
+        assert_eq!(out.len(), 3);
+        assert!(matches!(out[0], HarnessEvent::TextDelta { .. }));
+        assert!(matches!(out[1], HarnessEvent::RunFinished { .. }));
+        assert!(matches!(out[2], HarnessEvent::TextDelta { .. }));
     }
 }

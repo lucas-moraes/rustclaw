@@ -2,6 +2,7 @@
 
 use super::scheduler::SubagentScheduler;
 use super::SessionRuntime;
+use crate::harness::event::{EventReceiver, EventSender, HarnessEvent, SubagentInfo};
 use crate::harness::tool::context::{SubagentRunner, TaskOutcome};
 use anyhow::Result;
 use std::path::PathBuf;
@@ -20,6 +21,44 @@ pub struct TaskRunner {
     /// Process-wide concurrency limiter shared by every subagent, so parallel
     /// batches and nested spawns queue behind the same cap.
     pub scheduler: SubagentScheduler,
+}
+
+/// Makes a terminal event available even when the run future is dropped.
+/// A successful runtime may already have sent one; the relay stops at its first
+/// terminal for this session, so this fallback is never duplicated downstream.
+struct ChildRunGuard {
+    events: EventSender,
+    session_id: String,
+    fallback: String,
+}
+
+impl Drop for ChildRunGuard {
+    fn drop(&mut self) {
+        let _ = self.events.send(HarnessEvent::RunFinished {
+            session_id: self.session_id.clone(),
+            parent_session_id: None,
+        });
+    }
+}
+
+async fn relay_child_events(
+    mut child_rx: EventReceiver,
+    events: EventSender,
+    parent_id: String,
+    child_id: String,
+    depth: usize,
+) {
+    while let Some(event) = child_rx.recv().await {
+        // Nested runs share this stream. Their terminals must not cut off the
+        // immediate child's remaining output or its own terminal event.
+        let finished = matches!(
+            &event,
+            HarnessEvent::RunFinished { session_id, .. } if session_id == &child_id
+        );
+        if events.send(event.tag_child(&parent_id, depth)).is_err() || finished {
+            break;
+        }
+    }
 }
 
 /// Resolves the effective subagent agent given whether the parent allows file
@@ -77,19 +116,28 @@ impl SubagentRunner for TaskRunner {
             .set_session_parent(&child.id, &child_cwd, Some(&self.parent_session_id))
             .map_err(|e| e.to_string())?;
 
-        // Tag every child event with the parent session id and the child's
-        // nesting depth, so UIs route it into a subagent panel instead of the
-        // parent transcript (and never mistake a child's `RunFinished` for the
-        // parent turn ending). A relay task forwards tagged events to the real
-        // channel; it ends when the child's sender is dropped.
-        let (child_tx, mut child_rx) = crate::harness::event::event_channel();
-        let parent_id = self.parent_session_id.clone();
-        let relay = tokio::spawn(async move {
-            while let Some(ev) = child_rx.recv().await {
-                if events.send(ev.tag_child(&parent_id, depth)).is_err() {
-                    break;
-                }
-            }
+        // Relay until this child's terminal, not a nested descendant's. A
+        // detached relay also drains the RAII terminal if this future is dropped.
+        let (child_tx, child_rx) = crate::harness::event::event_channel();
+        let relay = tokio::spawn(relay_child_events(
+            child_rx,
+            events,
+            self.parent_session_id.clone(),
+            child.id.clone(),
+            depth,
+        ));
+        let mut run_guard = ChildRunGuard {
+            events: child_tx.clone(),
+            session_id: child.id.clone(),
+            fallback: "Subagent cancelled before completion".into(),
+        };
+        let _ = child_tx.send(HarnessEvent::RunStarted {
+            session_id: child.id.clone(),
+            parent_session_id: None,
+            subagent: Some(SubagentInfo {
+                agent: agent.to_string(),
+                depth,
+            }),
         });
 
         // Tell the child who it is and who its parent is, so it can use
@@ -121,8 +169,14 @@ before assuming you are alone.\n\
             .await
             .map_err(|e| e.to_string());
 
-        // Drop the child sender so the relay drains and exits, then wait for it
-        // so no tagged event is lost after the task returns.
+        run_guard.fallback = match &result {
+            Ok(result) => result.final_text.clone(),
+            Err(error) => format!("Subagent failed: {error}"),
+        };
+        // Queue the fallback before awaiting the relay, including on errors.
+        // Runtime/session tasks may retain sender clones, so channel closure is
+        // not a reliable completion signal. The first own terminal is.
+        drop(run_guard);
         drop(child_tx);
         let _ = relay.await;
 

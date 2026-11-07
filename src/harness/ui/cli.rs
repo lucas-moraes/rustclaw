@@ -10,9 +10,9 @@ use crate::harness::ui::commands::replay::EventRecorder;
 use anyhow::Result;
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
-use std::io::IsTerminal;
+use std::io::{self, BufRead, IsTerminal, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 pub struct CliAsker {
     pub engine: Arc<PermissionEngine>,
@@ -34,20 +34,23 @@ impl PermissionAsker for CliAsker {
         if self.always.load(Ordering::Relaxed) {
             return true;
         }
-        eprint!("\n[permission] {} ", request.tool);
-        if let Some(p) = &request.path {
-            eprint!("(path: {}) ", p);
-        }
-        eprint!("{}\n  allow? [y]es/[n]o/[a]lways: ", request.args_summary);
-        let answer = blocking_read_line().unwrap_or_default().to_lowercase();
-        match answer.as_str() {
-            "y" | "yes" | "" => true,
-            "a" | "always" => {
+        let tool = request.tool.clone();
+        let answer = blocking_read_line(move || {
+            eprint!("\n[permission] {} ", request.tool);
+            if let Some(p) = &request.path {
+                eprint!("(path: {}) ", p);
+            }
+            eprint!("{}\n  allow? [y]es/[n]o/[a]lways: ", request.args_summary);
+        })
+        .await;
+        match parse_permission_response(answer) {
+            CliPermissionResponse::Once => true,
+            CliPermissionResponse::Always => {
                 self.always.store(true, Ordering::Relaxed);
-                self.engine.set_always_allow(&request.tool);
+                self.engine.set_always_allow(&tool);
                 true
             }
-            _ => false,
+            CliPermissionResponse::Deny => false,
         }
     }
 }
@@ -57,12 +60,16 @@ pub struct CliUserAsker;
 #[async_trait::async_trait]
 impl UserAsker for CliUserAsker {
     async fn ask(&self, question: String, options: Vec<String>) -> Option<String> {
-        eprint!("\n[question] {}\n", question);
-        for (i, opt) in options.iter().enumerate() {
-            eprintln!("  {}. {}", i + 1, opt);
-        }
-        eprint!("> ");
-        let answer = blocking_read_line().unwrap_or_default();
+        let prompt_options = options.clone();
+        let answer = blocking_read_line(move || {
+            eprint!("\n[question] {}\n", question);
+            for (i, opt) in prompt_options.iter().enumerate() {
+                eprintln!("  {}. {}", i + 1, opt);
+            }
+            eprint!("> ");
+        })
+        .await
+        .ok()??;
         if answer.is_empty() {
             return None;
         }
@@ -76,9 +83,44 @@ impl UserAsker for CliUserAsker {
     }
 }
 
-/// Reads a line on a blocking task to avoid stalling the runtime.
-fn blocking_read_line() -> Option<String> {
-    std::io::stdin().lines().next().and_then(|r| r.ok())
+// Shared by permission and user questions, including prompts from concurrent tools.
+static CLI_PROMPT_LOCK: Mutex<()> = Mutex::new(());
+
+#[derive(Debug, PartialEq, Eq)]
+enum CliPermissionResponse {
+    Once,
+    Always,
+    Deny,
+}
+
+fn parse_permission_response(answer: io::Result<Option<String>>) -> CliPermissionResponse {
+    match answer {
+        Ok(Some(answer)) => match answer.to_ascii_lowercase().as_str() {
+            "y" | "yes" | "" => CliPermissionResponse::Once,
+            "a" | "always" => CliPermissionResponse::Always,
+            _ => CliPermissionResponse::Deny,
+        },
+        Ok(None) | Err(_) => CliPermissionResponse::Deny,
+    }
+}
+
+/// Keeps EOF distinct from an explicitly entered empty line.
+fn read_prompt_line(reader: &mut impl BufRead) -> io::Result<Option<String>> {
+    reader.lines().next().transpose()
+}
+
+/// Serializes the entire prompt/read pair on a blocking task, not the async runtime.
+async fn blocking_read_line(prompt: impl FnOnce() + Send + 'static) -> io::Result<Option<String>> {
+    tokio::task::spawn_blocking(move || {
+        let _guard = CLI_PROMPT_LOCK
+            .lock()
+            .map_err(|_| io::Error::other("CLI prompt lock poisoned"))?;
+        prompt();
+        io::stderr().flush()?;
+        read_prompt_line(&mut io::stdin().lock())
+    })
+    .await
+    .map_err(io::Error::other)?
 }
 
 /// Consumes events and renders them to the terminal.
@@ -404,4 +446,75 @@ pub async fn run(config: crate::config::RuntimeConfig, cwd: std::path::PathBuf) 
 
 fn data_db_path() -> std::path::PathBuf {
     crate::harness::paths::harness_db()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_permission_parser_requires_input_not_eof_or_error() {
+        assert_eq!(
+            parse_permission_response(Ok(None)),
+            CliPermissionResponse::Deny
+        );
+        assert_eq!(
+            parse_permission_response(Err(io::Error::other("read failed"))),
+            CliPermissionResponse::Deny
+        );
+        assert_eq!(
+            parse_permission_response(Ok(Some(String::new()))),
+            CliPermissionResponse::Once
+        );
+        assert_eq!(
+            parse_permission_response(Ok(Some("YES".into()))),
+            CliPermissionResponse::Once
+        );
+        assert_eq!(
+            parse_permission_response(Ok(Some("always".into()))),
+            CliPermissionResponse::Always
+        );
+        assert_eq!(
+            parse_permission_response(Ok(Some("no".into()))),
+            CliPermissionResponse::Deny
+        );
+    }
+
+    #[test]
+    fn test_prompt_reader_distinguishes_enter_and_eof() {
+        assert_eq!(read_prompt_line(&mut io::Cursor::new(b"")).unwrap(), None);
+        assert_eq!(
+            read_prompt_line(&mut io::Cursor::new(b"\n")).unwrap(),
+            Some(String::new())
+        );
+        assert_eq!(
+            read_prompt_line(&mut io::Cursor::new(b"\r\n")).unwrap(),
+            Some(String::new())
+        );
+        assert_eq!(
+            read_prompt_line(&mut io::Cursor::new(b"y")).unwrap(),
+            Some("y".into())
+        );
+        assert_eq!(
+            parse_permission_response(read_prompt_line(&mut io::Cursor::new(b""))),
+            CliPermissionResponse::Deny
+        );
+    }
+
+    #[test]
+    fn test_prompt_reader_propagates_error_and_permission_denies() {
+        struct FailedReader;
+        impl io::Read for FailedReader {
+            fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
+                Err(io::Error::other("read failed"))
+            }
+        }
+        let mut reader = io::BufReader::new(FailedReader);
+        let error = read_prompt_line(&mut reader).unwrap_err();
+        assert_eq!(error.to_string(), "read failed");
+        assert_eq!(
+            parse_permission_response(Err(error)),
+            CliPermissionResponse::Deny
+        );
+    }
 }

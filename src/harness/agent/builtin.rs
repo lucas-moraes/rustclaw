@@ -158,7 +158,7 @@ user (question), but you cannot write or edit files directly (write/edit are dis
 Keep answers natural and conversational, not overly technical."
             .into(),
         model: None,
-        temperature: Some(0.8),
+        temperature: Some(0.5),
         permission_overrides: HashMap::new(),
     }
 }

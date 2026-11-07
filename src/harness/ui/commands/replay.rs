@@ -207,6 +207,7 @@ mod tests {
             HarnessEvent::RunStarted {
                 session_id: "sess-12345678".to_string(),
                 parent_session_id: None,
+                subagent: None,
             },
             HarnessEvent::ToolEnd {
                 session_id: "sess-12345678".to_string(),

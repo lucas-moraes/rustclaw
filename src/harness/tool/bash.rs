@@ -16,9 +16,12 @@
 
 use super::{Tool, ToolResult};
 use crate::harness::session::preview;
-use crate::harness::tool::context::ToolContext;
+use crate::harness::tool::context::{AbortSignal, ToolContext};
+use process_wrap::tokio::{ChildWrapper, CommandWrap, KillOnDrop};
 use serde_json::{json, Value};
 use std::time::Duration;
+use tokio::io::{AsyncRead, AsyncReadExt};
+use tokio::time::{sleep_until, Instant};
 
 const MAX_OUTPUT_BYTES: usize = 20_000;
 const DEFAULT_TIMEOUT_SECS: u64 = 120;
@@ -457,6 +460,78 @@ impl BashTool {
     }
 }
 
+/// A foreground shell owns an isolated process group (Unix) or job (Windows).
+/// Killing only the shell would leave descendants holding our pipe writers open.
+struct ForegroundProcess(Box<dyn ChildWrapper>);
+
+impl ForegroundProcess {
+    fn spawn(command: tokio::process::Command) -> std::io::Result<Self> {
+        let mut command = CommandWrap::from(command);
+        command.wrap(KillOnDrop);
+        #[cfg(unix)]
+        command.wrap(process_wrap::tokio::ProcessGroup::leader());
+        #[cfg(windows)]
+        command.wrap(process_wrap::tokio::JobObject);
+        command.spawn().map(Self)
+    }
+}
+
+impl Drop for ForegroundProcess {
+    fn drop(&mut self) {
+        // Includes success (a descendant may have closed its pipes but kept running),
+        // I/O errors, timeout, cooperative abort and cancellation of the outer future.
+        // Never kill the harness's process group: spawn always creates a new one.
+        let _ = self.0.start_kill();
+        // KillOnDrop also leaves reaping of an unfinished shell to Tokio, without
+        // introducing an unbounded wait after the foreground deadline has expired.
+    }
+}
+
+#[derive(Debug)]
+enum ForegroundError {
+    Aborted,
+    TimedOut,
+    Io(std::io::Error),
+}
+
+async fn read_foreground_pipe<R: AsyncRead + Unpin>(pipe: Option<R>) -> std::io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    if let Some(mut pipe) = pipe {
+        pipe.read_to_end(&mut bytes).await?;
+    }
+    Ok(bytes)
+}
+
+async fn collect_foreground(
+    mut child: ForegroundProcess,
+    deadline: Instant,
+    abort: &AbortSignal,
+) -> Result<(std::process::ExitStatus, Vec<u8>, Vec<u8>), ForegroundError> {
+    let stdout = child.0.stdout().take();
+    let stderr = child.0.stderr().take();
+    let aborted = async {
+        while !abort.is_aborted() {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    };
+
+    // Reader futures are owned here, not spawned: EVERY exit drops/closes both
+    // readers before killing the isolated group/job. Nothing can be detached by
+    // dropping a JoinHandle, and the same absolute deadline covers wait + EOF.
+    tokio::select! {
+        biased;
+        _ = aborted => Err(ForegroundError::Aborted),
+        _ = sleep_until(deadline) => Err(ForegroundError::TimedOut),
+        result = async {
+            tokio::try_join!(
+                child.0.wait(),
+                read_foreground_pipe(stdout),
+                read_foreground_pipe(stderr),
+            )
+        } => result.map_err(ForegroundError::Io),
+    }
+}
+
 #[async_trait::async_trait]
 impl Tool for BashTool {
     fn name(&self) -> &str {
@@ -558,59 +633,20 @@ impl Tool for BashTool {
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
         let _sandbox_status = super::sandbox::apply(&mut child, sandbox, &cwd);
-        let mut child = child
-            .spawn()
+        let deadline = Instant::now() + Duration::from_secs(secs);
+        let child = ForegroundProcess::spawn(child)
             .map_err(|e| format!("failed to spawn command: {}", e))?;
-
-        let stdout = child.stdout.take();
-        let stderr = child.stderr.take();
-        let stdout_task = tokio::spawn(async move {
-            let mut buf = Vec::new();
-            if let Some(mut out) = stdout {
-                let _ = tokio::io::AsyncReadExt::read_to_end(&mut out, &mut buf).await;
-            }
-            buf
-        });
-        let stderr_task = tokio::spawn(async move {
-            let mut buf = Vec::new();
-            if let Some(mut err) = stderr {
-                let _ = tokio::io::AsyncReadExt::read_to_end(&mut err, &mut buf).await;
-            }
-            buf
-        });
-
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(secs);
-        let status = loop {
-            if ctx.abort.is_aborted() {
-                let _ = child.start_kill();
-                let _ = child.wait().await;
-                stdout_task.abort();
-                stderr_task.abort();
-                return Err("aborted".to_string());
-            }
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            if remaining.is_zero() {
-                let _ = child.start_kill();
-                let _ = child.wait().await;
-                stdout_task.abort();
-                stderr_task.abort();
-                return Err(format!(
+        let (status, stdout, stderr) = collect_foreground(child, deadline, &ctx.abort)
+            .await
+            .map_err(|err| match err {
+                ForegroundError::Aborted => "aborted".to_string(),
+                ForegroundError::TimedOut => format!(
                     "command timed out after {}s: {}",
                     secs,
                     preview(&command, 80)
-                ));
-            }
-            tokio::select! {
-                biased;
-                status = child.wait() => {
-                    break status.map_err(|e| format!("command failed: {}", e))?;
-                }
-                _ = tokio::time::sleep(Duration::from_millis(50).min(remaining)) => {}
-            }
-        };
-
-        let stdout = stdout_task.await.unwrap_or_default();
-        let stderr = stderr_task.await.unwrap_or_default();
+                ),
+                ForegroundError::Io(err) => format!("command failed: {}", err),
+            })?;
 
         let mut combined = String::new();
         if !stdout.is_empty() {
@@ -759,6 +795,260 @@ mod tests {
         let args = json!({"command": "x", "timeout_secs": 9999});
         assert_eq!(timeout_secs(&args), 600);
         assert_eq!(timeout_secs(&json!({"command": "x"})), 120);
+    }
+
+    /// Short fallback lifetime plus best-effort cleanup even on assertion panic.
+    #[cfg(unix)]
+    struct ForegroundProbe {
+        _dir: tempfile::TempDir,
+        pids: std::path::PathBuf,
+    }
+
+    #[cfg(unix)]
+    impl ForegroundProbe {
+        fn spawn(script: &str) -> (Self, ForegroundProcess) {
+            let dir = tempfile::tempdir().unwrap();
+            let pids = dir.path().join("pids");
+            let mut command = tokio::process::Command::new("sh");
+            command
+                .arg("-c")
+                .arg(script)
+                .arg("foreground-test")
+                .arg(&pids)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped());
+            let child = ForegroundProcess::spawn(command).unwrap();
+            (Self { _dir: dir, pids }, child)
+        }
+
+        fn recorded_pids(&self) -> Vec<i32> {
+            std::fs::read_to_string(&self.pids)
+                .unwrap_or_default()
+                .split_whitespace()
+                .map(|pid| pid.parse().unwrap())
+                .collect()
+        }
+
+        async fn wait_ready(&self) {
+            tokio::time::timeout(Duration::from_secs(1), async {
+                while self.recorded_pids().len() != 2 {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .expect("shell should record both PIDs");
+        }
+
+        async fn assert_stopped(&self) {
+            self.wait_ready().await;
+            for pid in self.recorded_pids() {
+                let stopped = tokio::time::timeout(Duration::from_secs(1), async {
+                    loop {
+                        let output = tokio::process::Command::new("ps")
+                            .args(["-o", "stat=", "-p", &pid.to_string()])
+                            .output()
+                            .await
+                            .unwrap();
+                        let state = String::from_utf8_lossy(&output.stdout);
+                        // Reparented zombies may briefly remain until init reaps.
+                        if state.trim().is_empty() || state.trim().starts_with('Z') {
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                })
+                .await;
+                assert!(stopped.is_ok(), "foreground process {pid} is still running");
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for ForegroundProbe {
+        fn drop(&mut self) {
+            for pid in self.recorded_pids() {
+                if pid > 1 && pid != std::process::id() as i32 {
+                    // Only PIDs written by this test's shell, never a group or
+                    // the harness itself. Sleepers self-expire after 3s as well.
+                    let _ = std::process::Command::new("kill")
+                        .args(["-KILL", &pid.to_string()])
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .status();
+                }
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_foreground_deadline_includes_both_inherited_pipes() {
+        for redirection in ["2>/dev/null", ">/dev/null", ""] {
+            let script =
+                format!("sleep 3 {redirection} & printf '%s %s' \"$$\" \"$!\" > \"$1\"; exit 0");
+            let (probe, child) = ForegroundProbe::spawn(&script);
+            let started = Instant::now();
+            let result = tokio::time::timeout(
+                Duration::from_secs(1),
+                collect_foreground(
+                    child,
+                    started + Duration::from_millis(150),
+                    &AbortSignal::default(),
+                ),
+            )
+            .await
+            .expect("inherited pipes must not outlive the foreground deadline");
+            assert!(matches!(result, Err(ForegroundError::TimedOut)));
+            assert!(started.elapsed() < Duration::from_secs(1));
+            probe.assert_stopped().await;
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_foreground_timeout_kills_shell_and_descendants() {
+        let (probe, child) =
+            ForegroundProbe::spawn("sleep 3 & printf '%s %s' \"$$\" \"$!\" > \"$1\"; wait");
+        let result = collect_foreground(
+            child,
+            Instant::now() + Duration::from_millis(150),
+            &AbortSignal::default(),
+        )
+        .await;
+        assert!(matches!(result, Err(ForegroundError::TimedOut)));
+        probe.assert_stopped().await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_foreground_abort_while_waiting_or_reading() {
+        for ending in ["wait", "exit 0"] {
+            let script = format!("sleep 3 & printf '%s %s' \"$$\" \"$!\" > \"$1\"; {ending}");
+            let (probe, child) = ForegroundProbe::spawn(&script);
+            let abort = AbortSignal::default();
+            let worker_abort = abort.clone();
+            let task = tokio::spawn(async move {
+                collect_foreground(
+                    child,
+                    Instant::now() + Duration::from_secs(2),
+                    &worker_abort,
+                )
+                .await
+            });
+            probe.wait_ready().await;
+            // Let exit 0 finish while the descendant keeps pipe writers open.
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            abort.abort();
+            let result = tokio::time::timeout(Duration::from_millis(500), task)
+                .await
+                .expect("abort should also interrupt readers")
+                .unwrap();
+            assert!(matches!(result, Err(ForegroundError::Aborted)));
+            probe.assert_stopped().await;
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_foreground_dropped_future_kills_descendants() {
+        let (probe, child) =
+            ForegroundProbe::spawn("sleep 3 & printf '%s %s' \"$$\" \"$!\" > \"$1\"; exit 0");
+        let task = tokio::spawn(async move {
+            collect_foreground(
+                child,
+                Instant::now() + Duration::from_secs(2),
+                &AbortSignal::default(),
+            )
+            .await
+        });
+        probe.wait_ready().await;
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        probe.assert_stopped().await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_foreground_success_cleans_descendants_and_keeps_output() {
+        let (probe, child) = ForegroundProbe::spawn(
+            "sleep 3 >/dev/null 2>&1 & printf '%s %s' \"$$\" \"$!\" > \"$1\"; \
+             printf output; printf error >&2; exit 7",
+        );
+        let (status, stdout, stderr) = collect_foreground(
+            child,
+            Instant::now() + Duration::from_secs(1),
+            &AbortSignal::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(status.code(), Some(7));
+        assert_eq!(stdout, b"output");
+        assert_eq!(stderr, b"error");
+        probe.assert_stopped().await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_background_survives_foreground_abort_signal() {
+        let dir = tempfile::tempdir().unwrap();
+        use crate::harness::permission::PermissionEngine;
+        use crate::harness::tool::context::{PathBufGuard, PermissionAsker, UserAsker};
+        use std::sync::Arc;
+
+        struct AllowAsker;
+        #[async_trait::async_trait]
+        impl PermissionAsker for AllowAsker {
+            async fn ask(&self, _req: crate::harness::tool::context::PermissionAskInput) -> bool {
+                true
+            }
+        }
+        #[async_trait::async_trait]
+        impl UserAsker for AllowAsker {
+            async fn ask(&self, _q: String, _opts: Vec<String>) -> Option<String> {
+                None
+            }
+        }
+        let ctx = ToolContext {
+            session_id: "s".into(),
+            agent: "build".into(),
+            agent_tools: vec![],
+            cwd: PathBufGuard(dir.path().to_path_buf()),
+            abort: AbortSignal::default(),
+            permission: Arc::new(PermissionEngine::default()),
+            asker: Arc::new(AllowAsker),
+            user_asker: Arc::new(AllowAsker),
+            todos: Arc::new(tokio::sync::RwLock::new(Vec::new())),
+            task_runner: None,
+            depth: 0,
+            events: crate::harness::event::event_channel().0,
+            project_memory: None,
+            hooks: Default::default(),
+            checkpoints: Arc::new(crate::harness::tool::checkpoint::FileCheckpoints::new()),
+            jobs: Arc::new(crate::harness::tool::jobs::JobRegistry::new()),
+            semantic_index: None,
+            embedder: None,
+            sandbox_policy: None,
+            message_bus: None,
+            shared_memory: None,
+        };
+        let marker = dir.path().join("background-done");
+        // Short-lived work must still run after execute returns.
+        let command = format!("sleep 0.2; printf done > '{}'", marker.display());
+        let result = BashTool
+            .execute(json!({"command": command, "background": true}), &ctx)
+            .await
+            .unwrap();
+        assert!(result.output.contains("background"));
+        ctx.abort.abort();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !marker.exists() || !ctx.jobs.list().is_empty() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("background job should finish independently and be cleaned up");
+        assert_eq!(std::fs::read_to_string(marker).unwrap(), "done");
     }
 
     #[tokio::test]
