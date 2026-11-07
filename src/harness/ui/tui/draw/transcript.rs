@@ -218,40 +218,33 @@ fn render_line(
             } else {
                 "💭 reasoning".to_string()
             };
+            // No box: the header is a padded label and the body flows as
+            // indented text under it (padding + text chaining, no rails).
             let mut out = vec![Line::from(vec![
-                Span::styled("  ╭ ", Style::default().fg(t.border)),
+                Span::styled("  ".to_string(), Style::default()),
                 Span::styled(
                     header,
                     Style::default().fg(body_color).add_modifier(Modifier::DIM),
                 ),
             ])];
-            if collapsed {
-                out.push(Line::from(vec![
-                    Span::styled("  │ ".to_string(), Style::default().fg(t.border)),
-                    Span::styled(
-                        line.text.clone(),
-                        Style::default().fg(body_color).add_modifier(Modifier::DIM),
-                    ),
-                ]));
+            let body_style = if collapsed {
+                Style::default().fg(body_color).add_modifier(Modifier::DIM)
             } else {
-                let body_w = width.saturating_sub(6).max(8);
-                for w in markdown::wrap_plain(&line.text, body_w) {
-                    out.push(Line::from(vec![
-                        Span::styled("  │ ".to_string(), Style::default().fg(t.border)),
-                        Span::styled(w, Style::default().fg(body_color)),
-                    ]));
-                }
+                Style::default().fg(body_color)
+            };
+            let body_w = width.saturating_sub(4).max(8);
+            for w in markdown::wrap_plain(&line.text, body_w) {
+                out.push(Line::from(vec![
+                    Span::styled("    ".to_string(), Style::default()),
+                    Span::styled(w, body_style),
+                ]));
             }
-            out.push(Line::from(Span::styled(
-                "  ╰────",
-                Style::default().fg(t.border),
-            )));
             out
         }
         LineKind::ToolStart => {
             let spin = anim::spinner_frame(tick);
             vec![Line::from(vec![
-                Span::styled("  ┊ ".to_string(), Style::default().fg(t.border)),
+                Span::styled("  ".to_string(), Style::default()),
                 Span::styled(format!("{spin} "), Style::default().fg(t.warn)),
                 Span::styled(
                     line.text.clone(),
@@ -266,7 +259,7 @@ fn render_line(
                 .trim_start_matches("✓ ")
                 .to_string();
             vec![Line::from(vec![
-                Span::styled("  ┊ ".to_string(), Style::default().fg(t.border)),
+                Span::styled("  ".to_string(), Style::default()),
                 Span::styled("✓ ".to_string(), Style::default().fg(t.success)),
                 Span::styled(text, Style::default().fg(t.success)),
             ])]
@@ -279,7 +272,7 @@ fn render_line(
                 .trim_start_matches("  ✓/✗ ")
                 .to_string();
             vec![Line::from(vec![
-                Span::styled("  ┊ ".to_string(), Style::default().fg(t.border)),
+                Span::styled("  ".to_string(), Style::default()),
                 Span::styled("✗ ".to_string(), Style::default().fg(t.error)),
                 Span::styled(text, Style::default().fg(t.error)),
             ])]
@@ -299,36 +292,20 @@ fn render_line(
             ),
         ])],
         LineKind::Diff => {
+            // No box: a padded "diff" label followed by the colored diff
+            // lines, each indented under the label (padding + text chaining).
             let mut out = vec![Line::from(vec![
-                Span::styled("  ╭─ ".to_string(), Style::default().fg(t.accent3)),
+                Span::styled("  ".to_string(), Style::default()),
                 Span::styled(
                     "diff",
                     Style::default().fg(t.accent3).add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(" ─────".to_string(), Style::default().fg(t.accent3)),
             ])];
-            // Body rows are padded to the full width so the right edge of the
-            // box is continuous; the footer rule spans the same width.
-            let gutter_w = 4usize; // "  │ "
-            let body_w = width.saturating_sub(gutter_w).max(8);
             for dl in markdown::render_diff(&line.text, t).into_iter().take(40) {
-                let plain: String = dl.spans.iter().map(|s| s.content.as_ref()).collect();
-                let pad = body_w.saturating_sub(Span::width(&Span::raw(&plain)));
-                let mut spans = vec![Span::styled(
-                    "  │ ".to_string(),
-                    Style::default().fg(t.accent3),
-                )];
+                let mut spans = vec![Span::styled("    ".to_string(), Style::default())];
                 spans.extend(dl.spans);
-                if pad > 0 {
-                    spans.push(Span::raw(" ".repeat(pad)));
-                }
                 out.push(Line::from(spans));
             }
-            let rule_w = width.saturating_sub(5).max(1); // "  ╰" + rule
-            out.push(Line::from(Span::styled(
-                format!("  ╰{}", "─".repeat(rule_w)),
-                Style::default().fg(t.accent3),
-            )));
             out
         }
     }
@@ -409,8 +386,11 @@ fn bubble(
     out
 }
 
-/// True if a rendered line is a markdown table/fence box-drawing row.
+/// True if a rendered line is a markdown table/fence rule row.
 /// These must not be soft-wrapped or re-parsed — that destroys the grid.
+/// Tables are borderless now, so the only structural glyph left is the
+/// header underline rule (`─`); the box glyphs are kept for safety in case
+/// a future renderer reintroduces them.
 fn is_structured_line(plain: &str) -> bool {
     plain.chars().any(|c| {
         matches!(
@@ -585,14 +565,15 @@ mod tests {
         );
         let plain = plain_lines(&out);
         let joined = plain.join("\n");
-        // The table grid should render directly, not wrapped in a code box.
-        assert!(joined.contains("\u{250c}"), "grid top:\n{}", joined);
-        assert!(!joined.contains("code"), "code box leaked:\n{}", joined);
+        // The table grid should render directly, not wrapped in a code block.
+        assert!(joined.contains("\u{2500}"), "grid underline:\n{}", joined);
+        assert!(joined.contains("A"), "grid header:\n{}", joined);
+        assert!(!joined.contains("code"), "code label leaked:\n{}", joined);
         assert!(!joined.contains("```"), "backticks leaked:\n{}", joined);
     }
 
     #[test]
-    fn test_bubble_preserves_code_fence_box() {
+    fn test_bubble_preserves_code_fence_block() {
         let t = Theme::cyberclaw();
         let text = "Aqui vai o código:\n```rust\nfn main() {}\n```\nFim.";
         let out = bubble(
@@ -608,10 +589,10 @@ mod tests {
         );
         let plain = plain_lines(&out);
         let joined = plain.join("\n");
-        // The code fence box must survive the bubble wrap path.
+        // The code fence block must survive the bubble wrap path.
         assert!(
-            joined.contains("╭─ rust"),
-            "fence top bar lost:\n{}",
+            joined.contains("rust"),
+            "fence lang label lost:\n{}",
             joined
         );
         assert!(
@@ -619,15 +600,17 @@ mod tests {
             "fence body lost:\n{}",
             joined
         );
-        assert!(joined.contains("╰"), "fence bottom bar lost:\n{}", joined);
-        // No raw backticks should leak.
+        // No box rails and no raw backticks should leak.
+        for bad in ['╭', '╰', '│'] {
+            assert!(!joined.contains(bad), "box glyph {bad} leaked:\n{joined}");
+        }
         assert!(!joined.contains("```"), "backticks leaked:\n{}", joined);
     }
 
     #[test]
-    fn test_bubble_table_keeps_column_separators() {
+    fn test_bubble_table_keeps_columns_aligned() {
         // Regression: bubble used to re-wrap grid lines (plain > inner_w) and
-        // re-render fragments, destroying │ separators between columns.
+        // re-render fragments, destroying the column layout.
         let t = Theme::cyberclaw();
         let text = "Aqui está uma tabela markdown:\n\n\
 | Linguagem | Uso | Popularidade |\n\
@@ -653,22 +636,23 @@ mod tests {
         );
         let plain = plain_lines(&out);
         let joined = plain.join("\n");
-        // Grid chrome present.
-        assert!(joined.contains('┌'), "missing top border:\n{joined}");
-        assert!(joined.contains('└'), "missing bottom border:\n{joined}");
-        assert!(joined.contains('├'), "missing header sep:\n{joined}");
-        // Body rows must keep column separators (not collapsed plain text).
+        // Grid chrome present (header underline, no box glyphs).
+        assert!(joined.contains('─'), "missing header underline:\n{joined}");
+        for bad in ['┌', '┬', '┐', '├', '┼', '┤', '└', '┴', '┘', '│'] {
+            assert!(!joined.contains(bad), "box glyph {bad} leaked:\n{joined}");
+        }
+        // Body rows must keep their columns (not collapsed plain text).
         assert!(
             plain
                 .iter()
-                .any(|p| p.contains("│ Rust") && p.contains("│ Sistemas")),
-            "body col separators lost:\n{joined}"
+                .any(|p| p.contains("Rust") && p.contains("Sistemas")),
+            "body columns lost:\n{joined}"
         );
         assert!(
             plain
                 .iter()
-                .any(|p| p.contains("│ Python") && p.contains("│ Data science")),
-            "body col separators lost:\n{joined}"
+                .any(|p| p.contains("Python") && p.contains("Data science")),
+            "body columns lost:\n{joined}"
         );
         // Inline-code backticks stripped from cells.
         assert!(!joined.contains('`'), "backticks leaked:\n{joined}");
@@ -786,10 +770,10 @@ mod tests {
 mod diff_render_tests {
     use super::*;
 
-    /// Renders a Diff line and asserts the box is closed on the left and keeps
-    /// clear of the scrollbar column on the right (RIGHT_PAD = INNER_PAD + 2).
+    /// Renders a Diff line and asserts it is borderless (no box rails) and
+    /// keeps clear of the scrollbar column on the right (RIGHT_PAD = INNER_PAD + 2).
     #[test]
-    fn diff_box_fills_full_width() {
+    fn diff_is_borderless_and_clears_the_scrollbar() {
         let mut app = App::inline_for_tests("test");
         app.splash = None;
         let text = "\
@@ -803,22 +787,30 @@ mod diff_render_tests {
         let width = 60u16;
         let buf = crate::harness::ui::tui::draw::render_to_buffer(&mut app, width, 20);
 
-        // Footer rule of the diff card: the first `╰` row (the card sits at
-        // the top; the unconfigured-hint box at the bottom has its own corners).
-        let mut footer_row = None;
+        // No box rails appear on the diff rows (the label may scroll out of
+        // the viewport, so only the diff body rows are checked).
+        let mut saw_body = false;
         for y in 0..20u16 {
-            if (0..width).any(|x| buf[(x, y)].symbol() == "╰") {
-                footer_row = Some(y);
-                break;
+            let row: String = (0..width)
+                .map(|x| buf[(x, y)].symbol().to_string())
+                .collect();
+            let is_diff_row = ["--- a/", "+++ b/", "@@", "fn old", "fn new"]
+                .iter()
+                .any(|m| row.contains(m));
+            if !is_diff_row {
+                continue;
+            }
+            saw_body = true;
+            // Ignore the scrollbar column (rightmost) which legitimately draws │.
+            let content: String = row.chars().take(width as usize - 1).collect();
+            for bad in ['╭', '╰', '│'] {
+                assert!(
+                    !content.contains(bad),
+                    "box glyph {bad} leaked into diff row {y}: {row:?}"
+                );
             }
         }
-        let fy = footer_row.expect("diff footer rendered");
-
-        // The footer must NOT reach the last column: the scrollbar owns it and
-        // the right pad (INNER_PAD + 2) keeps the card clear of the track.
-        let last = buf[(width - 1, fy)].symbol();
-        assert_ne!(last, "╯", "footer must not touch the scrollbar column");
-        assert_ne!(last, "─", "footer must not touch the scrollbar column");
+        assert!(saw_body, "diff body not rendered");
 
         // No diff content may spill into the right pad zone (only the
         // scrollbar glyphs are allowed there).

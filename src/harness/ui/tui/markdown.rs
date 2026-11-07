@@ -256,8 +256,8 @@ fn table_lines(buf: &[String], theme: &Theme, width: usize) -> Vec<Line<'static>
     if ncols == 0 || widths.iter().sum::<usize>() == 0 {
         return Vec::new();
     }
-    // Borders: "│ " per col + trailing "│" + one pad space per cell ≈ 3*ncols + 1.
-    let avail = width.saturating_sub(3 * ncols + 1).max(ncols);
+    // Borderless grid: two spaces between columns, one trailing pad per cell.
+    let avail = width.saturating_sub(2 * ncols).max(ncols);
     let total: usize = widths.iter().sum();
     if total > avail {
         // Shrink widest columns toward the mean; last resort, halve all.
@@ -309,7 +309,7 @@ fn table_lines(buf: &[String], theme: &Theme, width: usize) -> Vec<Line<'static>
         acc
     };
 
-    let rail = Style::default().fg(theme.accent3);
+    let rule = Style::default().fg(theme.accent3);
     let header_fg = Style::default()
         .fg(theme.accent)
         .add_modifier(Modifier::BOLD);
@@ -327,10 +327,7 @@ fn table_lines(buf: &[String], theme: &Theme, width: usize) -> Vec<Line<'static>
     };
     let mut out = Vec::new();
 
-    // Top border.
-    out.push(hrule("┌", "┬", "┐", &widths, rail));
-
-    // Header block.
+    // Header block: bold cells, two spaces between columns.
     {
         let wrapped: Vec<Vec<String>> = (0..ncols)
             .map(|i| wrap_cell(&header[i], widths[i]))
@@ -339,17 +336,19 @@ fn table_lines(buf: &[String], theme: &Theme, width: usize) -> Vec<Line<'static>
         for py in 0..h {
             let mut spans = Vec::new();
             for (i, cell) in wrapped.iter().enumerate() {
-                spans.push(Span::styled("│ ".to_string(), rail));
+                if i > 0 {
+                    spans.push(Span::raw("  "));
+                }
                 let line = cell.get(py).cloned().unwrap_or_default();
-                spans.push(Span::styled(pad_cell(&line, widths[i]) + " ", header_fg));
+                spans.push(Span::styled(pad_cell(&line, widths[i]), header_fg));
             }
-            spans.push(Span::styled("│".to_string(), rail));
             out.push(Line::from(spans));
         }
     }
 
-    // Separator under header.
-    out.push(hrule("├", "┼", "┤", &widths, rail));
+    // Underline the header with a plain rule (no box glyphs).
+    let total_w: usize = widths.iter().sum::<usize>() + 2 * ncols.saturating_sub(1);
+    out.push(Line::from(Span::styled("─".repeat(total_w.max(1)), rule)));
 
     // Body rows.
     for row in &rows {
@@ -364,47 +363,22 @@ fn table_lines(buf: &[String], theme: &Theme, width: usize) -> Vec<Line<'static>
         for py in 0..h {
             let mut spans: Vec<Span<'static>> = Vec::new();
             for (i, cell) in wrapped.iter().enumerate() {
-                spans.push(Span::styled("│ ".to_string(), rail));
+                if i > 0 {
+                    spans.push(Span::raw("  "));
+                }
                 let line = cell.get(py).cloned().unwrap_or_default();
-                spans.push(Span::styled(pad_cell(&line, widths[i]) + " ", body_fg));
+                spans.push(Span::styled(pad_cell(&line, widths[i]), body_fg));
             }
-            spans.push(Span::styled("│".to_string(), rail));
             out.push(Line::from(spans));
         }
     }
 
-    // Bottom border.
-    out.push(hrule("└", "┴", "┘", &widths, rail));
-
     out
 }
 
-/// Border rule line shaped to the column widths.
-fn hrule(
-    left: &str,
-    mid: &str,
-    right: &str,
-    widths: &[usize],
-    rail: ratatui::style::Style,
-) -> Line<'static> {
-    Line::from(Span::styled(
-        format!(
-            "{}{}{}",
-            left,
-            widths
-                .iter()
-                .map(|w| "─".repeat(w + 2))
-                .collect::<Vec<_>>()
-                .join(mid),
-            right
-        ),
-        rail,
-    ))
-}
-
-/// Build the visual lines for a code fence block: a top bar with the language,
-/// body lines with a left accent rail, and a bottom rule. Top/bottom rules
-/// always span the full available `width` so the box reaches the right edge.
+/// Build the visual lines for a code fence block: a padded language label
+/// followed by the code body, each line indented under the label (padding +
+/// text chaining, no box rails). Long lines soft-wrap to stay inside `width`.
 fn fence_lines(
     buf: &[String],
     lang: &str,
@@ -413,51 +387,42 @@ fn fence_lines(
     width: usize,
 ) -> Vec<Line<'static>> {
     let mut out = Vec::new();
-    let rail = Style::default().fg(theme.accent3);
     let code_fg = Style::default().fg(theme.text_bright);
     let w = width.max(8);
 
-    // Top edge: ╭─ rust ──────────────── (fills full width)
+    // Label row: "  rust" (or "  code" when the fence has no language).
     let label = if lang.is_empty() {
-        " code ".to_string()
+        "code".to_string()
     } else {
-        format!(" {} ", lang)
+        lang.to_string()
     };
-    // "╭─" (2) + label + trailing ─s = w
-    let rule_len = w.saturating_sub(2 + label.chars().count()).max(1);
     out.push(Line::from(vec![
-        Span::styled("╭─".to_string(), rail),
+        Span::styled("  ".to_string(), Style::default()),
         Span::styled(
             label,
             Style::default()
                 .fg(theme.accent3)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled("─".repeat(rule_len), rail),
     ]));
 
-    // Body lines with left rail; soft-wrap long lines to stay inside the box.
-    let body_w = w.saturating_sub(2).max(4); // after "│ "
+    // Body lines indented under the label; soft-wrap to stay inside `width`.
+    let body_w = w.saturating_sub(4).max(4);
     for l in buf {
         for chunk in wrap_plain(l, body_w) {
             out.push(Line::from(vec![
-                Span::styled("│ ".to_string(), rail),
+                Span::styled("    ".to_string(), Style::default()),
                 Span::styled(chunk, code_fg),
             ]));
         }
     }
 
-    // Bottom edge (or streaming indicator) — same full width.
+    // Streaming indicator: a block cursor on its own indented row.
     if streaming {
         out.push(Line::from(vec![
-            Span::styled("│ ".to_string(), rail),
+            Span::styled("    ".to_string(), Style::default()),
             Span::styled("▌".to_string(), Style::default().fg(theme.accent3)),
         ]));
-    } else {
-        out.push(Line::from(Span::styled(
-            format!("╰{}", "─".repeat(w.saturating_sub(1).max(1))),
-            rail,
-        )));
     }
     out
 }
@@ -623,50 +588,43 @@ mod tests {
     }
 
     #[test]
-    fn test_code_fence_renders_box() {
+    fn test_code_fence_renders_label_and_body() {
         let t = Theme::cyberclaw();
         let text = "Before\n```rust\nfn main() {}\n```\nAfter";
         let out = render_text(text, &t, Style::default(), 80);
         let p = plain(&out);
-        // Should have: Before, top bar, code line, bottom bar, After
-        assert_eq!(p.len(), 5, "got {:?}", p);
+        // Should have: Before, lang label, code line, After (no box rails).
+        assert_eq!(p.len(), 4, "got {:?}", p);
         assert!(p[0].contains("Before"));
-        assert!(p[1].contains("╭─"), "top bar: {:?}", p[1]);
         assert!(p[1].contains("rust"), "lang label: {:?}", p[1]);
         assert!(p[2].contains("fn main() {}"), "code: {:?}", p[2]);
-        assert!(p[3].contains("╰"), "bottom bar: {:?}", p[3]);
-        assert!(p[4].contains("After"));
+        assert!(p[3].contains("After"));
+        let joined = p.join("\n");
+        for bad in ['╭', '╰', '│'] {
+            assert!(!joined.contains(bad), "box glyph {bad} leaked:\n{joined}");
+        }
     }
 
     #[test]
-    fn test_code_fence_borders_fill_width() {
-        // Regression: top/bottom rules used a hardcoded ~40-col width and
-        // stopped short of the right edge while body lines ran longer.
+    fn test_code_fence_body_indented_under_label() {
+        // Borderless fence: the label is padded and every body line is
+        // indented under it, wrapping to stay inside the width.
         let t = Theme::cyberclaw();
         let width = 60;
         let text = "```rust\nmessages: std::sync::Arc::new(session.messages.clone()),\n```";
         let out = render_text(text, &t, Style::default(), width);
         let p = plain(&out);
-        assert!(p.len() >= 3, "got {:?}", p);
-        let top = &p[0];
-        let bottom = p.iter().find(|l| l.starts_with('╰')).expect("bottom");
-        assert_eq!(
-            top.chars().count(),
-            width,
-            "top border short: {:?} (len {})",
-            top,
-            top.chars().count()
-        );
-        assert_eq!(
-            bottom.chars().count(),
-            width,
-            "bottom border short: {:?} (len {})",
-            bottom,
-            bottom.chars().count()
-        );
-        assert!(top.starts_with("╭─"), "top shape: {:?}", top);
-        assert!(top.contains("rust"), "lang missing: {:?}", top);
-        assert!(bottom.starts_with('╰'), "bottom shape: {:?}", bottom);
+        assert!(p.len() >= 2, "got {:?}", p);
+        assert!(p[0].contains("rust"), "lang missing: {:?}", p[0]);
+        assert!(p[0].starts_with("  "), "label not padded: {:?}", p[0]);
+        for body in &p[1..] {
+            assert!(body.starts_with("    "), "body not indented: {:?}", body);
+            assert!(dw(body) <= width, "body overflows width: {:?}", body);
+        }
+        let joined = p.join("\n");
+        for bad in ['╭', '╰', '│'] {
+            assert!(!joined.contains(bad), "box glyph {bad} leaked:\n{joined}");
+        }
     }
 
     #[test]
@@ -675,8 +633,9 @@ mod tests {
         let text = "```\nhello\n```";
         let out = render_text(text, &t, Style::default(), 80);
         let p = plain(&out);
-        assert_eq!(p.len(), 3, "got {:?}", p);
+        assert_eq!(p.len(), 2, "got {:?}", p);
         assert!(p[0].contains("code"), "default label: {:?}", p[0]);
+        assert!(p[1].contains("hello"), "body: {:?}", p[1]);
     }
 
     #[test]
@@ -685,7 +644,7 @@ mod tests {
         let text = "```python\nprint('hi')";
         let out = render_text(text, &t, Style::default(), 80);
         let p = plain(&out);
-        // top bar + code line + streaming indicator
+        // lang label + code line + streaming indicator
         assert_eq!(p.len(), 3, "got {:?}", p);
         assert!(p[2].contains("▌"), "streaming cursor: {:?}", p[2]);
     }
@@ -751,20 +710,21 @@ mod tests {
     }
 
     #[test]
-    fn test_table_renders_grid() {
+    fn test_table_renders_borderless_grid() {
         let t = Theme::cyberclaw();
         let text = "| Comando | Desc |\n|---|---|\n| build | compila |\n| test | roda |";
         let out = render_text(text, &t, Style::default(), 80);
         let p = plain(&out);
         let joined = p.join("\n");
-        // Top border, header, separator, 2 body rows, bottom border.
-        assert!(joined.contains("┌"), "top border:\n{}", joined);
+        // Header, underline rule, 2 body rows — no box glyphs.
         assert!(joined.contains("Comando"), "header:\n{}", joined);
         assert!(joined.contains("Desc"), "header:\n{}", joined);
-        assert!(joined.contains("├"), "separator:\n{}", joined);
+        assert!(joined.contains("─"), "header underline:\n{}", joined);
         assert!(joined.contains("build"), "body:\n{}", joined);
         assert!(joined.contains("compila"), "body:\n{}", joined);
-        assert!(joined.contains("└"), "bottom border:\n{}", joined);
+        for bad in ['┌', '┬', '┐', '├', '┼', '┤', '└', '┴', '┘', '│'] {
+            assert!(!joined.contains(bad), "box glyph {bad} leaked:\n{joined}");
+        }
         // No raw pipes should leak.
         assert!(!joined.contains("|"), "pipes leaked:\n{}", joined);
     }
@@ -777,7 +737,8 @@ mod tests {
         let p = plain(&out);
         let joined = p.join("\n");
         assert!(p[0].contains("Tabela:"), "intro text:\n{}", joined);
-        assert!(joined.contains("┌"), "table rendered:\n{}", joined);
+        assert!(joined.contains("─"), "table rendered:\n{}", joined);
+        assert!(joined.contains("A"), "header rendered:\n{}", joined);
     }
 
     #[test]
@@ -787,14 +748,14 @@ mod tests {
         let text = "| Icon | Nome |\n|---|---|\n| 🤖 | bot |";
         let out = render_text(text, &t, Style::default(), 80);
         let p = plain(&out);
-        // All box lines must have identical display width (alignment).
-        let box_lines: Vec<&String> = p
+        // All grid lines must have identical display width (alignment).
+        let grid_lines: Vec<&String> = p
             .iter()
-            .filter(|l| l.contains('│') || l.contains('┌') || l.contains('├') || l.contains('└'))
+            .filter(|l| l.contains('─') || l.contains("Icon") || l.contains("bot"))
             .collect();
-        assert!(box_lines.len() >= 4, "box lines:\n{:?}", p);
-        let w0 = dw(box_lines[0]);
-        for l in &box_lines {
+        assert!(grid_lines.len() >= 3, "grid lines:\n{:?}", p);
+        let w0 = dw(grid_lines[0]);
+        for l in &grid_lines {
             assert_eq!(dw(l), w0, "misaligned line: {:?} (want {})", l, w0);
         }
     }
@@ -809,13 +770,13 @@ mod tests {
                     | Arquiteturas Seguras | 30% | Mais tempo! |";
         let out = render_text(text, &t, Style::default(), 40);
         let p = plain(&out);
-        let box_lines: Vec<&String> = p
+        let grid_lines: Vec<&String> = p
             .iter()
-            .filter(|l| l.contains('│') || l.contains('┌') || l.contains('├') || l.contains('└'))
+            .filter(|l| l.contains('─') || l.contains("Dominio") || l.contains("30%"))
             .collect();
-        assert!(box_lines.len() >= 4, "box lines:\n{:?}", p);
-        let w0 = dw(box_lines[0]);
-        for l in &box_lines {
+        assert!(grid_lines.len() >= 3, "grid lines:\n{:?}", p);
+        let w0 = dw(grid_lines[0]);
+        for l in &grid_lines {
             assert_eq!(dw(l), w0, "misaligned line: {:?} (want {})", l, w0);
         }
         // Content must survive (possibly wrapped).
@@ -831,9 +792,9 @@ mod tests {
         let out = render_text(text, &t, Style::default(), 80);
         let p = plain(&out);
         let joined = p.join("\n");
-        assert!(joined.contains("┌"), "grid top:\n{}", joined);
+        assert!(joined.contains("─"), "grid underline:\n{}", joined);
         assert!(joined.contains("A"), "header:\n{}", joined);
-        assert!(joined.contains("└"), "grid bottom:\n{}", joined);
+        assert!(joined.contains("1"), "body:\n{}", joined);
         assert!(!joined.contains("╭─"), "code box leaked:\n{}", joined);
         assert!(!joined.contains("```"), "backticks leaked:\n{}", joined);
     }
@@ -847,8 +808,8 @@ mod tests {
         let out = render_text(text, &t, Style::default(), 80);
         let p = plain(&out);
         let joined = p.join("\n");
-        assert!(joined.contains("┌"), "grid top:\n{}", joined);
-        assert!(joined.contains("│ A │"), "grid rows:\n{}", joined);
+        assert!(joined.contains("─"), "grid underline:\n{}", joined);
+        assert!(joined.contains("A"), "grid header:\n{}", joined);
         assert!(joined.contains("Table info:"), "prose kept:\n{}", joined);
         assert!(!joined.contains("╭─"), "code box leaked:\n{}", joined);
         assert!(
@@ -864,15 +825,15 @@ mod tests {
     }
 
     #[test]
-    fn test_rust_code_fence_still_code_box() {
-        // Code containing '|' at start of lines must stay a code box (not a
+    fn test_rust_code_fence_still_code_block() {
+        // Code containing '|' at start of lines must stay a code block (not a
         // phantom table): no separator row => no table extraction.
         let t = Theme::cyberclaw();
         let text = "```rust\n| band = 1;\nvec.push(x);\n```";
         let out = render_text(text, &t, Style::default(), 80);
         let p = plain(&out);
         let joined = p.join("\n");
-        assert!(joined.contains("╭─"), "expected code box:\n{}", joined);
+        assert!(joined.contains("rust"), "expected lang label:\n{}", joined);
         assert!(joined.contains("| band = 1;"), "code kept:\n{}", joined);
     }
 }
