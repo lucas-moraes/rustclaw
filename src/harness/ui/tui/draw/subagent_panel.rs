@@ -74,11 +74,12 @@ fn draw_panel(frame: &mut Frame, app: &App, panel: &SubagentPanel, area: Rect) {
         (theme.accent, spinner_frame(app.tick))
     };
 
-    // The label already carries the agent name, the depth badge and the tool
-    // counters; the live mark (spinner / ✓ / ✗) is rendered on the status line
-    // below, so strip the label's own static mark to avoid showing it twice.
+    // The label carries the tree prefix, the static mark, the agent name, the
+    // depth badge and the tool counters. The border title keeps only the info
+    // text: tree glyphs on the border row read as broken border segments
+    // (`└─` / `│`) and the live mark is drawn on the status line below.
     let label = App::subagent_panel_label(panel);
-    let label = strip_label_mark(&label);
+    let label = clean_title(&label);
     // Title must fit between the two corners, otherwise ratatui clips it
     // mid-glyph and the right border drifts.
     let title = format!(
@@ -125,16 +126,25 @@ fn draw_panel(frame: &mut Frame, app: &App, panel: &SubagentPanel, area: Rect) {
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
-/// Removes the static status mark (`⏳` / `✓` / `✗`) that
-/// `subagent_panel_label` prefixes, since the live mark is drawn separately.
-fn strip_label_mark(label: &str) -> String {
-    let trimmed = label.trim_start();
+/// Strips the tree prefix (`└─ `, `│  └─ `, …) and the static status mark
+/// (`⏳` / `✓` / `✗`) that `subagent_panel_label` embeds, leaving just the
+/// `agent — tools · summary` text for the border title. Tree glyphs on the
+/// border row read as broken border segments and the live mark is drawn on
+/// the status line inside the box.
+fn clean_title(label: &str) -> String {
+    let mut rest = label.trim_start();
+    while let Some(r) = rest.strip_prefix("│  ") {
+        rest = r.trim_start();
+    }
+    if let Some(r) = rest.strip_prefix("└─ ") {
+        rest = r.trim_start();
+    }
     for mark in ["⏳", "✓", "✗"] {
-        if let Some(rest) = trimmed.strip_prefix(mark) {
-            return rest.trim_start().to_string();
+        if let Some(r) = rest.strip_prefix(mark) {
+            return r.trim_start().to_string();
         }
     }
-    trimmed.to_string()
+    rest.to_string()
 }
 
 /// Status line: spinner/check mark, agent name and tool counters.
@@ -145,6 +155,11 @@ fn status_line<'a>(
     color: ratatui::style::Color,
 ) -> Line<'a> {
     let mut spans = vec![
+        // Tree prefix + live mark live inside the box, not on the border.
+        Span::styled(
+            App::subagent_tree_prefix(panel.depth),
+            Style::default().fg(theme.text_dim),
+        ),
         Span::styled(format!("{mark} "), Style::default().fg(color)),
         Span::styled(
             panel.agent.clone(),
@@ -328,5 +343,60 @@ mod tests {
             .map(|i| (format!("c{i}"), panel(&format!("agent{i}"), false)))
             .collect();
         assert_eq!(visible_panels(&app).len(), MAX_PANELS);
+    }
+
+    #[test]
+    fn clean_title_strips_tree_prefix_and_mark() {
+        assert_eq!(clean_title("⏳ explore — 2 tools"), "explore — 2 tools");
+        assert_eq!(clean_title("└─ ⏳L1 build — 3 tools"), "L1 build — 3 tools");
+        assert_eq!(
+            clean_title("│  └─ ✓L2 g — 1 tools · done"),
+            "L2 g — 1 tools · done"
+        );
+    }
+
+    #[test]
+    fn nested_panel_border_has_no_tree_glyphs_or_static_mark() {
+        for finished in [false, true] {
+            let mut app = App::inline_for_tests("");
+            app.splash = None;
+            let mut p = panel("build", finished);
+            p.depth = 2;
+            p.lines = vec!["· grep".into()];
+            app.subagent_panels = vec![("a".into(), p)];
+            let rows = buffer_rows(&mut app);
+            let top = rows
+                .iter()
+                .find(|r| r.contains('╭'))
+                .expect("top border row");
+            for bad in ['└', '│', '⏳', '✓', '✗'] {
+                assert!(
+                    !top.contains(bad),
+                    "{bad} leaked into the border title: {top}"
+                );
+            }
+            assert!(
+                top.contains("L2"),
+                "depth badge missing from the title: {top}"
+            );
+            assert!(
+                top.contains("build"),
+                "agent name missing from the title: {top}"
+            );
+        }
+    }
+
+    #[test]
+    fn tree_prefix_and_mark_live_on_the_status_line() {
+        let mut app = App::inline_for_tests("");
+        app.splash = None;
+        let mut p = panel("build", true);
+        p.depth = 1;
+        app.subagent_panels = vec![("a".into(), p)];
+        let text = buffer_text(&mut app);
+        assert!(
+            text.contains("└─ ✓ build"),
+            "status line should carry the tree prefix + mark:\n{text}"
+        );
     }
 }
