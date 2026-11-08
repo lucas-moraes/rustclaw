@@ -1,9 +1,10 @@
 //! Permission engine: allow / ask / deny rules per tool, with path escalation.
 //!
 //! Defaults mirror OpenCode/Claude Code conventions:
-//! - read-only tools (read/glob/grep/todo_read) => Allow
+//! - read-only tools (read/glob/grep/todo_read/...) => Allow, anywhere on disk
 //! - mutating tools (write/edit/bash) => Ask
-//! - paths outside the session cwd => escalated to Ask even for read tools.
+//! - paths outside the session cwd => escalated to Ask for mutating tools;
+//!   read-only tools stay Allow (see `READ_TOOLS`).
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -34,6 +35,24 @@ pub const ALL_TOOLS: &[&str] = &[
     "remember",
     "cursor",
     "cursor_plan",
+];
+
+/// Tools that only read: they never mutate the filesystem or run commands.
+/// These are allowed by default **anywhere on disk** — the path escalation in
+/// `check` does not apply to them, so inspecting a file outside the workspace
+/// (logs, configs, another checkout) never prompts.
+pub const READ_TOOLS: &[&str] = &[
+    "read",
+    "glob",
+    "grep",
+    "ast_search",
+    "semantic_search",
+    "todo_read",
+    "web_search",
+    "fetch_webpage",
+    "git_status",
+    "git_diff",
+    "git_log",
 ];
 
 /// Callback invoked when a tool is marked "always allow", so the decision can
@@ -114,22 +133,12 @@ impl PermissionConfig {
     /// tools fall back to Ask (human-in-the-loop).
     pub fn with_defaults() -> Self {
         let mut tools = HashMap::new();
-        for t in [
-            "read",
-            "glob",
-            "grep",
-            "ast_search",
-            "semantic_search",
-            "todo_read",
-            "todo_write",
-            "web_search",
-            "fetch_webpage",
-            "git_status",
-            "git_diff",
-            "git_log",
-        ] {
+        for t in READ_TOOLS {
             tools.insert(t.to_string(), Rule::Allow);
         }
+        // todo_write mutates the session todo list (not the filesystem), so it
+        // is allowed by default but is not a pure read tool.
+        tools.insert("todo_write".to_string(), Rule::Allow);
         for t in [
             "write",
             "edit",
@@ -276,10 +285,12 @@ impl PermissionEngine {
             .copied()
             .unwrap_or(Rule::Ask);
 
-        // Paths outside the workspace always escalate to Ask (unless denied).
+        // Paths outside the workspace escalate to Ask (unless denied) for
+        // tools that can mutate or execute. Read-only tools are exempt: reading
+        // a log or config outside the project is safe and should never prompt.
         // Both sides are canonicalized first so lexical escapes like
         // `/proj/../etc/passwd` or symlinks pointing outside are caught.
-        if let Some(p) = path {
+        if let Some(p) = path.filter(|_| !READ_TOOLS.contains(&tool)) {
             // Canonicalize both sides so lexical escapes (`/proj/../etc`)
             // and symlinks pointing outside are caught. For nonexistent
             // paths, canonicalize the deepest existing ancestor and rejoin
@@ -385,16 +396,46 @@ mod tests {
     }
 
     #[test]
-    fn test_path_outside_cwd_escalates() {
+    fn test_read_tools_allow_paths_outside_cwd() {
+        // Read-only tools are allowed anywhere on disk: inspecting a log or a
+        // config outside the workspace must never prompt.
         let engine = PermissionEngine::default();
         let cwd = Path::new("/proj");
-        assert_eq!(
-            engine.check("read", Some("/etc/passwd"), cwd),
-            PermissionDecision::Ask
-        );
+        for tool in ["read", "glob", "grep", "ast_search"] {
+            assert_eq!(
+                engine.check(tool, Some("/etc/passwd"), cwd),
+                PermissionDecision::Allow,
+                "{tool} should be allowed outside the cwd"
+            );
+        }
         assert_eq!(
             engine.check("read", Some("/proj/src/main.rs"), cwd),
             PermissionDecision::Allow
+        );
+    }
+
+    #[test]
+    fn test_mutating_tools_still_escalate_outside_cwd() {
+        // Writing/executing outside the project keeps the human in the loop.
+        let engine = PermissionEngine::default();
+        let cwd = Path::new("/proj");
+        for tool in ["write", "edit", "bash"] {
+            assert_eq!(
+                engine.check(tool, Some("/etc/passwd"), cwd),
+                PermissionDecision::Ask,
+                "{tool} must still ask outside the cwd"
+            );
+        }
+    }
+
+    #[test]
+    fn test_deny_wins_over_read_exemption() {
+        // An explicit deny is never bypassed by the read-only exemption.
+        let engine = PermissionEngine::default();
+        engine.set_rule("read", Rule::Deny);
+        assert_eq!(
+            engine.check("read", Some("/etc/passwd"), Path::new("/proj")),
+            PermissionDecision::Deny
         );
     }
 
@@ -404,17 +445,20 @@ mod tests {
         let root = dir.path().join("proj");
         std::fs::create_dir_all(&root).unwrap();
         let engine = PermissionEngine::default();
+        // Grant `write` so the test isolates path canonicalization from the
+        // mutating-tool default (which is Ask).
+        engine.set_always_allow("write");
 
         // `/proj/../etc/passwd` is lexically inside but really outside.
         let escape = root.join("..").join("etc").join("passwd");
         assert_eq!(
-            engine.check("read", Some(escape.to_str().unwrap()), &root),
+            engine.check("write", Some(escape.to_str().unwrap()), &root),
             PermissionDecision::Ask
         );
         // A real file inside the project still passes.
         std::fs::write(root.join("f.txt"), b"x").unwrap();
         assert_eq!(
-            engine.check("read", Some(root.join("f.txt").to_str().unwrap()), &root),
+            engine.check("write", Some(root.join("f.txt").to_str().unwrap()), &root),
             PermissionDecision::Allow
         );
     }
@@ -434,7 +478,7 @@ mod tests {
             .join("etc")
             .join("passwd");
         assert_eq!(
-            engine.check("read", Some(escape.to_str().unwrap()), &root),
+            engine.check("write", Some(escape.to_str().unwrap()), &root),
             PermissionDecision::Ask
         );
     }
@@ -450,7 +494,7 @@ mod tests {
         std::os::unix::fs::symlink(&outside, &link).unwrap();
         let engine = PermissionEngine::default();
         assert_eq!(
-            engine.check("read", Some(link.to_str().unwrap()), &root),
+            engine.check("write", Some(link.to_str().unwrap()), &root),
             PermissionDecision::Ask
         );
     }
@@ -464,9 +508,9 @@ mod tests {
             engine.check("read", Some("/proj/new-file.txt"), cwd),
             PermissionDecision::Allow
         );
-        // Nonexistent path outside cwd: still escalates.
+        // Nonexistent path outside cwd: still escalates for mutating tools.
         assert_eq!(
-            engine.check("read", Some("/etc/nonexistent"), cwd),
+            engine.check("write", Some("/etc/nonexistent"), cwd),
             PermissionDecision::Ask
         );
     }
