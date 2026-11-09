@@ -4,6 +4,7 @@
 //! them to/from OpenAI or Anthropic wire formats.
 
 pub mod compaction;
+pub mod delivery;
 pub mod doom_loop;
 pub mod image;
 pub mod ledger;
@@ -11,6 +12,7 @@ pub mod metrics;
 pub mod processor;
 pub mod store;
 pub mod tool_exec;
+pub mod verification;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};

@@ -116,6 +116,8 @@ pub struct TaskOutcome {
     pub effective_agent: String,
     /// Wall-clock duration of the child run in seconds.
     pub duration_secs: u64,
+    /// File changes and verification reported by the child session.
+    pub delivery: crate::harness::session::delivery::DeliveryReport,
 }
 
 /// Everything a tool needs to run, scoped to the current session.
@@ -162,6 +164,8 @@ pub struct ToolContext {
     pub message_bus: Option<Arc<crate::harness::swarm::MessageBus>>,
     /// Shared key/value memory of the project (`shared_memory` tool).
     pub shared_memory: Option<Arc<crate::harness::swarm::SharedMemory>>,
+    /// Delivery state scoped to the current session turn.
+    pub delivery: Arc<crate::harness::session::delivery::DeliveryTracker>,
 }
 
 /// Working directory guard: all path resolution goes through this.

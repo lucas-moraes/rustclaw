@@ -264,11 +264,13 @@ fn decide_turn_end(
 
 /// Tools that mutate the workspace. A turn that ran one of these and then
 /// stopped without a passing check is claiming success without evidence.
+#[cfg_attr(not(test), allow(dead_code))]
 const MUTATING_TOOLS: [&str; 2] = ["write", "edit"];
 
 /// Substrings that mark a `bash` command as a project check. Heuristic, not a
 /// shell parser: `echo cargo test` would pass. That is acceptable — the gate
 /// errs toward trusting an explicit check rather than blocking a real one.
+#[cfg_attr(not(test), allow(dead_code))]
 const CHECK_COMMAND_MARKERS: [&str; 4] =
     ["cargo test", "cargo check", "cargo clippy", "cargo build"];
 
@@ -280,6 +282,7 @@ const CHECK_COMMAND_MARKERS: [&str; 4] =
 /// when it ran *after* the last mutation and reported `exit_code == Some(0)`:
 /// a failed or unknown-exit check does not clear the gap. `write`/`edit` that
 /// errored do not count as mutations (the rollback already undid them).
+#[cfg_attr(not(test), allow(dead_code))]
 fn verification_gap(parts: &[ToolPart]) -> Option<String> {
     let last_mutation = parts.iter().rposition(|p| {
         MUTATING_TOOLS.contains(&p.name.as_str())
@@ -536,11 +539,8 @@ impl SessionProcessor {
             turn_secs
         );
 
-        // Index of the first message of this turn, so the verification gate can
-        // read only the tool parts produced here (not the whole session).
-        let turn_start = session.messages.len();
-        // The verification nudge fires at most once per turn.
-        let mut verification_nudged = false;
+        // The delivery gate nudges at most twice per turn.
+        let mut verification_nudges: u32 = 0;
 
         'turn: loop {
             while iterations < self.config.max_iterations {
@@ -742,36 +742,75 @@ impl SessionProcessor {
                         }
                         continue 'turn;
                     }
-                    // Verification gate: a turn that mutated files and never ran
-                    // a passing check is claiming success without evidence.
-                    // Nudge once, then accept on the next stop.
-                    if !verification_nudged {
-                        // Compaction may have shrunk the message list mid-turn;
-                        // clamp so the slice index stays in range.
-                        let start = turn_start.min(session.messages.len());
-                        let turn_parts: Vec<ToolPart> = session.messages[start..]
-                            .iter()
-                            .flat_map(|m| m.parts.iter())
-                            .filter_map(|p| match p {
-                                Part::Tool(t) => Some(t.clone()),
-                                _ => None,
-                            })
-                            .collect();
-                        if let Some(note) = verification_gap(&turn_parts) {
-                            verification_nudged = true;
+                    // Delivery gate: a turn that mutated files and never ran a
+                    // passing verification since the last mutation is claiming
+                    // success without evidence. Nudge up to twice, then accept
+                    // with an explicit status appended.
+                    let report = ctx.delivery.snapshot();
+                    if report.pending() {
+                        if verification_nudges < 2 {
+                            verification_nudges += 1;
                             tracing::info!(
-                                "verification gap: nudging once (session={})",
+                                "delivery pending: nudging ({}/{}, session={})",
+                                verification_nudges,
+                                2,
                                 session.id
                             );
-                            let msg = Message::user(note);
+                            let mut changed = report.changed_files.join(", ");
+                            if changed.is_empty() {
+                                changed = report.operations.join(", ");
+                            }
+                            let msg = Message::user(format!(
+                                "System note: files were changed but no verification has passed \
+                                 since the last change (changed: {}). Run a verification (e.g. \
+                                 cargo test/check) and, in your final answer, state what was \
+                                 Implemented, how you Verified it (command + result), or mark it \
+                                 Pending.",
+                                if changed.is_empty() {
+                                    "uncertain operations only"
+                                } else {
+                                    &changed
+                                }
+                            ));
                             session.push_message(msg.clone());
                             let sid = session.id.clone();
                             let cwd = session.cwd.clone();
                             self.persist(&sid, &cwd, &msg).await;
                             continue 'turn;
                         }
+                        // Retries exhausted: accept, but make the state explicit.
+                        final_text = format!(
+                            "{}\n\n---\nDelivery status: PENDING VERIFICATION — changed files: {}; \
+                             last failed check: {}",
+                            text,
+                            if report.changed_files.is_empty() {
+                                "(uncertain operations only)".to_string()
+                            } else {
+                                report.changed_files.join(", ")
+                            },
+                            report
+                                .checks
+                                .iter()
+                                .rev()
+                                .find(|c| !c.success)
+                                .map(|c| c.label.as_str())
+                                .unwrap_or("(none recorded)")
+                        );
+                        break;
                     }
-                    final_text = text;
+                    if report.verified {
+                        let label = report
+                            .checks
+                            .iter()
+                            .rev()
+                            .find(|c| c.success && c.current)
+                            .map(|c| c.label.as_str())
+                            .unwrap_or("verification");
+                        final_text =
+                            format!("{}\n\n---\nDelivery status: VERIFIED via {}", text, label);
+                    } else {
+                        final_text = text;
+                    }
                     break;
                 }
 

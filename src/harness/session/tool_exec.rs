@@ -93,6 +93,15 @@ pub async fn execute_tool_calls(
     // entirely. Conservative: only files targeted by write/edit participate.
     let iteration_snapshot = IterationSnapshot::capture(&pending, ctx.cwd.path());
 
+    // Delivery tracking: the revision *before* this batch. Any verification
+    // that started in this batch is stamped with it, so a mutation recorded
+    // later in the same batch (or a later one) invalidates the check.
+    let batch_started_revision = ctx.delivery.revision();
+    let inputs: std::collections::HashMap<String, serde_json::Value> = pending
+        .iter()
+        .map(|(id, _, input)| (id.clone(), input.clone()))
+        .collect();
+
     // Spawn executions (permission-checked, then run concurrently).
     let mut join_set = tokio::task::JoinSet::new();
     for (tool_id, name, input) in pending {
@@ -243,6 +252,7 @@ pub async fn execute_tool_calls(
             Ok(r) => {
                 tracing::debug!("tool call completed: {} (session={})", name, session.id);
                 session.metrics.record_tool_call(&name, false);
+                observe_delivery(ctx, &name, inputs.get(&tool_id), &r, batch_started_revision);
                 // C2: compress large structured outputs before they enter the
                 // context. The original is saved to disk (content-addressed)
                 // and the summary carries a pointer the model can `read`.
@@ -323,6 +333,7 @@ pub async fn execute_tool_calls(
             Err(e) => {
                 tracing::warn!("tool call failed: {} (session={}): {}", name, session.id, e);
                 session.metrics.record_tool_call(&name, true);
+                observe_failed_delivery(ctx, &name, inputs.get(&tool_id), batch_started_revision);
                 if let Some(msg) = session.messages.iter_mut().find(|m| m.id == *assistant_id) {
                     if let Some(t) = found_tool(msg, &tool_id) {
                         t.status = ToolStatus::Error;
@@ -390,6 +401,122 @@ pub async fn execute_tool_calls(
             .persist(&session.id, &session.cwd, &snapshot)
             .await;
     }
+}
+
+/// Updates the delivery tracker after a tool call completes.
+///
+/// - `write`/`edit`: the mutation invalidates any prior verification.
+/// - `bash`: a recognized verification command records evidence; anything
+///   else is a possible (unobservable) mutation.
+/// - `task`: child delivery reports are merged into the parent tracker.
+fn observe_delivery(
+    ctx: &ToolContext,
+    name: &str,
+    input: Option<&serde_json::Value>,
+    r: &crate::harness::tool::ToolResult,
+    started_revision: u64,
+) {
+    match name {
+        "write" | "edit" => {
+            if let Some(path) = input.and_then(|i| i.get("path")).and_then(|v| v.as_str()) {
+                ctx.delivery.record_changes([path.to_string()]);
+            }
+        }
+        "bash" => {
+            if let Some(cmd) = input
+                .and_then(|i| i.get("command"))
+                .and_then(|v| v.as_str())
+            {
+                match crate::harness::session::verification::verification_command(cmd) {
+                    Some(label) => {
+                        let success = exit_code_from_metadata(&r.metadata) == Some(0);
+                        ctx.delivery
+                            .record_verification(label, started_revision, success);
+                    }
+                    None => {
+                        ctx.delivery
+                            .mark_uncertain(format!("bash: {}", truncate_cmd(cmd)));
+                    }
+                }
+            }
+        }
+        "task" => merge_child_delivery(ctx, &r.metadata, started_revision),
+        _ => {}
+    }
+}
+
+/// A failed tool call still carries delivery information: a verification
+/// command that ran and failed is evidence of a failed check, and a bash
+/// command that failed may still have mutated something.
+fn observe_failed_delivery(
+    ctx: &ToolContext,
+    name: &str,
+    input: Option<&serde_json::Value>,
+    started_revision: u64,
+) {
+    if name == "bash" {
+        if let Some(cmd) = input
+            .and_then(|i| i.get("command"))
+            .and_then(|v| v.as_str())
+        {
+            match crate::harness::session::verification::verification_command(cmd) {
+                Some(label) => {
+                    ctx.delivery
+                        .record_verification(label, started_revision, false);
+                }
+                None => {
+                    ctx.delivery
+                        .mark_uncertain(format!("bash: {}", truncate_cmd(cmd)));
+                }
+            }
+        }
+    }
+    // write/edit/task failures are recorded as errors by the tool itself;
+    // a failed mutation did not complete, so nothing to record.
+}
+
+/// Merges child delivery reports carried in `task` metadata into the parent
+/// tracker. Single tasks use `{"delivery": report}`; batches use
+/// `{"deliveries": [report, ...]}` (successful children only, original order).
+fn merge_child_delivery(ctx: &ToolContext, metadata: &serde_json::Value, started_revision: u64) {
+    let reports: Vec<crate::harness::session::delivery::DeliveryReport> =
+        if let Some(list) = metadata.get("deliveries").and_then(|v| v.as_array()) {
+            list.iter()
+                .filter_map(|v| serde_json::from_value(v.clone()).ok())
+                .collect()
+        } else if let Some(report) = metadata.get("delivery") {
+            serde_json::from_value(report.clone())
+                .ok()
+                .into_iter()
+                .collect()
+        } else {
+            Vec::new()
+        };
+    for report in reports {
+        ctx.delivery
+            .record_changes(report.changed_files.iter().cloned());
+        for op in &report.operations {
+            ctx.delivery.mark_uncertain(op.clone());
+        }
+        for check in &report.checks {
+            if check.success {
+                ctx.delivery
+                    .record_verification(check.label.clone(), started_revision, true);
+            } else {
+                ctx.delivery
+                    .mark_uncertain(format!("failed check: {}", check.label));
+            }
+        }
+    }
+}
+
+fn truncate_cmd(cmd: &str) -> &str {
+    let cut = cmd
+        .char_indices()
+        .nth(80)
+        .map(|(i, _)| i)
+        .unwrap_or(cmd.len());
+    &cmd[..cut]
 }
 
 /// Tools that mutate files on disk (participate in iteration rollback).

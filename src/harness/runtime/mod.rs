@@ -48,6 +48,8 @@ pub fn effective_prompt_cache(provider: &str) -> bool {
 
 /// Result of a prompt call.
 pub struct PromptResult {
+    /// Delivery state observed during the turn (mutations + verifications).
+    pub delivery: crate::harness::session::delivery::DeliveryReport,
     pub final_text: String,
     pub iterations: usize,
     pub usage: crate::harness::provider::Usage,
@@ -895,6 +897,9 @@ impl SessionRuntime {
             sandbox_policy: self.sandbox_policy.clone(),
             message_bus: self.message_bus.clone(),
             shared_memory: self.shared_memory.clone(),
+            delivery: std::sync::Arc::new(
+                crate::harness::session::delivery::DeliveryTracker::default(),
+            ),
         };
 
         // 4. Run the processor turn.
@@ -1033,6 +1038,7 @@ impl SessionRuntime {
             iterations,
             usage,
             aborted,
+            delivery: ctx.delivery.snapshot(),
         })
     }
 

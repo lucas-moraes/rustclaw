@@ -203,6 +203,7 @@ mod tests {
             sandbox_policy: None,
             message_bus: Some(Arc::new(MessageBus::open(&db, dir).unwrap())),
             shared_memory: Some(Arc::new(SharedMemory::open(&db, dir).unwrap())),
+            delivery: Default::default(),
         }
     }
 

@@ -112,6 +112,7 @@ Then use the read tool to read src/main.rs. Report what tools you used.";
                 iterations: 1,
                 effective_agent: "explore".into(),
                 duration_secs: 0,
+                delivery: Default::default(),
             })
         }
     }

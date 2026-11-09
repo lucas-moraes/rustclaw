@@ -123,6 +123,7 @@ mod tests {
             hooks: Default::default(),
             message_bus: None,
             shared_memory: None,
+            delivery: Default::default(),
         }
     }
 

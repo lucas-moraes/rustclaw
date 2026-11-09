@@ -280,6 +280,7 @@ pub fn execute(cmd: &str) -> i32 {
             sandbox_policy: None,
             message_bus: None,
             shared_memory: None,
+            delivery: Default::default(),
         }
     }
 

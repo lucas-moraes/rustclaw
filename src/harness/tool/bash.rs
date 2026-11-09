@@ -1031,6 +1031,7 @@ mod tests {
             sandbox_policy: None,
             message_bus: None,
             shared_memory: None,
+            delivery: Default::default(),
         };
         let marker = dir.path().join("background-done");
         // Short-lived work must still run after execute returns.
@@ -1099,6 +1100,7 @@ mod tests {
             sandbox_policy: None,
             message_bus: None,
             shared_memory: None,
+            delivery: Default::default(),
         };
 
         // Abort after a short delay while a long sleep is running.
@@ -1171,6 +1173,7 @@ mod tests {
             sandbox_policy: None,
             message_bus: None,
             shared_memory: None,
+            delivery: Default::default(),
         };
 
         // Set a secret in the parent env; the bash tool must not see it.

@@ -64,6 +64,7 @@ fn test_ctx() -> ToolContext {
         sandbox_policy: None,
         message_bus: None,
         shared_memory: None,
+        delivery: std::sync::Arc::new(crate::harness::session::delivery::DeliveryTracker::default()),
     }
 }
 
@@ -1313,8 +1314,10 @@ async fn test_successful_edit_prevents_rollback() {
             },
         ],
         final_text_events("done"),
-        // The verification gate nudges once after the successful edit; the
-        // second stop is accepted. This test only cares about rollback.
+        // The delivery gate nudges after the successful edit (the edit is a
+        // mutation with no verification since). This test only cares about
+        // rollback, so provide enough accepted stops for the two nudges.
+        final_text_events("done"),
         final_text_events("done"),
     ];
     let provider = MockProvider::new(script);
@@ -1620,9 +1623,9 @@ impl Tool for MetaTool {
 }
 
 #[tokio::test]
-async fn verification_gate_nudges_once_then_accepts() {
-    // edit + "done" + "done": the first stop injects the note and calls the
-    // provider again; the second stop is accepted.
+async fn verification_gate_nudges_twice_then_accepts() {
+    // edit + "done" x3: two nudges (bounded retries), then the third stop is
+    // accepted with an explicit PENDING status appended.
     let registry = crate::harness::tool::registry::ToolRegistry::builder()
         .register(StdArc::new(MetaTool {
             name: "edit",
@@ -1630,8 +1633,9 @@ async fn verification_gate_nudges_once_then_accepts() {
         }))
         .build();
     let provider = MockProvider::new(vec![
-        tool_call_events("t1", "edit", r#"{"file_path":"src/lib.rs"}"#),
+        tool_call_events("t1", "edit", r#"{"path":"src/lib.rs"}"#),
         final_text_events("done"),
+        final_text_events("still pending"),
         final_text_events("done again"),
     ]);
     let (processor, dir) = test_processor(provider, registry, 10);
@@ -1645,22 +1649,151 @@ async fn verification_gate_nudges_once_then_accepts() {
         .await
         .unwrap();
 
-    assert_eq!(outcome.final_text, "done again", "second stop is accepted");
+    assert!(
+        outcome.final_text.starts_with("done again"),
+        "third stop is accepted"
+    );
+    assert!(
+        outcome.final_text.contains("PENDING VERIFICATION"),
+        "status appended after retries exhausted: {:?}",
+        outcome.final_text
+    );
     assert_eq!(
-        outcome.iterations, 3,
-        "one extra provider call for the nudge"
+        outcome.iterations, 4,
+        "two extra provider calls for the nudges"
     );
 
-    // The note is a user message, not a system one.
+    // The notes are user messages naming the target.
+    let notes = session
+        .messages
+        .iter()
+        .filter(|m| m.role.as_str() == "user" && m.text_content().contains("verification"))
+        .count();
+    assert_eq!(notes, 2, "two nudge notes persisted");
     let note = session
         .messages
         .iter()
-        .find(|m| m.role.as_str() == "user" && m.text_content().contains("verify"))
-        .expect("verification note persisted as a user message");
+        .find(|m| m.role.as_str() == "user" && m.text_content().contains("src/lib.rs"))
+        .expect("note names the target");
+    assert!(note.text_content().contains("src/lib.rs"));
+}
+
+#[tokio::test]
+async fn verification_gate_verified_check_appends_status() {
+    // edit + bash "cargo test" (exit 0) + "done": accepted with VERIFIED status.
+    let registry = crate::harness::tool::registry::ToolRegistry::builder()
+        .register(StdArc::new(MetaTool {
+            name: "edit",
+            exit_code: None,
+        }))
+        .register(StdArc::new(MetaTool {
+            name: "bash",
+            exit_code: Some(0),
+        }))
+        .build();
+    let provider = MockProvider::new(vec![
+        tool_call_events("t1", "edit", r#"{"path":"src/lib.rs"}"#),
+        tool_call_events("t2", "bash", r#"{"command":"cargo test"}"#),
+        final_text_events("done"),
+    ]);
+    let (processor, dir) = test_processor(provider, registry, 10);
+    let mut session = processor.store.create_session("build", dir.path()).unwrap();
+    session.messages.push(Message::user("edit then test"));
+    let agent = agent_with_tools(vec!["edit".to_string(), "bash".to_string()]);
+    let ctx = test_ctx();
+
+    let outcome = processor
+        .run_turn(&mut session, &agent, "sys", &ctx)
+        .await
+        .unwrap();
+
     assert!(
-        note.text_content().contains("src/lib.rs"),
-        "note names the target"
+        outcome.final_text.contains("VERIFIED via cargo test"),
+        "verified status appended: {:?}",
+        outcome.final_text
     );
+    assert_eq!(outcome.iterations, 3);
+    assert!(
+        !session
+            .messages
+            .iter()
+            .any(|m| m.role.as_str() == "user" && m.text_content().contains("System note")),
+        "no nudge when a verification passed"
+    );
+}
+
+#[tokio::test]
+async fn verification_gate_stale_check_nudges_again() {
+    // edit + bash "cargo test" (exit 0) + edit + "done": the check predates the
+    // second mutation, so the gate nudges.
+    let registry = crate::harness::tool::registry::ToolRegistry::builder()
+        .register(StdArc::new(MetaTool {
+            name: "edit",
+            exit_code: None,
+        }))
+        .register(StdArc::new(MetaTool {
+            name: "bash",
+            exit_code: Some(0),
+        }))
+        .build();
+    let provider = MockProvider::new(vec![
+        tool_call_events("t1", "edit", r#"{"path":"src/lib.rs"}"#),
+        tool_call_events("t2", "bash", r#"{"command":"cargo test"}"#),
+        tool_call_events("t3", "edit", r#"{"path":"src/main.rs"}"#),
+        // Both text stops are nudged: the bash check predates the second edit.
+        final_text_events("done"),
+        final_text_events("still pending"),
+        final_text_events("done again"),
+    ]);
+    let (processor, dir) = test_processor(provider, registry, 10);
+    let mut session = processor.store.create_session("build", dir.path()).unwrap();
+    session.messages.push(Message::user("edit, test, edit"));
+    let agent = agent_with_tools(vec!["edit".to_string(), "bash".to_string()]);
+    let ctx = test_ctx();
+
+    let outcome = processor
+        .run_turn(&mut session, &agent, "sys", &ctx)
+        .await
+        .unwrap();
+
+    let notes = session
+        .messages
+        .iter()
+        .filter(|m| m.role.as_str() == "user" && m.text_content().contains("System note"))
+        .count();
+    assert_eq!(notes, 2, "stale check triggers the bounded nudges");
+    assert!(outcome.final_text.starts_with("done again"));
+}
+
+#[tokio::test]
+async fn verification_gate_read_only_turn_untouched() {
+    // A turn with no mutations ends on the first stop, no status appended.
+    let registry = crate::harness::tool::registry::ToolRegistry::builder()
+        .register(StdArc::new(MetaTool {
+            name: "diagnostics",
+            exit_code: Some(0),
+        }))
+        .build();
+    let provider = MockProvider::new(vec![
+        tool_call_events("t1", "diagnostics", "{}"),
+        final_text_events("just a report"),
+    ]);
+    let (processor, dir) = test_processor(provider, registry, 10);
+    let mut session = processor
+        .store
+        .create_session("reason", dir.path())
+        .unwrap();
+    session.messages.push(Message::user("look around"));
+    let agent = agent_with_tools(vec!["diagnostics".to_string()]);
+    let ctx = test_ctx();
+
+    let outcome = processor
+        .run_turn(&mut session, &agent, "sys", &ctx)
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.final_text, "just a report", "no status appended");
+    assert_eq!(outcome.iterations, 2);
 }
 
 #[tokio::test]

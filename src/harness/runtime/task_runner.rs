@@ -198,6 +198,7 @@ before assuming you are alone.\n\
             iterations: result.iterations,
             effective_agent: agent.to_string(),
             duration_secs,
+            delivery: result.delivery,
         })
     }
 }

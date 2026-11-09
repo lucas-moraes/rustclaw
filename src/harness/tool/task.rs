@@ -55,6 +55,16 @@ fn agent_label(requested: &str, effective: &str) -> String {
     }
 }
 
+fn delivery_status(delivery: &crate::harness::session::delivery::DeliveryReport) -> &'static str {
+    if !delivery.has_changes() {
+        ""
+    } else if delivery.verified {
+        " [delivery: verified]"
+    } else {
+        " [delivery: pending]"
+    }
+}
+
 /// Parses either the single-task form or the batch form.
 fn parse_entries(args: &Value) -> Result<Vec<BatchEntry>, String> {
     if let Some(list) = args["tasks"].as_array() {
@@ -153,17 +163,19 @@ impl Tool for TaskTool {
                 )
                 .await?;
             let label = agent_label(&e.agent, &outcome.effective_agent);
-            return Ok(ToolResult::simple(
-                format!("task ({})", preview(&describe(&e.description, &label), 40)),
-                format!(
-                    "Subagent `{}` (session `{}`, {} iterations, {}s) result:\n{}",
+            return Ok(ToolResult {
+                title: format!("task ({})", preview(&describe(&e.description, &label), 40)),
+                output: format!(
+                    "Subagent `{}` (session `{}`, {} iterations, {}s){} result:\n{}",
                     label,
                     outcome.session_id,
                     outcome.iterations,
                     outcome.duration_secs,
+                    delivery_status(&outcome.delivery),
                     preview(&outcome.final_text, PER_TASK_CHARS)
                 ),
-            ));
+                metadata: json!({ "delivery": outcome.delivery }),
+            });
         }
 
         let fail_fast = args["fail_fast"].as_bool().unwrap_or(false);
@@ -220,9 +232,10 @@ impl Tool for TaskTool {
                 Some(Ok(outcome)) => {
                     let label = agent_label(&entry.agent, &outcome.effective_agent);
                     format!(
-                        "## task {} ({}) — ✓\n{}\n",
+                        "## task {} ({}) — ✓{}\n{}\n",
                         i + 1,
                         describe(&entry.description, &label),
+                        delivery_status(&outcome.delivery),
                         preview(&outcome.final_text, per_task_budget)
                     )
                 }
@@ -251,10 +264,18 @@ impl Tool for TaskTool {
             ));
         }
 
-        Ok(ToolResult::simple(
-            format!("task batch ({} subagents)", entries.len()),
-            out,
-        ))
+        let deliveries: Vec<_> = slots
+            .iter()
+            .filter_map(|slot| match slot {
+                Some(Ok(outcome)) => Some(&outcome.delivery),
+                _ => None,
+            })
+            .collect();
+        Ok(ToolResult {
+            title: format!("task batch ({} subagents)", entries.len()),
+            output: out,
+            metadata: json!({ "deliveries": deliveries }),
+        })
     }
 }
 
@@ -305,6 +326,7 @@ mod tests {
                 iterations: 1,
                 effective_agent: String::new(),
                 duration_secs: 0,
+                delivery: Default::default(),
             })
         }
     }
@@ -356,6 +378,7 @@ mod tests {
             depth: 0,
             message_bus: None,
             shared_memory: None,
+            delivery: Default::default(),
         };
         (ctx, tx, rx)
     }
@@ -436,6 +459,7 @@ mod tests {
                     iterations: 1,
                     effective_agent: String::new(),
                     duration_secs: 0,
+                    delivery: Default::default(),
                 })
             }
         }
@@ -478,6 +502,7 @@ mod tests {
                     iterations: 1,
                     effective_agent: String::new(),
                     duration_secs: 0,
+                    delivery: Default::default(),
                 })
             }
         }
@@ -516,6 +541,7 @@ mod tests {
                     iterations: 1,
                     effective_agent: String::new(),
                     duration_secs: 0,
+                    delivery: Default::default(),
                 })
             }
         }
@@ -538,6 +564,100 @@ mod tests {
             echo.0.lock().unwrap_or_else(|e| e.into_inner())[0],
             "reason"
         );
+    }
+
+    struct DeliveryRunner;
+
+    #[async_trait::async_trait]
+    impl SubagentRunner for DeliveryRunner {
+        async fn run_task(
+            &self,
+            agent: String,
+            prompt: String,
+            _events: EventSender,
+            _depth: usize,
+        ) -> Result<TaskOutcome, String> {
+            if prompt == "error" {
+                return Err("child failed".into());
+            }
+            let mut outcome = TaskOutcome {
+                final_text: format!("{prompt} result"),
+                session_id: "child-delivery".into(),
+                iterations: 1,
+                effective_agent: agent,
+                duration_secs: 0,
+                delivery: Default::default(),
+            };
+            if prompt != "unchanged" {
+                outcome.delivery.changed_files.push(format!("{prompt}.rs"));
+                outcome.delivery.verified = prompt == "verified";
+            }
+            Ok(outcome)
+        }
+    }
+
+    #[tokio::test]
+    async fn test_single_delivery_metadata_and_status_without_merging() {
+        for (prompt, expected_status) in [
+            ("unchanged", ""),
+            ("pending", " [delivery: pending]"),
+            ("verified", " [delivery: verified]"),
+        ] {
+            let (ctx, _tx, _rx) = ctx_with(Arc::new(DeliveryRunner));
+            let result = TaskTool
+                .execute(json!({"prompt": prompt, "agent": "build"}), &ctx)
+                .await
+                .unwrap();
+            let delivery: crate::harness::session::delivery::DeliveryReport =
+                serde_json::from_value(result.metadata["delivery"].clone()).unwrap();
+            assert_eq!(delivery.has_changes(), prompt != "unchanged");
+            assert_eq!(delivery.verified, prompt == "verified");
+            assert_eq!(
+                result.output,
+                format!(
+                    "Subagent `build` (session `child-delivery`, 1 iterations, 0s){expected_status} result:\n{prompt} result"
+                )
+            );
+            assert!(!ctx.delivery.snapshot().has_changes());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_batch_delivery_metadata_preserves_success_order_without_merging() {
+        let (ctx, _tx, _rx) = ctx_with(Arc::new(DeliveryRunner));
+        let result = TaskTool
+            .execute(
+                json!({"tasks": [
+                    {"prompt": "verified", "agent": "build", "description": "verify"},
+                    {"prompt": "error", "agent": "build"},
+                    {"prompt": "unchanged", "agent": "build"},
+                    {"prompt": "pending", "agent": "build"}
+                ]}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let deliveries: Vec<crate::harness::session::delivery::DeliveryReport> =
+            serde_json::from_value(result.metadata["deliveries"].clone()).unwrap();
+        assert_eq!(deliveries.len(), 3);
+        assert_eq!(deliveries[0].changed_files, ["verified.rs"]);
+        assert!(deliveries[0].verified);
+        assert!(!deliveries[1].has_changes());
+        assert_eq!(deliveries[2].changed_files, ["pending.rs"]);
+        assert!(!deliveries[2].verified);
+        assert!(result
+            .output
+            .contains("## task 1 (build — verify) — ✓ [delivery: verified]\nverified result"));
+        assert!(result
+            .output
+            .contains("## task 2 (build) — ✗\nchild failed"));
+        assert!(result
+            .output
+            .contains("## task 3 (build) — ✓\nunchanged result"));
+        assert!(result
+            .output
+            .contains("## task 4 (build) — ✓ [delivery: pending]\npending result"));
+        assert!(!ctx.delivery.snapshot().has_changes());
     }
 
     #[tokio::test]
@@ -583,6 +703,7 @@ mod tests {
                     iterations: 1,
                     effective_agent: String::new(),
                     duration_secs: 0,
+                    delivery: Default::default(),
                 })
             }
         }

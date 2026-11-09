@@ -177,6 +177,7 @@ mod tests {
             sandbox_policy: None,
             message_bus: None,
             shared_memory: None,
+            delivery: Default::default(),
         };
 
         let tool = EditTool;
