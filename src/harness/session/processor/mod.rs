@@ -95,6 +95,10 @@ const KEEP_RECENT_TOOL_OUTPUTS: usize = 6;
 /// results like `git_status` intact for context).
 const MIN_ELIDE_BYTES: usize = 512;
 
+/// Elision boundary advances in multiples of this many tool outputs, so the
+/// wire payload stays byte-stable between flips (prompt-cache friendly).
+const ELIDE_CHUNK: usize = 4;
+
 /// Returns a copy of `messages` where tool outputs older than the most recent
 /// `KEEP_RECENT_TOOL_OUTPUTS` are replaced by a short placeholder. Only the
 /// in-memory copy sent to the provider is changed — the persisted session
@@ -113,8 +117,16 @@ fn elide_old_tool_outputs(messages: &[Message]) -> Vec<Message> {
     if total_tools <= KEEP_RECENT_TOOL_OUTPUTS {
         return messages.to_vec();
     }
-    // Number of tool results (from the start) eligible for elision.
-    let elidable = total_tools - KEEP_RECENT_TOOL_OUTPUTS;
+    // Number of tool results (from the start) eligible for elision, rounded
+    // DOWN to a multiple of ELIDE_CHUNK. Without this, the cutoff advances by
+    // one every turn, rewriting an old middle message each time and
+    // invalidating the provider prompt cache from that point onward. Chunking
+    // keeps the wire payload byte-stable between flips, so the cached prefix
+    // (system + tools + all messages before the boundary) survives.
+    let elidable = ((total_tools - KEEP_RECENT_TOOL_OUTPUTS) / ELIDE_CHUNK) * ELIDE_CHUNK;
+    if elidable == 0 {
+        return messages.to_vec();
+    }
     let mut seen = 0usize;
 
     messages

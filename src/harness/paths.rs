@@ -86,6 +86,10 @@ mod tests {
 
     #[test]
     fn test_all_paths_share_base_dir() {
+        // Global env lock: base_dir() reads RUSTCLAW_HOME concurrently, and
+        // test_rustclaw_home_env_overrides_base sets it while holding the lock.
+        let _env = crate::harness::testenv::lock();
+        std::env::remove_var("RUSTCLAW_HOME");
         let dir = base_dir();
         assert_eq!(auth_json(), dir.join("auth.json"));
         assert_eq!(config_json(), dir.join("config.json"));

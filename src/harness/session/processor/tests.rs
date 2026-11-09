@@ -1363,7 +1363,8 @@ fn big_output(n: usize) -> String {
 
 #[test]
 fn elide_keeps_recent_outputs_intact() {
-    // 8 tool results, KEEP_RECENT_TOOL_OUTPUTS = 6 -> the 2 oldest are elided.
+    // 8 tool results, KEEP_RECENT_TOOL_OUTPUTS = 6 -> 2 elidable, but the
+    // boundary is chunked (ELIDE_CHUNK = 4), so nothing is elided yet.
     let mut msgs = vec![Message::user("go")];
     for i in 0..8 {
         msgs.push(tool_msg(&format!("t{i}"), "read", big_output(2000)));
@@ -1376,11 +1377,31 @@ fn elide_keeps_recent_outputs_intact() {
         .map(|t| t.output.as_str())
         .collect();
     assert_eq!(outputs.len(), 8);
-    // 2 oldest elided.
-    assert!(outputs[0].contains("output omitted"), "oldest elided");
-    assert!(outputs[1].contains("output omitted"));
-    // 6 most recent intact.
-    for o in &outputs[2..] {
+    // Chunked boundary: 2 elidable < ELIDE_CHUNK -> nothing elided.
+    for o in &outputs {
+        assert_eq!(o.len(), 2000, "below chunk boundary -> intact");
+    }
+}
+
+#[test]
+fn elide_advances_in_chunks() {
+    // 14 tool results -> 8 elidable -> boundary rounds down to 8 (2 chunks).
+    let mut msgs = vec![Message::user("go")];
+    for i in 0..14 {
+        msgs.push(tool_msg(&format!("t{i}"), "read", big_output(2000)));
+    }
+    let out = super::elide_old_tool_outputs(&msgs);
+    let outputs: Vec<&str> = out
+        .iter()
+        .flat_map(|m| m.tool_parts())
+        .map(|t| t.output.as_str())
+        .collect();
+    assert_eq!(outputs.len(), 14);
+    // Exactly 8 oldest elided (2 full chunks), 6 most recent intact.
+    for o in &outputs[..8] {
+        assert!(o.contains("output omitted"), "oldest chunk elided");
+    }
+    for o in &outputs[8..] {
         assert_eq!(o.len(), 2000, "recent output must stay intact");
     }
 }
@@ -1416,8 +1437,9 @@ fn elide_skips_small_outputs() {
 
 #[test]
 fn elide_preserves_tool_name_and_size_in_placeholder() {
+    // 12 tool results -> 6 elidable -> one full chunk elided.
     let mut msgs = vec![Message::user("go")];
-    for i in 0..8 {
+    for i in 0..12 {
         msgs.push(tool_msg(&format!("t{i}"), "bash", big_output(5000)));
     }
     let out = super::elide_old_tool_outputs(&msgs);
