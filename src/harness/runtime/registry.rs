@@ -27,6 +27,7 @@ pub fn build_default_registry() -> ToolRegistry {
         shared_memory::SharedMemoryTool,
         task::TaskTool,
         todo::{TodoReadTool, TodoWriteTool},
+        tree::TreeTool,
         web_search::WebSearchTool,
         write::WriteTool,
     };
@@ -36,6 +37,7 @@ pub fn build_default_registry() -> ToolRegistry {
         .register(Arc::new(WriteTool))
         .register(Arc::new(EditTool))
         .register(Arc::new(GlobTool))
+        .register(Arc::new(TreeTool))
         .register(Arc::new(GrepTool))
         .register(Arc::new(AstSearchTool))
         .register(Arc::new(DiagnosticsTool))

@@ -27,6 +27,7 @@ pub mod semantic_search;
 pub mod shared_memory;
 pub mod task;
 pub mod todo;
+pub mod tree;
 pub mod truncate;
 pub mod web_search;
 pub mod write;

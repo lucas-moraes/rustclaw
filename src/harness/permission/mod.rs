@@ -53,6 +53,7 @@ pub const READ_TOOLS: &[&str] = &[
     "git_status",
     "git_diff",
     "git_log",
+    "tree",
 ];
 
 /// Callback invoked when a tool is marked "always allow", so the decision can
