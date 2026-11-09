@@ -124,6 +124,15 @@ pub(crate) fn settings_rows(c: &crate::config::RuntimeConfig) -> Vec<(String, St
             false,
         ),
         (
+            "task_timeout_secs".into(),
+            if c.task_timeout_secs == 0 {
+                "off (unlimited)".into()
+            } else {
+                c.task_timeout_secs.to_string()
+            },
+            false,
+        ),
+        (
             "cache_ttl".into(),
             if c.cache_ttl.is_empty() {
                 "5m (default)".into()

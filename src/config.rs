@@ -95,6 +95,10 @@ pub struct GlobalSettings {
     /// `read`. `0` (default) = built-in default (4 KiB).
     #[serde(default, skip_serializing_if = "usize_is_zero")]
     pub compress_threshold_bytes: usize,
+    /// Wall-clock limit per subagent task, in seconds. `0` (default) = no
+    /// timeout.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub task_timeout_secs: u64,
     /// Speech-to-text model used by push-to-talk (`Ctrl+R` in the TUI).
     /// Empty (default) = `openai/whisper-large-v3` on DeepInfra.
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -110,10 +114,6 @@ pub const DEFAULT_STT_MODEL: &str = "openai/whisper-large-v3";
 
 fn is_zero_f64(v: &f64) -> bool {
     *v == 0.0
-}
-
-fn default_true() -> bool {
-    true
 }
 
 fn is_false(v: &bool) -> bool {
@@ -146,6 +146,7 @@ impl Default for GlobalSettings {
             service_tier: String::new(),
             reasoning_effort: String::new(),
             compress_threshold_bytes: 0,
+            task_timeout_secs: 0,
             stt_model: String::new(),
             voice_enabled: false,
         }
@@ -153,6 +154,10 @@ impl Default for GlobalSettings {
 }
 
 fn usize_is_zero(v: &usize) -> bool {
+    *v == 0
+}
+
+fn is_zero_u64(v: &u64) -> bool {
     *v == 0
 }
 
@@ -261,6 +266,8 @@ pub struct RuntimeConfig {
     /// the context; the original is saved to disk and recoverable via
     /// `read`. `0` = default (4 KiB). See `harness::tool::compress`.
     pub compress_threshold_bytes: usize,
+    /// Wall-clock limit per subagent task, in seconds. `0` = no timeout.
+    pub task_timeout_secs: u64,
     /// Speech-to-text model for push-to-talk (`Ctrl+R` in the TUI).
     /// Empty = `openai/whisper-large-v3` on DeepInfra.
     pub stt_model: String,
@@ -314,6 +321,7 @@ impl RuntimeConfig {
             service_tier: String::new(),
             reasoning_effort: String::new(),
             compress_threshold_bytes: 0,
+            task_timeout_secs: 0,
             stt_model: String::new(),
             voice_enabled: false,
             cache_ttl: String::new(),
@@ -384,6 +392,9 @@ impl RuntimeConfig {
         cfg.reasoning_effort = settings.reasoning_effort.clone();
         if settings.compress_threshold_bytes != 0 {
             cfg.compress_threshold_bytes = settings.compress_threshold_bytes;
+        }
+        if settings.task_timeout_secs != 0 {
+            cfg.task_timeout_secs = settings.task_timeout_secs;
         }
         cfg.voice_enabled = settings.voice_enabled;
         if !settings.stt_model.is_empty() {

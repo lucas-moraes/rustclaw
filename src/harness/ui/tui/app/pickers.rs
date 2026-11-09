@@ -147,7 +147,7 @@ pub(crate) fn handle_settings_command(app: &mut App, text: &str) {
                 app.add_system("usage: /settings iterations <n> (e.g. 50)");
                 return;
             };
-            match app.runtime.update_settings(Some(n), None, None, None, None) {
+            match app.runtime.update_settings(Some(n), None, None, None, None, None) {
                 Ok(()) => app.add_system(&format!("settings · max_iterations = {}", n)),
                 Err(e) => app.add_system(&format!("[error] {}", e)),
             }
@@ -157,7 +157,7 @@ pub(crate) fn handle_settings_command(app: &mut App, text: &str) {
                 app.add_system("usage: /settings context <tokens> (e.g. 100000)");
                 return;
             };
-            match app.runtime.update_settings(None, Some(n), None, None, None) {
+            match app.runtime.update_settings(None, Some(n), None, None, None, None) {
                 Ok(()) => app.add_system(&format!("settings · max_context_tokens = {}", n)),
                 Err(e) => app.add_system(&format!("[error] {}", e)),
             }
@@ -167,7 +167,7 @@ pub(crate) fn handle_settings_command(app: &mut App, text: &str) {
                 app.add_system("usage: /settings turn_timeout <secs> (e.g. 1200)");
                 return;
             };
-            match app.runtime.update_settings(None, None, Some(n), None, None) {
+            match app.runtime.update_settings(None, None, Some(n), None, None, None) {
                 Ok(()) => app.add_system(&format!("settings · turn_timeout_secs = {}", n)),
                 Err(e) => app.add_system(&format!("[error] {}", e)),
             }
@@ -177,7 +177,7 @@ pub(crate) fn handle_settings_command(app: &mut App, text: &str) {
                 app.add_system("usage: /settings compact_ratio <0.0-1.0> (e.g. 0.85)");
                 return;
             };
-            match app.runtime.update_settings(None, None, None, Some(r), None) {
+            match app.runtime.update_settings(None, None, None, Some(r), None, None) {
                 Ok(()) => app.add_system(&format!("settings · compact_trigger_ratio = {}", r)),
                 Err(e) => app.add_system(&format!("[error] {}", e)),
             }
@@ -189,12 +189,30 @@ pub(crate) fn handle_settings_command(app: &mut App, text: &str) {
                 return;
             }
             let val = if m == "off" { "" } else { m };
-            match app.runtime.update_settings(None, None, None, None, Some(val)) {
+            match app.runtime.update_settings(None, None, None, None, Some(val), None) {
                 Ok(()) => app.add_system(&format!(
                     "settings · summary_model = {}",
                     if val.is_empty() { "(same as model)" } else { val }
                 )),
                 Err(e) => app.add_system(&format!("[error] {}", e)),
+            }
+        }
+        Some("task_timeout") => {
+            let v = parts.next().unwrap_or("");
+            let secs = if v == "off" || v == "0" {
+                Some(0)
+            } else {
+                v.parse::<u64>().ok()
+            };
+            match secs {
+                Some(n) => match app.runtime.update_settings(None, None, None, None, None, Some(n)) {
+                    Ok(()) => app.add_system(&format!(
+                        "settings · task_timeout_secs = {}",
+                        if n == 0 { "off (unlimited)".to_string() } else { n.to_string() }
+                    )),
+                    Err(e) => app.add_system(&format!("[error] {}", e)),
+                },
+                None => app.add_system("usage: /settings task_timeout <secs|off>"),
             }
         }
         Some("theme") => match parts.next() {
@@ -211,7 +229,7 @@ pub(crate) fn handle_settings_command(app: &mut App, text: &str) {
             None => app.add_system(&format!("current theme: {}", app.theme.name)),
         },
         Some(other) => app.add_system(&format!(
-            "unknown setting: {} (iterations · context · turn_timeout · compact_ratio · summary_model · theme)",
+            "unknown setting: {} (iterations · context · turn_timeout · compact_ratio · summary_model · task_timeout · theme)",
             other
         )),
     }

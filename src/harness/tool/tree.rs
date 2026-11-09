@@ -183,14 +183,6 @@ fn is_ignored_dir(path: &std::path::Path) -> bool {
 mod tests {
     use super::*;
 
-    fn tmpdir(name: &str) -> tempfile::TempDir {
-        tempfile::tempdir_in(std::env::temp_dir()).unwrap_or_else(|_| {
-            let d = std::env::temp_dir().join(name);
-            let _ = std::fs::create_dir_all(&d);
-            tempfile::TempDir::new().unwrap()
-        })
-    }
-
     #[test]
     fn test_tree_basic_structure() {
         let dir = tempfile::tempdir().unwrap();

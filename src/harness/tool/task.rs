@@ -5,26 +5,54 @@
 //! in input order.
 
 use super::{Tool, ToolResult};
+use crate::harness::agent::find_builtin;
 use crate::harness::session::preview;
-use crate::harness::tool::context::ToolContext;
+use crate::harness::tool::context::{TaskOutcome, ToolContext};
 use serde_json::{json, Value};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 /// Max subagents running concurrently within one batch tool call.
 const MAX_PARALLEL_TASKS: usize = 4;
+/// Agent used when the caller does not specify one.
+const DEFAULT_AGENT: &str = "reason";
 /// Maximum subagent nesting depth (root agent = 0). A subagent at this depth
 /// may not spawn further subagents, preventing unbounded recursion.
 pub const MAX_SUBAGENT_DEPTH: usize = 3;
-/// Per-task output budget (chars) in the aggregated result.
+/// Per-task output cap (chars) in the aggregated result.
 const PER_TASK_CHARS: usize = 4000;
-/// Total output budget (chars) for the aggregated result.
-const TOTAL_CHARS: usize = 8000;
+/// Total output budget (chars) for the aggregated batch result. Divided
+/// evenly among the batch tasks, so 4 tasks get 4000 chars each.
+const TOTAL_CHARS: usize = 16000;
 
 pub struct TaskTool;
 
 struct BatchEntry {
+    description: String,
+    /// Canonical agent name (as reported by the registry), never an alias.
     agent: String,
     prompt: String,
+}
+
+/// Validates an agent name against the builtin registry and returns its
+/// canonical name. Aliases (plan/explore/general) resolve to `reason`.
+fn canonical_agent(raw: &str) -> Result<String, String> {
+    match find_builtin(raw) {
+        Some(spec) => Ok(spec.name),
+        None => Err(format!(
+            "unknown agent `{raw}` (valid: build, reason, chat-free, cursor, cursor_plan)"
+        )),
+    }
+}
+
+/// Label for an agent in the output. Shows `requested → effective` when the
+/// runner demoted the subagent (e.g. build requested but run as reason).
+fn agent_label(requested: &str, effective: &str) -> String {
+    if effective.is_empty() || effective.eq_ignore_ascii_case(requested) {
+        requested.to_string()
+    } else {
+        format!("{requested} → {effective} (demoted)")
+    }
 }
 
 /// Parses either the single-task form or the batch form.
@@ -38,7 +66,9 @@ fn parse_entries(args: &Value) -> Result<Vec<BatchEntry>, String> {
             .enumerate()
             .map(|(i, t)| {
                 Ok(BatchEntry {
-                    agent: t["agent"].as_str().unwrap_or("explore").to_string(),
+                    description: t["description"].as_str().unwrap_or("").to_string(),
+                    agent: canonical_agent(t["agent"].as_str().unwrap_or(DEFAULT_AGENT))
+                        .map_err(|e| format!("tasks[{i}]: {e}"))?,
                     prompt: t["prompt"]
                         .as_str()
                         .ok_or_else(|| format!("tasks[{i}]: missing required argument: prompt"))?
@@ -51,7 +81,8 @@ fn parse_entries(args: &Value) -> Result<Vec<BatchEntry>, String> {
         .as_str()
         .ok_or_else(|| "missing required argument: prompt".to_string())?;
     Ok(vec![BatchEntry {
-        agent: args["agent"].as_str().unwrap_or("explore").to_string(),
+        description: args["description"].as_str().unwrap_or("").to_string(),
+        agent: canonical_agent(args["agent"].as_str().unwrap_or(DEFAULT_AGENT))?,
         prompt: prompt.to_string(),
     }])
 }
@@ -62,11 +93,11 @@ impl Tool for TaskTool {
         "task"
     }
     fn description(&self) -> &str {
-        "Spawns a subagent (default: explore, or build/plan/general) to complete a \
-delegated task. Returns the subagent's summary. Use for parallelizable or \
-self-contained research/implementation work. To run several independent tasks \
-in parallel, pass `tasks: [{description, prompt, agent}, ...]` instead of a \
-single `prompt`."
+        "Spawns a subagent (default: reason; also build, chat-free, cursor, \
+         cursor_plan) to complete a delegated task. Returns the subagent's \
+         summary. Use for parallelizable or self-contained research/implementation \
+         work. To run several independent tasks in parallel, pass \
+         `tasks: [{description, prompt, agent}, ...]` instead of a single `prompt`."
     }
     fn parameters(&self) -> Value {
         json!({
@@ -74,7 +105,8 @@ single `prompt`."
             "properties": {
                 "description": {"type": "string", "description": "Short description of the task"},
                 "prompt": {"type": "string", "description": "Full instructions for the subagent (single task)"},
-                "agent": {"type": "string", "description": "explore|build|plan|general (default explore)"},
+                "agent": {"type": "string", "description": "reason|build|chat-free|cursor|cursor_plan (default reason)"},
+                "fail_fast": {"type": "boolean", "description": "Batch only: skip remaining tasks once one fails (default false)"},
                 "tasks": {
                     "type": "array",
                     "description": "Batch of independent tasks to run in parallel (max 4 concurrent)",
@@ -120,15 +152,22 @@ single `prompt`."
                     ctx.depth + 1,
                 )
                 .await?;
+            let label = agent_label(&e.agent, &outcome.effective_agent);
             return Ok(ToolResult::simple(
-                format!("task ({})", preview(&e.agent, 20)),
+                format!("task ({})", preview(&describe(&e.description, &label), 40)),
                 format!(
-                    "Subagent `{}` result:\n{}",
-                    e.agent,
+                    "Subagent `{}` (session `{}`, {} iterations, {}s) result:\n{}",
+                    label,
+                    outcome.session_id,
+                    outcome.iterations,
+                    outcome.duration_secs,
                     preview(&outcome.final_text, PER_TASK_CHARS)
                 ),
             ));
         }
+
+        let fail_fast = args["fail_fast"].as_bool().unwrap_or(false);
+        let failed = Arc::new(AtomicBool::new(false));
 
         // Batch: run concurrently with a concurrency cap, preserving input order.
         let semaphore = Arc::new(tokio::sync::Semaphore::new(MAX_PARALLEL_TASKS));
@@ -140,72 +179,91 @@ single `prompt`."
             let prompt = e.prompt.clone();
             let sem = semaphore.clone();
             let abort = ctx.abort.clone();
+            let failed = failed.clone();
             let child_depth = ctx.depth + 1;
             join_set.spawn(async move {
                 let _permit = sem.acquire_owned().await;
                 if abort.is_aborted() {
-                    return (idx, agent, Err("aborted".to_string()));
+                    return (idx, Err("aborted".to_string()));
                 }
-                let result = runner
-                    .run_task(agent.clone(), prompt, events, child_depth)
-                    .await;
-                (idx, agent, result)
+                if fail_fast && failed.load(Ordering::SeqCst) {
+                    return (
+                        idx,
+                        Err("skipped (fail_fast: an earlier task failed)".to_string()),
+                    );
+                }
+                let result = runner.run_task(agent, prompt, events, child_depth).await;
+                if result.is_err() {
+                    failed.store(true, Ordering::SeqCst);
+                }
+                (idx, result)
             });
         }
 
         // Collect in completion order, then reassemble by input index.
-        let mut slots: Vec<Option<(String, Result<String, String>)>> =
+        let mut slots: Vec<Option<Result<TaskOutcome, String>>> =
             (0..entries.len()).map(|_| None).collect();
         while let Some(joined) = join_set.join_next().await {
-            let Ok((idx, agent, result)) = joined else {
+            let Ok((idx, result)) = joined else {
                 continue;
             };
-            let mapped = result.map(|o| o.final_text);
-            slots[idx] = Some((agent, mapped));
+            slots[idx] = Some(result);
         }
 
-        // Aggregate with per-task and total budgets.
+        // Aggregate: each task gets an equal share of TOTAL_CHARS (and at most
+        // PER_TASK_CHARS), so late tasks are not starved by early ones.
+        let per_task_budget = (TOTAL_CHARS / entries.len()).min(PER_TASK_CHARS);
         let mut out = String::new();
-        let mut budget = TOTAL_CHARS;
-        for (i, slot) in slots.iter().enumerate() {
-            let (agent, result) = match slot {
-                Some(v) => v,
-                None => {
-                    out.push_str(&format!("## task {} — ✗ (cancelled)\n", i + 1));
-                    continue;
+        let mut truncated_count = 0usize;
+        for (i, (entry, slot)) in entries.iter().zip(slots.iter()).enumerate() {
+            let section = match slot {
+                Some(Ok(outcome)) => {
+                    let label = agent_label(&entry.agent, &outcome.effective_agent);
+                    format!(
+                        "## task {} ({}) — ✓\n{}\n",
+                        i + 1,
+                        describe(&entry.description, &label),
+                        preview(&outcome.final_text, per_task_budget)
+                    )
                 }
-            };
-            let section = match result {
-                Ok(text) => format!(
-                    "## task {} ({}) — ✓\n{}\n",
+                Some(Err(e)) => format!(
+                    "## task {} ({}) — ✗\n{}\n",
                     i + 1,
-                    agent,
-                    preview(text, PER_TASK_CHARS)
+                    describe(&entry.description, &entry.agent),
+                    e
                 ),
-                Err(e) => format!("## task {} ({}) — ✗\n{}\n", i + 1, agent, e),
+                None => format!("## task {} — ✗ (cancelled)\n", i + 1),
             };
-            if budget == 0 {
-                out.push_str(&format!("## task {} — (output budget exhausted)\n", i + 1));
-                continue;
-            }
-            let take = section.char_indices().nth(budget).map(|(i, _)| i);
-            match take {
-                Some(cut) => {
-                    out.push_str(&section[..cut]);
-                    out.push_str("\n…(truncated)\n");
-                    budget = 0;
-                }
-                None => {
-                    out.push_str(&section);
-                    budget = budget.saturating_sub(section.chars().count());
+            // Sections are already capped by `preview`; this only flags when
+            // the final task text itself was cut.
+            if let Some(Ok(outcome)) = slot {
+                if outcome.final_text.chars().count() > per_task_budget {
+                    truncated_count += 1;
                 }
             }
+            out.push_str(&section);
+        }
+        if truncated_count > 0 {
+            out.push_str(&format!(
+                "\n[{} of {} tasks truncated — ask a specific follow-up via message_send if you need the full output]\n",
+                truncated_count,
+                entries.len()
+            ));
         }
 
         Ok(ToolResult::simple(
-            format!("task batch ({} subagents)", slots.len()),
+            format!("task batch ({} subagents)", entries.len()),
             out,
         ))
+    }
+}
+
+/// Builds the `description (agent)` label used in batch section headers.
+fn describe(description: &str, agent_label: &str) -> String {
+    if description.is_empty() {
+        agent_label.to_string()
+    } else {
+        format!("{} — {}", agent_label, preview(description, 80))
     }
 }
 
@@ -245,6 +303,8 @@ mod tests {
                 final_text: format!("{} done", agent),
                 session_id: format!("child-{}", agent),
                 iterations: 1,
+                effective_agent: String::new(),
+                duration_secs: 0,
             })
         }
     }
@@ -301,12 +361,13 @@ mod tests {
     }
 
     fn batch_args(n: usize) -> Value {
+        let agents = ["reason", "build", "reason", "build"];
         let tasks: Vec<Value> = (0..n)
             .map(|i| {
                 json!({
                     "description": format!("t{i}"),
                     "prompt": format!("p{i}"),
-                    "agent": format!("agent{i}"),
+                    "agent": agents[i % agents.len()],
                 })
             })
             .collect();
@@ -322,15 +383,19 @@ mod tests {
         });
         let (ctx, _tx, _rx) = ctx_with(runner.clone() as Arc<dyn SubagentRunner>);
         let result = TaskTool.execute(batch_args(3), &ctx).await.unwrap();
+        let agents = ["reason", "build", "reason"];
         for i in 1..=3 {
             assert!(
-                result
-                    .output
-                    .contains(&format!("## task {} (agent{}) — ✓", i, i - 1)),
+                result.output.contains(&format!(
+                    "## task {} ({} — t{}) — ✓",
+                    i,
+                    agents[i - 1],
+                    i - 1
+                )),
                 "missing ordered section {i}: {}",
                 result.output
             );
-            assert!(result.output.contains(&format!("agent{} done", i - 1)));
+            assert!(result.output.contains(&format!("{} done", agents[i - 1])));
         }
     }
 
@@ -369,6 +434,8 @@ mod tests {
                     final_text: "late".into(),
                     session_id: "c".into(),
                     iterations: 1,
+                    effective_agent: String::new(),
+                    duration_secs: 0,
                 })
             }
         }
@@ -383,6 +450,46 @@ mod tests {
         assert!(
             result.output.contains("task 1") && result.output.contains("task 2"),
             "expected both sections: {}",
+            result.output
+        );
+    }
+
+    #[tokio::test]
+    async fn test_batch_fail_fast_skips_remaining() {
+        /// Task 1 fails immediately; the rest are slow, so the tasks queued
+        /// behind the concurrency cap observe the failure and are skipped.
+        struct FailFirst;
+        #[async_trait::async_trait]
+        impl SubagentRunner for FailFirst {
+            async fn run_task(
+                &self,
+                agent: String,
+                prompt: String,
+                _events: EventSender,
+                _depth: usize,
+            ) -> Result<TaskOutcome, String> {
+                if prompt == "p0" {
+                    return Err("boom".into());
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                Ok(TaskOutcome {
+                    final_text: format!("{agent} done"),
+                    session_id: "c".into(),
+                    iterations: 1,
+                    effective_agent: String::new(),
+                    duration_secs: 0,
+                })
+            }
+        }
+        let (ctx, _tx, _rx) = ctx_with(Arc::new(FailFirst));
+        let mut args = batch_args(6);
+        args["fail_fast"] = json!(true);
+        let result = TaskTool.execute(args, &ctx).await.unwrap();
+        assert!(result.output.contains("## task 1 (reason — t0) — ✗"));
+        assert!(result.output.contains("boom"));
+        assert!(
+            result.output.contains("skipped (fail_fast"),
+            "expected skipped sections: {}",
             result.output
         );
     }
@@ -407,6 +514,8 @@ mod tests {
                     final_text: "the answer".into(),
                     session_id: "c".into(),
                     iterations: 1,
+                    effective_agent: String::new(),
+                    duration_secs: 0,
                 })
             }
         }
@@ -419,9 +528,16 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(result.output.contains("Subagent `explore` result:"));
+        assert!(result
+            .output
+            .contains("Subagent `reason` (session `c`, 1 iterations, 0s) result:"));
         assert!(result.output.contains("the answer"));
         assert_eq!(echo.0.lock().unwrap_or_else(|e| e.into_inner()).len(), 1);
+        // The legacy alias is canonicalised before reaching the runner.
+        assert_eq!(
+            echo.0.lock().unwrap_or_else(|e| e.into_inner())[0],
+            "reason"
+        );
     }
 
     #[tokio::test]
@@ -465,6 +581,8 @@ mod tests {
                     final_text: "ok".into(),
                     session_id: "c".into(),
                     iterations: 1,
+                    effective_agent: String::new(),
+                    duration_secs: 0,
                 })
             }
         }

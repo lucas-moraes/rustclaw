@@ -21,6 +21,8 @@ pub struct TaskRunner {
     /// Process-wide concurrency limiter shared by every subagent, so parallel
     /// batches and nested spawns queue behind the same cap.
     pub scheduler: SubagentScheduler,
+    /// Per-task wall-clock timeout in seconds. `None` disables the timeout.
+    pub task_timeout_secs: Option<u64>,
 }
 
 /// Makes a terminal event available even when the run future is dropped.
@@ -156,18 +158,27 @@ before assuming you are alone.\n\
             child.id, self.parent_session_id
         );
 
-        let result = self
-            .runtime
-            .prompt_at_depth(
-                &mut child,
-                &child_tx,
-                &prompt,
-                crate::harness::tool::context::AbortSignal::new(),
-                None,
-                depth,
-            )
-            .await
-            .map_err(|e| e.to_string());
+        let started = std::time::Instant::now();
+        let run_fut = self.runtime.prompt_at_depth(
+            &mut child,
+            &child_tx,
+            &prompt,
+            crate::harness::tool::context::AbortSignal::new(),
+            None,
+            depth,
+        );
+        let result = match self.task_timeout_secs {
+            Some(secs) => {
+                match tokio::time::timeout(std::time::Duration::from_secs(secs), run_fut).await {
+                    Ok(res) => res.map_err(|e| e.to_string()),
+                    Err(_) => Err(format!(
+                        "Subagent timed out after {secs}s (task_timeout_secs setting)"
+                    )),
+                }
+            }
+            None => run_fut.await.map_err(|e| e.to_string()),
+        };
+        let duration_secs = started.elapsed().as_secs();
 
         run_guard.fallback = match &result {
             Ok(result) => result.final_text.clone(),
@@ -185,6 +196,8 @@ before assuming you are alone.\n\
             final_text: result.final_text,
             session_id: child.id.clone(),
             iterations: result.iterations,
+            effective_agent: agent.to_string(),
+            duration_secs,
         })
     }
 }

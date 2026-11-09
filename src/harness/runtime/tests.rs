@@ -110,6 +110,8 @@ Then use the read tool to read src/main.rs. Report what tools you used.";
                 final_text: "done".into(),
                 session_id: "child-1".into(),
                 iterations: 1,
+                effective_agent: "explore".into(),
+                duration_secs: 0,
             })
         }
     }

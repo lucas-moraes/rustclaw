@@ -485,6 +485,7 @@ impl SessionRuntime {
         turn_timeout_secs: Option<u64>,
         compact_trigger_ratio: Option<f64>,
         summary_model: Option<&str>,
+        task_timeout_secs: Option<u64>,
     ) -> Result<()> {
         if let Some(n) = max_iterations {
             anyhow::ensure!(n > 0, "max_iterations must be > 0");
@@ -508,6 +509,9 @@ impl SessionRuntime {
         if let Some(m) = summary_model {
             self.config.summary_model = m.to_string();
         }
+        if let Some(n) = task_timeout_secs {
+            self.config.task_timeout_secs = n;
+        }
         let mut s = crate::config::GlobalSettings::load();
         s.max_iterations = self.config.max_iterations;
         s.max_context_tokens = self.config.max_context_tokens;
@@ -516,6 +520,7 @@ impl SessionRuntime {
         s.model = self.config.model.clone();
         s.compact_trigger_ratio = self.config.compact_trigger_ratio;
         s.summary_model = self.config.summary_model.clone();
+        s.task_timeout_secs = self.config.task_timeout_secs;
         s.save().context("failed to persist config.json")?;
         Ok(())
     }
@@ -876,6 +881,8 @@ impl SessionRuntime {
                 runtime: Arc::new(self.clone_shareable()),
                 parent_session_id: session.id.clone(),
                 allow_write: session.agent == crate::harness::agent::builtin::BUILD,
+                task_timeout_secs: (self.config.task_timeout_secs != 0)
+                    .then_some(self.config.task_timeout_secs),
             })),
             events: events.clone(),
             jobs: self.jobs.clone(),

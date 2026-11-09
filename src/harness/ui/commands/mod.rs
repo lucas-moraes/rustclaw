@@ -101,7 +101,7 @@ pub async fn handle(
                     }
                 ));
                 out.push(
-                    "usage: /settings iterations <n> · context <n> · turn_timeout <secs> · compact_ratio <0.0-1.0> · summary_model <name|off> · fail_fast <on|off> · service_tier <tier|off> · reasoning_effort <low|medium|high|off> · stt_model <model> · compress_threshold <bytes|off>"
+                    "usage: /settings iterations <n> · context <n> · turn_timeout <secs> · compact_ratio <0.0-1.0> · summary_model <name|off> · fail_fast <on|off> · service_tier <tier|off> · reasoning_effort <low|medium|high|off> · stt_model <model> · compress_threshold <bytes|off> · task_timeout <secs|off>"
                         .to_string(),
                 );
             } else {
@@ -109,7 +109,7 @@ pub async fn handle(
                 match parts.next() {
                     Some("iterations") => {
                         match parts.next().and_then(|v| v.parse::<usize>().ok()) {
-                            Some(n) => match runtime.update_settings(Some(n), None, None, None, None) {
+                            Some(n) => match runtime.update_settings(Some(n), None, None, None, None, None) {
                                 Ok(()) => out.push(format!("settings · max_iterations = {}", n)),
                                 Err(e) => out.push(format!("[error] {}", e)),
                             },
@@ -117,7 +117,7 @@ pub async fn handle(
                         }
                     }
                     Some("context") => match parts.next().and_then(|v| v.parse::<usize>().ok()) {
-                        Some(n) => match runtime.update_settings(None, Some(n), None, None, None) {
+                        Some(n) => match runtime.update_settings(None, Some(n), None, None, None, None) {
                             Ok(()) => out.push(format!("settings · max_context_tokens = {}", n)),
                             Err(e) => out.push(format!("[error] {}", e)),
                         },
@@ -125,7 +125,7 @@ pub async fn handle(
                     },
                     Some("turn_timeout") => {
                         match parts.next().and_then(|v| v.parse::<u64>().ok()) {
-                            Some(n) => match runtime.update_settings(None, None, Some(n), None, None) {
+                            Some(n) => match runtime.update_settings(None, None, Some(n), None, None, None) {
                                 Ok(()) => out.push(format!("settings · turn_timeout_secs = {}", n)),
                                 Err(e) => out.push(format!("[error] {}", e)),
                             },
@@ -134,7 +134,7 @@ pub async fn handle(
                     }
                     Some("compact_ratio") => {
                         match parts.next().and_then(|v| v.parse::<f64>().ok()) {
-                            Some(r) => match runtime.update_settings(None, None, None, Some(r), None) {
+                            Some(r) => match runtime.update_settings(None, None, None, Some(r), None, None) {
                                 Ok(()) => out.push(format!("settings · compact_trigger_ratio = {}", r)),
                                 Err(e) => out.push(format!("[error] {}", e)),
                             },
@@ -147,13 +147,31 @@ pub async fn handle(
                             out.push("usage: /settings summary_model <name|off>".to_string());
                         } else {
                             let val = if m == "off" { "" } else { m };
-                            match runtime.update_settings(None, None, None, None, Some(val)) {
+                            match runtime.update_settings(None, None, None, None, Some(val), None) {
                                 Ok(()) => out.push(format!(
                                     "settings · summary_model = {}",
                                     if val.is_empty() { "(same as model)" } else { val }
                                 )),
                                 Err(e) => out.push(format!("[error] {}", e)),
                             }
+                        }
+                    }
+                    Some("task_timeout") => {
+                        let v = parts.next().unwrap_or("");
+                        let secs = if v == "off" || v == "0" {
+                            Some(0)
+                        } else {
+                            v.parse::<u64>().ok()
+                        };
+                        match secs {
+                            Some(n) => match runtime.update_settings(None, None, None, None, None, Some(n)) {
+                                Ok(()) => out.push(format!(
+                                    "settings · task_timeout_secs = {}",
+                                    if n == 0 { "off (unlimited)".to_string() } else { n.to_string() }
+                                )),
+                                Err(e) => out.push(format!("[error] {}", e)),
+                            },
+                            None => out.push("usage: /settings task_timeout <secs|off>".to_string()),
                         }
                     }
                     Some("fail_fast") => {

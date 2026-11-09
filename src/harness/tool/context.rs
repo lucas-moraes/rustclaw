@@ -111,6 +111,11 @@ pub struct TaskOutcome {
     /// Number of iterations the child turn used. Read by tests.
     #[allow(dead_code)]
     pub iterations: usize,
+    /// Agent actually used, after demotion/normalisation (may differ from the
+    /// requested one, e.g. `build` → `reason` when writes are disabled).
+    pub effective_agent: String,
+    /// Wall-clock duration of the child run in seconds.
+    pub duration_secs: u64,
 }
 
 /// Everything a tool needs to run, scoped to the current session.
