@@ -50,6 +50,141 @@ pub fn verification_command(command: &str) -> Option<String> {
     is_verification(&values).then(|| command.to_owned())
 }
 
+/// Whether `command` is made only of well-known read-only inspection commands
+/// (`git status`, `ls`, `grep`, ...), joined by `|`, `;`, `&&` or `||`.
+///
+/// Verification commands may appear as segments too. Such commands cannot change
+/// the workspace, so they must not count as a "possible mutation". This says
+/// nothing about success: a pipeline never counts as verification evidence. Like
+/// [`verification_command`], this is conservative: redirections, substitutions,
+/// globbing, background execution and unknown programs all return `false`.
+pub fn is_read_only_command(command: &str) -> bool {
+    // Harmless stream plumbing that the tokenizer would otherwise reject.
+    let command = command
+        .replace("2>&1", " ")
+        .replace("2>/dev/null", " ")
+        .replace(">/dev/null", " ");
+    let Some(segments) = split_segments(command.trim()) else {
+        return false;
+    };
+    !segments.is_empty()
+        && segments.iter().all(|segment| {
+            // A verification segment (cargo test, ...) cannot hide a mutation either.
+            if verification_command(segment).is_some() {
+                return true;
+            }
+            let Some(tokens) = tokenize(segment) else {
+                return false;
+            };
+            let mut words = Vec::new();
+            for token in tokens {
+                match token {
+                    Token::Word(word) if !word.assignment => words.push(word.value),
+                    _ => return false,
+                }
+            }
+            let words: Vec<&str> = words.iter().map(String::as_str).collect();
+            is_read_only(&words)
+        })
+}
+
+/// Split on unquoted `|`, `||`, `;`, `&&`. A lone `&` (background) is rejected.
+fn split_segments(command: &str) -> Option<Vec<&str>> {
+    let mut segments = Vec::new();
+    let mut chars = command.char_indices().peekable();
+    let mut quote: Option<char> = None;
+    let mut start = 0;
+    while let Some((index, ch)) = chars.next() {
+        match quote {
+            Some('"') if ch == '\\' => {
+                chars.next();
+            }
+            Some(delimiter) => {
+                if ch == delimiter {
+                    quote = None;
+                }
+            }
+            None => match ch {
+                '\'' | '"' => quote = Some(ch),
+                '\\' => {
+                    chars.next();
+                }
+                '|' | ';' => {
+                    segments.push(&command[start..index]);
+                    start = index + 1;
+                }
+                '&' if chars.peek().is_some_and(|(_, next)| *next == '&') => {
+                    segments.push(&command[start..index]);
+                    chars.next();
+                    start = index + 2;
+                }
+                '&' => return None,
+                _ => {}
+            },
+        }
+    }
+    if quote.is_some() {
+        return None;
+    }
+    segments.push(&command[start..]);
+    segments.retain(|segment| !segment.trim().is_empty());
+    Some(segments)
+}
+
+fn is_read_only(words: &[&str]) -> bool {
+    let Some((program, args)) = words.split_first() else {
+        return false;
+    };
+    let has = |flags: &[&str]| {
+        args.iter()
+            .any(|arg| flags.contains(&arg.split('=').next().unwrap_or_default()))
+    };
+    match *program {
+        "ls" | "cat" | "head" | "tail" | "wc" | "pwd" | "echo" | "printf" | "stat" | "file"
+        | "which" | "date" | "uname" | "diff" | "cut" | "uniq" | "tr" | "true" | "false"
+        | "test" | "basename" | "dirname" | "realpath" | "du" | "df" | "cd" => true,
+        // `sort -o FILE` writes; `tail -f` never returns.
+        "sort" => !args
+            .iter()
+            .any(|arg| *arg == "-o" || arg.starts_with("--output") || arg.starts_with("-o")),
+        "grep" | "egrep" | "fgrep" => true,
+        // `--pre` runs an arbitrary preprocessor.
+        "rg" => !has(&["--pre", "--pre-glob"]),
+        // Only plain line printing (`sed -n 10,20p file`); anything else may write.
+        "sed" => {
+            matches!(args, ["-n", script, ..] if is_print_script(script))
+        }
+        "find" => !has(&[
+            "-exec", "-execdir", "-ok", "-okdir", "-delete", "-fprint", "-fprint0", "-fprintf",
+            "-fls",
+        ]),
+        "git" => match args {
+            // `git -c`, `--exec-path`, `-C` etc. change what runs; keep it simple.
+            [sub, rest @ ..] if !sub.starts_with('-') => match *sub {
+                "status" | "log" | "show" | "diff" | "rev-parse" | "ls-files" | "blame"
+                | "describe" | "shortlog" => !rest.iter().any(|arg| {
+                    arg.starts_with("--output") || *arg == "--ext-diff" || *arg == "--textconv"
+                }),
+                _ => false,
+            },
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+/// `5p`, `10,20p`, `$p` is excluded (needs `$`, rejected by the tokenizer anyway).
+fn is_print_script(script: &str) -> bool {
+    let Some(body) = script.strip_suffix('p') else {
+        return false;
+    };
+    !body.is_empty()
+        && body.split(',').count() <= 2
+        && body
+            .split(',')
+            .all(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+}
+
 #[derive(Debug)]
 struct Word {
     value: String,
@@ -461,6 +596,44 @@ mod tests {
             "git diff --src-prefix --check",
         ] {
             assert_eq!(verification_command(command), None, "{command}");
+        }
+    }
+
+    #[test]
+    fn read_only_commands_are_not_mutations() {
+        for command in [
+            "git status --porcelain",
+            "ls -la | head -5",
+            "grep -rn \"foo\" src | head",
+            "sed -n 10,20p src/main.rs",
+            "cd /tmp/x && git log --oneline -5",
+            "cargo fmt --check && echo ok; cargo test 2>&1 | grep -E \"test result\"",
+            "cargo clippy --all-targets -- -D warnings 2>&1 | grep -c warning",
+        ] {
+            assert!(super::is_read_only_command(command), "{command}");
+        }
+    }
+
+    #[test]
+    fn possible_mutations_are_not_read_only() {
+        for command in [
+            "rm -rf target",
+            "echo hi > file",
+            "cat a >> b",
+            "sed -i s/a/b/ f",
+            "sed -n 1p f; rm f",
+            "find . -delete",
+            "find . -exec rm {} ;",
+            "sort -o out in",
+            "git checkout main",
+            "git commit -am x",
+            "ls & sleep 1",
+            "python3 script.py",
+            "echo $(rm f)",
+            "ls | tee out",
+            "",
+        ] {
+            assert!(!super::is_read_only_command(command), "{command}");
         }
     }
 }

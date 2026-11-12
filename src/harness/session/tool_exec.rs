@@ -433,6 +433,7 @@ fn observe_delivery(
                         ctx.delivery
                             .record_verification(label, started_revision, success);
                     }
+                    None if crate::harness::session::verification::is_read_only_command(cmd) => {}
                     None => {
                         ctx.delivery
                             .mark_uncertain(format!("bash: {}", truncate_cmd(cmd)));
@@ -464,6 +465,7 @@ fn observe_failed_delivery(
                     ctx.delivery
                         .record_verification(label, started_revision, false);
                 }
+                None if crate::harness::session::verification::is_read_only_command(cmd) => {}
                 None => {
                     ctx.delivery
                         .mark_uncertain(format!("bash: {}", truncate_cmd(cmd)));
