@@ -69,11 +69,18 @@ pub fn to_anthropic_messages(messages: &[Message]) -> Vec<Value> {
                         Part::Image { .. } => {}
                         // Skip pending/running tool calls (no result yet).
                         Part::Tool(t) if t.is_terminal() => {
+                            // Anthropic requires `input` to be a JSON object; a
+                            // failed/unparsed call can carry `null` here.
+                            let input = if t.input.is_object() {
+                                t.input.clone()
+                            } else {
+                                json!({})
+                            };
                             content.push(json!({
                                 "type": "tool_use",
                                 "id": t.id,
                                 "name": t.name,
-                                "input": t.input,
+                                "input": input,
                             }));
                         }
                         Part::Tool(_) => {}
