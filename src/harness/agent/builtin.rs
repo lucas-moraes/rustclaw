@@ -57,7 +57,12 @@ For independent research or verification work, delegate to subagents with the ta
 pass `tasks: [...]` (a batch) so independent tasks run in parallel instead of one by one. \
 To inspect a symbol definition (struct, enum, trait, function, impl) in a .rs file, prefer \
 the ast_search tool over reading the whole file — it extracts exactly the block you need \
-without loading the full source into context."
+without loading the full source into context. \
+If the `agent-desktop` CLI is installed (check with `agent-desktop status`), you can see and \
+operate desktop apps through the OS accessibility tree using the bash tool. Before the first \
+use, run `agent-desktop skills get desktop` and `agent-desktop skills get platform` and follow \
+them (snapshot, act on a ref, re-snapshot to verify). Desktop snapshots can contain private \
+content; keep them out of logs and uploads."
             .into(),
         model: None,
         temperature: Some(0.0),

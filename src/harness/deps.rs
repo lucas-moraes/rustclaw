@@ -49,33 +49,46 @@ impl DepStatus {
 /// `chrome` is required for `fetch_webpage`'s `render: "browser"` mode
 /// (headless Chrome via `chromiumoxide`). It is shipped in the default binary,
 /// so a missing browser is a real (if non-fatal) gap.
-pub const KNOWN_DEPS: &[SystemDep] = &[SystemDep {
-    id: "chrome",
-    name: "Chrome/Chromium",
-    needed_for: "fetch_webpage render=\"browser\" (JS/SPA pages)",
-    binaries: &[
-        "google-chrome",
-        "google-chrome-stable",
-        "chromium",
-        "chromium-browser",
-        "chrome",
-    ],
-    extra_paths: &[
-        // macOS app bundles.
-        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-        "/Applications/Chromium.app/Contents/MacOS/Chromium",
-        "/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary",
-        // Common Linux locations.
-        "/usr/bin/google-chrome",
-        "/usr/bin/chromium",
-        "/usr/bin/chromium-browser",
-        "/snap/bin/chromium",
-    ],
-    install_hint: "install Google Chrome or Chromium \
+pub const KNOWN_DEPS: &[SystemDep] = &[
+    SystemDep {
+        id: "chrome",
+        name: "Chrome/Chromium",
+        needed_for: "fetch_webpage render=\"browser\" (JS/SPA pages)",
+        binaries: &[
+            "google-chrome",
+            "google-chrome-stable",
+            "chromium",
+            "chromium-browser",
+            "chrome",
+        ],
+        extra_paths: &[
+            // macOS app bundles.
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/Applications/Chromium.app/Contents/MacOS/Chromium",
+            "/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary",
+            // Common Linux locations.
+            "/usr/bin/google-chrome",
+            "/usr/bin/chromium",
+            "/usr/bin/chromium-browser",
+            "/snap/bin/chromium",
+        ],
+        install_hint: "install Google Chrome or Chromium \
                    (macOS: `brew install --cask google-chrome`; \
                    Debian/Ubuntu: `sudo apt install chromium`; \
                    Fedora: `sudo dnf install chromium`)",
-}];
+    },
+    SystemDep {
+        id: "agent-desktop",
+        name: "agent-desktop",
+        needed_for: "desktop automation via accessibility tree (agent-desktop MCP/CLI)",
+        binaries: &["agent-desktop"],
+        extra_paths: &[],
+        install_hint: "install agent-desktop \
+                   (macOS: `brew install agent-desktop`; \
+                   npm: `npm install -g agent-desktop`; \
+                   or the release tarball from github.com/vercel-labs/agent-desktop)",
+    },
+];
 
 /// Probes every known dependency and returns their status.
 pub fn check_all() -> Vec<DepStatus> {

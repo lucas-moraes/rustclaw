@@ -342,6 +342,19 @@ como tools nativas (`src/harness/mcp/`).
 - Agentes readonly (`plan`/`explore`) admitem MCP tools com annotation
   `readOnlyHint: true` (marcador `mcp_readonly` na allowlist).
 
+### agent-desktop (desktop automation)
+
+O instalador (`scripts/install.sh`) também instala o
+[agent-desktop](https://github.com/vercel-labs/agent-desktop) (vercel-labs) ao
+lado do rustclaw — automação de desktop via árvore de acessibilidade, sem
+screenshots. Opt-out com `RUSTCLAW_SKIP_AGENT_DESKTOP=1`; versão pinada com
+`AGENT_DESKTOP_VERSION` (default `v1.2.0`). No macOS, conceda a permissão de
+Accessibility depois: `agent-desktop permissions --guide`. O agente usa o CLI
+pela tool `bash` (sem configurar MCP): o prompt do `build` o instrui a rodar
+`agent-desktop skills get desktop` e `skills get platform` antes do primeiro uso.
+O MCP (`agent-desktop mcp` no `mcp.json`) é opcional. O `/doctor` reporta a
+ausência do binário (`src/harness/deps.rs`).
+
 ### Comandos
 
 - `/mcp list` — servers configurados + contagem de tools.

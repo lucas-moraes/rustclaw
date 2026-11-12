@@ -56,6 +56,11 @@ and adjusts PATH if needed. Specific version:
 RUSTCLAW_VERSION=v1.3.0 curl -fsSL .../install.sh | bash
 ```
 
+The installer also installs [agent-desktop](https://github.com/vercel-labs/agent-desktop)
+(next to rustclaw in `~/.local/bin`) for desktop automation. Skip it with
+`RUSTCLAW_SKIP_AGENT_DESKTOP=1`, pin it with `AGENT_DESKTOP_VERSION=v1.2.0`.
+On macOS, grant Accessibility permission afterwards: `agent-desktop permissions --guide`.
+
 Install from source (development):
 
 ```bash

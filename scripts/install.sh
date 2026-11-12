@@ -7,6 +7,11 @@
 # Env options:
 #   RUSTCLAW_VERSION=v0.2.0   pin a specific release tag
 #   RUSTCLAW_INSTALL_DIR      install prefix (default: ~/.local/bin)
+#   AGENT_DESKTOP_VERSION     agent-desktop release tag (default: v1.2.0)
+#   RUSTCLAW_SKIP_AGENT_DESKTOP=1  do not install agent-desktop alongside rustclaw
+#
+# agent-desktop (vercel-labs) is installed next to rustclaw. A failure there is
+# a warning only: rustclaw is still installed.
 
 set -euo pipefail
 
@@ -14,6 +19,8 @@ REPO="lucas-moraes/rustclaw"
 BIN="rustclaw"
 VERSION="${RUSTCLAW_VERSION:-}"
 INSTALL_DIR="${RUSTCLAW_INSTALL_DIR:-$HOME/.local/bin}"
+AGENT_DESKTOP_REPO="vercel-labs/agent-desktop"
+AGENT_DESKTOP_VERSION="${AGENT_DESKTOP_VERSION:-v1.2.0}"
 
 log()  { printf '%s\n' "$*"; }
 die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -46,6 +53,52 @@ download() {
   else
     die "need curl or wget to download"
   fi
+}
+
+# Install agent-desktop (vercel-labs) next to rustclaw.
+# Best-effort: a failure here warns but does not abort the rustclaw install.
+install_agent_desktop() {
+  local target="$1" tmp="$2"
+  [ "${RUSTCLAW_SKIP_AGENT_DESKTOP:-0}" = "1" ] && { log "skipping agent-desktop (RUSTCLAW_SKIP_AGENT_DESKTOP=1)"; return 0; }
+
+  # Asset names use the full version and a Rust target triple, e.g.
+  # agent-desktop-v1.2.0-aarch64-apple-darwin.tar.gz.
+  local triple
+  case "$target" in
+    darwin-arm64) triple="aarch64-apple-darwin" ;;
+    *) log "warning: no agent-desktop asset for target $target"; return 0 ;;
+  esac
+  local archive="agent-desktop-$AGENT_DESKTOP_VERSION-$triple.tar.gz"
+  local base="https://github.com/$AGENT_DESKTOP_REPO/releases/download/$AGENT_DESKTOP_VERSION"
+
+  download "$base/$archive" "$tmp/$archive" || {
+    log "warning: agent-desktop download failed ($base/$archive)"
+    log "  install manually: npm install -g agent-desktop | brew install agent-desktop"
+    return 0
+  }
+  download "$base/checksums.txt" "$tmp/ad-checksums.txt" \
+    || log "warning: agent-desktop checksums.txt unavailable, skipping verification"
+
+  if [ -f "$tmp/ad-checksums.txt" ]; then
+    local expected
+    expected="$(grep "$archive" "$tmp/ad-checksums.txt" | awk '{print $1}')"
+    if [ -n "$expected" ]; then
+      echo "$expected  $tmp/$archive" | shasum -a 256 -c - >/dev/null 2>&1 \
+        || ( command -v sha256sum >/dev/null && echo "$expected  $tmp/$archive" | sha256sum -c - >/dev/null ) \
+        || die "checksum mismatch for $archive"
+      log "agent-desktop checksum ok"
+    fi
+  fi
+
+  tar -xzf "$tmp/$archive" -C "$tmp"
+  local bin
+  for bin in agent-desktop agent-desktop-macos-helper; do
+    [ -f "$tmp/$bin" ] || { log "warning: agent-desktop archive did not contain $bin"; return 0; }
+    chmod +x "$tmp/$bin"
+    mv "$tmp/$bin" "$INSTALL_DIR/$bin"
+  done
+  log "✓ installed: $INSTALL_DIR/agent-desktop ($AGENT_DESKTOP_VERSION)"
+  log "  grant Accessibility permission: agent-desktop permissions --guide"
 }
 
 main() {
@@ -112,6 +165,8 @@ main() {
   log ""
   log "✓ installed: $(command -v "$BIN" || printf '%s/%s' "$INSTALL_DIR" "$BIN")"
   log "  run 'rustclaw --version' to confirm"
+
+  install_agent_desktop "$target" "$tmp"
 }
 
 main "$@"
