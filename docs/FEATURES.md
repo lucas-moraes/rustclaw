@@ -349,11 +349,14 @@ O instalador (`scripts/install.sh`) também instala o
 lado do rustclaw — automação de desktop via árvore de acessibilidade, sem
 screenshots. Opt-out com `RUSTCLAW_SKIP_AGENT_DESKTOP=1`; versão pinada com
 `AGENT_DESKTOP_VERSION` (default `v1.2.0`). No macOS, conceda a permissão de
-Accessibility depois: `agent-desktop permissions --guide`. O agente usa o CLI
-pela tool `bash` (sem configurar MCP): o prompt do `build` o instrui a rodar
-`agent-desktop skills get desktop` e `skills get platform` antes do primeiro uso.
-O MCP (`agent-desktop mcp` no `mcp.json`) é opcional. O `/doctor` reporta a
-ausência do binário (`src/harness/deps.rs`).
+Accessibility depois: `agent-desktop permissions --guide`. O agente `build` tem a
+tool nativa **`agent_desktop`** (wrapper allowlisted do CLI, sem configurar MCP):
+subcomandos de observação (`status`, `snapshot`, `screenshot`, `list-apps`,
+`skills`) são somente leitura; ações (`click`, `type`, `key`, ...) passam pelo
+fluxo Ask. O prompt do `build` instrui a rodar `skills get desktop` e
+`skills get platform` antes do primeiro uso, e o loop snapshot → agir por ref →
+re-snapshot. O MCP (`agent-desktop mcp` no `mcp.json`) é opcional. O `/doctor`
+reporta a ausência do binário (`src/harness/deps.rs`).
 
 ### Comandos
 

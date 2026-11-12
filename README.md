@@ -16,6 +16,7 @@ A coding agent harness in Rust, in the style of OpenCode / Claude Code. Agent lo
 - 🔐 **HITL permissions** — allow / ask / deny per tool and path (y/n/always in the CLI)
 - 🎭 **Agents** — `build`, `plan`, `explore`, `general`, `chat-free` + subagent via the `task` tool
 - 🛠️ **Coding tools** — bash, read, write, edit, glob, grep, ast_search, todo, question, task, remember, git_status, git_diff, git_log
+- 🖥️ **Desktop automation** — native `agent_desktop` tool (wraps the [agent-desktop](https://github.com/vercel-labs/agent-desktop) CLI): see and operate apps via the OS accessibility tree (snapshot → act on a ref → re-snapshot); observation subcommands are read-only, actions ask for permission
 - 🔍 **Syntactic search (Tree-Sitter)** — `ast_search` extracts structs, enums, traits, functions and impls from `.rs` files via AST, with no regex or false positives
 - 🔌 **MCP (Model Context Protocol)** — connects to external MCP servers (stdio or streamable HTTP) and exposes their tools as native tools (`mcp_<server>_<tool>`)
 - 🌐 **Free Web Research** — DuckDuckGo search (`web_search`) and HTML documentation converted to clean Markdown (`fetch_webpage`), with no paid API keys

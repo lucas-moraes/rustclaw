@@ -139,6 +139,7 @@ src/
     │   ├── context.rs   # ToolContext (cwd, abort, permission, askers, todos)
     │   ├── bash.rs read.rs write.rs edit.rs glob.rs grep.rs
     │   ├── ast_search.rs web_search/ fetch_webpage.rs browser.rs
+    │   ├── agent_desktop.rs # wrapper do CLI agent-desktop (computer use)
     │   ├── semantic_search.rs tree.rs
     │   ├── todo.rs question.rs task.rs remember.rs
     │   ├── message.rs shared_memory.rs   # swarm: message_* e shared_memory
