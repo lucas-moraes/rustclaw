@@ -11,7 +11,7 @@
 /// substitutions, background execution, and commands after verification are rejected.
 pub fn verification_command(command: &str) -> Option<String> {
     let command = command.trim();
-    let tokens = tokenize(command)?;
+    let tokens = tokenize(command, false)?;
     let mut words = Vec::new();
     let mut changed_directory = false;
 
@@ -73,7 +73,7 @@ pub fn is_read_only_command(command: &str) -> bool {
             if verification_command(segment).is_some() {
                 return true;
             }
-            let Some(tokens) = tokenize(segment) else {
+            let Some(tokens) = tokenize(segment, true) else {
                 return false;
             };
             let mut words = Vec::new();
@@ -237,7 +237,9 @@ fn is_cd(words: &[Word]) -> bool {
     !path.is_empty() && !path.starts_with('-')
 }
 
-fn tokenize(command: &str) -> Option<Vec<Token>> {
+/// `globs` allows unquoted `* ? [ ] ~ { }`. Only safe for read-only programs, where
+/// expansion merely changes which files are read; verification keeps it off.
+fn tokenize(command: &str, globs: bool) -> Option<Vec<Token>> {
     let mut tokens = Vec::new();
     let mut chars = command.char_indices().peekable();
     let mut start = None;
@@ -290,6 +292,10 @@ fn tokenize(command: &str) -> Option<Vec<Token>> {
             }
             // Reject shell operators, comments, expansion, and globbing. Their
             // literal equivalents inside quotes are safe and remain ordinary words.
+            '*' | '?' | '[' | ']' | '~' | '{' | '}' if globs => {
+                start.get_or_insert(index);
+                value.push(ch);
+            }
             '|' | ';' | '&' | '<' | '>' | '(' | ')' | '{' | '}' | '$' | '`' | '#' | '*' | '?'
             | '[' | ']' | '~' => return None,
             _ => {
@@ -609,6 +615,10 @@ mod tests {
             "cd /tmp/x && git log --oneline -5",
             "cargo fmt --check && echo ok; cargo test 2>&1 | grep -E \"test result\"",
             "cargo clippy --all-targets -- -D warnings 2>&1 | grep -c warning",
+            "grep -rn \"KNOWN\" src --include=*.rs | grep -v \"^src/x\" | head",
+            "ls ~/.local/bin | grep -c agent-desktop",
+            "cat src/*.rs | wc -l",
+            "cd /x && grep -n \"agent-desktop\" -B2 -A8 src/harness/deps.rs | head -50; grep -rn \"KNOWN_DEPS\\|deps::\" src --include=*.rs | grep -v \"^src/harness/deps.rs\" | head",
         ] {
             assert!(super::is_read_only_command(command), "{command}");
         }
@@ -630,6 +640,9 @@ mod tests {
             "ls & sleep 1",
             "python3 script.py",
             "echo $(rm f)",
+            "rm *.rs",
+            "echo hi > *.rs",
+            "find . -name *.rs -delete",
             "ls | tee out",
             "",
         ] {
