@@ -1,5 +1,6 @@
 //! Tool abstraction with JSON Schema parameters (native tool calling).
 
+pub mod agent_desktop;
 pub mod ast_search;
 pub mod bash;
 pub mod browser;

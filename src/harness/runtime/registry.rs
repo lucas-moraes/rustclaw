@@ -10,6 +10,7 @@ use std::sync::Arc;
 /// is applied by [`apply_cursor_toggle`] (removes it when the toggle is off).
 pub fn build_default_registry() -> ToolRegistry {
     use crate::harness::tool::{
+        agent_desktop::AgentDesktopTool,
         ast_search::AstSearchTool,
         bash::BashTool,
         cursor::CursorTool,
@@ -32,6 +33,7 @@ pub fn build_default_registry() -> ToolRegistry {
         write::WriteTool,
     };
     ToolRegistry::builder()
+        .register(Arc::new(AgentDesktopTool))
         .register(Arc::new(BashTool))
         .register(Arc::new(ReadTool))
         .register(Arc::new(WriteTool))

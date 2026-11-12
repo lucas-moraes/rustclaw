@@ -364,10 +364,12 @@ impl Tool for MyTool {
   `write`/`edit`). `reason` tem planejar como tarefa principal: a resposta final
   **é** o plano (prosa, passos ordenados nomeando arquivos); `todo_write` é só
   rastreio, nunca o plano. Não adicionar nota automática plan→build.
-- `build` documenta no prompt o **agent-desktop** (computer use pela árvore de
-  acessibilidade, CLI via tool `bash`, sem MCP): `agent-desktop status`,
-  `skills get desktop`/`skills get platform` antes do primeiro uso, loop
-  snapshot → agir por ref → re-snapshot; snapshots são conteúdo privado.
+- `build` tem a tool nativa **`agent_desktop`** (computer use pela árvore de
+  acessibilidade; wrapper allowlisted do CLI `agent-desktop`, sem MCP).
+  Subcomandos de observação (`status`, `snapshot`, `screenshot`, `list-apps`,
+  `skills`) são somente leitura; ações (`click`, `type`, `key`, ...) passam pelo
+  fluxo Ask. `skills get desktop`/`skills get platform` antes do primeiro uso,
+  loop snapshot → agir por ref → re-snapshot; snapshots são conteúdo privado.
   Instalado por `scripts/install.sh` (versão pinada `AGENT_DESKTOP_VERSION`,
   SHA-256, opt-out `RUSTCLAW_SKIP_AGENT_DESKTOP=1`, falha não aborta) e
   reportado pelo `/doctor` (`KNOWN_DEPS` em `deps.rs`). Refs são efêmeros.

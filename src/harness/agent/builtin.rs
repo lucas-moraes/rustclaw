@@ -39,6 +39,7 @@ const BUILD_TOOLS_NO_WRITE: &[&str] = &[
     "git_status",
     "git_diff",
     "git_log",
+    "agent_desktop",
     // Special marker: admits MCP tools annotated `readOnlyHint: true`.
     "mcp_readonly",
 ];
@@ -58,11 +59,12 @@ pass `tasks: [...]` (a batch) so independent tasks run in parallel instead of on
 To inspect a symbol definition (struct, enum, trait, function, impl) in a .rs file, prefer \
 the ast_search tool over reading the whole file — it extracts exactly the block you need \
 without loading the full source into context. \
-If the `agent-desktop` CLI is installed (check with `agent-desktop status`), you can see and \
-operate desktop apps through the OS accessibility tree using the bash tool. Before the first \
-use, run `agent-desktop skills get desktop` and `agent-desktop skills get platform` and follow \
-them (snapshot, act on a ref, re-snapshot to verify). Desktop snapshots can contain private \
-content; keep them out of logs and uploads."
+You also have the native `agent_desktop` tool (wraps the `agent-desktop` CLI, computer use \
+via the OS accessibility tree). Workflow: `snapshot` -> act on a ref (`click`, `type`, `key`) \
+-> re-snapshot to verify. Before the first use, run subcommand `skills` with args \
+`get desktop` and `get platform` and follow them. Observation subcommands (`status`, \
+`snapshot`, `screenshot`, `list-apps`, `skills`) are read-only; actions ask for permission. \
+Desktop snapshots can contain private content; keep them out of logs and uploads."
             .into(),
         model: None,
         temperature: Some(0.0),
