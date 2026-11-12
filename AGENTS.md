@@ -26,7 +26,13 @@ cargo clippy          # lint
 cargo fmt             # format
 cargo fmt --check     # formatting check
 cargo check           # full check
+cargo clippy --all-targets -- -D warnings   # gate esperado: 0 warnings
 ```
+
+Rode `cargo test` **sem pipe** como verificação final: o delivery gate (ver
+"Delivery gate") só aceita um comando de verificação simples; `cargo test | grep`
+não conta como evidência. Testes que mexem em env vars do processo
+(`RUSTCLAW_HOME`, chaves) devem segurar o lock de `harness/testenv.rs`.
 
 ## Code Style Guidelines
 
@@ -85,9 +91,16 @@ src/
 └── harness/         # O harness em si
     ├── mod.rs
     ├── event.rs     # Event bus (HarnessEvent)
+    ├── paths.rs     # base_dir() (RUSTCLAW_HOME / portable / fallback)
+    ├── deps.rs      # KNOWN_DEPS: programas externos checados pelo /doctor
+    ├── eval.rs      # Evals offline (ScriptedProvider), gate de regressão
+    ├── testenv.rs   # Lock global p/ testes que alteram env vars
+    ├── swarm/       # Coordenação entre agentes (bus.rs, memory.rs; SQLite)
+    ├── index/       # Índice semântico (chunk/embed/indexer/search/store)
     ├── runtime/     # SessionRuntime (facade)
     │   ├── mod.rs       # SessionRuntime + PromptResult + re-exports
     │   ├── registry.rs  # build_default_registry
+    │   ├── scheduler.rs # Semáforo global de subagentes (qualquer profundidade)
     │   ├── task_runner.rs # TaskRunner (subagentes via tool::task)
     │   └── context.rs   # frozen_summary_for + memory_block_for
     ├── auth.rs      # Auth token store (~/Library/.../rustclaw/auth.json)
@@ -95,6 +108,7 @@ src/
     ├── hooks.rs     # Pre/post tool hooks (run_pre_tool, spawn_post_tool)
     ├── skill/       # Skills = memória da sessão (prompt/session/memory)
     │   ├── mod.rs   # SkillSpec, SessionSkill, PromptSkillToggle
+    │   ├── builtin.rs # Skills embutidas (off por padrão; ativar via /skills)
     │   ├── loader.rs# Discovery de SKILL.md (projeto+home+env) + parse
     │   └── inject.rs# Render de skills habilitadas no system prompt
     ├── session/
@@ -106,6 +120,10 @@ src/
     │   ├── tool_exec.rs # Execução de tools (JoinSet + permissões + catch_unwind)
     │   ├── doom_loop.rs # DoomLoopDetector (detecção de ciclos de tool calls)
     │   ├── compaction.rs# Compactação de contexto em overflow
+    │   ├── delivery.rs  # DeliveryTracker/Report: evidência p/ o delivery gate
+    │   ├── verification.rs # Reconhece comandos de verificação / somente leitura
+    │   ├── ledger.rs    # ContextLedger (sobrevive à compactação)
+    │   ├── metrics.rs   # SessionMetrics (/stats, evals)
     │   └── image.rs     # Suporte a imagens nas mensagens
     ├── provider/
     │   ├── mod.rs       # Trait Provider + ProviderEvent + SSE parser
@@ -120,8 +138,12 @@ src/
     │   ├── registry.rs  # ToolRegistry (builder)
     │   ├── context.rs   # ToolContext (cwd, abort, permission, askers, todos)
     │   ├── bash.rs read.rs write.rs edit.rs glob.rs grep.rs
-    │   ├── ast_search.rs web_search.rs fetch_webpage.rs
+    │   ├── ast_search.rs web_search/ fetch_webpage.rs browser.rs
+    │   ├── semantic_search.rs tree.rs
     │   ├── todo.rs question.rs task.rs remember.rs
+    │   ├── message.rs shared_memory.rs   # swarm: message_* e shared_memory
+    │   ├── compress.rs output_store.rs   # compressão + original recuperável
+    │   ├── sandbox.rs   # Landlock p/ bash (só Linux)
     │   ├── diff.rs git.rs diagnostics.rs checkpoint.rs
     │   ├── cursor.rs    # CursorTool: delega a tarefa ao Cursor CLI
     │   ├── env.rs jobs.rs truncate.rs
@@ -140,8 +162,8 @@ src/
     │   ├── client.rs # McpClient (stdio/HTTP, handshake, list/call, reconnect)
     │   └── tool.rs   # McpTool impl Tool (mcp_<server>_<tool>)
     ├── agent/
-    │   ├── mod.rs        # AgentSpec + build_system_prompt
-    │   ├── builtin.rs    # build/plan/explore/general
+    │   ├── mod.rs        # AgentSpec + build_system_prompt + find_builtin
+    │   ├── builtin.rs    # build / reason / chat-free / cursor / cursor_plan
     │   └── custom.rs     # Agentes customizados (user-defined)
     └── ui/
         ├── mod.rs
@@ -151,6 +173,11 @@ src/
         │   ├── memory.rs# /memory list|rm|clear|promote|gc
         │   ├── export.rs# /export (Markdown/JSON)
         │   ├── apply_plan.rs # /apply-plan
+        │   ├── index_cmd.rs  # /index
+        │   ├── permissions_cmd.rs # /permissions
+        │   ├── provider_cmd.rs    # /provider
+        │   ├── session_cmd.rs     # sessões
+        │   ├── stats.rs      # /stats
         │   └── replay.rs# /record, /replay
         └── tui/         # TUI ratatui + crossterm
             ├── mod.rs   # entry + TTY selection + askers wiring
@@ -285,6 +312,10 @@ impl Tool for MyTool {
 - `provider::Provider` tem `stream(LlmRequest)` e `complete(LlmRequest)`
 - Adaptadores convertem `Message`/`Part` e emitem `ProviderEvent` unificado
 - `ProviderEvent::ToolCallEnd` carrega os argumentos completos da tool call
+- `anthropic.rs`: `tool_use.input` é sempre enviado como objeto JSON (valor
+  não-objeto/`Null` vira `{}`); a API rejeita com 400 caso contrário. A origem
+  do `Null` (`ToolCallStart` em `processor/stream_loop.rs`) ainda não foi
+  corrigida.
 - Prompt caching: `AnthropicProvider.prompt_cache` injeta até 3 breakpoints
   `cache_control` (system/tools/última message); flag efetiva =
   `config.json prompt_caching` && (providers.json `prompt_cache` ?? default
@@ -302,9 +333,46 @@ impl Tool for MyTool {
   detecta ciclos multi-call (A,B,A,B...)
 - Compaction automática em overflow de contexto (`session/compaction.rs`)
 
+### Delivery gate (verificação antes de entregar)
+- Ao fim do turno, se arquivos mudaram (ou algo pode ter mudado) e nenhuma
+  verificação passou desde a última mudança, o processor injeta uma
+  "System note" pedindo verificação (até 2x, depois aceita com status explícito).
+  Isso gera uma **segunda resposta**; é o comportamento esperado quando faltou
+  verificação, não um bug.
+- Evidência vem de `session/delivery.rs` (`DeliveryTracker`), alimentada em
+  `session/tool_exec.rs`: `write`/`edit` marcam mudança; `bash` marca
+  "mutação incerta" (`mark_uncertain`) salvo se for verificação
+  (`verification_command`) ou **somente leitura** (`is_read_only_command`,
+  ambos em `session/verification.rs`).
+- `verification_command` é conservador: aceita um único comando de verificação
+  (`cargo test/check/build/clippy`, `cargo fmt --check`, `npm test`, `pytest`,
+  `go test/vet`, `git diff --check`), opcionalmente com `cd x &&`.
+  Pipelines, redirecionamentos e `$(...)` **não** contam como evidência.
+- `is_read_only_command` aceita `ls/cat/grep/rg/head/wc/sed -n Np/find` (sem
+  `-exec/-delete`), `git status|log|diff|show|...`, unidos por `| ; && ||` e
+  `2>&1`/`>/dev/null`. Rejeita `>`/`>>`, `$(...)`, `&`, `sed -i`, `sort -o`,
+  `tee`, programas desconhecidos. Ao ampliar a lista, lembre que cada item novo
+  arrisca ignorar uma mutação real.
+- Ao final de um turno com mudanças, reporte **Implemented / Verified /
+  Pending** (comando + resultado).
+
 ### Agents
-- Builtins em `agent/builtin.rs` (`build`/`plan`/`explore`/`general`/`cursor`)
-- `tool::task` dispara subagent via `runtime::TaskRunner` (child session isolada)
+- Builtins em `agent/builtin.rs`: `build`, `reason`, `chat-free`, `cursor`,
+  `cursor_plan`. `plan`/`explore`/`general` são **aliases legados** de `reason`
+  (`find_builtin` em `agent/mod.rs`); não recriar como agentes separados.
+- `reason` e `chat-free` usam `BUILD_TOOLS_NO_WRITE` (tudo do `build` menos
+  `write`/`edit`). `reason` tem planejar como tarefa principal: a resposta final
+  **é** o plano (prosa, passos ordenados nomeando arquivos); `todo_write` é só
+  rastreio, nunca o plano. Não adicionar nota automática plan→build.
+- `build` documenta no prompt o **agent-desktop** (computer use pela árvore de
+  acessibilidade, CLI via tool `bash`, sem MCP): `agent-desktop status`,
+  `skills get desktop`/`skills get platform` antes do primeiro uso, loop
+  snapshot → agir por ref → re-snapshot; snapshots são conteúdo privado.
+  Instalado por `scripts/install.sh` (versão pinada `AGENT_DESKTOP_VERSION`,
+  SHA-256, opt-out `RUSTCLAW_SKIP_AGENT_DESKTOP=1`, falha não aborta) e
+  reportado pelo `/doctor` (`KNOWN_DEPS` em `deps.rs`). Refs são efêmeros.
+- `tool::task` dispara subagent via `runtime::TaskRunner` (child session isolada);
+  concorrência total limitada por `runtime/scheduler.rs`
 
 ### Cursor delegation (`cursor_agent` / `cursor_plan` toggles)
 - Dois toggles **independentes**:
@@ -350,11 +418,15 @@ impl Tool for MyTool {
 - Modelo: **prompt** (pedido atual) + **session** (histórico) + **memory** (skills)
 - Skills escolhidas na criação da session (SkillPicker) ou via `/skills`
 - Skills marcadas no turno (checkbox) entram no system prompt (`# Session skills`)
-- Persistidas em `harness_sessions.skills_json` (DB: `dirs::data_local_dir()/rustclaw/harness.db`)
+- Persistidas em `harness_sessions.skills_json` (DB: `<base_dir>/harness.db`)
 
 ### Permissions
 - `PermissionEngine` decide Allow/Ask/Deny por tool + path (fora do CWD → Ask)
 - Tools mutáveis pedem confirmação no CLI (y/n/always)
+- `read` de arquivos em qualquer caminho é permitido por padrão; escrita fora
+  do CWD → Ask
+- `bash` roda sob Landlock apenas no Linux (`tool/sandbox.rs`); no macOS não há
+  sandbox de filesystem. Cada comando `bash` não allow-listado cai em Ask.
 
 ### MCP (Model Context Protocol)
 - `McpManager` (`mcp/mod.rs`): `connect_all` paralelo no boot (falha de um
@@ -368,8 +440,10 @@ impl Tool for MyTool {
 - Registro: `SessionRuntime::init_mcp()` (chamado no boot do CLI/TUI) injeta
   as tools no `ToolRegistry` via `registry.with_tool`
 - Permissões: MCP tools caem no default `Ask`; `/permissions set mcp_... allow`
-  persiste. Todos os modos admitem tools MCP com `readOnlyHint` via marcador
-  `mcp_readonly` na allowlist (`Tool::read_only()` no trait)
+  persiste. Os modos `reason`/`chat-free` admitem tools MCP com `readOnlyHint`
+  via marcador `mcp_readonly` na allowlist (`Tool::read_only()` no trait).
+  Atenção: servers que não anotam `readOnlyHint` (ex.: agent-desktop, 67 tools
+  sem hint) **não** entram por esse marcador
 - Comandos: `/mcp list|status|restart` (`ui/commands/mod.rs`)
 
 ### Project Memory (remember tool)
@@ -390,7 +464,7 @@ impl Tool for MyTool {
 
 ### Auth & Budget
 - `auth.rs`: `AuthStore` — gerencia tokens de API por provider em
-  `dirs::data_local_dir()/rustclaw/auth.json` (0600)
+  `<base_dir>/auth.json` (0600; ver Configuration)
 - `budget.rs`: `BudgetTracker` — contabilidade de uso de tokens + estimativa
   de custo via `catalog::estimate_cost` e `catalog::estimate_cost_cached`
 
